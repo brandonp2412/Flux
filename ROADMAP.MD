@@ -91,7 +91,13 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [x] Struct literals, field access, and functional update/copy syntax with single evaluation of the base value.
 - [x] Closed enums / tagged unions with typed positional payloads, namespace-qualified constructors, semantic indexing, deterministic native tagged-union lowering, and cross-value-type cycle diagnostics.
 - [ ] Exhaustive `match` expressions and statements.
+  - [x] Exhaustive enum `match` statements with typed payload bindings, duplicate/missing-arm diagnostics, guaranteed-return analysis, formatter/semantic support, single scrutinee evaluation, and native `switch` lowering.
+  - [ ] `match` expressions that produce a value.
 - [ ] Pattern matching over structs, enums, lists, and multi-values.
+  - [x] Enum variant payload patterns in `match` statements, including `_` ignored payload positions.
+  - [ ] Struct patterns.
+  - [ ] List/map/record patterns after those value types exist.
+  - [ ] Multi-value patterns outside call destructuring.
 - [ ] Destructuring bindings beyond multi-return calls.
 - [x] Transparent concrete type aliases with forward/chained resolution, cycle diagnostics, formatter/tooling support, and zero runtime representation.
 - [x] Compile-time constants with forward references, constant folding, cycle diagnostics, alias-aware typing, and zero-runtime-storage lowering for `i64`, `bool`, and `str`.

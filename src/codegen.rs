@@ -274,6 +274,62 @@ fn emit_block(
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
+            StmtKind::Match { value, arms } => {
+                let value = emit_expr(value, env, signatures)?;
+                let Type::Named(enum_name) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "match code generation requires an enum value",
+                    ));
+                };
+                let definition = signatures.enum_type(enum_name).ok_or_else(|| {
+                    diag(stmt.span, "match code generation requires an enum value")
+                })?;
+                let temp = format!("flux__match_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}struct {} {temp} = {};\n",
+                    struct_c_name(enum_name),
+                    value.code
+                ));
+                out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
+                for arm in arms {
+                    let variant = definition
+                        .variant(&arm.variant)
+                        .expect("type checking guarantees match variants exist");
+                    out.push_str(&format!(
+                        "{pad}    case {}: {{\n",
+                        enum_tag_value_name(enum_name, &arm.variant)
+                    ));
+                    let mut nested = env.clone();
+                    for (index, (binding, payload_ty)) in
+                        arm.bindings.iter().zip(&variant.payloads).enumerate()
+                    {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        out.push_str(&format!(
+                            "{pad}        {} {} = {temp}.payload.{}.v{index};\n",
+                            c_type(payload_ty, signatures),
+                            binding.name,
+                            enum_payload_member_name(&arm.variant)
+                        ));
+                        nested.insert(binding.name.clone(), payload_ty.clone());
+                    }
+                    emit_block(
+                        out,
+                        &arm.body,
+                        depth + 2,
+                        &mut nested,
+                        signatures,
+                        temp_counter,
+                        current_function,
+                    )?;
+                    out.push_str(&format!("{pad}        break;\n"));
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                out.push_str(&format!("{pad}}}\n"));
+            }
         }
     }
     Ok(())
@@ -593,6 +649,12 @@ fn collect_update_helpers_from_block(
                 collect_update_helpers_from_expr(start, signatures, emitted, helpers);
                 collect_update_helpers_from_expr(end, signatures, emitted, helpers);
                 collect_update_helpers_from_block(body, signatures, emitted, helpers);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+                for arm in arms {
+                    collect_update_helpers_from_block(&arm.body, signatures, emitted, helpers);
+                }
             }
         }
     }

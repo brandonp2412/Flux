@@ -148,6 +148,159 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_exhaustive_enum_match_with_typed_payload_bindings() {
+    let source = r#"
+enum Outcome {
+    Ok(i64)
+    Error(str)
+    Pending
+}
+
+fn score(outcome: Outcome) -> i64 {
+    match outcome:
+        Outcome.Ok(value):
+            return value
+        Outcome.Error(message):
+            print(message)
+            return -1
+        Outcome.Pending():
+            return 0
+}
+
+fn main() -> i64 {
+    print(score(Outcome.Ok(42)))
+    return 0
+}
+"#;
+
+    check_source(source).expect("exhaustive enum match should typecheck");
+    let generated = compile_to_c(source).expect("enum match should lower natively");
+    assert!(generated.contains("switch (flux__match_"));
+    assert!(generated.contains("case flux__tag_Outcome_Ok"));
+    assert!(generated.contains("flux__payload_Ok.v0"));
+    assert!(generated.contains("case flux__tag_Outcome_Error"));
+    assert!(generated.contains("case flux__tag_Outcome_Pending"));
+}
+
+#[test]
+fn match_scrutinee_is_evaluated_exactly_once() {
+    let source = r#"
+enum Outcome {
+    Ok(i64)
+    Empty
+}
+
+fn make() -> Outcome {
+    return Outcome.Ok(42)
+}
+
+fn main() -> i64 {
+    match make():
+        Outcome.Ok(value):
+            print(value)
+        Outcome.Empty():
+            print(0)
+    return 0
+}
+"#;
+
+    let generated = compile_to_c(source).expect("match should compile");
+    let assignment = generated
+        .lines()
+        .find(|line| line.contains("flux__match_") && line.contains("= make();"))
+        .expect("match should assign the scrutinee once");
+    assert!(assignment.contains("struct flux__type_Outcome"));
+    assert_eq!(generated.matches("= make();").count(), 1);
+}
+
+#[test]
+fn rejects_non_exhaustive_or_invalid_enum_matches() {
+    let missing = r#"
+enum Outcome {
+    Ok(i64)
+    Empty
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Empty()
+    match value:
+        Outcome.Ok(payload):
+            print(payload)
+    return 0
+}
+"#;
+    let error = check_source(missing).expect_err("non-exhaustive match should fail");
+    assert!(error.message.contains("non-exhaustive match"));
+    assert!(error.message.contains("Empty"));
+
+    let duplicate = r#"
+enum Outcome {
+    Ok(i64)
+    Empty
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Empty()
+    match value:
+        Outcome.Ok(first):
+            print(first)
+        Outcome.Ok(second):
+            print(second)
+        Outcome.Empty():
+            print(0)
+    return 0
+}
+"#;
+    let error = check_source(duplicate).expect_err("duplicate match arm should fail");
+    assert!(error.message.contains("duplicate match arm"));
+
+    let arity = r#"
+enum Outcome {
+    Ok(i64)
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Ok(1)
+    match value:
+        Outcome.Ok():
+            print(0)
+    return 0
+}
+"#;
+    let error = check_source(arity).expect_err("wrong match payload arity should fail");
+    assert!(error.message.contains("expects 1 payload binding, got 0"));
+
+    let non_enum = r#"
+fn main() -> i64 {
+    match 42:
+        Outcome.Ok(value):
+            print(value)
+    return 0
+}
+"#;
+    let error = check_source(non_enum).expect_err("matching a non-enum should fail");
+    assert!(
+        error
+            .message
+            .contains("match requires an enum value, got i64")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_match_patterns() {
+    let source = "enum Outcome {\n Ok(i64)\n Empty\n}\nfn main()->i64 {\n let value:Outcome=Outcome.Ok(42)\n match value:\n  Outcome.Ok(payload):\n   print(payload)\n  Outcome.Empty():\n   print(0)\n return 0\n}\n";
+    let expected = "enum Outcome {\n    Ok(i64)\n    Empty\n}\nfn main() -> i64 {\n    let value: Outcome = Outcome.Ok(42)\n    match value:\n        Outcome.Ok(payload):\n            print(payload)\n        Outcome.Empty():\n            print(0)\n    return 0\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("match source should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(701))
+        .expect("match source should analyze");
+    let payload = database
+        .symbols_named("payload")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("match payload binding should be indexed");
+    assert_eq!(payload.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, payload.span), "payload");
+}
+
+#[test]
 fn accepts_closed_enums_with_typed_payloads_and_native_tags() {
     let source = r#"
 enum Outcome {

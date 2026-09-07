@@ -14,6 +14,7 @@ pub enum SymbolKind {
     Function,
     Parameter,
     Binding,
+    PatternBinding,
     LoopVariable,
 }
 
@@ -104,7 +105,7 @@ impl SemanticDatabase {
                     span: param.name_span,
                 });
             }
-            collect_block_symbols(&function.body, &mut symbols);
+            collect_block_symbols(&function.body, &mut symbols, &signatures);
         }
         Self {
             program,
@@ -150,7 +151,11 @@ impl SemanticDatabase {
     }
 }
 
-fn collect_block_symbols(body: &[Stmt], symbols: &mut Vec<SemanticSymbol>) {
+fn collect_block_symbols(
+    body: &[Stmt],
+    symbols: &mut Vec<SemanticSymbol>,
+    signatures: &Signatures,
+) {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let {
@@ -177,8 +182,8 @@ fn collect_block_symbols(body: &[Stmt], symbols: &mut Vec<SemanticSymbol>) {
             StmtKind::If {
                 body, else_body, ..
             } => {
-                collect_block_symbols(body, symbols);
-                collect_block_symbols(else_body, symbols);
+                collect_block_symbols(body, symbols, signatures);
+                collect_block_symbols(else_body, symbols, signatures);
             }
             StmtKind::ForRange {
                 name,
@@ -192,7 +197,28 @@ fn collect_block_symbols(body: &[Stmt], symbols: &mut Vec<SemanticSymbol>) {
                     ty: Some(Type::I64),
                     span: *name_span,
                 });
-                collect_block_symbols(body, symbols);
+                collect_block_symbols(body, symbols, signatures);
+            }
+            StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    let payloads = signatures
+                        .enum_type(&arm.enum_name)
+                        .and_then(|definition| definition.variant(&arm.variant))
+                        .map(|variant| variant.payloads.as_slice())
+                        .unwrap_or(&[]);
+                    for (index, binding) in arm.bindings.iter().enumerate() {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        symbols.push(SemanticSymbol {
+                            name: binding.name.clone(),
+                            kind: SymbolKind::PatternBinding,
+                            ty: payloads.get(index).cloned(),
+                            span: binding.span,
+                        });
+                    }
+                    collect_block_symbols(&arm.body, symbols, signatures);
+                }
             }
             StmtKind::Return(_) | StmtKind::Expr(_) => {}
         }

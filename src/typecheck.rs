@@ -735,6 +735,112 @@ fn check_block_all(
                 }
                 check_block_all(body, &mut nested, return_types, signatures, diagnostics);
             }
+            StmtKind::Match { value, arms } => {
+                let value_ty = match type_of_expr(value, env, signatures) {
+                    Ok(value_ty) => value_ty,
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        continue;
+                    }
+                };
+                let Type::Named(enum_name) = value_ty else {
+                    diagnostics.push(diag(
+                        value.span,
+                        &format!("match requires an enum value, got {}", value_ty.name()),
+                    ));
+                    continue;
+                };
+                let Some(definition) = signatures.enum_type(&enum_name) else {
+                    diagnostics.push(diag(
+                        value.span,
+                        &format!("match requires an enum value, got {enum_name}"),
+                    ));
+                    continue;
+                };
+                let mut seen = HashSet::new();
+                for arm in arms {
+                    if arm.enum_name != enum_name {
+                        diagnostics.push(diag(
+                            arm.enum_span,
+                            &format!(
+                                "match arm uses enum '{}', expected '{enum_name}'",
+                                arm.enum_name
+                            ),
+                        ));
+                        continue;
+                    }
+                    let Some(variant) = definition.variant(&arm.variant) else {
+                        diagnostics.push(
+                            diag(
+                                arm.variant_span,
+                                &format!("enum '{enum_name}' has no variant '{}'", arm.variant),
+                            )
+                            .with_label(definition.span, format!("'{enum_name}' is declared here")),
+                        );
+                        continue;
+                    };
+                    if !seen.insert(arm.variant.as_str()) {
+                        diagnostics.push(diag(
+                            arm.variant_span,
+                            &format!("duplicate match arm for '{enum_name}.{}'", arm.variant),
+                        ));
+                        continue;
+                    }
+                    if arm.bindings.len() != variant.payloads.len() {
+                        diagnostics.push(diag(
+                            arm.span,
+                            &format!(
+                                "match arm '{}.{}' expects {} payload binding{}, got {}",
+                                enum_name,
+                                arm.variant,
+                                variant.payloads.len(),
+                                if variant.payloads.len() == 1 { "" } else { "s" },
+                                arm.bindings.len()
+                            ),
+                        ));
+                        continue;
+                    }
+                    let mut nested = env.clone();
+                    for (binding, payload_ty) in arm.bindings.iter().zip(&variant.payloads) {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        if nested.contains_key(&binding.name) {
+                            diagnostics.push(diag(
+                                binding.span,
+                                &format!(
+                                    "match binding '{}' shadows an existing binding",
+                                    binding.name
+                                ),
+                            ));
+                        } else {
+                            nested.insert(binding.name.clone(), payload_ty.clone());
+                        }
+                    }
+                    check_block_all(
+                        &arm.body,
+                        &mut nested,
+                        return_types,
+                        signatures,
+                        diagnostics,
+                    );
+                }
+                let missing = definition
+                    .variants
+                    .iter()
+                    .filter(|variant| !seen.contains(variant.name.as_str()))
+                    .map(|variant| variant.name.as_str())
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    diagnostics.push(diag(
+                        stmt.span,
+                        &format!(
+                            "non-exhaustive match on '{enum_name}'; missing {}",
+                            missing.join(", ")
+                        ),
+                    ));
+                }
+            }
         }
     }
 }
@@ -1041,8 +1147,15 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             {
                 return true;
             }
+            StmtKind::Match { arms, .. }
+                if !arms.is_empty()
+                    && arms.iter().all(|arm| block_guarantees_return(&arm.body)) =>
+            {
+                return true;
+            }
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
+            | StmtKind::Match { .. }
             | StmtKind::Let { .. }
             | StmtKind::LetDestructure { .. }
             | StmtKind::Expr(_) => {}

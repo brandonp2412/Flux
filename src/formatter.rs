@@ -219,6 +219,23 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 );
                 format_block(body, depth + 1, lines);
             }
+            StmtKind::Match { value, arms } => {
+                lines.insert(stmt.line, format!("{pad}match {}:", format_expr(value, 0)));
+                let arm_pad = "    ".repeat(depth + 1);
+                for arm in arms {
+                    let bindings = arm
+                        .bindings
+                        .iter()
+                        .map(|binding| binding.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    lines.insert(
+                        arm.line,
+                        format!("{arm_pad}{}.{}({bindings}):", arm.enum_name, arm.variant),
+                    );
+                    format_block(&arm.body, depth + 2, lines);
+                }
+            }
         }
     }
 }

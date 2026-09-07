@@ -182,6 +182,28 @@ pub enum StmtKind {
         end: Expr,
         body: Vec<Stmt>,
     },
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub enum_name: String,
+    pub enum_span: SourceSpan,
+    pub variant: String,
+    pub variant_span: SourceSpan,
+    pub bindings: Vec<PatternBinding>,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct PatternBinding {
+    pub name: String,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]

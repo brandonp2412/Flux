@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    Param, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField, Type, TypeAlias,
-    UnaryOp,
+    MatchArm, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
+    StructLiteralField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -339,6 +339,18 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 attach_expr_source(start, source_id);
                 attach_expr_source(end, source_id);
                 attach_block_source(body, source_id);
+            }
+            StmtKind::Match { value, arms } => {
+                attach_expr_source(value, source_id);
+                for arm in arms {
+                    arm.span = arm.span.with_source(source_id);
+                    arm.enum_span = arm.enum_span.with_source(source_id);
+                    arm.variant_span = arm.variant_span.with_source(source_id);
+                    for binding in &mut arm.bindings {
+                        binding.span = binding.span.with_source(source_id);
+                    }
+                    attach_block_source(&mut arm.body, source_id);
+                }
             }
         }
     }
@@ -845,7 +857,9 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             break;
         }
 
-        let stmt = if line.text.starts_with("if ") && line.text.ends_with(':') {
+        let stmt = if line.text.starts_with("match ") && line.text.ends_with(':') {
+            parse_match_statement(lines, index, indent)?
+        } else if line.text.starts_with("if ") && line.text.ends_with(':') {
             parse_if_statement(lines, index, indent)?
         } else if line.text.starts_with("elif ") {
             return Err(diag(
@@ -906,6 +920,110 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
     }
 
     Ok(body)
+}
+
+fn parse_match_statement(
+    lines: &[Line],
+    index: &mut usize,
+    indent: usize,
+) -> Result<Stmt, Diagnostic> {
+    let line = &lines[*index];
+    let raw_value = &line.text[6..line.text.len() - 1];
+    let (value_src, value_column) = trim_with_column(raw_value, line.indent + 1 + 6);
+    if value_src.is_empty() {
+        return Err(diag(line.number, "match requires a value"));
+    }
+    let value = parse_expression_at(value_src, line.number, value_column)?;
+    let stmt_line = line.number;
+    let stmt_span = line.span();
+    *index += 1;
+
+    if *index >= lines.len() || lines[*index].indent <= indent {
+        return Err(diag(stmt_line, "match requires at least one indented arm"));
+    }
+    let arm_indent = lines[*index].indent;
+    let mut arms = Vec::new();
+    while *index < lines.len() && lines[*index].indent == arm_indent {
+        let arm_line = &lines[*index];
+        let mut arm = parse_match_arm_header(arm_line)?;
+        *index += 1;
+        arm.body = parse_nested_block(lines, index, arm_indent, arm.line, "match arm")?;
+        arms.push(arm);
+    }
+    if arms.is_empty() {
+        return Err(diag(stmt_line, "match requires at least one arm"));
+    }
+
+    Ok(Stmt {
+        line: stmt_line,
+        span: stmt_span,
+        keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 5),
+        kind: StmtKind::Match { value, arms },
+    })
+}
+
+fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
+    let Some(pattern) = line.text.strip_suffix(':') else {
+        return Err(diag(line.number, "match arms must end with ':'"));
+    };
+    let pattern = pattern.trim();
+    let Some(dot_offset) = pattern.find('.') else {
+        return Err(diag(
+            line.number,
+            "enum match arms use 'Enum.Variant(bindings):' syntax",
+        ));
+    };
+    let enum_name = pattern[..dot_offset].trim();
+    validate_identifier(enum_name, line.number)?;
+    let variant_source = &pattern[dot_offset + 1..];
+    let Some(open_offset) = variant_source.find('(') else {
+        return Err(diag(
+            line.number,
+            "enum match variants require parentheses, including payloadless variants",
+        ));
+    };
+    let Some(inner) = variant_source.strip_suffix(')') else {
+        return Err(diag(line.number, "match arm pattern must end with ')'"));
+    };
+    let variant = variant_source[..open_offset].trim();
+    validate_identifier(variant, line.number)?;
+    let bindings_source = &inner[open_offset + 1..];
+    let enum_column = line.indent + 1 + pattern.find(enum_name).unwrap_or(0);
+    let variant_column =
+        line.indent + 1 + dot_offset + 1 + variant_source[..open_offset].find(variant).unwrap_or(0);
+    let binding_base_column = line.indent + 1 + dot_offset + 1 + open_offset + 1;
+    let mut bindings = Vec::new();
+    if !bindings_source.trim().is_empty() {
+        for (raw_binding, offset) in split_top_level_commas_with_offsets(bindings_source) {
+            let (binding, column) = trim_with_column(raw_binding, binding_base_column + offset);
+            validate_identifier(binding, line.number)?;
+            if binding != "_"
+                && bindings
+                    .iter()
+                    .any(|existing: &PatternBinding| existing.name == binding)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate match binding '{binding}'"),
+                ));
+            }
+            bindings.push(PatternBinding {
+                name: binding.to_string(),
+                span: SourceSpan::new(line.number, column, binding.len()),
+            });
+        }
+    }
+
+    Ok(MatchArm {
+        enum_name: enum_name.to_string(),
+        enum_span: SourceSpan::new(line.number, enum_column, enum_name.len()),
+        variant: variant.to_string(),
+        variant_span: SourceSpan::new(line.number, variant_column, variant.len()),
+        bindings,
+        body: Vec::new(),
+        line: line.number,
+        span: line.span(),
+    })
 }
 
 fn parse_if_statement(
@@ -1291,6 +1409,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "type"
             | "const"
             | "let"
+            | "match"
             | "return"
             | "if"
             | "elif"

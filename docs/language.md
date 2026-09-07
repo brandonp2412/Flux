@@ -122,7 +122,23 @@ fn load() -> Outcome {
 
 Construction is always namespace-qualified as `Enum.Variant(...)`; payloadless variants still use `()` so variant construction remains syntactically distinct from ordinary field access. Payload arity and types are checked statically. Enum and struct definitions may refer to each other forward by value when the resulting layout is acyclic. Recursive by-value cycles are rejected until Flux has explicit ownership/indirection types.
 
-The bootstrap backend lowers each enum to a native tag plus a union containing only the payload storage required by payload-bearing variants. Typed inline constructors build the tagged value; there is no object hierarchy, reflection, heap allocation, or hidden dynamic dispatch. Pattern matching and exhaustive `match` are the intended way to inspect enum values.
+The bootstrap backend lowers each enum to a native tag plus a union containing only the payload storage required by payload-bearing variants. Typed inline constructors build the tagged value; there is no object hierarchy, reflection, heap allocation, or hidden dynamic dispatch.
+
+Enum values are consumed with exhaustive `match` statements. Payloads are bound positionally and statically typed; `_` ignores an unused payload position:
+
+```flux
+fn score(outcome: Outcome) -> i64 {
+    match outcome:
+        Outcome.Ok(value):
+            return value
+        Outcome.Error(_):
+            return -1
+        Outcome.Pending():
+            return 0
+}
+```
+
+Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload binding arity must match the variant declaration. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis. Match expressions that themselves yield a value are planned separately.
 
 ## Compile-time constants
 
@@ -207,6 +223,7 @@ Currently implemented:
 - `elif condition:` and `else:` attached to the preceding conditional chain;
 - exhaustive `if` / `elif` / `else` return analysis, so a fully returning chain satisfies a function's return requirement;
 - `for name in start..end:` with an exclusive integer range;
+- exhaustive enum `match` statements with typed positional payload bindings;
 - `return`;
 - expression statements.
 
@@ -214,7 +231,8 @@ Planned:
 
 - `while`;
 - `break` / `continue`;
-- exhaustive `match` for closed enum-like types.
+- `match` expressions that produce values;
+- broader struct/list/record patterns as those value types mature.
 
 ## Native compilation architecture
 
