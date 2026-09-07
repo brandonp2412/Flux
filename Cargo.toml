@@ -1,0 +1,14 @@
+[package]
+name = "fluxc"
+version = "0.1.0"
+edition = "2024"
+description = "Bootstrap compiler for the Flux programming language"
+license = "MIT"
+
+[lib]
+name = "fluxc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fluxc"
+path = "src/main.rs"
