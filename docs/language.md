@@ -180,4 +180,6 @@ The UI subsystem is intentionally downstream of the core type/ownership/IR work:
 
 LSP, debugger, and profiler support are mandatory product features.
 
+Compiler failures are represented as structured diagnostics rather than raw strings. A diagnostic records its compilation stage (`parse`, `type`, or `codegen`), message, and an optional source span. Function and statement AST nodes retain source spans now; expression spans are present and will be refined to token-level precision as the parser evolves. This diagnostic model is intended to be reused directly by editor tooling instead of reparsing CLI text.
+
 The compiler should therefore maintain stable source spans and a reusable semantic query layer from early development. The debugger will need source-to-native debug metadata, expression evaluation rules, and predictable optimized-build behavior. The profiler should support low-overhead instrumentation and symbolization without requiring a separate language parser.

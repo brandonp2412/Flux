@@ -1,3 +1,5 @@
+use crate::diagnostic::SourceSpan;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     I64,
@@ -42,6 +44,7 @@ pub struct Function {
     pub returns: Vec<Type>,
     pub body: Vec<Stmt>,
     pub line: usize,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ pub struct Binding {
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub line: usize,
+    pub span: SourceSpan,
     pub kind: StmtKind,
 }
 
@@ -90,6 +94,7 @@ pub enum StmtKind {
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub line: usize,
+    pub span: SourceSpan,
     pub kind: ExprKind,
 }
 

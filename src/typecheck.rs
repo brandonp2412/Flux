@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp};
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 
 #[derive(Debug, Clone)]
 pub struct Signature {
@@ -10,16 +11,16 @@ pub struct Signature {
 
 pub type Signatures = HashMap<String, Signature>;
 
-pub fn check(program: &Program) -> Result<Signatures, String> {
+pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
     let mut signatures = HashMap::new();
 
     for function in &program.functions {
         if function.name == "print" {
-            return Err(diag(function.line, "'print' is a built-in function name"));
+            return Err(diag(function.span, "'print' is a built-in function name"));
         }
         if signatures.contains_key(&function.name) {
             return Err(diag(
-                function.line,
+                function.span,
                 &format!("duplicate function '{}'", function.name),
             ));
         }
@@ -37,10 +38,16 @@ pub fn check(program: &Program) -> Result<Signatures, String> {
     }
 
     let Some(main) = signatures.get("main") else {
-        return Err("program requires fn main() -> i64 { ... }".to_string());
+        return Err(Diagnostic::global(
+            DiagnosticStage::Type,
+            "program requires fn main() -> i64 { ... }",
+        ));
     };
     if !main.params.is_empty() || main.returns != vec![Type::I64] {
-        return Err("main must have signature fn main() -> i64".to_string());
+        return Err(Diagnostic::global(
+            DiagnosticStage::Type,
+            "main must have signature fn main() -> i64",
+        ));
     }
 
     for function in &program.functions {
@@ -50,7 +57,7 @@ pub fn check(program: &Program) -> Result<Signatures, String> {
     Ok(signatures)
 }
 
-fn check_function(function: &Function, signatures: &Signatures) -> Result<(), String> {
+fn check_function(function: &Function, signatures: &Signatures) -> Result<(), Diagnostic> {
     let mut env = HashMap::new();
     for param in &function.params {
         env.insert(param.name.clone(), param.ty.clone());
@@ -60,7 +67,7 @@ fn check_function(function: &Function, signatures: &Signatures) -> Result<(), St
 
     if !function.returns.is_empty() && !block_guarantees_return(&function.body) {
         return Err(diag(
-            function.line,
+            function.span,
             &format!(
                 "function '{}' can reach the end without returning {}",
                 function.name,
@@ -77,25 +84,25 @@ fn check_block(
     env: &mut HashMap<String, Type>,
     return_types: &[Type],
     signatures: &Signatures,
-) -> Result<(), String> {
+) -> Result<(), Diagnostic> {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let { name, ty, expr } => {
                 if env.contains_key(name) {
                     return Err(diag(
-                        stmt.line,
+                        stmt.span,
                         &format!("'{name}' is already defined in this scope"),
                     ));
                 }
                 let actual = type_of_expr(expr, env, signatures)?;
-                require_type(stmt.line, ty, &actual, "binding")?;
+                require_type(stmt.span, ty, &actual, "binding")?;
                 env.insert(name.clone(), ty.clone());
             }
             StmtKind::LetDestructure { bindings, expr } => {
                 let actuals = value_types_of_expr(expr, env, signatures)?;
                 if actuals.len() != bindings.len() {
                     return Err(diag(
-                        stmt.line,
+                        stmt.span,
                         &format!(
                             "destructuring expects {} values, expression returns {}",
                             bindings.len(),
@@ -106,12 +113,12 @@ fn check_block(
                 for (binding, actual) in bindings.iter().zip(&actuals) {
                     if env.contains_key(&binding.name) {
                         return Err(diag(
-                            stmt.line,
+                            stmt.span,
                             &format!("'{}' is already defined in this scope", binding.name),
                         ));
                     }
                     require_type(
-                        stmt.line,
+                        stmt.span,
                         &binding.ty,
                         actual,
                         &format!("destructured binding '{}'", binding.name),
@@ -132,7 +139,7 @@ fn check_block(
                 };
                 if actuals.len() != return_types.len() {
                     return Err(diag(
-                        stmt.line,
+                        stmt.span,
                         &format!(
                             "return expects {} values, got {}",
                             return_types.len(),
@@ -142,7 +149,7 @@ fn check_block(
                 }
                 for (index, (actual, expected)) in actuals.iter().zip(return_types).enumerate() {
                     require_type(
-                        stmt.line,
+                        stmt.span,
                         expected,
                         actual,
                         &format!("return value {}", index + 1),
@@ -154,7 +161,7 @@ fn check_block(
             }
             StmtKind::If { cond, body } => {
                 let cond_type = type_of_expr(cond, env, signatures)?;
-                require_type(stmt.line, &Type::Bool, &cond_type, "if condition")?;
+                require_type(stmt.span, &Type::Bool, &cond_type, "if condition")?;
                 let mut nested = env.clone();
                 check_block(body, &mut nested, return_types, signatures)?;
             }
@@ -166,14 +173,14 @@ fn check_block(
             } => {
                 if env.contains_key(name) {
                     return Err(diag(
-                        stmt.line,
+                        stmt.span,
                         &format!("loop variable '{name}' shadows an existing binding"),
                     ));
                 }
                 let start_type = type_of_expr(start, env, signatures)?;
                 let end_type = type_of_expr(end, env, signatures)?;
-                require_type(stmt.line, &Type::I64, &start_type, "range start")?;
-                require_type(stmt.line, &Type::I64, &end_type, "range end")?;
+                require_type(stmt.span, &Type::I64, &start_type, "range start")?;
+                require_type(stmt.span, &Type::I64, &end_type, "range end")?;
                 let mut nested = env.clone();
                 nested.insert(name.clone(), Type::I64);
                 check_block(body, &mut nested, return_types, signatures)?;
@@ -187,7 +194,7 @@ pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<Type, String> {
+) -> Result<Type, Diagnostic> {
     match &expr.kind {
         ExprKind::Int(_) => Ok(Type::I64),
         ExprKind::Bool(_) => Ok(Type::Bool),
@@ -196,15 +203,15 @@ pub fn type_of_expr(
         ExprKind::Var(name) => env
             .get(name)
             .cloned()
-            .ok_or_else(|| diag(expr.line, &format!("unknown binding '{name}'"))),
+            .ok_or_else(|| diag(expr.span, &format!("unknown binding '{name}'"))),
         ExprKind::Call { name, args } if name == "print" => {
             if args.len() != 1 {
-                return Err(diag(expr.line, "print expects exactly one argument"));
+                return Err(diag(expr.span, "print expects exactly one argument"));
             }
             let ty = type_of_expr(&args[0], env, signatures)?;
             if !matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
                 return Err(diag(
-                    expr.line,
+                    expr.span,
                     &format!("print does not support {}", ty.name()),
                 ));
             }
@@ -212,19 +219,19 @@ pub fn type_of_expr(
         }
         ExprKind::Call { name, args } if name == "error" => {
             if args.len() != 1 {
-                return Err(diag(expr.line, "error expects exactly one string argument"));
+                return Err(diag(expr.span, "error expects exactly one string argument"));
             }
             let ty = type_of_expr(&args[0], env, signatures)?;
-            require_type(expr.line, &Type::Str, &ty, "error message")?;
+            require_type(expr.span, &Type::Str, &ty, "error message")?;
             Ok(Type::Error)
         }
         ExprKind::Call { name, args } => {
-            let returns = check_call(expr.line, name, args, env, signatures)?;
+            let returns = check_call(expr.span, name, args, env, signatures)?;
             match returns.as_slice() {
                 [] => Ok(Type::Void),
                 [ty] => Ok(ty.clone()),
                 _ => Err(diag(
-                    expr.line,
+                    expr.span,
                     &format!(
                         "function '{name}' returns {} values; use a destructuring binding",
                         returns.len()
@@ -236,11 +243,11 @@ pub fn type_of_expr(
             let ty = type_of_expr(inner, env, signatures)?;
             match op {
                 UnaryOp::Neg => {
-                    require_type(expr.line, &Type::I64, &ty, "unary '-'")?;
+                    require_type(expr.span, &Type::I64, &ty, "unary '-'")?;
                     Ok(Type::I64)
                 }
                 UnaryOp::Not => {
-                    require_type(expr.line, &Type::Bool, &ty, "unary '!'")?;
+                    require_type(expr.span, &Type::Bool, &ty, "unary '!'")?;
                     Ok(Type::Bool)
                 }
             }
@@ -250,25 +257,25 @@ pub fn type_of_expr(
             let right_ty = type_of_expr(right, env, signatures)?;
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                    require_type(expr.line, &Type::I64, &left_ty, "left arithmetic operand")?;
-                    require_type(expr.line, &Type::I64, &right_ty, "right arithmetic operand")?;
+                    require_type(expr.span, &Type::I64, &left_ty, "left arithmetic operand")?;
+                    require_type(expr.span, &Type::I64, &right_ty, "right arithmetic operand")?;
                     Ok(Type::I64)
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    require_type(expr.line, &Type::I64, &left_ty, "left comparison operand")?;
-                    require_type(expr.line, &Type::I64, &right_ty, "right comparison operand")?;
+                    require_type(expr.span, &Type::I64, &left_ty, "left comparison operand")?;
+                    require_type(expr.span, &Type::I64, &right_ty, "right comparison operand")?;
                     Ok(Type::Bool)
                 }
                 BinOp::Eq | BinOp::Ne => {
                     if left_ty == Type::Void || right_ty == Type::Void {
-                        return Err(diag(expr.line, "void values cannot be compared"));
+                        return Err(diag(expr.span, "void values cannot be compared"));
                     }
-                    require_type(expr.line, &left_ty, &right_ty, "equality operand")?;
+                    require_type(expr.span, &left_ty, &right_ty, "equality operand")?;
                     Ok(Type::Bool)
                 }
                 BinOp::And | BinOp::Or => {
-                    require_type(expr.line, &Type::Bool, &left_ty, "left boolean operand")?;
-                    require_type(expr.line, &Type::Bool, &right_ty, "right boolean operand")?;
+                    require_type(expr.span, &Type::Bool, &left_ty, "left boolean operand")?;
+                    require_type(expr.span, &Type::Bool, &right_ty, "right boolean operand")?;
                     Ok(Type::Bool)
                 }
             }
@@ -280,28 +287,28 @@ fn value_types_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<Vec<Type>, String> {
+) -> Result<Vec<Type>, Diagnostic> {
     match &expr.kind {
         ExprKind::Call { name, args } if name != "print" && name != "error" => {
-            check_call(expr.line, name, args, env, signatures)
+            check_call(expr.span, name, args, env, signatures)
         }
         _ => Ok(vec![type_of_expr(expr, env, signatures)?]),
     }
 }
 
 fn check_call(
-    line: usize,
+    span: SourceSpan,
     name: &str,
     args: &[Expr],
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<Vec<Type>, String> {
+) -> Result<Vec<Type>, Diagnostic> {
     let Some(signature) = signatures.get(name) else {
-        return Err(diag(line, &format!("unknown function '{name}'")));
+        return Err(diag(span, &format!("unknown function '{name}'")));
     };
     if args.len() != signature.params.len() {
         return Err(diag(
-            line,
+            span,
             &format!(
                 "function '{name}' expects {} arguments, got {}",
                 signature.params.len(),
@@ -312,7 +319,7 @@ fn check_call(
     for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
         let actual = type_of_expr(arg, env, signatures)?;
         require_type(
-            line,
+            span,
             expected,
             &actual,
             &format!("argument {} to '{name}'", index + 1),
@@ -346,12 +353,17 @@ fn return_types_name(types: &[Type]) -> String {
     }
 }
 
-fn require_type(line: usize, expected: &Type, actual: &Type, context: &str) -> Result<(), String> {
+fn require_type(
+    span: SourceSpan,
+    expected: &Type,
+    actual: &Type,
+    context: &str,
+) -> Result<(), Diagnostic> {
     if expected == actual {
         Ok(())
     } else {
         Err(diag(
-            line,
+            span,
             &format!(
                 "{context}: expected {}, got {}",
                 expected.name(),
@@ -361,6 +373,6 @@ fn require_type(line: usize, expected: &Type, actual: &Type, context: &str) -> R
     }
 }
 
-fn diag(line: usize, message: &str) -> String {
-    format!("line {line}: {message}")
+fn diag(span: SourceSpan, message: &str) -> Diagnostic {
+    Diagnostic::new(DiagnosticStage::Type, span, message)
 }

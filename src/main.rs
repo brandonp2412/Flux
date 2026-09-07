@@ -24,7 +24,7 @@ fn run() -> Result<(), String> {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            fluxc::check_source(&source)?;
+            fluxc::check_source(&source).map_err(|diagnostic| diagnostic.to_string())?;
             println!("ok: {}", path.display());
             Ok(())
         }
@@ -32,7 +32,8 @@ fn run() -> Result<(), String> {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let generated = fluxc::compile_to_c(&source)?;
+            let generated =
+                fluxc::compile_to_c(&source).map_err(|diagnostic| diagnostic.to_string())?;
             if let Some(output) = output_path(&args[2..])? {
                 fs::write(&output, generated)
                     .map_err(|error| format!("failed to write '{}': {error}", output.display()))?;
@@ -45,7 +46,8 @@ fn run() -> Result<(), String> {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let generated = fluxc::compile_to_c(&source)?;
+            let generated =
+                fluxc::compile_to_c(&source).map_err(|diagnostic| diagnostic.to_string())?;
             let output = output_path(&args[2..])?.unwrap_or_else(|| default_binary_path(path));
             build_native(&generated, &output)?;
             println!("built: {}", output.display());

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp};
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{Signatures, type_of_expr};
 
-pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, String> {
+pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     let mut out = String::new();
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
@@ -79,7 +80,7 @@ fn emit_function(
     function: &Function,
     signatures: &Signatures,
     temp_counter: &mut usize,
-) -> Result<(), String> {
+) -> Result<(), Diagnostic> {
     out.push_str(&function_prototype(function));
     out.push_str(" {\n");
     let mut env = HashMap::new();
@@ -107,7 +108,7 @@ fn emit_block(
     signatures: &Signatures,
     temp_counter: &mut usize,
     current_function: &Function,
-) -> Result<(), String> {
+) -> Result<(), Diagnostic> {
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
@@ -226,7 +227,7 @@ fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<EmittedExpr, String> {
+) -> Result<EmittedExpr, Diagnostic> {
     let emitted = match &expr.kind {
         ExprKind::Int(value) => EmittedExpr {
             code: format!("INT64_C({value})"),
@@ -247,9 +248,9 @@ fn emit_expr(
         ExprKind::Var(name) => EmittedExpr {
             code: name.clone(),
             ty: env.get(name).cloned().ok_or_else(|| {
-                format!(
-                    "line {}: unknown binding '{name}' during code generation",
-                    expr.line
+                diag(
+                    expr.span,
+                    &format!("unknown binding '{name}' during code generation"),
                 )
             })?,
         },
@@ -260,7 +261,7 @@ fn emit_expr(
                 Type::Bool => "flux_print_bool",
                 Type::Str => "flux_print_str",
                 Type::Error => "flux_print_error",
-                Type::Void => return Err(format!("line {}: cannot print void", expr.line)),
+                Type::Void => return Err(diag(expr.span, "cannot print void")),
             };
             EmittedExpr {
                 code: format!("{helper}({})", arg.code),
@@ -276,9 +277,9 @@ fn emit_expr(
         }
         ExprKind::Call { name, args } => {
             let signature = signatures.get(name).ok_or_else(|| {
-                format!(
-                    "line {}: unknown function '{name}' during code generation",
-                    expr.line
+                diag(
+                    expr.span,
+                    &format!("unknown function '{name}' during code generation"),
                 )
             })?;
             let mut rendered = Vec::with_capacity(args.len());
@@ -289,9 +290,11 @@ fn emit_expr(
                 [] => Type::Void,
                 [ty] => ty.clone(),
                 _ => {
-                    return Err(format!(
-                        "line {}: multi-value call '{name}' requires destructuring during code generation",
-                        expr.line
+                    return Err(diag(
+                        expr.span,
+                        &format!(
+                            "multi-value call '{name}' requires destructuring during code generation"
+                        ),
                     ));
                 }
             };
@@ -349,23 +352,23 @@ fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<(String, String), String> {
+) -> Result<(String, String), Diagnostic> {
     let ExprKind::Call { name, args } = &expr.kind else {
-        return Err(format!(
-            "line {}: only multi-value function calls can be destructured",
-            expr.line
+        return Err(diag(
+            expr.span,
+            "only multi-value function calls can be destructured",
         ));
     };
     let signature = signatures.get(name).ok_or_else(|| {
-        format!(
-            "line {}: unknown function '{name}' during code generation",
-            expr.line
+        diag(
+            expr.span,
+            &format!("unknown function '{name}' during code generation"),
         )
     })?;
     if signature.returns.len() < 2 {
-        return Err(format!(
-            "line {}: function '{name}' does not return multiple values",
-            expr.line
+        return Err(diag(
+            expr.span,
+            &format!("function '{name}' does not return multiple values"),
         ));
     }
     let mut rendered = Vec::with_capacity(args.len());
@@ -423,6 +426,10 @@ fn c_operator(op: BinOp) -> &'static str {
         BinOp::And => "&&",
         BinOp::Or => "||",
     }
+}
+
+fn diag(span: SourceSpan, message: &str) -> Diagnostic {
+    Diagnostic::new(DiagnosticStage::Codegen, span, message)
 }
 
 fn c_string(value: &str) -> String {

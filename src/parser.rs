@@ -1,6 +1,7 @@
 use crate::ast::{
     BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, Type, UnaryOp,
 };
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 
 #[derive(Debug, Clone)]
 struct Line {
@@ -9,7 +10,13 @@ struct Line {
     text: String,
 }
 
-pub fn parse(source: &str) -> Result<Program, String> {
+impl Line {
+    fn span(&self) -> SourceSpan {
+        SourceSpan::new(self.number, self.indent + 1, self.text.len().max(1))
+    }
+}
+
+pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     let lines = preprocess(source)?;
     let mut functions = Vec::new();
     let mut index = 0;
@@ -48,17 +55,21 @@ pub fn parse(source: &str) -> Result<Program, String> {
             returns,
             body,
             line: function_line,
+            span: line.span(),
         });
     }
 
     if functions.is_empty() {
-        return Err("Flux source contains no functions".to_string());
+        return Err(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "Flux source contains no functions",
+        ));
     }
 
     Ok(Program { functions })
 }
 
-fn preprocess(source: &str) -> Result<Vec<Line>, String> {
+fn preprocess(source: &str) -> Result<Vec<Line>, Diagnostic> {
     let mut lines = Vec::new();
     for (index, raw) in source.lines().enumerate() {
         let number = index + 1;
@@ -111,7 +122,7 @@ fn strip_comment(input: &str) -> &str {
 fn parse_function_header(
     input: &str,
     line: usize,
-) -> Result<(String, Vec<Param>, Vec<Type>), String> {
+) -> Result<(String, Vec<Param>, Vec<Type>), Diagnostic> {
     let Some(rest) = input.strip_prefix("fn ") else {
         return Err(diag(
             line,
@@ -166,7 +177,7 @@ fn parse_function_header(
     Ok((name.to_string(), params, returns))
 }
 
-fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, String> {
+fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, Diagnostic> {
     let mut body = Vec::new();
 
     while *index < lines.len() {
@@ -192,6 +203,7 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             let nested = parse_nested_block(lines, index, indent, stmt_line, "if")?;
             Stmt {
                 line: stmt_line,
+                span: line.span(),
                 kind: StmtKind::If { cond, body: nested },
             }
         } else if line.text.starts_with("for ") && line.text.ends_with(':') {
@@ -214,6 +226,7 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
             Stmt {
                 line: stmt_line,
+                span: line.span(),
                 kind: StmtKind::ForRange {
                     name: name.to_string(),
                     start,
@@ -222,7 +235,7 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                 },
             }
         } else {
-            let stmt = parse_simple_statement(&line.text, line.number)?;
+            let stmt = parse_simple_statement(&line.text, line.span())?;
             *index += 1;
             stmt
         };
@@ -239,7 +252,7 @@ fn parse_nested_block(
     parent_indent: usize,
     parent_line: usize,
     kind: &str,
-) -> Result<Vec<Stmt>, String> {
+) -> Result<Vec<Stmt>, Diagnostic> {
     if *index >= lines.len() || lines[*index].indent <= parent_indent {
         return Err(diag(
             parent_line,
@@ -250,7 +263,8 @@ fn parse_nested_block(
     parse_block(lines, index, nested_indent)
 }
 
-fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
+fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnostic> {
+    let line = span.line;
     if let Some(rest) = input.strip_prefix("let ") {
         let Some((binding_src, expr_src)) = rest.split_once('=') else {
             return Err(diag(line, "let bindings require '= expression'"));
@@ -261,6 +275,7 @@ fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
             let expr = parse_expression(expr_src.trim(), line)?;
             return Ok(Stmt {
                 line,
+                span,
                 kind: StmtKind::Let {
                     name: binding.name,
                     ty: binding.ty,
@@ -286,6 +301,7 @@ fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
         let expr = parse_expression(expr_src.trim(), line)?;
         return Ok(Stmt {
             line,
+            span,
             kind: StmtKind::LetDestructure { bindings, expr },
         });
     }
@@ -293,6 +309,7 @@ fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
     if input == "return" {
         return Ok(Stmt {
             line,
+            span,
             kind: StmtKind::Return(Vec::new()),
         });
     }
@@ -303,17 +320,19 @@ fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(Stmt {
             line,
+            span,
             kind: StmtKind::Return(expressions),
         });
     }
 
     Ok(Stmt {
         line,
+        span,
         kind: StmtKind::Expr(parse_expression(input, line)?),
     })
 }
 
-fn parse_binding(input: &str, line: usize) -> Result<Binding, String> {
+fn parse_binding(input: &str, line: usize) -> Result<Binding, Diagnostic> {
     let Some((name_src, ty_src)) = input.split_once(':') else {
         return Err(diag(
             line,
@@ -408,7 +427,7 @@ fn split_range(input: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn parse_return_types(input: &str, line: usize) -> Result<Vec<Type>, String> {
+fn parse_return_types(input: &str, line: usize) -> Result<Vec<Type>, Diagnostic> {
     let input = input.trim();
     if input == "void" {
         return Ok(Vec::new());
@@ -443,11 +462,11 @@ fn parse_return_types(input: &str, line: usize) -> Result<Vec<Type>, String> {
     }
 }
 
-fn parse_type(input: &str, line: usize) -> Result<Type, String> {
+fn parse_type(input: &str, line: usize) -> Result<Type, Diagnostic> {
     Type::parse(input).ok_or_else(|| diag(line, &format!("unknown type '{input}'")))
 }
 
-fn validate_identifier(input: &str, line: usize) -> Result<(), String> {
+fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
     if input.starts_with("flux__") {
         return Err(diag(
             line,
@@ -498,7 +517,7 @@ enum Token {
     Comma,
 }
 
-fn parse_expression(input: &str, line: usize) -> Result<Expr, String> {
+fn parse_expression(input: &str, line: usize) -> Result<Expr, Diagnostic> {
     let tokens = lex_expression(input, line)?;
     let mut parser = ExprParser {
         tokens: &tokens,
@@ -512,7 +531,7 @@ fn parse_expression(input: &str, line: usize) -> Result<Expr, String> {
     Ok(expr)
 }
 
-fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, String> {
+fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, Diagnostic> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0usize;
@@ -646,7 +665,7 @@ struct ExprParser<'a> {
 }
 
 impl ExprParser<'_> {
-    fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, String> {
+    fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, Diagnostic> {
         let mut left = self.parse_unary()?;
         while let Some((op, precedence)) = self.peek_binary() {
             if precedence < min_precedence {
@@ -656,6 +675,7 @@ impl ExprParser<'_> {
             let right = self.parse_binary(precedence + 1)?;
             left = Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Binary {
                     left: Box::new(left),
                     op,
@@ -666,12 +686,13 @@ impl ExprParser<'_> {
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, String> {
+    fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         if matches!(self.tokens.get(self.index), Some(Token::Minus)) {
             self.index += 1;
             let expr = self.parse_unary()?;
             return Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Unary {
                     op: UnaryOp::Neg,
                     expr: Box::new(expr),
@@ -683,6 +704,7 @@ impl ExprParser<'_> {
             let expr = self.parse_unary()?;
             return Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(expr),
@@ -692,7 +714,7 @@ impl ExprParser<'_> {
         self.parse_primary()
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, String> {
+    fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let Some(token) = self.tokens.get(self.index).cloned() else {
             return Err(diag(self.line, "expected expression"));
         };
@@ -701,28 +723,34 @@ impl ExprParser<'_> {
         match token {
             Token::Int(value) => Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Int(value),
             }),
             Token::Str(value) => Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Str(value),
             }),
             Token::True => Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Bool(true),
             }),
             Token::False => Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Bool(false),
             }),
             Token::Nil => Ok(Expr {
                 line: self.line,
+                span: SourceSpan::line(self.line),
                 kind: ExprKind::Nil,
             }),
             Token::Ident(name) => {
                 if !matches!(self.tokens.get(self.index), Some(Token::LParen)) {
                     return Ok(Expr {
                         line: self.line,
+                        span: SourceSpan::line(self.line),
                         kind: ExprKind::Var(name),
                     });
                 }
@@ -749,6 +777,7 @@ impl ExprParser<'_> {
                 self.index += 1;
                 Ok(Expr {
                     line: self.line,
+                    span: SourceSpan::line(self.line),
                     kind: ExprKind::Call { name, args },
                 })
             }
@@ -783,6 +812,6 @@ impl ExprParser<'_> {
     }
 }
 
-fn diag(line: usize, message: &str) -> String {
-    format!("line {line}: {message}")
+fn diag(line: usize, message: &str) -> Diagnostic {
+    Diagnostic::new(DiagnosticStage::Parse, SourceSpan::line(line), message)
 }

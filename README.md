@@ -23,6 +23,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, and `void`;
 - function signature, return, and argument validation;
+- structured parse/type/codegen diagnostics with reusable source-span metadata;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
 - CLI commands for checking, emitting C, and building a native executable;
@@ -103,7 +104,7 @@ fn main() -> i64 {
 
 ## Near-term roadmap
 
-1. Replace string diagnostics with source spans and structured diagnostics.
+1. Refine diagnostics to token-level spans and add multi-diagnostic recovery for editor tooling.
 2. Add `else` / `elif` and a small explicit error-propagation shorthand that lowers to ordinary control flow.
 3. Add structs, ownership moves, borrows, and the first borrow checker.
 4. Introduce Flux typed IR and a direct optimizing native backend.

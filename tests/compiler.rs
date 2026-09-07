@@ -1,4 +1,4 @@
-use fluxc::{check_source, compile_to_c};
+use fluxc::{DiagnosticStage, check_source, compile_to_c};
 
 #[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
@@ -31,7 +31,12 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("type mismatch should fail");
-    assert!(error.contains("expected i64, got bool"));
+    assert!(error.message.contains("expected i64, got bool"));
+    assert_eq!(error.stage, DiagnosticStage::Type);
+    let span = error
+        .span
+        .expect("type diagnostic should have a source span");
+    assert_eq!((span.line, span.column), (3, 5));
 }
 
 #[test]
@@ -43,7 +48,12 @@ fn main() -> i64
 "#;
 
     let error = check_source(source).expect_err("function brace should be mandatory");
-    assert!(error.contains("functions must open their body with '{'"));
+    assert!(
+        error
+            .message
+            .contains("functions must open their body with '{'")
+    );
+    assert_eq!(error.stage, DiagnosticStage::Parse);
 }
 
 #[test]
@@ -57,7 +67,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("if condition must be bool");
-    assert!(error.contains("if condition: expected bool, got i64"));
+    assert!(
+        error
+            .message
+            .contains("if condition: expected bool, got i64")
+    );
 }
 
 #[test]
@@ -99,7 +113,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("multi-value call in scalar binding must fail");
-    assert!(error.contains("returns 2 values; use a destructuring binding"));
+    assert!(
+        error
+            .message
+            .contains("returns 2 values; use a destructuring binding")
+    );
 }
 
 #[test]
@@ -116,7 +134,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("destructuring arity must match exactly");
-    assert!(error.contains("destructuring expects 3 values, expression returns 2"));
+    assert!(
+        error
+            .message
+            .contains("destructuring expects 3 values, expression returns 2")
+    );
 }
 
 #[test]
@@ -133,7 +155,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("destructuring types must match exactly");
-    assert!(error.contains("destructured binding 'value': expected bool, got i64"));
+    assert!(
+        error
+            .message
+            .contains("destructured binding 'value': expected bool, got i64")
+    );
 }
 
 #[test]
@@ -181,7 +207,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("forwarded return types must match exactly");
-    assert!(error.contains("return value 2: expected error, got bool"));
+    assert!(
+        error
+            .message
+            .contains("return value 2: expected error, got bool")
+    );
 }
 
 #[test]
@@ -197,7 +227,7 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("return arity must match exactly");
-    assert!(error.contains("return expects 2 values, got 1"));
+    assert!(error.message.contains("return expects 2 values, got 1"));
 }
 
 #[test]
@@ -213,7 +243,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("return value types must match exactly");
-    assert!(error.contains("return value 1: expected i64, got bool"));
+    assert!(
+        error
+            .message
+            .contains("return value 1: expected i64, got bool")
+    );
 }
 
 #[test]
@@ -252,7 +286,11 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("error messages must be strings");
-    assert!(error.contains("error message: expected str, got i64"));
+    assert!(
+        error
+            .message
+            .contains("error message: expected str, got i64")
+    );
 }
 
 #[test]
@@ -265,7 +303,7 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("nil should only type as error");
-    assert!(error.contains("binding: expected i64, got error"));
+    assert!(error.message.contains("binding: expected i64, got error"));
 }
 
 #[test]
@@ -280,5 +318,9 @@ fn main() -> i64 {
 "#;
 
     let error = check_source(source).expect_err("error values must not compare as strings");
-    assert!(error.contains("equality operand: expected error, got str"));
+    assert!(
+        error
+            .message
+            .contains("equality operand: expected error, got str")
+    );
 }
