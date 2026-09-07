@@ -7,6 +7,9 @@ use crate::parser;
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
     let mut formatted = HashMap::new();
+    for definition in &program.structs {
+        format_struct(definition, &mut formatted);
+    }
     for function in &program.functions {
         format_function(function, &mut formatted);
     }
@@ -56,6 +59,16 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     }
 
     Ok(format!("{}\n", output.join("\n")))
+}
+
+fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, String>) {
+    lines.insert(definition.line, format!("struct {} {{", definition.name));
+    for field in &definition.fields {
+        lines.insert(
+            field.name_span.line,
+            format!("    {}: {}", field.name, field.ty.name()),
+        );
+    }
 }
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
@@ -197,6 +210,15 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ExprKind::StructLiteral { name, fields, .. } => format!(
+            "{name} {{ {} }}",
+            fields
+                .iter()
+                .map(|field| format!("{}: {}", field.name, format_expr(&field.value, 0)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 7)),
         ExprKind::Unary { op, expr } => {
             let operator = match op {
                 UnaryOp::Neg => "-",

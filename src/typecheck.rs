@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
@@ -10,7 +10,52 @@ pub struct Signature {
     pub span: SourceSpan,
 }
 
-pub type Signatures = HashMap<String, Signature>;
+#[derive(Debug, Clone)]
+pub struct StructFieldSignature {
+    pub name: String,
+    pub ty: Type,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructSignature {
+    pub fields: Vec<StructFieldSignature>,
+    pub span: SourceSpan,
+}
+
+impl StructSignature {
+    pub fn field(&self, name: &str) -> Option<&StructFieldSignature> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Signatures {
+    functions: HashMap<String, Signature>,
+    structs: HashMap<String, StructSignature>,
+}
+
+impl Signatures {
+    pub fn get(&self, name: &str) -> Option<&Signature> {
+        self.functions.get(name)
+    }
+
+    pub fn struct_type(&self, name: &str) -> Option<&StructSignature> {
+        self.structs.get(name)
+    }
+
+    pub fn structs(&self) -> &HashMap<String, StructSignature> {
+        &self.structs
+    }
+
+    fn contains_function(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
+    fn insert_function(&mut self, name: String, signature: Signature) {
+        self.functions.insert(name, signature);
+    }
+}
 
 pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
     check_all(program).map_err(|diagnostics| {
@@ -22,22 +67,80 @@ pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
 }
 
 pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
-    let mut signatures = HashMap::new();
+    let mut signatures = Signatures::default();
     let mut diagnostics = Vec::new();
 
-    for function in &program.functions {
-        if function.name == "print" {
-            diagnostics.push(diag(function.span, "'print' is a built-in function name"));
+    for definition in &program.structs {
+        if signatures.structs.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("duplicate struct '{}'", definition.name),
+            ));
             continue;
         }
-        if signatures.contains_key(&function.name) {
+        signatures.structs.insert(
+            definition.name.clone(),
+            StructSignature {
+                fields: definition
+                    .fields
+                    .iter()
+                    .map(|field| StructFieldSignature {
+                        name: field.name.clone(),
+                        ty: field.ty.clone(),
+                        span: field.name_span,
+                    })
+                    .collect(),
+                span: definition.name_span,
+            },
+        );
+    }
+
+    for definition in &program.structs {
+        for field in &definition.fields {
+            if let Err(diagnostic) = require_known_type(field.type_span, &field.ty, &signatures) {
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    for function in &program.functions {
+        if function.name == "print" || function.name == "error" {
             diagnostics.push(diag(
-                function.span,
+                function.name_span,
+                &format!("'{}' is a built-in function name", function.name),
+            ));
+            continue;
+        }
+        if signatures.structs.contains_key(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
+                &format!("function '{}' conflicts with a struct name", function.name),
+            ));
+            continue;
+        }
+        if signatures.contains_function(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
                 &format!("duplicate function '{}'", function.name),
             ));
             continue;
         }
-        signatures.insert(
+        for param in &function.params {
+            if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures) {
+                diagnostics.push(diagnostic);
+            }
+        }
+        for (index, ty) in function.returns.iter().enumerate() {
+            let span = function
+                .return_type_spans
+                .get(index)
+                .copied()
+                .unwrap_or(function.return_span);
+            if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
+                diagnostics.push(diagnostic);
+            }
+        }
+        signatures.insert_function(
             function.name.clone(),
             Signature {
                 params: function
@@ -46,7 +149,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                     .map(|param| param.ty.clone())
                     .collect(),
                 returns: function.returns.clone(),
-                span: function.span,
+                span: function.name_span,
             },
         );
     }
@@ -123,7 +226,16 @@ fn check_block_all(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } => {
+            StmtKind::Let {
+                name,
+                ty,
+                type_span,
+                expr,
+                ..
+            } => {
+                if let Err(diagnostic) = require_known_type(*type_span, ty, signatures) {
+                    diagnostics.push(diagnostic);
+                }
                 let duplicate = env.contains_key(name);
                 if duplicate {
                     diagnostics.push(diag(
@@ -155,6 +267,14 @@ fn check_block_all(
                         None
                     }
                 };
+
+                for binding in bindings {
+                    if let Err(diagnostic) =
+                        require_known_type(binding.type_span, &binding.ty, signatures)
+                    {
+                        diagnostics.push(diagnostic);
+                    }
+                }
 
                 if let Some(actuals) = actuals.as_ref() {
                     if actuals.len() != bindings.len() {
@@ -386,6 +506,84 @@ pub fn type_of_expr(
                 )),
             }
         }
+        ExprKind::StructLiteral {
+            name,
+            name_span,
+            fields,
+        } => {
+            let Some(definition) = signatures.struct_type(name) else {
+                return Err(diag(*name_span, &format!("unknown struct '{name}'")));
+            };
+            let mut seen = HashSet::new();
+            for field in fields {
+                if !seen.insert(field.name.as_str()) {
+                    return Err(diag(
+                        field.name_span,
+                        &format!("duplicate field '{}' in {name} literal", field.name),
+                    ));
+                }
+                let Some(expected) = definition.field(&field.name) else {
+                    return Err(diag(
+                        field.name_span,
+                        &format!("struct '{name}' has no field '{}'", field.name),
+                    )
+                    .with_label(definition.span, format!("'{name}' is declared here")));
+                };
+                let actual = type_of_expr(&field.value, env, signatures)?;
+                require_type(
+                    field.value.span,
+                    &expected.ty,
+                    &actual,
+                    &format!("field '{}.{}'", name, field.name),
+                )?;
+            }
+            let missing = definition
+                .fields
+                .iter()
+                .filter(|field| !seen.contains(field.name.as_str()))
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!(
+                        "{name} literal is missing field{} {}",
+                        if missing.len() == 1 { "" } else { "s" },
+                        missing.join(", ")
+                    ),
+                ));
+            }
+            Ok(Type::Named(name.clone()))
+        }
+        ExprKind::Field {
+            base,
+            name,
+            name_span,
+        } => {
+            let base_ty = type_of_expr(base, env, signatures)?;
+            let Type::Named(struct_name) = base_ty else {
+                return Err(diag(
+                    *name_span,
+                    &format!(
+                        "field access requires a struct value, got {}",
+                        base_ty.name()
+                    ),
+                ));
+            };
+            let Some(definition) = signatures.struct_type(&struct_name) else {
+                return Err(diag(base.span, &format!("unknown struct '{struct_name}'")));
+            };
+            definition
+                .field(name)
+                .map(|field| field.ty.clone())
+                .ok_or_else(|| {
+                    diag(
+                        *name_span,
+                        &format!("struct '{struct_name}' has no field '{name}'"),
+                    )
+                    .with_label(definition.span, format!("'{struct_name}' is declared here"))
+                })
+        }
         ExprKind::Unary { op, expr: inner } => {
             let ty = type_of_expr(inner, env, signatures)?;
             match op {
@@ -416,6 +614,12 @@ pub fn type_of_expr(
                 BinOp::Eq | BinOp::Ne => {
                     if left_ty == Type::Void || right_ty == Type::Void {
                         return Err(diag(expr.span, "void values cannot be compared"));
+                    }
+                    if matches!(left_ty, Type::Named(_)) || matches!(right_ty, Type::Named(_)) {
+                        return Err(diag(
+                            expr.span,
+                            "whole-struct equality is not defined yet; compare fields explicitly",
+                        ));
                     }
                     require_type(expr.span, &left_ty, &right_ty, "equality operand")?;
                     Ok(Type::Bool)
@@ -509,6 +713,19 @@ fn return_types_name(types: &[Type]) -> String {
             "({})",
             types.iter().map(Type::name).collect::<Vec<_>>().join(", ")
         ),
+    }
+}
+
+fn require_known_type(
+    span: SourceSpan,
+    ty: &Type,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    match ty {
+        Type::Named(name) if signatures.struct_type(name).is_none() => {
+            Err(diag(span, &format!("unknown type '{name}'")))
+        }
+        _ => Ok(()),
     }
 }
 

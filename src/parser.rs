@@ -1,5 +1,6 @@
 use crate::ast::{
-    BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, Type, UnaryOp,
+    BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, StructDef,
+    StructField, StructLiteralField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -92,6 +93,7 @@ pub fn parse_all_with_source(
 
 pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
+    let mut structs = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
 
@@ -106,11 +108,22 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
+        if line.text.starts_with("struct ") {
+            match parse_struct_declaration(&lines, &mut index) {
+                Ok(definition) => structs.push(definition),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                }
+            }
+            continue;
+        }
+
         let header = match parse_function_header(&line.text, line.number) {
             Ok(header) => header,
             Err(diagnostic) => {
                 diagnostics.push(diagnostic);
-                index = recover_after_malformed_function(&lines, index + 1);
+                index = recover_after_malformed_declaration(&lines, index + 1);
                 continue;
             }
         };
@@ -132,7 +145,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 Ok(body) => body,
                 Err(diagnostic) => {
                     diagnostics.push(diagnostic);
-                    index = recover_after_malformed_function(&lines, index);
+                    index = recover_after_malformed_declaration(&lines, index);
                     continue;
                 }
             }
@@ -145,7 +158,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 function_line,
                 "function body must end with a top-level '}'",
             ));
-            index = recover_after_malformed_function(&lines, index);
+            index = recover_after_malformed_declaration(&lines, index);
             continue;
         }
         index += 1;
@@ -172,7 +185,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     }
 
     if diagnostics.is_empty() {
-        Ok(Program { functions })
+        Ok(Program { structs, functions })
     } else {
         Err(diagnostics)
     }
@@ -188,6 +201,15 @@ fn source_fingerprint(source: &str) -> u64 {
 }
 
 fn attach_program_source(program: &mut Program, source_id: SourceId) {
+    for definition in &mut program.structs {
+        definition.span = definition.span.with_source(source_id);
+        definition.keyword_span = definition.keyword_span.with_source(source_id);
+        definition.name_span = definition.name_span.with_source(source_id);
+        for field in &mut definition.fields {
+            field.name_span = field.name_span.with_source(source_id);
+            field.type_span = field.type_span.with_source(source_id);
+        }
+    }
     for function in &mut program.functions {
         function.span = function.span.with_source(source_id);
         function.keyword_span = function.keyword_span.with_source(source_id);
@@ -269,6 +291,21 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(arg, source_id);
             }
         }
+        ExprKind::StructLiteral {
+            name_span, fields, ..
+        } => {
+            *name_span = name_span.with_source(source_id);
+            for field in fields {
+                field.name_span = field.name_span.with_source(source_id);
+                attach_expr_source(&mut field.value, source_id);
+            }
+        }
+        ExprKind::Field {
+            base, name_span, ..
+        } => {
+            *name_span = name_span.with_source(source_id);
+            attach_expr_source(base, source_id);
+        }
         ExprKind::Unary { expr, .. } => attach_expr_source(expr, source_id),
         ExprKind::Binary { left, right, .. } => {
             attach_expr_source(left, source_id);
@@ -311,20 +348,99 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
     (lines, diagnostics)
 }
 
-fn recover_after_malformed_function(lines: &[Line], mut index: usize) -> usize {
+fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usize {
     while index < lines.len() {
         let line = &lines[index];
         if line.indent == 0 {
             if line.text == "}" {
                 return index + 1;
             }
-            if line.text.starts_with("fn ") {
+            if line.text.starts_with("fn ") || line.text.starts_with("struct ") {
                 return index;
             }
         }
         index += 1;
     }
     index
+}
+
+fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructDef, Diagnostic> {
+    let header = &lines[*index];
+    let Some(rest) = header.text.strip_prefix("struct ") else {
+        return Err(diag(header.number, "expected struct declaration"));
+    };
+    let Some(raw_name) = rest.strip_suffix('{') else {
+        return Err(diag(
+            header.number,
+            "struct declarations must open their body with '{'",
+        ));
+    };
+    let name = raw_name.trim();
+    validate_identifier(name, header.number)?;
+    let leading = raw_name.len() - raw_name.trim_start().len();
+    let name_span = SourceSpan::new(header.number, 8 + leading, name.len());
+    let definition_span = header.span();
+    *index += 1;
+
+    let mut fields = Vec::new();
+    if *index < lines.len() && lines[*index].indent > 0 {
+        let field_indent = lines[*index].indent;
+        while *index < lines.len() {
+            let line = &lines[*index];
+            if line.indent < field_indent {
+                break;
+            }
+            if line.indent > field_indent {
+                return Err(diag(line.number, "unexpected indentation in struct body"));
+            }
+            let Some(colon_offset) = line.text.find(':') else {
+                return Err(diag(line.number, "struct fields use 'name: type' syntax"));
+            };
+            let raw_field_name = &line.text[..colon_offset];
+            let raw_type = &line.text[colon_offset + 1..];
+            let (field_name, name_column) = trim_with_column(raw_field_name, line.indent + 1);
+            validate_identifier(field_name, line.number)?;
+            let (type_text, type_column) =
+                trim_with_column(raw_type, line.indent + 1 + colon_offset + 1);
+            let ty = parse_type(type_text, line.number)?;
+            if ty == Type::Void {
+                return Err(diag(line.number, "struct fields cannot have type void"));
+            }
+            if fields
+                .iter()
+                .any(|field: &StructField| field.name == field_name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate struct field '{field_name}'"),
+                ));
+            }
+            fields.push(StructField {
+                name: field_name.to_string(),
+                name_span: SourceSpan::new(line.number, name_column, field_name.len()),
+                ty,
+                type_span: SourceSpan::new(line.number, type_column, type_text.len()),
+            });
+            *index += 1;
+        }
+    }
+
+    if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
+        return Err(diag(
+            header.number,
+            "struct body must end with a top-level '}'",
+        ));
+    }
+    *index += 1;
+
+    Ok(StructDef {
+        name: name.to_string(),
+        name_span,
+        keyword_span: SourceSpan::new(header.number, 1, 6),
+        fields,
+        line: header.number,
+        span: definition_span,
+    })
 }
 
 fn strip_comment(input: &str) -> &str {
@@ -811,8 +927,8 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
             continue;
         }
         match byte {
-            b'(' => depth += 1,
-            b')' => depth = depth.saturating_sub(1),
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
                 parts.push((&input[start..index], start));
                 start = index + 1;
@@ -919,7 +1035,8 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
     }
     if matches!(
         input,
-        "fn" | "let"
+        "fn" | "struct"
+            | "let"
             | "return"
             | "if"
             | "elif"
@@ -959,6 +1076,10 @@ enum TokenKind {
     Bang,
     LParen,
     RParen,
+    LBrace,
+    RBrace,
+    Colon,
+    Dot,
     Comma,
 }
 
@@ -1093,6 +1214,10 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b'/' => (TokenKind::Slash, 1),
                 b'(' => (TokenKind::LParen, 1),
                 b')' => (TokenKind::RParen, 1),
+                b'{' => (TokenKind::LBrace, 1),
+                b'}' => (TokenKind::RBrace, 1),
+                b':' => (TokenKind::Colon, 1),
+                b'.' => (TokenKind::Dot, 1),
                 b',' => (TokenKind::Comma, 1),
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
@@ -1211,6 +1336,42 @@ impl ExprParser<'_> {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_atom()?;
+        while matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Dot)
+        ) {
+            self.index += 1;
+            let Some(field) = self.tokens.get(self.index).cloned() else {
+                return Err(diag(self.line, "expected field name after '.'"));
+            };
+            let TokenKind::Ident(name) = field.kind else {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    field.span,
+                    "expected field name after '.'",
+                ));
+            };
+            self.index += 1;
+            let span = SourceSpan::new(
+                self.line,
+                expr.span.column,
+                field.span.column + field.span.length - expr.span.column,
+            );
+            expr = Expr {
+                line: self.line,
+                span,
+                kind: ExprKind::Field {
+                    base: Box::new(expr),
+                    name,
+                    name_span: field.span,
+                },
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_atom(&mut self) -> Result<Expr, Diagnostic> {
         let Some(token) = self.tokens.get(self.index).cloned() else {
             return Err(diag(self.line, "expected expression"));
         };
@@ -1244,6 +1405,12 @@ impl ExprParser<'_> {
                 kind: ExprKind::Nil,
             }),
             TokenKind::Ident(name) => {
+                if matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::LBrace)
+                ) {
+                    return self.parse_struct_literal(name, token_span);
+                }
                 if !matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
                     Some(TokenKind::LParen)
@@ -1323,6 +1490,88 @@ impl ExprParser<'_> {
                 "expected expression",
             )),
         }
+    }
+
+    fn parse_struct_literal(
+        &mut self,
+        name: String,
+        name_span: SourceSpan,
+    ) -> Result<Expr, Diagnostic> {
+        self.index += 1;
+        let mut fields = Vec::new();
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBrace)
+        ) {
+            loop {
+                let Some(field_token) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "expected struct field name"));
+                };
+                let TokenKind::Ident(field_name) = field_token.kind else {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        field_token.span,
+                        "expected struct field name",
+                    ));
+                };
+                self.index += 1;
+                let Some(colon) = self.tokens.get(self.index) else {
+                    return Err(diag(self.line, "expected ':' after struct field name"));
+                };
+                if !matches!(colon.kind, TokenKind::Colon) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        colon.span,
+                        "expected ':' after struct field name",
+                    ));
+                }
+                self.index += 1;
+                let value = self.parse_binary(1)?;
+                fields.push(StructLiteralField {
+                    name: field_name,
+                    name_span: field_token.span,
+                    value,
+                });
+                match self.tokens.get(self.index).map(|token| &token.kind) {
+                    Some(TokenKind::Comma) => {
+                        self.index += 1;
+                        if matches!(
+                            self.tokens.get(self.index).map(|token| &token.kind),
+                            Some(TokenKind::RBrace)
+                        ) {
+                            break;
+                        }
+                    }
+                    Some(TokenKind::RBrace) => break,
+                    _ => return Err(diag(self.line, "expected ',' or '}' in struct literal")),
+                }
+            }
+        }
+        let Some(close) = self.tokens.get(self.index) else {
+            return Err(diag(self.line, "expected '}' after struct literal"));
+        };
+        if !matches!(close.kind, TokenKind::RBrace) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                close.span,
+                "expected '}' after struct literal",
+            ));
+        }
+        let close_span = close.span;
+        self.index += 1;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(
+                self.line,
+                name_span.column,
+                close_span.column + close_span.length - name_span.column,
+            ),
+            kind: ExprKind::StructLiteral {
+                name,
+                name_span,
+                fields,
+            },
+        })
     }
 
     fn peek_binary(&self) -> Option<(BinOp, u8)> {

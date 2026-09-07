@@ -20,16 +20,17 @@ Flux is an experimental compiled language for building native applications and s
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
-- parsing for functions, typed bindings, calls, `if` / `elif` / `else`, and exclusive range `for` loops;
+- parsing for functions, structs, typed bindings, calls, field access, `if` / `elif` / `else`, and exclusive range `for` loops;
 - explicit multi-value function returns and strictly typed destructuring bindings;
-- static checking for `i64`, `bool`, `str`, `error`, and `void`;
+- static checking for `i64`, `bool`, `str`, `error`, `void`, and named struct value types;
+- struct literals with exact field validation, nested value layouts, and native by-value lowering;
 - function signature, return, and argument validation;
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, and building a native executable;
-- compiler tests and a runnable example.
+- compiler tests and runnable native examples, including nested structs.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

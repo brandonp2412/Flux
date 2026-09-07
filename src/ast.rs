@@ -7,6 +7,7 @@ pub enum Type {
     Str,
     Error,
     Void,
+    Named(String),
 }
 
 impl Type {
@@ -17,24 +18,54 @@ impl Type {
             "str" => Some(Self::Str),
             "error" => Some(Self::Error),
             "void" => Some(Self::Void),
+            name if is_type_identifier(name) => Some(Self::Named(name.to_string())),
             _ => None,
         }
     }
 
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Self::I64 => "i64",
             Self::Bool => "bool",
             Self::Str => "str",
             Self::Error => "error",
             Self::Void => "void",
+            Self::Named(name) => name,
         }
     }
 }
 
+fn is_type_identifier(input: &str) -> bool {
+    let mut chars = input.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub structs: Vec<StructDef>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub fields: Vec<StructField>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub ty: Type,
+    pub type_span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +155,16 @@ pub enum ExprKind {
         name: String,
         args: Vec<Expr>,
     },
+    StructLiteral {
+        name: String,
+        name_span: SourceSpan,
+        fields: Vec<StructLiteralField>,
+    },
+    Field {
+        base: Box<Expr>,
+        name: String,
+        name_span: SourceSpan,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
@@ -133,6 +174,13 @@ pub enum ExprKind {
         op: BinOp,
         right: Box<Expr>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteralField {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone, Copy)]

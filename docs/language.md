@@ -45,6 +45,25 @@ let label: str = "Flux"
 
 The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
 
+## Struct values
+
+Flux structs are plain named value types. They contain data only: no constructors, methods, inheritance, object identity, or hidden heap allocation.
+
+```flux
+struct User {
+    name: str
+    age: i64
+}
+
+fn birthday(user: User) -> User {
+    return User { name: user.name, age: user.age + 1 }
+}
+```
+
+Struct literals must provide each declared field exactly once with the declared type. Unknown fields, missing fields, duplicate fields, and unknown named types are compile-time errors. Field access is statically resolved. Structs may contain other structs by value and are emitted in dependency order; recursive by-value layouts are rejected because they have infinite size. Indirect recursive structures will be introduced only together with explicit ownership/reference semantics.
+
+Struct values lower to native value structs in the bootstrap C backend. Copy/update sugar is not implemented yet; when introduced it must evaluate its source value once and preserve the same explicit value semantics.
+
 ## Error handling
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
@@ -123,13 +142,15 @@ The first borrow checker should be implemented after structs and a typed interme
 
 ## Primitive bootstrap types
 
-Currently implemented:
+Currently implemented primitives:
 
 - `i64`
 - `bool`
 - `str`
 - `error`
 - `void`
+
+Programs may additionally declare named `struct` value types.
 
 `str` is currently an immutable string view/literal type in the bootstrap compiler. An owned string type will be introduced together with ownership semantics.
 

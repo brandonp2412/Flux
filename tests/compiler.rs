@@ -148,6 +148,156 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_struct_values_literals_field_access_and_nested_layout() {
+    let source = r#"
+struct Profile {
+    user: User
+    active: bool
+}
+
+struct User {
+    name: str
+    age: i64
+}
+
+fn birthday(user: User) -> User {
+    return User { name: user.name, age: user.age + 1 }
+}
+
+fn main() -> i64 {
+    let profile: Profile = Profile { user: User { name: "Ada", age: 41 }, active: true }
+    let older: User = birthday(profile.user)
+    print(older.name)
+    print(older.age)
+    return 0
+}
+"#;
+
+    check_source(source).expect("struct program should typecheck");
+    let generated = compile_to_c(source).expect("struct program should compile");
+    let user_pos = generated
+        .find("struct flux__type_User {")
+        .expect("User C struct should be emitted");
+    let profile_pos = generated
+        .find("struct flux__type_Profile {")
+        .expect("Profile C struct should be emitted");
+    assert!(
+        user_pos < profile_pos,
+        "dependencies should be emitted first"
+    );
+    assert!(generated.contains(".flux__field_name = \"Ada\""));
+    assert!(generated.contains("flux__field_age"));
+}
+
+#[test]
+fn rejects_invalid_struct_literals_and_field_access() {
+    let missing = r#"
+struct User {
+    name: str
+    age: i64
+}
+fn main() -> i64 {
+    let user: User = User { name: "Ada" }
+    return 0
+}
+"#;
+    let error = check_source(missing).expect_err("missing struct field should fail");
+    assert!(error.message.contains("missing field age"));
+
+    let unknown = r#"
+struct User {
+    name: str
+}
+fn main() -> i64 {
+    let user: User = User { name: "Ada", nope: 1 }
+    return 0
+}
+"#;
+    let error = check_source(unknown).expect_err("unknown struct field should fail");
+    assert!(error.message.contains("has no field 'nope'"));
+
+    let wrong_type = r#"
+struct User {
+    age: i64
+}
+fn main() -> i64 {
+    let user: User = User { age: false }
+    return 0
+}
+"#;
+    let error = check_source(wrong_type).expect_err("wrong field type should fail");
+    assert!(
+        error
+            .message
+            .contains("field 'User.age': expected i64, got bool")
+    );
+
+    let bad_access = r#"
+struct User {
+    age: i64
+}
+fn main() -> i64 {
+    let user: User = User { age: 1 }
+    print(user.nope)
+    return 0
+}
+"#;
+    let error = check_source(bad_access).expect_err("unknown field access should fail");
+    assert!(error.message.contains("has no field 'nope'"));
+}
+
+#[test]
+fn rejects_unknown_struct_types_and_recursive_by_value_cycles() {
+    let unknown_type = r#"
+struct User {
+    missing: Missing
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unknown_type).expect_err("unknown field type should fail");
+    assert!(error.message.contains("unknown type 'Missing'"));
+
+    let recursive = r#"
+struct Node {
+    next: Node
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = compile_to_c(recursive).expect_err("recursive value struct should not lower");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("recursive by-value cycle"));
+}
+
+#[test]
+fn formatter_handles_struct_declarations_and_literals() {
+    let source = "struct User {\n name:str\n age:i64\n}\nfn main()->i64 {\n let user:User=User{name:\"Ada\",age:41}\n print(user.name)\n return 0\n}\n";
+    let expected = "struct User {\n    name: str\n    age: i64\n}\nfn main() -> i64 {\n    let user: User = User { name: \"Ada\", age: 41 }\n    print(user.name)\n    return 0\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("struct source should format");
+    assert_eq!(formatted, expected);
+}
+
+#[test]
+fn semantic_database_indexes_structs_and_fields() {
+    let source = "struct User {\n    name: str\n}\nfn main() -> i64 {\n    return 0\n}\n";
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(301))
+        .expect("struct source should analyze");
+    let definition = database
+        .symbols_named("User")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Struct)
+        .expect("struct symbol should be indexed");
+    assert_eq!(span_text(source, definition.span), "User");
+    let field = database
+        .symbols_named("name")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::StructField)
+        .expect("field symbol should be indexed");
+    assert_eq!(field.ty, Some(fluxc::ast::Type::Str));
+}
+
+#[test]
 fn formatter_is_deterministic_and_preserves_comments() {
     let source = "fn add(a:i64,b: i64)->i64 { # header\n  let value:i64=a+b # sum\n  if value>0:\n      return value\n  else:\n      return 0\n}\n\n\nfn main()->i64 {\n    return add(1,2)\n}\n";
     let expected = "fn add(a: i64, b: i64) -> i64 { # header\n    let value: i64 = a + b # sum\n    if value > 0:\n        return value\n    else:\n        return 0\n}\n\nfn main() -> i64 {\n    return add(1, 2)\n}\n";

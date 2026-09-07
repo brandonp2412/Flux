@@ -87,8 +87,8 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 ## Data and algebraic types
 
-- [ ] `struct` value types.
-- [ ] Struct literals and functional update/copy syntax.
+- [x] `struct` value types with named fields, nested acyclic value layout, native C lowering, formatter support, and semantic indexing.
+- [ ] Struct literals and functional update/copy syntax. Struct literals and field access are implemented; update/copy syntax remains.
 - [ ] Closed enums / tagged unions with payloads.
 - [ ] Exhaustive `match` expressions and statements.
 - [ ] Pattern matching over structs, enums, lists, and multi-values.

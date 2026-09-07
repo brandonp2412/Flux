@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp};
+use crate::ast::{
+    BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, StructDef, Type, UnaryOp,
+};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{Signatures, type_of_expr};
 
@@ -22,6 +24,21 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
     out.push_str("    return a / b;\n");
     out.push_str("}\n\n");
+
+    for definition in struct_emit_order(program)? {
+        out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
+        for field in &definition.fields {
+            out.push_str(&format!(
+                "    {} {};\n",
+                c_type(&field.ty),
+                field_c_name(&field.name)
+            ));
+        }
+        out.push_str("};\n");
+    }
+    if !program.structs.is_empty() {
+        out.push('\n');
+    }
 
     for function in &program.functions {
         if function.returns.len() > 1 {
@@ -301,6 +318,9 @@ fn emit_expr(
                 Type::Bool => "flux_print_bool",
                 Type::Str => "flux_print_str",
                 Type::Error => "flux_print_error",
+                Type::Named(_) => {
+                    return Err(diag(expr.span, "cannot print a struct value directly"));
+                }
                 Type::Void => return Err(diag(expr.span, "cannot print void")),
             };
             EmittedExpr {
@@ -341,6 +361,29 @@ fn emit_expr(
             EmittedExpr {
                 code: format!("{name}({})", rendered.join(", ")),
                 ty,
+            }
+        }
+        ExprKind::StructLiteral { name, fields, .. } => {
+            let mut rendered = Vec::with_capacity(fields.len());
+            for field in fields {
+                let value = emit_expr(&field.value, env, signatures)?;
+                rendered.push(format!(".{} = {}", field_c_name(&field.name), value.code));
+            }
+            EmittedExpr {
+                code: format!(
+                    "((struct {}){{ {} }})",
+                    struct_c_name(name),
+                    rendered.join(", ")
+                ),
+                ty: Type::Named(name.clone()),
+            }
+        }
+        ExprKind::Field { base, name, .. } => {
+            let base = emit_expr(base, env, signatures)?;
+            let result_ty = type_of_expr(expr, env, signatures)?;
+            EmittedExpr {
+                code: format!("({}).{}", base.code, field_c_name(name)),
+                ty: result_ty,
             }
         }
         ExprKind::Unary { op, expr: inner } => {
@@ -424,7 +467,7 @@ fn emit_multi_expr(
 fn c_function_return_type(function: &Function) -> String {
     match function.returns.as_slice() {
         [] => "void".to_string(),
-        [ty] => c_type(ty).to_string(),
+        [ty] => c_type(ty),
         _ => format!("struct {}", multi_return_struct_name(&function.name)),
     }
 }
@@ -433,14 +476,80 @@ fn multi_return_struct_name(function_name: &str) -> String {
     format!("flux__ret_{function_name}")
 }
 
-fn c_type(ty: &Type) -> &'static str {
+fn c_type(ty: &Type) -> String {
     match ty {
-        Type::I64 => "int64_t",
-        Type::Bool => "bool",
-        Type::Str => "const char *",
-        Type::Error => "const char *",
-        Type::Void => "void",
+        Type::I64 => "int64_t".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Str => "const char *".to_string(),
+        Type::Error => "const char *".to_string(),
+        Type::Void => "void".to_string(),
+        Type::Named(name) => format!("struct {}", struct_c_name(name)),
     }
+}
+
+fn struct_c_name(name: &str) -> String {
+    format!("flux__type_{name}")
+}
+
+fn field_c_name(name: &str) -> String {
+    format!("flux__field_{name}")
+}
+
+fn struct_emit_order(program: &Program) -> Result<Vec<&StructDef>, Diagnostic> {
+    let definitions = program
+        .structs
+        .iter()
+        .map(|definition| (definition.name.as_str(), definition))
+        .collect::<HashMap<_, _>>();
+    let mut visiting = HashSet::new();
+    let mut emitted = HashSet::new();
+    let mut order = Vec::with_capacity(program.structs.len());
+
+    for definition in &program.structs {
+        visit_struct(
+            definition,
+            &definitions,
+            &mut visiting,
+            &mut emitted,
+            &mut order,
+        )?;
+    }
+    Ok(order)
+}
+
+fn visit_struct<'a>(
+    definition: &'a StructDef,
+    definitions: &HashMap<&str, &'a StructDef>,
+    visiting: &mut HashSet<&'a str>,
+    emitted: &mut HashSet<&'a str>,
+    order: &mut Vec<&'a StructDef>,
+) -> Result<(), Diagnostic> {
+    if emitted.contains(definition.name.as_str()) {
+        return Ok(());
+    }
+    if !visiting.insert(definition.name.as_str()) {
+        return Err(diag(
+            definition.name_span,
+            &format!(
+                "struct '{}' participates in a recursive by-value cycle",
+                definition.name
+            ),
+        )
+        .with_note("recursive value structs need an indirection/ownership type, which is not implemented yet"));
+    }
+
+    for field in &definition.fields {
+        if let Type::Named(name) = &field.ty
+            && let Some(dependency) = definitions.get(name.as_str())
+        {
+            visit_struct(dependency, definitions, visiting, emitted, order)?;
+        }
+    }
+
+    visiting.remove(definition.name.as_str());
+    emitted.insert(definition.name.as_str());
+    order.push(definition);
+    Ok(())
 }
 
 fn c_condition(code: &str) -> String {
