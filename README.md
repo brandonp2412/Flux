@@ -24,7 +24,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, and `void`;
 - function signature, return, and argument validation;
-- structured parse/type/codegen diagnostics with reusable source-span metadata;
+- structured parse/type/codegen diagnostics with reusable source-span metadata and safe multi-error parser/type-checker recovery;
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;

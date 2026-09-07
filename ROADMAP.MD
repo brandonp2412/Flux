@@ -56,6 +56,7 @@ Implemented on `main`:
 - [x] Structured parse/type/codegen diagnostics.
 - [x] Token-level expression source spans.
 - [x] Multi-diagnostic parser recovery across malformed functions with batch check diagnostics.
+- [x] Multi-diagnostic type checking with safe statement/function continuation and cascade suppression.
 - [x] Bootstrap C lowering through optimized Clang native compilation.
 - [x] Native end-to-end examples and compiler tests.
 
@@ -65,10 +66,10 @@ Implemented on `main`:
 
 The parser and semantic layer must become robust enough that every later subsystem can share the same source model.
 
-Parser recovery now synchronizes at function boundaries, retains diagnostics from later functions, and exposes batch checking for editor/CLI consumers. Next focus is safe multi-diagnostic type checking.
+Parser recovery synchronizes at function boundaries, and type checking now continues across independent statements/functions while retaining declared binding types after invalid initializers to suppress misleading follow-on errors. The batch API is now suitable for editor diagnostic collection; next focus is stable source identity and machine-readable diagnostics.
 
 - [x] Multi-diagnostic parser recovery instead of stopping at the first syntax error.
-- [ ] Multi-diagnostic type checking where safe to continue.
+- [x] Multi-diagnostic type checking where safe to continue.
 - [ ] Stable file/source identifiers in spans, not only line/column.
 - [ ] Full token ranges for declarations, bindings, types, and control-flow constructs.
 - [ ] Diagnostic labels/notes/fix suggestions.

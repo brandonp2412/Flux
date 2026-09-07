@@ -40,6 +40,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn reports_multiple_type_diagnostics_without_cascading_failed_bindings() {
+    let source = r#"
+fn helper(value: i64) -> i64 {
+    let count: i64 = false
+    print(count)
+    if 42:
+        return value
+    return true
+}
+
+fn main() -> i64 {
+    let label: str = 99
+    return 0
+}
+"#;
+
+    let diagnostics = check_source_all(source).expect_err("independent type errors should batch");
+    assert_eq!(diagnostics.len(), 4);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.stage == DiagnosticStage::Type)
+    );
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("binding: expected i64, got bool")
+    );
+    assert!(
+        diagnostics[1]
+            .message
+            .contains("if condition: expected bool, got i64")
+    );
+    assert!(
+        diagnostics[2]
+            .message
+            .contains("return value 1: expected i64, got bool")
+    );
+    assert!(
+        diagnostics[3]
+            .message
+            .contains("binding: expected str, got i64")
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown binding 'count'"))
+    );
+}
+
+#[test]
 fn reports_token_level_expression_parse_spans() {
     let source = r#"
 fn main() -> i64 {

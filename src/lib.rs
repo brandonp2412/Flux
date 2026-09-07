@@ -23,6 +23,6 @@ pub fn check_source(source: &str) -> Result<(), Diagnostic> {
 
 pub fn check_source_all(source: &str) -> Result<(), Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
-    typecheck::check(&program).map_err(|diagnostic| vec![diagnostic])?;
+    typecheck::check_all(&program)?;
     Ok(())
 }

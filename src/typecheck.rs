@@ -12,17 +12,29 @@ pub struct Signature {
 pub type Signatures = HashMap<String, Signature>;
 
 pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
+    check_all(program).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .next()
+            .expect("check_all always returns at least one diagnostic on failure")
+    })
+}
+
+pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     let mut signatures = HashMap::new();
+    let mut diagnostics = Vec::new();
 
     for function in &program.functions {
         if function.name == "print" {
-            return Err(diag(function.span, "'print' is a built-in function name"));
+            diagnostics.push(diag(function.span, "'print' is a built-in function name"));
+            continue;
         }
         if signatures.contains_key(&function.name) {
-            return Err(diag(
+            diagnostics.push(diag(
                 function.span,
                 &format!("duplicate function '{}'", function.name),
             ));
+            continue;
         }
         signatures.insert(
             function.name.clone(),
@@ -37,36 +49,51 @@ pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
         );
     }
 
-    let Some(main) = signatures.get("main") else {
-        return Err(Diagnostic::global(
+    match signatures.get("main") {
+        None => diagnostics.push(Diagnostic::global(
             DiagnosticStage::Type,
             "program requires fn main() -> i64 { ... }",
-        ));
-    };
-    if !main.params.is_empty() || main.returns != vec![Type::I64] {
-        return Err(Diagnostic::global(
-            DiagnosticStage::Type,
-            "main must have signature fn main() -> i64",
-        ));
+        )),
+        Some(main) if !main.params.is_empty() || main.returns != vec![Type::I64] => {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Type,
+                "main must have signature fn main() -> i64",
+            ));
+        }
+        Some(_) => {}
     }
 
     for function in &program.functions {
-        check_function(function, &signatures)?;
+        check_function_all(function, &signatures, &mut diagnostics);
     }
 
-    Ok(signatures)
+    if diagnostics.is_empty() {
+        Ok(signatures)
+    } else {
+        Err(diagnostics)
+    }
 }
 
-fn check_function(function: &Function, signatures: &Signatures) -> Result<(), Diagnostic> {
+fn check_function_all(
+    function: &Function,
+    signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let mut env = HashMap::new();
     for param in &function.params {
         env.insert(param.name.clone(), param.ty.clone());
     }
 
-    check_block(&function.body, &mut env, &function.returns, signatures)?;
+    check_block_all(
+        &function.body,
+        &mut env,
+        &function.returns,
+        signatures,
+        diagnostics,
+    );
 
     if !function.returns.is_empty() && !block_guarantees_return(&function.body) {
-        return Err(diag(
+        diagnostics.push(diag(
             function.span,
             &format!(
                 "function '{}' can reach the end without returning {}",
@@ -75,123 +102,185 @@ fn check_function(function: &Function, signatures: &Signatures) -> Result<(), Di
             ),
         ));
     }
-
-    Ok(())
 }
 
-fn check_block(
+fn check_block_all(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
     return_types: &[Type],
     signatures: &Signatures,
-) -> Result<(), Diagnostic> {
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let { name, ty, expr } => {
-                if env.contains_key(name) {
-                    return Err(diag(
+                let duplicate = env.contains_key(name);
+                if duplicate {
+                    diagnostics.push(diag(
                         stmt.span,
                         &format!("'{name}' is already defined in this scope"),
                     ));
                 }
-                let actual = type_of_expr(expr, env, signatures)?;
-                require_type(expr.span, ty, &actual, "binding")?;
-                env.insert(name.clone(), ty.clone());
+                match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) = require_type(expr.span, ty, &actual, "binding") {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                if !duplicate {
+                    env.insert(name.clone(), ty.clone());
+                }
             }
             StmtKind::LetDestructure {
                 bindings,
                 expr,
                 else_return,
             } => {
-                let actuals = value_types_of_expr(expr, env, signatures)?;
-                if actuals.len() != bindings.len() {
-                    return Err(diag(
-                        stmt.span,
-                        &format!(
-                            "destructuring expects {} values, expression returns {}",
-                            bindings.len(),
-                            actuals.len()
-                        ),
-                    ));
+                let actuals = match value_types_of_expr(expr, env, signatures) {
+                    Ok(actuals) => Some(actuals),
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+
+                if let Some(actuals) = actuals.as_ref() {
+                    if actuals.len() != bindings.len() {
+                        diagnostics.push(diag(
+                            stmt.span,
+                            &format!(
+                                "destructuring expects {} values, expression returns {}",
+                                bindings.len(),
+                                actuals.len()
+                            ),
+                        ));
+                    }
+                    for (binding, actual) in bindings.iter().zip(actuals) {
+                        if let Err(diagnostic) = require_type(
+                            stmt.span,
+                            &binding.ty,
+                            actual,
+                            &format!("destructured binding '{}'", binding.name),
+                        ) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
                 }
-                for (binding, actual) in bindings.iter().zip(&actuals) {
+
+                for binding in bindings {
                     if env.contains_key(&binding.name) {
-                        return Err(diag(
+                        diagnostics.push(diag(
                             stmt.span,
                             &format!("'{}' is already defined in this scope", binding.name),
                         ));
+                    } else {
+                        env.insert(binding.name.clone(), binding.ty.clone());
                     }
-                    require_type(
-                        stmt.span,
-                        &binding.ty,
-                        actual,
-                        &format!("destructured binding '{}'", binding.name),
-                    )?;
                 }
+
                 if *else_return {
                     if bindings.last().map(|binding| &binding.ty) != Some(&Type::Error) {
-                        return Err(diag(
+                        diagnostics.push(diag(
                             stmt.span,
                             "'else return' requires the final destructured value to have type error",
                         ));
                     }
-                    if actuals.as_slice() != return_types {
-                        return Err(diag(
+                    if let Some(actuals) = actuals.as_ref()
+                        && actuals.as_slice() != return_types
+                    {
+                        diagnostics.push(diag(
                             stmt.span,
                             &format!(
                                 "'else return' can only forward an exact return shape: function returns {}, call returns {}",
                                 return_types_name(return_types),
-                                return_types_name(&actuals)
+                                return_types_name(actuals)
                             ),
                         ));
                     }
                 }
-                for binding in bindings {
-                    env.insert(binding.name.clone(), binding.ty.clone());
-                }
             }
             StmtKind::Return(expressions) => {
                 let actuals = if expressions.len() == 1 {
-                    value_types_of_expr(&expressions[0], env, signatures)?
+                    match value_types_of_expr(&expressions[0], env, signatures) {
+                        Ok(actuals) => Some(actuals),
+                        Err(diagnostic) => {
+                            diagnostics.push(diagnostic);
+                            None
+                        }
+                    }
                 } else {
-                    expressions
-                        .iter()
-                        .map(|expr| type_of_expr(expr, env, signatures))
-                        .collect::<Result<Vec<_>, _>>()?
+                    let mut actuals = Vec::with_capacity(expressions.len());
+                    let mut complete = true;
+                    for expr in expressions {
+                        match type_of_expr(expr, env, signatures) {
+                            Ok(actual) => actuals.push(actual),
+                            Err(diagnostic) => {
+                                diagnostics.push(diagnostic);
+                                complete = false;
+                            }
+                        }
+                    }
+                    complete.then_some(actuals)
                 };
-                if actuals.len() != return_types.len() {
-                    return Err(diag(
-                        stmt.span,
-                        &format!(
-                            "return expects {} values, got {}",
-                            return_types.len(),
-                            actuals.len()
-                        ),
-                    ));
-                }
-                for (index, (actual, expected)) in actuals.iter().zip(return_types).enumerate() {
-                    require_type(
-                        stmt.span,
-                        expected,
-                        actual,
-                        &format!("return value {}", index + 1),
-                    )?;
+
+                if let Some(actuals) = actuals {
+                    if actuals.len() != return_types.len() {
+                        diagnostics.push(diag(
+                            stmt.span,
+                            &format!(
+                                "return expects {} values, got {}",
+                                return_types.len(),
+                                actuals.len()
+                            ),
+                        ));
+                    } else {
+                        for (index, (actual, expected)) in
+                            actuals.iter().zip(return_types).enumerate()
+                        {
+                            if let Err(diagnostic) = require_type(
+                                stmt.span,
+                                expected,
+                                actual,
+                                &format!("return value {}", index + 1),
+                            ) {
+                                diagnostics.push(diagnostic);
+                            }
+                        }
+                    }
                 }
             }
             StmtKind::Expr(expr) => {
-                type_of_expr(expr, env, signatures)?;
+                if let Err(diagnostic) = type_of_expr(expr, env, signatures) {
+                    diagnostics.push(diagnostic);
+                }
             }
             StmtKind::If {
                 cond,
                 body,
                 else_body,
             } => {
-                let cond_type = type_of_expr(cond, env, signatures)?;
-                require_type(cond.span, &Type::Bool, &cond_type, "if condition")?;
+                match type_of_expr(cond, env, signatures) {
+                    Ok(cond_type) => {
+                        if let Err(diagnostic) =
+                            require_type(cond.span, &Type::Bool, &cond_type, "if condition")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
                 let mut then_env = env.clone();
-                check_block(body, &mut then_env, return_types, signatures)?;
+                check_block_all(body, &mut then_env, return_types, signatures, diagnostics);
                 let mut else_env = env.clone();
-                check_block(else_body, &mut else_env, return_types, signatures)?;
+                check_block_all(
+                    else_body,
+                    &mut else_env,
+                    return_types,
+                    signatures,
+                    diagnostics,
+                );
             }
             StmtKind::ForRange {
                 name,
@@ -199,23 +288,41 @@ fn check_block(
                 end,
                 body,
             } => {
-                if env.contains_key(name) {
-                    return Err(diag(
+                let shadows = env.contains_key(name);
+                if shadows {
+                    diagnostics.push(diag(
                         stmt.span,
                         &format!("loop variable '{name}' shadows an existing binding"),
                     ));
                 }
-                let start_type = type_of_expr(start, env, signatures)?;
-                let end_type = type_of_expr(end, env, signatures)?;
-                require_type(start.span, &Type::I64, &start_type, "range start")?;
-                require_type(end.span, &Type::I64, &end_type, "range end")?;
+                match type_of_expr(start, env, signatures) {
+                    Ok(start_type) => {
+                        if let Err(diagnostic) =
+                            require_type(start.span, &Type::I64, &start_type, "range start")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                match type_of_expr(end, env, signatures) {
+                    Ok(end_type) => {
+                        if let Err(diagnostic) =
+                            require_type(end.span, &Type::I64, &end_type, "range end")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
                 let mut nested = env.clone();
-                nested.insert(name.clone(), Type::I64);
-                check_block(body, &mut nested, return_types, signatures)?;
+                if !shadows {
+                    nested.insert(name.clone(), Type::I64);
+                }
+                check_block_all(body, &mut nested, return_types, signatures, diagnostics);
             }
         }
     }
-    Ok(())
 }
 
 pub fn type_of_expr(
