@@ -67,6 +67,43 @@ fn run() -> Result<(), CliError> {
                 )),
             }
         }
+        "format" => {
+            let path = require_source(&args)?;
+            let check_only = match &args[2..] {
+                [] => false,
+                [flag] if flag == "--check" => true,
+                _ => {
+                    return Err(CliError::Message(
+                        "format syntax is 'format <file.flux> [--check]'".to_string(),
+                    ));
+                }
+            };
+            let source = fs::read_to_string(path)
+                .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
+            let formatted = fluxc::formatter::format_source(&source).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
+            if formatted == source {
+                if check_only {
+                    println!("formatted: {}", path.display());
+                }
+                return Ok(());
+            }
+            if check_only {
+                return Err(CliError::Message(format!(
+                    "{} is not canonically formatted",
+                    path.display()
+                )));
+            }
+            fs::write(path, formatted)
+                .map_err(|error| format!("failed to write '{}': {error}", path.display()))?;
+            println!("formatted: {}", path.display());
+            Ok(())
+        }
         "emit-c" => {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
@@ -156,5 +193,5 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux> [--json] | fluxc emit-c <file.flux> [-o file.c] | fluxc build <file.flux> [-o binary]".to_string()
+    "usage: fluxc check <file.flux> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux> [-o file.c] | fluxc build <file.flux> [-o binary]".to_string()
 }

@@ -69,7 +69,7 @@ Implemented on `main`:
 
 The parser and semantic layer must become robust enough that every later subsystem can share the same source model.
 
-Parser recovery synchronizes at function boundaries, and type checking continues across independent statements/functions while suppressing misleading cascades. Diagnostics now carry stable source identity, rich labels/notes/fixes, and JSON transport. Declaration names, parameter/binding types, return types, statement keywords, branch keywords, loop variables, and expressions retain precise spans. Editor consumers can keep parse snapshots keyed by stable source IDs/fingerprints and cheaply reuse unchanged parses. Next focus is the shared semantic query database and deterministic formatter.
+Milestone 1 is complete. Parser recovery synchronizes at function boundaries, type checking batches independent errors while suppressing misleading cascades, diagnostics carry stable source identity plus rich JSON metadata, and all declaration/control-flow/expression syntax retains precise spans. Editor consumers can reuse parse snapshots and query one analyzed semantic database for symbols/signatures. The canonical formatter preserves comments, normalizes indentation/expression spacing, is idempotent, and supports CI check mode. Development can now move into the functional language core.
 
 - [x] Multi-diagnostic parser recovery instead of stopping at the first syntax error.
 - [x] Multi-diagnostic type checking where safe to continue.
@@ -79,7 +79,7 @@ Parser recovery synchronizes at function boundaries, and type checking continues
 - [x] Machine-readable diagnostic output.
 - [x] Incremental parse snapshot API suitable for editor use, with stable source identity, source fingerprints, unchanged-source reuse, and reparsing on edits.
 - [x] Semantic query database shared by compiler and LSP, indexing function/parameter/binding/loop symbols and analyzed signatures from one typed program.
-- [ ] Deterministic formatter and canonical Flux formatting rules.
+- [x] Deterministic comment-preserving formatter and canonical Flux formatting rules, exposed through `fluxc format` and `fluxc format --check`.
 
 # Milestone 2 — Functional language core
 

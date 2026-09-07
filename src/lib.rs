@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod codegen;
 pub mod diagnostic;
+pub mod formatter;
 pub mod parser;
 pub mod semantic;
 pub mod typecheck;
@@ -11,15 +12,13 @@ pub use diagnostic::{
 };
 
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
-    let program = parser::parse(source)?;
-    let signatures = typecheck::check(&program)?;
-    codegen::emit_c(&program, &signatures)
+    compile_to_c_with_source(source, SourceId::UNKNOWN)
 }
 
 pub fn compile_to_c_with_source(source: &str, source_id: SourceId) -> Result<String, Diagnostic> {
-    let program = parser::parse_with_source(source, source_id)?;
-    let signatures = typecheck::check(&program)?;
-    codegen::emit_c(&program, &signatures)
+    let database =
+        semantic::SemanticDatabase::analyze(source, source_id).map_err(first_diagnostic)?;
+    codegen::emit_c(database.program(), database.signatures())
 }
 
 pub fn check_source(source: &str) -> Result<(), Diagnostic> {
@@ -31,15 +30,11 @@ pub fn check_source_with_id(source: &str, source_id: SourceId) -> Result<(), Dia
 }
 
 pub fn check_source_all(source: &str) -> Result<(), Vec<Diagnostic>> {
-    let program = parser::parse_all(source)?;
-    typecheck::check_all(&program)?;
-    Ok(())
+    check_source_all_with_id(source, SourceId::UNKNOWN)
 }
 
 pub fn check_source_all_with_id(source: &str, source_id: SourceId) -> Result<(), Vec<Diagnostic>> {
-    let program = parser::parse_all_with_source(source, source_id)?;
-    typecheck::check_all(&program)?;
-    Ok(())
+    semantic::SemanticDatabase::analyze(source, source_id).map(|_| ())
 }
 
 fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {

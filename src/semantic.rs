@@ -67,6 +67,10 @@ impl SemanticDatabase {
         self.signatures.get(name)
     }
 
+    pub fn signatures(&self) -> &Signatures {
+        &self.signatures
+    }
+
     pub fn symbols(&self) -> &[SemanticSymbol] {
         &self.symbols
     }

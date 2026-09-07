@@ -397,30 +397,30 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     };
     let return_text = ret_src.trim();
     let returns = parse_return_types(return_text, line)?;
-    let return_span = SourceSpan::new(
-        line,
-        input
-            .find(return_text)
-            .map(|offset| offset + 1)
-            .unwrap_or(1),
-        return_text.len(),
-    );
+    let arrow_offset = input
+        .find("->")
+        .expect("function return arrow was already parsed");
+    let after_arrow = &input[arrow_offset + 2..];
+    let return_leading = after_arrow.len() - after_arrow.trim_start().len();
+    let return_column = arrow_offset + 2 + return_leading + 1;
+    let return_span = SourceSpan::new(line, return_column, return_text.len());
     let return_type_spans = return_type_spans(return_text, return_span);
 
     let mut params = Vec::new();
     if !params_src.trim().is_empty() {
-        let params_base = 4 + open + 1;
-        let mut param_offset = 0usize;
-        for raw_param in params_src.split(',') {
-            let Some((raw_name, raw_ty)) = raw_param.split_once(':') else {
+        let params_base_column = 4 + open + 1;
+        for (raw_param, param_offset) in split_top_level_commas_with_offsets(params_src) {
+            let Some(colon_offset) = raw_param.find(':') else {
                 return Err(diag(line, "parameters use 'name: type' syntax"));
             };
-            let param_name = raw_name.trim();
+            let raw_name = &raw_param[..colon_offset];
+            let raw_ty = &raw_param[colon_offset + 1..];
+            let (param_name, name_column) =
+                trim_with_column(raw_name, params_base_column + param_offset);
             validate_identifier(param_name, line)?;
-            let type_text = raw_ty.trim();
+            let (type_text, type_column) =
+                trim_with_column(raw_ty, params_base_column + param_offset + colon_offset + 1);
             let ty = parse_type(type_text, line)?;
-            let name_offset = raw_param.find(param_name).unwrap_or(0);
-            let type_offset = raw_param.find(type_text).unwrap_or(raw_param.len());
             if ty == Type::Void {
                 return Err(diag(line, "parameters cannot have type void"));
             }
@@ -429,19 +429,10 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
             }
             params.push(Param {
                 name: param_name.to_string(),
-                name_span: SourceSpan::new(
-                    line,
-                    params_base + param_offset + name_offset,
-                    param_name.len(),
-                ),
+                name_span: SourceSpan::new(line, name_column, param_name.len()),
                 ty,
-                type_span: SourceSpan::new(
-                    line,
-                    params_base + param_offset + type_offset,
-                    type_text.len(),
-                ),
+                type_span: SourceSpan::new(line, type_column, type_text.len()),
             });
-            param_offset += raw_param.len() + 1;
         }
     }
 
@@ -463,22 +454,13 @@ fn return_type_spans(return_text: &str, return_span: SourceSpan) -> Vec<SourceSp
         return vec![return_span];
     };
 
-    let mut spans = Vec::new();
-    let mut search_from = 0usize;
-    for raw in split_top_level_commas(inner) {
-        let ty = raw.trim();
-        let relative = inner[search_from..]
-            .find(ty)
-            .map(|offset| search_from + offset)
-            .unwrap_or(search_from);
-        spans.push(SourceSpan::new(
-            return_span.line,
-            return_span.column + 1 + relative,
-            ty.len(),
-        ));
-        search_from = relative + ty.len();
-    }
-    spans
+    split_top_level_commas_with_offsets(inner)
+        .into_iter()
+        .map(|(raw, offset)| {
+            let (ty, column) = trim_with_column(raw, return_span.column + 1 + offset);
+            SourceSpan::new(return_span.line, column, ty.len())
+        })
+        .collect()
 }
 
 fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, Diagnostic> {
@@ -510,30 +492,29 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             ));
         } else if line.text.starts_with("for ") && line.text.ends_with(':') {
             let stmt_line = line.number;
-            let inner = line.text[4..line.text.len() - 1].trim();
-            let Some((name_src, range_src)) = inner.split_once(" in ") else {
+            let raw_inner = &line.text[4..line.text.len() - 1];
+            let inner_leading = raw_inner.len() - raw_inner.trim_start().len();
+            let inner = raw_inner.trim();
+            let inner_column = line.indent + 1 + 4 + inner_leading;
+            let Some(in_offset) = inner.find(" in ") else {
                 return Err(diag(stmt_line, "for loops use 'for name in start..end:'"));
             };
-            let name = name_src.trim();
+            let raw_name = &inner[..in_offset];
+            let raw_range = &inner[in_offset + 4..];
+            let (name, name_column) = trim_with_column(raw_name, inner_column);
             validate_identifier(name, stmt_line)?;
-            let Some((start_src, end_src)) = split_range(range_src) else {
+            let (range_src, range_column) =
+                trim_with_column(raw_range, inner_column + in_offset + 4);
+            let Some((start_raw, end_raw, range_split)) = split_range_with_offset(range_src) else {
                 return Err(diag(
                     stmt_line,
                     "for loops currently require an exclusive range 'start..end'",
                 ));
             };
-            let start_src = start_src.trim();
-            let end_src = end_src.trim();
-            let start = parse_expression_at(
-                start_src,
-                stmt_line,
-                expression_column(&line.text, start_src, line.indent + 1),
-            )?;
-            let end = parse_expression_at(
-                end_src,
-                stmt_line,
-                expression_column(&line.text, end_src, line.indent + 1),
-            )?;
+            let (start_src, start_column) = trim_with_column(start_raw, range_column);
+            let (end_src, end_column) = trim_with_column(end_raw, range_column + range_split + 2);
+            let start = parse_expression_at(start_src, stmt_line, start_column)?;
+            let end = parse_expression_at(end_src, stmt_line, end_column)?;
             *index += 1;
             let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
             Stmt {
@@ -542,11 +523,7 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                 keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 3),
                 kind: StmtKind::ForRange {
                     name: name.to_string(),
-                    name_span: SourceSpan::new(
-                        stmt_line,
-                        expression_column(&line.text, name, line.indent + 1),
-                        name.len(),
-                    ),
+                    name_span: SourceSpan::new(stmt_line, name_column, name.len()),
                     start,
                     end,
                     body: nested,
@@ -670,17 +647,20 @@ fn parse_nested_block(
 fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnostic> {
     let line = span.line;
     if let Some(rest) = input.strip_prefix("let ") {
-        let Some((binding_src, raw_expr_src)) = rest.split_once('=') else {
+        let Some(eq_offset) = rest.find('=') else {
             return Err(diag(line, "let bindings require '= expression'"));
         };
-        let raw_expr_src = raw_expr_src.trim();
+        let binding_src = &rest[..eq_offset];
+        let raw_expr_src = &rest[eq_offset + 1..];
+        let raw_expr_column = span.column + 4 + eq_offset + 1;
+        let (trimmed_expr, expr_column) = trim_with_column(raw_expr_src, raw_expr_column);
         let (expr_src, else_return) =
-            if let Some(expr_src) = raw_expr_src.strip_suffix(" else return") {
+            if let Some(expr_src) = trimmed_expr.strip_suffix(" else return") {
                 (expr_src.trim_end(), true)
             } else {
-                (raw_expr_src, false)
+                (trimmed_expr, false)
             };
-        let raw_bindings = split_top_level_commas(binding_src);
+        let raw_bindings = split_top_level_commas_with_offsets(binding_src);
         if raw_bindings.len() == 1 {
             if else_return {
                 return Err(diag(
@@ -688,17 +668,11 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                     "'else return' requires a multi-value destructuring binding",
                 ));
             }
-            let raw_binding = raw_bindings[0].trim();
-            let binding = parse_binding(
-                raw_binding,
-                line,
-                expression_column(input, raw_binding, span.column),
-            )?;
-            let expr = parse_expression_at(
-                expr_src,
-                line,
-                expression_column(input, expr_src, span.column),
-            )?;
+            let (raw_binding, binding_offset) = raw_bindings[0];
+            let (raw_binding, binding_column) =
+                trim_with_column(raw_binding, span.column + 4 + binding_offset);
+            let binding = parse_binding(raw_binding, line, binding_column)?;
+            let expr = parse_expression_at(expr_src, line, expr_column)?;
             return Ok(Stmt {
                 line,
                 span,
@@ -714,13 +688,10 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         }
 
         let mut bindings = Vec::with_capacity(raw_bindings.len());
-        for raw_binding in raw_bindings {
-            let raw_binding = raw_binding.trim();
-            let binding = parse_binding(
-                raw_binding,
-                line,
-                expression_column(input, raw_binding, span.column),
-            )?;
+        for (raw_binding, binding_offset) in raw_bindings {
+            let (raw_binding, binding_column) =
+                trim_with_column(raw_binding, span.column + 4 + binding_offset);
+            let binding = parse_binding(raw_binding, line, binding_column)?;
             if bindings
                 .iter()
                 .any(|existing: &Binding| existing.name == binding.name)
@@ -732,11 +703,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             }
             bindings.push(binding);
         }
-        let expr = parse_expression_at(
-            expr_src,
-            line,
-            expression_column(input, expr_src, span.column),
-        )?;
+        let expr = parse_expression_at(expr_src, line, expr_column)?;
         return Ok(Stmt {
             line,
             span,
@@ -758,11 +725,12 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         });
     }
     if let Some(expr_src) = input.strip_prefix("return ") {
-        let expressions = split_top_level_commas(expr_src)
+        let expression_base_column = span.column + 7;
+        let expressions = split_top_level_commas_with_offsets(expr_src)
             .into_iter()
-            .map(|part| {
-                let part = part.trim();
-                parse_expression_at(part, line, expression_column(input, part, span.column))
+            .map(|(raw_part, offset)| {
+                let (part, column) = trim_with_column(raw_part, expression_base_column + offset);
+                parse_expression_at(part, line, column)
             })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(Stmt {
@@ -773,37 +741,36 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         });
     }
 
+    let expr = parse_expression_at(input, line, span.column)?;
     Ok(Stmt {
         line,
         span,
-        keyword_span: SourceSpan::new(line, span.column, 0),
-        kind: StmtKind::Expr(parse_expression_at(input, line, span.column)?),
+        keyword_span: expr.span,
+        kind: StmtKind::Expr(expr),
     })
 }
 
 fn parse_binding(input: &str, line: usize, column: usize) -> Result<Binding, Diagnostic> {
-    let Some((name_src, ty_src)) = input.split_once(':') else {
+    let Some(colon_offset) = input.find(':') else {
         return Err(diag(
             line,
             "strict bindings require an explicit type: 'let name: type = value'",
         ));
     };
-    let name = name_src.trim();
+    let name_src = &input[..colon_offset];
+    let ty_src = &input[colon_offset + 1..];
+    let (name, name_column) = trim_with_column(name_src, column);
     validate_identifier(name, line)?;
-    let type_text = ty_src.trim();
+    let (type_text, type_column) = trim_with_column(ty_src, column + colon_offset + 1);
     let ty = parse_type(type_text, line)?;
     if ty == Type::Void {
         return Err(diag(line, "variables cannot have type void"));
     }
     Ok(Binding {
         name: name.to_string(),
-        name_span: SourceSpan::new(line, column + name_src.find(name).unwrap_or(0), name.len()),
+        name_span: SourceSpan::new(line, name_column, name.len()),
         ty,
-        type_span: SourceSpan::new(
-            line,
-            column + input.find(type_text).unwrap_or(0),
-            type_text.len(),
-        ),
+        type_span: SourceSpan::new(line, type_column, type_text.len()),
     })
 }
 
@@ -812,6 +779,11 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
         .into_iter()
         .map(|(part, _)| part)
         .collect()
+}
+
+fn trim_with_column(input: &str, column: usize) -> (&str, usize) {
+    let leading = input.len() - input.trim_start().len();
+    (input.trim(), column + leading)
 }
 
 fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
@@ -852,7 +824,7 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
     parts
 }
 
-fn split_range(input: &str) -> Option<(&str, &str)> {
+fn split_range_with_offset(input: &str) -> Option<(&str, &str, usize)> {
     let bytes = input.as_bytes();
     let mut in_string = false;
     let mut escaped = false;
@@ -880,7 +852,7 @@ fn split_range(input: &str) -> Option<(&str, &str)> {
                 b'(' => depth += 1,
                 b')' => depth = depth.saturating_sub(1),
                 b'.' if depth == 0 && bytes[index + 1] == b'.' => {
-                    return Some((&input[..index], &input[index + 2..]));
+                    return Some((&input[..index], &input[index + 2..], index));
                 }
                 _ => {}
             }

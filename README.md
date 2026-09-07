@@ -28,7 +28,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
-- CLI commands for checking, emitting C, and building a native executable;
+- CLI commands for checking, deterministic formatting, emitting C, and building a native executable;
 - compiler tests and a runnable example.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
@@ -59,6 +59,13 @@ Check without producing a binary:
 
 ```sh
 cargo run -- check examples/hello.flux
+```
+
+Format source deterministically, or verify canonical formatting in CI:
+
+```sh
+cargo run -- format examples/hello.flux
+cargo run -- format examples/hello.flux --check
 ```
 
 Tooling/CI can request structured diagnostics without parsing human text:

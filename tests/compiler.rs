@@ -148,6 +148,18 @@ fn main() -> i64 {
 }
 
 #[test]
+fn formatter_is_deterministic_and_preserves_comments() {
+    let source = "fn add(a:i64,b: i64)->i64 { # header\n  let value:i64=a+b # sum\n  if value>0:\n      return value\n  else:\n      return 0\n}\n\n\nfn main()->i64 {\n    return add(1,2)\n}\n";
+    let expected = "fn add(a: i64, b: i64) -> i64 { # header\n    let value: i64 = a + b # sum\n    if value > 0:\n        return value\n    else:\n        return 0\n}\n\nfn main() -> i64 {\n    return add(1, 2)\n}\n";
+
+    let formatted = fluxc::formatter::format_source(source).expect("source should format");
+    assert_eq!(formatted, expected);
+    let second =
+        fluxc::formatter::format_source(&formatted).expect("formatted source should parse");
+    assert_eq!(second, formatted, "formatting should be idempotent");
+}
+
+#[test]
 fn semantic_database_shares_symbols_and_signatures_for_editor_queries() {
     let source = "fn double(value: i64) -> i64 {\n    let result: i64 = value * 2\n    return result\n}\n\nfn main() -> i64 {\n    for i in 0..2:\n        print(double(i))\n    return 0\n}\n";
     let source_id = SourceId::new(101);
