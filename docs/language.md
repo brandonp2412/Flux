@@ -10,6 +10,8 @@ Performance policy: abstractions should compile away where practical, optimizati
 
 Safety policy: safe Flux must prevent use-after-free, dangling references, data races caused by ordinary safe language constructs, and type confusion. Unsafe operations, if introduced, must be syntactically explicit and narrowly scoped.
 
+Abstraction policy: Flux is function-first. Programs are composed from data, functions, and interfaces/capabilities. Flux does not use classes, inheritance, mixins, widget subclasses, controller hierarchies, or constructor-oriented architecture as its abstraction model.
+
 ## Syntax
 
 Functions use braces:
@@ -95,6 +97,14 @@ Reusable container and algorithm design will therefore rely on a combination of:
 - concrete application types.
 
 The compiler implementation may use generic implementation languages internally; that does not expose generics to Flux programs.
+
+## Dart-inspired ergonomics direction
+
+Flux should borrow Dart's strongest expression and collection ergonomics without importing Dart's class-oriented object model. Planned features include optional types, null/optional-aware access and indexing, coalescing, `first`/`last` and related sequence conveniences, cascades that evaluate their target once, collection spreads and collection-level `if`/`for`, records, patterns/destructuring, named/default parameters, concise functions, string interpolation, and async/generator ergonomics.
+
+These features must remain compatible with Flux's no-generics rule, explicit recoverable-error returns, ownership model, and function/interface architecture. Property-like conveniences on compiler-known collection types are syntax sugar and do not imply an object hierarchy.
+
+The detailed adoption/rejection checklist lives in `ROADMAP.MD`.
 
 ## Memory model direction
 
@@ -191,7 +201,7 @@ The UI subsystem is intentionally downstream of the core type/ownership/IR work:
 
 ## Tooling contract
 
-LSP, debugger, and profiler support are mandatory product features.
+LSP, debugger, and profiler support are mandatory product features. Development hot reload is also a first-class requirement: `flux run` should watch source files automatically and apply compatible changes on file save, preserving compatible state and falling back to a controlled restart only when necessary. The normal workflow must not require a manual hot-reload key.
 
 Compiler failures are represented as structured diagnostics rather than raw strings. A diagnostic records its compilation stage (`parse`, `type`, or `codegen`), message, and an optional source span. Function and statement AST nodes retain source spans, while expression nodes now carry token-level line/column/length spans assembled through unary, binary, call, and parenthesized expressions. Type errors for bindings, conditions, and ranges use those expression spans directly. This diagnostic model is intended to be reused by editor tooling instead of reparsing CLI text.
 

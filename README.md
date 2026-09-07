@@ -8,6 +8,7 @@ Flux is an experimental compiled language for building native applications and s
 - Function bodies are delimited by `{}`.
 - Control-flow bodies use indentation (`if`, `for`, etc.).
 - Strict static typing; implicit type coercions are deliberately minimized.
+- Function-first architecture built from data, functions, and interfaces rather than classes, inheritance, mixins, or widget/controller object hierarchies.
 - No generics in the Flux language.
 - No exception / try-catch model. Recoverable failures are represented explicitly in return values.
 - Rust-like memory-safety goals: ownership, borrowing, lifetime validation, and no unchecked dangling references in safe Flux.
@@ -114,14 +115,8 @@ fn main() -> i64 {
 }
 ```
 
-## Near-term roadmap
+## Roadmap
 
-1. Add multi-diagnostic recovery for editor tooling now that expression diagnostics retain token-level spans.
-2. Add structs, ownership moves, borrows, and the first borrow checker.
-3. Introduce Flux typed IR and a direct optimizing native backend.
-4. Add packages/modules and stable ABI rules.
-5. Build the LSP on the same parser/type database as the compiler.
-6. Define debug metadata and profiler hooks before optimizing them away.
-7. Implement the flat UI grammar and grid layout engine after the core ownership/IR model is stable.
+`ROADMAP.MD` is the source of truth for Flux development and is updated at the start of every development session. It covers the complete language/compiler plan, Dart-inspired non-OOP ergonomics, ownership, native UI, Android/iOS/desktop/web/server targets, automatic save-triggered hot reload, testing, LSP, debugger, profiler, packaging, and Flux 1.0 criteria.
 
-See `docs/language.md` for the evolving language specification.
+See `ROADMAP.MD` for planned work and `docs/language.md` for the evolving language specification.
