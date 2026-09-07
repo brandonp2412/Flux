@@ -148,6 +148,106 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_struct_destructuring_with_inferred_field_types_and_single_evaluation() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+
+type Person = User
+
+fn make_user() -> User {
+    return User { name: "Ada", age: 42 }
+}
+
+fn main() -> i64 {
+    let Person { name, age: years } = make_user()
+    print(name)
+    print(years)
+    return 0
+}
+"#;
+
+    check_source(source).expect("struct destructuring should typecheck");
+    let generated = compile_to_c(source).expect("struct destructuring should lower natively");
+    assert_eq!(generated.matches("= make_user();").count(), 1);
+    assert!(generated.contains("flux__field_name"));
+    assert!(generated.contains("flux__field_age"));
+}
+
+#[test]
+fn rejects_invalid_struct_destructuring_patterns() {
+    let unknown_field = r#"
+struct User {
+    name: str
+}
+fn main() -> i64 {
+    let user: User = User { name: "Ada" }
+    let User { nope } = user
+    return 0
+}
+"#;
+    let error = check_source(unknown_field).expect_err("unknown pattern field should fail");
+    assert!(error.message.contains("has no field 'nope'"));
+
+    let wrong_value = r#"
+struct User {
+    name: str
+}
+struct Other {
+    name: str
+}
+fn main() -> i64 {
+    let other: Other = Other { name: "Ada" }
+    let User { name } = other
+    return 0
+}
+"#;
+    let error = check_source(wrong_value).expect_err("wrong pattern value type should fail");
+    assert!(
+        error
+            .message
+            .contains("struct destructuring: expected User, got Other")
+    );
+
+    let shadow = r#"
+struct User {
+    name: str
+}
+fn main() -> i64 {
+    let name: str = "existing"
+    let user: User = User { name: "Ada" }
+    let User { name } = user
+    return 0
+}
+"#;
+    let error = check_source(shadow).expect_err("pattern binding shadow should fail");
+    assert!(
+        error
+            .message
+            .contains("'name' is already defined in this scope")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_struct_destructuring() {
+    let source = "struct User {\n name:str\n age:i64\n}\nfn main()->i64 {\n let user:User=User{name:\"Ada\",age:42}\n let User{name,age: years}=user\n print(name)\n print(years)\n return 0\n}\n";
+    let expected = "struct User {\n    name: str\n    age: i64\n}\nfn main() -> i64 {\n    let user: User = User { name: \"Ada\", age: 42 }\n    let User { name, age: years } = user\n    print(name)\n    print(years)\n    return 0\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("struct pattern should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(702))
+        .expect("struct pattern should analyze");
+    let years = database
+        .symbols_named("years")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("renamed struct pattern binding should be indexed");
+    assert_eq!(years.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, years.span), "years");
+}
+
+#[test]
 fn accepts_exhaustive_enum_match_with_typed_payload_bindings() {
     let source = r#"
 enum Outcome {

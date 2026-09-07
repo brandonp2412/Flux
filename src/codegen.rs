@@ -171,6 +171,43 @@ fn emit_block(
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                 }
             }
+            StmtKind::LetStructDestructure { fields, expr, .. } => {
+                let value = emit_expr(expr, env, signatures)?;
+                let Type::Named(struct_name) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "struct destructuring code generation requires a struct value",
+                    ));
+                };
+                let definition = signatures.struct_type(struct_name).ok_or_else(|| {
+                    diag(
+                        stmt.span,
+                        "struct destructuring code generation requires a struct value",
+                    )
+                })?;
+                let temp = format!("flux__destructure_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {temp} = {};\n",
+                    c_type(&value.ty, signatures),
+                    value.code
+                ));
+                for field in fields {
+                    if field.binding.name == "_" {
+                        continue;
+                    }
+                    let field_signature = definition
+                        .field(&field.field)
+                        .expect("type checking guarantees struct pattern fields exist");
+                    out.push_str(&format!(
+                        "{pad}{} {} = {temp}.{};\n",
+                        c_type(&field_signature.ty, signatures),
+                        field.binding.name,
+                        field_c_name(&field.field)
+                    ));
+                    env.insert(field.binding.name.clone(), field_signature.ty.clone());
+                }
+            }
             StmtKind::Return(values) if values.is_empty() => {
                 out.push_str(&format!("{pad}return;\n"));
             }
@@ -622,7 +659,9 @@ fn collect_update_helpers_from_block(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { expr, .. } | StmtKind::LetDestructure { expr, .. } => {
+            StmtKind::Let { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. } => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
             }
             StmtKind::Return(values) => {

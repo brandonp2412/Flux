@@ -167,6 +167,12 @@ pub enum StmtKind {
         expr: Expr,
         else_return: bool,
     },
+    LetStructDestructure {
+        struct_name: String,
+        struct_span: SourceSpan,
+        fields: Vec<StructPatternField>,
+        expr: Expr,
+    },
     Return(Vec<Expr>),
     Expr(Expr),
     If {
@@ -204,6 +210,13 @@ pub struct MatchArm {
 pub struct PatternBinding {
     pub name: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructPatternField {
+    pub field: String,
+    pub field_span: SourceSpan,
+    pub binding: PatternBinding,
 }
 
 #[derive(Debug, Clone)]

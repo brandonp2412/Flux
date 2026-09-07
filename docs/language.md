@@ -64,6 +64,14 @@ Struct literals must provide each declared field exactly once with the declared 
 
 Struct values lower to native value structs in the bootstrap C backend. Functional updates use `Type { ..base, field: value }`. The base may be any expression, is evaluated exactly once, and is copied by value before the listed fields are replaced. The bootstrap backend lowers update shapes through generated typed inline helpers rather than relying on non-standard C expression extensions.
 
+Structs can also be destructured into inferred, statically typed field bindings:
+
+```flux
+let User { name, age: years } = load_user()
+```
+
+Shorthand fields bind to the same local name; `field: local` renames the binding and `field: _` ignores a field. The pattern may select only the fields it needs. The source expression is evaluated exactly once, aliases of the struct type are accepted, unknown fields and wrong source types are compile-time errors, and pattern bindings may not silently shadow an existing local.
+
 ## Error handling
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
@@ -103,6 +111,25 @@ fn load_config(path: str) -> (str, error) {
 ```
 
 This form is intentionally narrow. The final destructured value must have type `error`, and the call's full multi-value return shape must exactly match the enclosing function. The call is evaluated once. If the final error value is non-`nil`, the exact multi-value result is returned immediately; otherwise the values are destructured and execution continues. This is explicit control flow rather than exception propagation.
+
+Struct values can also be destructured by field. Field types are inferred from the struct declaration, fields may be renamed, and `_` may ignore a field without creating a binding:
+
+```flux
+struct User {
+    name: str
+    age: i64
+}
+
+fn main() -> i64 {
+    let user: User = User { name: "Ada", age: 42 }
+    let User { name, age: years } = user
+    print(name)
+    print(years)
+    return 0
+}
+```
+
+Struct destructuring is statically checked against the named struct type, rejects unknown/duplicate fields and duplicate local bindings, and evaluates the source expression exactly once before projecting fields. Concrete type aliases may be used as the pattern type because aliases are transparent at runtime.
 
 ## Closed enums and tagged unions
 

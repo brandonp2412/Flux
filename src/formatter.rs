@@ -153,6 +153,31 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format!("{pad}let {bindings} = {}{suffix}", format_expr(expr, 0)),
                 );
             }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                ..
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        if field.field == field.binding.name {
+                            field.field.clone()
+                        } else {
+                            format!("{}: {}", field.field, field.binding.name)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}let {struct_name} {{ {fields} }} = {}",
+                        format_expr(expr, 0)
+                    ),
+                );
+            }
             StmtKind::Return(values) => {
                 if values.is_empty() {
                     lines.insert(stmt.line, format!("{pad}return"));

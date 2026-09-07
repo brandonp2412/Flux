@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
     MatchArm, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
-    StructLiteralField, Type, TypeAlias, UnaryOp,
+    StructLiteralField, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -306,6 +306,19 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 for binding in bindings {
                     binding.name_span = binding.name_span.with_source(source_id);
                     binding.type_span = binding.type_span.with_source(source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::LetStructDestructure {
+                struct_span,
+                fields,
+                expr,
+                ..
+            } => {
+                *struct_span = struct_span.with_source(source_id);
+                for field in fields {
+                    field.field_span = field.field_span.with_source(source_id);
+                    field.binding.span = field.binding.span.with_source(source_id);
                 }
                 attach_expr_source(expr, source_id);
             }
@@ -1145,6 +1158,29 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             } else {
                 (trimmed_expr, false)
             };
+        if let Some((struct_name, struct_span, fields)) =
+            parse_struct_destructure_pattern(binding_src, line, span.column + 4)?
+        {
+            if else_return {
+                return Err(diag(
+                    line,
+                    "'else return' is only valid on multi-value call destructuring",
+                ));
+            }
+            let expr = parse_expression_at(expr_src, line, expr_column)?;
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetStructDestructure {
+                    struct_name,
+                    struct_span,
+                    fields,
+                    expr,
+                },
+            });
+        }
+
         let raw_bindings = split_top_level_commas_with_offsets(binding_src);
         if raw_bindings.len() == 1 {
             if else_return {
@@ -1233,6 +1269,93 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         keyword_span: expr.span,
         kind: StmtKind::Expr(expr),
     })
+}
+
+fn parse_struct_destructure_pattern(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<Option<(String, SourceSpan, Vec<StructPatternField>)>, Diagnostic> {
+    let trimmed = input.trim();
+    let leading = input.len() - input.trim_start().len();
+    let pattern_column = column + leading;
+    let Some(open_offset) = trimmed.find('{') else {
+        return Ok(None);
+    };
+    let Some(inner) = trimmed.strip_suffix('}') else {
+        return Ok(None);
+    };
+    let struct_name = trimmed[..open_offset].trim();
+    if struct_name.is_empty() {
+        return Ok(None);
+    }
+    validate_identifier(struct_name, line)?;
+    let struct_offset = trimmed[..open_offset]
+        .find(struct_name)
+        .expect("trimmed struct pattern contains its name");
+    let struct_span = SourceSpan::new(line, pattern_column + struct_offset, struct_name.len());
+    let inner = &inner[open_offset + 1..];
+    if inner.trim().is_empty() {
+        return Err(diag(
+            line,
+            "struct destructuring requires at least one field",
+        ));
+    }
+
+    let mut fields = Vec::new();
+    for (raw_field, offset) in split_top_level_commas_with_offsets(inner) {
+        let field_column = pattern_column + open_offset + 1 + offset;
+        let (entry, entry_column) = trim_with_column(raw_field, field_column);
+        if entry.is_empty() {
+            return Err(diag(
+                line,
+                "struct destructuring contains an empty field pattern",
+            ));
+        }
+        let (field_name, field_name_column, binding_name, binding_column) =
+            if let Some(colon_offset) = entry.find(':') {
+                let (field_name, field_name_column) =
+                    trim_with_column(&entry[..colon_offset], entry_column);
+                let (binding_name, binding_column) =
+                    trim_with_column(&entry[colon_offset + 1..], entry_column + colon_offset + 1);
+                (field_name, field_name_column, binding_name, binding_column)
+            } else {
+                (entry, entry_column, entry, entry_column)
+            };
+        validate_identifier(field_name, line)?;
+        if binding_name != "_" {
+            validate_identifier(binding_name, line)?;
+        }
+        if fields
+            .iter()
+            .any(|existing: &StructPatternField| existing.field == field_name)
+        {
+            return Err(diag(
+                line,
+                &format!("duplicate struct pattern field '{field_name}'"),
+            ));
+        }
+        if binding_name != "_"
+            && fields
+                .iter()
+                .any(|existing: &StructPatternField| existing.binding.name == binding_name)
+        {
+            return Err(diag(
+                line,
+                &format!("duplicate struct pattern binding '{binding_name}'"),
+            ));
+        }
+        fields.push(StructPatternField {
+            field: field_name.to_string(),
+            field_span: SourceSpan::new(line, field_name_column, field_name.len()),
+            binding: PatternBinding {
+                name: binding_name.to_string(),
+                span: SourceSpan::new(line, binding_column, binding_name.len()),
+            },
+        });
+    }
+
+    Ok(Some((struct_name.to_string(), struct_span, fields)))
 }
 
 fn parse_binding(input: &str, line: usize, column: usize) -> Result<Binding, Diagnostic> {

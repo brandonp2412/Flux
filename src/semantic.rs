@@ -179,6 +179,32 @@ fn collect_block_symbols(
                     });
                 }
             }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                ..
+            } => {
+                let definition = signatures.canonical_type(&Type::Named(struct_name.clone()));
+                let concrete_name = match definition {
+                    Type::Named(name) => name,
+                    _ => struct_name.clone(),
+                };
+                for field in fields {
+                    if field.binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures
+                        .struct_type(&concrete_name)
+                        .and_then(|definition| definition.field(&field.field))
+                        .map(|field| field.ty.clone());
+                    symbols.push(SemanticSymbol {
+                        name: field.binding.name.clone(),
+                        kind: SymbolKind::PatternBinding,
+                        ty,
+                        span: field.binding.span,
+                    });
+                }
+            }
             StmtKind::If {
                 body, else_body, ..
             } => {

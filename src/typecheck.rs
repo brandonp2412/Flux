@@ -613,6 +613,64 @@ fn check_block_all(
                     }
                 }
             }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                struct_span,
+                fields,
+                expr,
+            } => {
+                let pattern_ty = signatures.canonical_type(&Type::Named(struct_name.clone()));
+                let Type::Named(concrete_name) = &pattern_ty else {
+                    diagnostics.push(diag(
+                        *struct_span,
+                        &format!("struct pattern '{struct_name}' does not name a struct type"),
+                    ));
+                    continue;
+                };
+                let Some(definition) = signatures.struct_type(concrete_name) else {
+                    diagnostics.push(diag(
+                        *struct_span,
+                        &format!("struct pattern '{struct_name}' does not name a struct type"),
+                    ));
+                    continue;
+                };
+                match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) =
+                            require_type(expr.span, &pattern_ty, &actual, "struct destructuring")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                for field in fields {
+                    let Some(field_signature) = definition.field(&field.field) else {
+                        diagnostics.push(
+                            diag(
+                                field.field_span,
+                                &format!("struct '{concrete_name}' has no field '{}'", field.field),
+                            )
+                            .with_label(
+                                definition.span,
+                                format!("'{concrete_name}' is declared here"),
+                            ),
+                        );
+                        continue;
+                    };
+                    if field.binding.name == "_" {
+                        continue;
+                    }
+                    if env.contains_key(&field.binding.name) {
+                        diagnostics.push(diag(
+                            field.binding.span,
+                            &format!("'{}' is already defined in this scope", field.binding.name),
+                        ));
+                    } else {
+                        env.insert(field.binding.name.clone(), field_signature.ty.clone());
+                    }
+                }
+            }
             StmtKind::Return(expressions) => {
                 let actuals = if expressions.len() == 1 {
                     match value_types_of_expr(&expressions[0], env, signatures) {
@@ -1158,6 +1216,7 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::Match { .. }
             | StmtKind::Let { .. }
             | StmtKind::LetDestructure { .. }
+            | StmtKind::LetStructDestructure { .. }
             | StmtKind::Expr(_) => {}
         }
     }
