@@ -47,25 +47,28 @@ The bootstrap compiler intentionally performs no implicit `bool`/integer/string 
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
 
-The intended model is explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. The target syntax is:
+The model uses explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. Multi-value returns and typed destructuring are implemented in the bootstrap compiler:
 
 ```flux
-fn read_config(path: str) -> (Config, error?) {
-    # ...
+fn divide(value: i64, by: i64) -> (i64, bool) {
+    if by == 0:
+        return 0, false
+    return value / by, true
 }
 
 fn main() -> i64 {
-    let config: Config, err: error? = read_config("app.conf")
-    if err != nil:
-        print(err.message)
-        return 1
+    let result: i64, ok: bool = divide(84, 2)
+    if ok:
+        print(result)
     return 0
 }
 ```
 
-`error?` is a nullable built-in error reference/value, not a generic `Result<T, E>`. Flux has no generics, so the language must not depend on generic result containers for ordinary failure handling.
+Multi-values are deliberately not general-purpose tuple values. A function returning multiple values must be consumed by a destructuring binding, and every binding type is checked positionally at compile time. This keeps the feature narrow, predictable, and easy to lower efficiently.
 
-The exact multi-binding and propagation shorthand remain to be implemented. A future shorthand may reduce repetitive error forwarding, but it must still compile to explicit control flow rather than stack unwinding.
+The next error-handling step is a built-in nullable error value/type, conceptually allowing APIs such as `fn read_config(path: str) -> (str, error?)`. `error?` will not be a generic `Result<T, E>`; Flux has no generics, so ordinary failure handling must not depend on generic result containers.
+
+A future propagation shorthand may reduce repetitive error forwarding, but it must still compile to explicit control flow rather than stack unwinding.
 
 ## Generics
 

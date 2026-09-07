@@ -21,6 +21,24 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Stri
     out.push_str("}\n\n");
 
     for function in &program.functions {
+        if function.returns.len() > 1 {
+            let tag = multi_return_struct_name(&function.name);
+            out.push_str(&format!("struct {tag} {{\n"));
+            for (index, ty) in function.returns.iter().enumerate() {
+                out.push_str(&format!("    {} v{index};\n", c_type(ty)));
+            }
+            out.push_str("};\n");
+        }
+    }
+    if program
+        .functions
+        .iter()
+        .any(|function| function.returns.len() > 1)
+    {
+        out.push('\n');
+    }
+
+    for function in &program.functions {
         out.push_str(&function_prototype(function));
         out.push_str(";\n");
     }
@@ -39,7 +57,7 @@ fn function_prototype(function: &Function) -> String {
     let ret = if function.name == "main" {
         "int".to_string()
     } else {
-        c_type(&function.ret).to_string()
+        c_function_return_type(function)
     };
     let params = if function.params.is_empty() {
         "void".to_string()
@@ -66,7 +84,15 @@ fn emit_function(
     for param in &function.params {
         env.insert(param.name.clone(), param.ty.clone());
     }
-    emit_block(out, &function.body, 1, &mut env, signatures, temp_counter)?;
+    emit_block(
+        out,
+        &function.body,
+        1,
+        &mut env,
+        signatures,
+        temp_counter,
+        function,
+    )?;
     out.push_str("}\n");
     Ok(())
 }
@@ -78,6 +104,7 @@ fn emit_block(
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    current_function: &Function,
 ) -> Result<(), String> {
     for stmt in body {
         let pad = "    ".repeat(depth);
@@ -87,10 +114,37 @@ fn emit_block(
                 out.push_str(&format!("{pad}{} {name} = {};\n", c_type(ty), value.code));
                 env.insert(name.clone(), ty.clone());
             }
-            StmtKind::Return(None) => out.push_str(&format!("{pad}return;\n")),
-            StmtKind::Return(Some(expr)) => {
-                let value = emit_expr(expr, env, signatures)?;
+            StmtKind::LetDestructure { bindings, expr } => {
+                let (value, tag) = emit_multi_expr(expr, env, signatures)?;
+                let temp = format!("flux__multi_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                for (index, binding) in bindings.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{pad}{} {} = {temp}.v{index};\n",
+                        c_type(&binding.ty),
+                        binding.name
+                    ));
+                    env.insert(binding.name.clone(), binding.ty.clone());
+                }
+            }
+            StmtKind::Return(values) if values.is_empty() => {
+                out.push_str(&format!("{pad}return;\n"));
+            }
+            StmtKind::Return(values) if values.len() == 1 => {
+                let value = emit_expr(&values[0], env, signatures)?;
                 out.push_str(&format!("{pad}return {};\n", value.code));
+            }
+            StmtKind::Return(values) => {
+                let tag = multi_return_struct_name(&current_function.name);
+                let temp = format!("flux__return_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!("{pad}struct {tag} {temp};\n"));
+                for (index, expr) in values.iter().enumerate() {
+                    let value = emit_expr(expr, env, signatures)?;
+                    out.push_str(&format!("{pad}{temp}.v{index} = {};\n", value.code));
+                }
+                out.push_str(&format!("{pad}return {temp};\n"));
             }
             StmtKind::Expr(expr) => {
                 let value = emit_expr(expr, env, signatures)?;
@@ -98,9 +152,17 @@ fn emit_block(
             }
             StmtKind::If { cond, body } => {
                 let cond = emit_expr(cond, env, signatures)?;
-                out.push_str(&format!("{pad}if ({}) {{\n", cond.code));
+                out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
                 let mut nested = env.clone();
-                emit_block(out, body, depth + 1, &mut nested, signatures, temp_counter)?;
+                emit_block(
+                    out,
+                    body,
+                    depth + 1,
+                    &mut nested,
+                    signatures,
+                    temp_counter,
+                    current_function,
+                )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::ForRange {
@@ -111,7 +173,7 @@ fn emit_block(
             } => {
                 let start = emit_expr(start, env, signatures)?;
                 let end = emit_expr(end, env, signatures)?;
-                let temp = format!("__flux_end_{}", *temp_counter);
+                let temp = format!("flux__end_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}for (int64_t {name} = {}, {temp} = {}; {name} < {temp}; ++{name}) {{\n",
@@ -119,7 +181,15 @@ fn emit_block(
                 ));
                 let mut nested = env.clone();
                 nested.insert(name.clone(), Type::I64);
-                emit_block(out, body, depth + 1, &mut nested, signatures, temp_counter)?;
+                emit_block(
+                    out,
+                    body,
+                    depth + 1,
+                    &mut nested,
+                    signatures,
+                    temp_counter,
+                    current_function,
+                )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
@@ -183,9 +253,19 @@ fn emit_expr(
             for arg in args {
                 rendered.push(emit_expr(arg, env, signatures)?.code);
             }
+            let ty = match signature.returns.as_slice() {
+                [] => Type::Void,
+                [ty] => ty.clone(),
+                _ => {
+                    return Err(format!(
+                        "line {}: multi-value call '{name}' requires destructuring during code generation",
+                        expr.line
+                    ));
+                }
+            };
             EmittedExpr {
                 code: format!("{name}({})", rendered.join(", ")),
-                ty: signature.ret.clone(),
+                ty,
             }
         }
         ExprKind::Unary { op, expr: inner } => {
@@ -226,12 +306,65 @@ fn emit_expr(
     Ok(emitted)
 }
 
+fn emit_multi_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(String, String), String> {
+    let ExprKind::Call { name, args } = &expr.kind else {
+        return Err(format!(
+            "line {}: only multi-value function calls can be destructured",
+            expr.line
+        ));
+    };
+    let signature = signatures.get(name).ok_or_else(|| {
+        format!(
+            "line {}: unknown function '{name}' during code generation",
+            expr.line
+        )
+    })?;
+    if signature.returns.len() < 2 {
+        return Err(format!(
+            "line {}: function '{name}' does not return multiple values",
+            expr.line
+        ));
+    }
+    let mut rendered = Vec::with_capacity(args.len());
+    for arg in args {
+        rendered.push(emit_expr(arg, env, signatures)?.code);
+    }
+    Ok((
+        format!("{name}({})", rendered.join(", ")),
+        multi_return_struct_name(name),
+    ))
+}
+
+fn c_function_return_type(function: &Function) -> String {
+    match function.returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => c_type(ty).to_string(),
+        _ => format!("struct {}", multi_return_struct_name(&function.name)),
+    }
+}
+
+fn multi_return_struct_name(function_name: &str) -> String {
+    format!("flux__ret_{function_name}")
+}
+
 fn c_type(ty: &Type) -> &'static str {
     match ty {
         Type::I64 => "int64_t",
         Type::Bool => "bool",
         Type::Str => "const char *",
         Type::Void => "void",
+    }
+}
+
+fn c_condition(code: &str) -> String {
+    if code.starts_with('(') && code.ends_with(')') {
+        code.to_string()
+    } else {
+        format!("({code})")
     }
 }
 

@@ -36,13 +36,19 @@ pub struct Program {
 pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
-    pub ret: Type,
+    pub returns: Vec<Type>,
     pub body: Vec<Stmt>,
     pub line: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct Binding {
     pub name: String,
     pub ty: Type,
 }
@@ -60,7 +66,11 @@ pub enum StmtKind {
         ty: Type,
         expr: Expr,
     },
-    Return(Option<Expr>),
+    LetDestructure {
+        bindings: Vec<Binding>,
+        expr: Expr,
+    },
+    Return(Vec<Expr>),
     Expr(Expr),
     If {
         cond: Expr,

@@ -5,7 +5,7 @@ use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type,
 #[derive(Debug, Clone)]
 pub struct Signature {
     pub params: Vec<Type>,
-    pub ret: Type,
+    pub returns: Vec<Type>,
 }
 
 pub type Signatures = HashMap<String, Signature>;
@@ -31,7 +31,7 @@ pub fn check(program: &Program) -> Result<Signatures, String> {
                     .iter()
                     .map(|param| param.ty.clone())
                     .collect(),
-                ret: function.ret.clone(),
+                returns: function.returns.clone(),
             },
         );
     }
@@ -39,7 +39,7 @@ pub fn check(program: &Program) -> Result<Signatures, String> {
     let Some(main) = signatures.get("main") else {
         return Err("program requires fn main() -> i64 { ... }".to_string());
     };
-    if !main.params.is_empty() || main.ret != Type::I64 {
+    if !main.params.is_empty() || main.returns != vec![Type::I64] {
         return Err("main must have signature fn main() -> i64".to_string());
     }
 
@@ -56,15 +56,15 @@ fn check_function(function: &Function, signatures: &Signatures) -> Result<(), St
         env.insert(param.name.clone(), param.ty.clone());
     }
 
-    check_block(&function.body, &mut env, &function.ret, signatures)?;
+    check_block(&function.body, &mut env, &function.returns, signatures)?;
 
-    if function.ret != Type::Void && !block_guarantees_return(&function.body) {
+    if !function.returns.is_empty() && !block_guarantees_return(&function.body) {
         return Err(diag(
             function.line,
             &format!(
                 "function '{}' can reach the end without returning {}",
                 function.name,
-                function.ret.name()
+                return_types_name(&function.returns)
             ),
         ));
     }
@@ -75,7 +75,7 @@ fn check_function(function: &Function, signatures: &Signatures) -> Result<(), St
 fn check_block(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
-    return_type: &Type,
+    return_types: &[Type],
     signatures: &Signatures,
 ) -> Result<(), String> {
     for stmt in body {
@@ -91,22 +91,57 @@ fn check_block(
                 require_type(stmt.line, ty, &actual, "binding")?;
                 env.insert(name.clone(), ty.clone());
             }
-            StmtKind::Return(expr) => match (return_type, expr) {
-                (Type::Void, None) => {}
-                (Type::Void, Some(_)) => {
-                    return Err(diag(stmt.line, "void functions cannot return a value"));
-                }
-                (_, None) => {
+            StmtKind::LetDestructure { bindings, expr } => {
+                let actuals = value_types_of_expr(expr, env, signatures)?;
+                if actuals.len() != bindings.len() {
                     return Err(diag(
                         stmt.line,
-                        &format!("expected return value of type {}", return_type.name()),
+                        &format!(
+                            "destructuring expects {} values, expression returns {}",
+                            bindings.len(),
+                            actuals.len()
+                        ),
                     ));
                 }
-                (expected, Some(expr)) => {
-                    let actual = type_of_expr(expr, env, signatures)?;
-                    require_type(stmt.line, expected, &actual, "return")?;
+                for (binding, actual) in bindings.iter().zip(&actuals) {
+                    if env.contains_key(&binding.name) {
+                        return Err(diag(
+                            stmt.line,
+                            &format!("'{}' is already defined in this scope", binding.name),
+                        ));
+                    }
+                    require_type(
+                        stmt.line,
+                        &binding.ty,
+                        actual,
+                        &format!("destructured binding '{}'", binding.name),
+                    )?;
                 }
-            },
+                for binding in bindings {
+                    env.insert(binding.name.clone(), binding.ty.clone());
+                }
+            }
+            StmtKind::Return(expressions) => {
+                if expressions.len() != return_types.len() {
+                    return Err(diag(
+                        stmt.line,
+                        &format!(
+                            "return expects {} values, got {}",
+                            return_types.len(),
+                            expressions.len()
+                        ),
+                    ));
+                }
+                for (index, (expr, expected)) in expressions.iter().zip(return_types).enumerate() {
+                    let actual = type_of_expr(expr, env, signatures)?;
+                    require_type(
+                        stmt.line,
+                        expected,
+                        &actual,
+                        &format!("return value {}", index + 1),
+                    )?;
+                }
+            }
             StmtKind::Expr(expr) => {
                 type_of_expr(expr, env, signatures)?;
             }
@@ -114,7 +149,7 @@ fn check_block(
                 let cond_type = type_of_expr(cond, env, signatures)?;
                 require_type(stmt.line, &Type::Bool, &cond_type, "if condition")?;
                 let mut nested = env.clone();
-                check_block(body, &mut nested, return_type, signatures)?;
+                check_block(body, &mut nested, return_types, signatures)?;
             }
             StmtKind::ForRange {
                 name,
@@ -134,7 +169,7 @@ fn check_block(
                 require_type(stmt.line, &Type::I64, &end_type, "range end")?;
                 let mut nested = env.clone();
                 nested.insert(name.clone(), Type::I64);
-                check_block(body, &mut nested, return_type, signatures)?;
+                check_block(body, &mut nested, return_types, signatures)?;
             }
         }
     }
@@ -168,29 +203,18 @@ pub fn type_of_expr(
             Ok(Type::Void)
         }
         ExprKind::Call { name, args } => {
-            let Some(signature) = signatures.get(name) else {
-                return Err(diag(expr.line, &format!("unknown function '{name}'")));
-            };
-            if args.len() != signature.params.len() {
-                return Err(diag(
+            let returns = check_call(expr.line, name, args, env, signatures)?;
+            match returns.as_slice() {
+                [] => Ok(Type::Void),
+                [ty] => Ok(ty.clone()),
+                _ => Err(diag(
                     expr.line,
                     &format!(
-                        "function '{name}' expects {} arguments, got {}",
-                        signature.params.len(),
-                        args.len()
+                        "function '{name}' returns {} values; use a destructuring binding",
+                        returns.len()
                     ),
-                ));
+                )),
             }
-            for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
-                let actual = type_of_expr(arg, env, signatures)?;
-                require_type(
-                    expr.line,
-                    expected,
-                    &actual,
-                    &format!("argument {} to '{name}'", index + 1),
-                )?;
-            }
-            Ok(signature.ret.clone())
         }
         ExprKind::Unary { op, expr: inner } => {
             let ty = type_of_expr(inner, env, signatures)?;
@@ -236,6 +260,51 @@ pub fn type_of_expr(
     }
 }
 
+fn value_types_of_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, String> {
+    match &expr.kind {
+        ExprKind::Call { name, args } if name != "print" => {
+            check_call(expr.line, name, args, env, signatures)
+        }
+        _ => Ok(vec![type_of_expr(expr, env, signatures)?]),
+    }
+}
+
+fn check_call(
+    line: usize,
+    name: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, String> {
+    let Some(signature) = signatures.get(name) else {
+        return Err(diag(line, &format!("unknown function '{name}'")));
+    };
+    if args.len() != signature.params.len() {
+        return Err(diag(
+            line,
+            &format!(
+                "function '{name}' expects {} arguments, got {}",
+                signature.params.len(),
+                args.len()
+            ),
+        ));
+    }
+    for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
+        let actual = type_of_expr(arg, env, signatures)?;
+        require_type(
+            line,
+            expected,
+            &actual,
+            &format!("argument {} to '{name}'", index + 1),
+        )?;
+    }
+    Ok(signature.returns.clone())
+}
+
 fn block_guarantees_return(body: &[Stmt]) -> bool {
     for stmt in body {
         match &stmt.kind {
@@ -243,10 +312,22 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
             | StmtKind::Let { .. }
+            | StmtKind::LetDestructure { .. }
             | StmtKind::Expr(_) => {}
         }
     }
     false
+}
+
+fn return_types_name(types: &[Type]) -> String {
+    match types {
+        [] => "void".to_string(),
+        [ty] => ty.name().to_string(),
+        _ => format!(
+            "({})",
+            types.iter().map(Type::name).collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 fn require_type(line: usize, expected: &Type, actual: &Type, context: &str) -> Result<(), String> {

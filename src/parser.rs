@@ -1,4 +1,6 @@
-use crate::ast::{BinOp, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, Type, UnaryOp};
+use crate::ast::{
+    BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, Type, UnaryOp,
+};
 
 #[derive(Debug, Clone)]
 struct Line {
@@ -21,7 +23,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
             ));
         }
 
-        let (name, params, ret) = parse_function_header(&line.text, line.number)?;
+        let (name, params, returns) = parse_function_header(&line.text, line.number)?;
         let function_line = line.number;
         index += 1;
 
@@ -43,7 +45,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         functions.push(Function {
             name,
             params,
-            ret,
+            returns,
             body,
             line: function_line,
         });
@@ -106,7 +108,10 @@ fn strip_comment(input: &str) -> &str {
     input
 }
 
-fn parse_function_header(input: &str, line: usize) -> Result<(String, Vec<Param>, Type), String> {
+fn parse_function_header(
+    input: &str,
+    line: usize,
+) -> Result<(String, Vec<Param>, Vec<Type>), String> {
     let Some(rest) = input.strip_prefix("fn ") else {
         return Err(diag(
             line,
@@ -134,7 +139,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<(String, Vec<Param>
     let Some(ret_src) = ret_src.trim().strip_suffix('{') else {
         return Err(diag(line, "functions must open their body with '{'"));
     };
-    let ret = parse_type(ret_src.trim(), line)?;
+    let returns = parse_return_types(ret_src.trim(), line)?;
 
     let mut params = Vec::new();
     if !params_src.trim().is_empty() {
@@ -158,7 +163,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<(String, Vec<Param>
         }
     }
 
-    Ok((name.to_string(), params, ret))
+    Ok((name.to_string(), params, returns))
 }
 
 fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, String> {
@@ -247,42 +252,58 @@ fn parse_nested_block(
 
 fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
     if let Some(rest) = input.strip_prefix("let ") {
-        let Some((binding, expr_src)) = rest.split_once('=') else {
+        let Some((binding_src, expr_src)) = rest.split_once('=') else {
             return Err(diag(line, "let bindings require '= expression'"));
         };
-        let Some((name_src, ty_src)) = binding.split_once(':') else {
-            return Err(diag(
+        let raw_bindings = split_top_level_commas(binding_src);
+        if raw_bindings.len() == 1 {
+            let binding = parse_binding(raw_bindings[0], line)?;
+            let expr = parse_expression(expr_src.trim(), line)?;
+            return Ok(Stmt {
                 line,
-                "strict bindings require an explicit type: 'let name: type = value'",
-            ));
-        };
-        let name = name_src.trim();
-        validate_identifier(name, line)?;
-        let ty = parse_type(ty_src.trim(), line)?;
-        if ty == Type::Void {
-            return Err(diag(line, "variables cannot have type void"));
+                kind: StmtKind::Let {
+                    name: binding.name,
+                    ty: binding.ty,
+                    expr,
+                },
+            });
+        }
+
+        let mut bindings = Vec::with_capacity(raw_bindings.len());
+        for raw_binding in raw_bindings {
+            let binding = parse_binding(raw_binding, line)?;
+            if bindings
+                .iter()
+                .any(|existing: &Binding| existing.name == binding.name)
+            {
+                return Err(diag(
+                    line,
+                    &format!("duplicate destructured binding '{}'", binding.name),
+                ));
+            }
+            bindings.push(binding);
         }
         let expr = parse_expression(expr_src.trim(), line)?;
         return Ok(Stmt {
             line,
-            kind: StmtKind::Let {
-                name: name.to_string(),
-                ty,
-                expr,
-            },
+            kind: StmtKind::LetDestructure { bindings, expr },
         });
     }
 
     if input == "return" {
         return Ok(Stmt {
             line,
-            kind: StmtKind::Return(None),
+            kind: StmtKind::Return(Vec::new()),
         });
     }
     if let Some(expr_src) = input.strip_prefix("return ") {
+        let expressions = split_top_level_commas(expr_src)
+            .into_iter()
+            .map(|part| parse_expression(part.trim(), line))
+            .collect::<Result<Vec<_>, _>>()?;
         return Ok(Stmt {
             line,
-            kind: StmtKind::Return(Some(parse_expression(expr_src.trim(), line)?)),
+            kind: StmtKind::Return(expressions),
         });
     }
 
@@ -290,6 +311,63 @@ fn parse_simple_statement(input: &str, line: usize) -> Result<Stmt, String> {
         line,
         kind: StmtKind::Expr(parse_expression(input, line)?),
     })
+}
+
+fn parse_binding(input: &str, line: usize) -> Result<Binding, String> {
+    let Some((name_src, ty_src)) = input.split_once(':') else {
+        return Err(diag(
+            line,
+            "strict bindings require an explicit type: 'let name: type = value'",
+        ));
+    };
+    let name = name_src.trim();
+    validate_identifier(name, line)?;
+    let ty = parse_type(ty_src.trim(), line)?;
+    if ty == Type::Void {
+        return Err(diag(line, "variables cannot have type void"));
+    }
+    Ok(Binding {
+        name: name.to_string(),
+        ty,
+    })
+}
+
+fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let bytes = input.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(&input[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&input[start..]);
+    parts
 }
 
 fn split_range(input: &str) -> Option<(&str, &str)> {
@@ -330,11 +408,52 @@ fn split_range(input: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn parse_return_types(input: &str, line: usize) -> Result<Vec<Type>, String> {
+    let input = input.trim();
+    if input == "void" {
+        return Ok(Vec::new());
+    }
+    if let Some(inner) = input
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let parts = split_top_level_commas(inner);
+        if parts.len() < 2 {
+            return Err(diag(
+                line,
+                "multi-value return types require at least two types",
+            ));
+        }
+        let mut returns = Vec::with_capacity(parts.len());
+        for part in parts {
+            let ty = parse_type(part.trim(), line)?;
+            if ty == Type::Void {
+                return Err(diag(line, "void cannot appear in a multi-value return"));
+            }
+            returns.push(ty);
+        }
+        return Ok(returns);
+    }
+
+    let ty = parse_type(input, line)?;
+    if ty == Type::Void {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![ty])
+    }
+}
+
 fn parse_type(input: &str, line: usize) -> Result<Type, String> {
     Type::parse(input).ok_or_else(|| diag(line, &format!("unknown type '{input}'")))
 }
 
 fn validate_identifier(input: &str, line: usize) -> Result<(), String> {
+    if input.starts_with("flux__") {
+        return Err(diag(
+            line,
+            "identifiers starting with 'flux__' are reserved for the compiler",
+        ));
+    }
     let mut chars = input.chars();
     let Some(first) = chars.next() else {
         return Err(diag(line, "identifier cannot be empty"));
@@ -527,10 +646,7 @@ struct ExprParser<'a> {
 impl ExprParser<'_> {
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, String> {
         let mut left = self.parse_unary()?;
-        loop {
-            let Some((op, precedence)) = self.peek_binary() else {
-                break;
-            };
+        while let Some((op, precedence)) = self.peek_binary() {
             if precedence < min_precedence {
                 break;
             }

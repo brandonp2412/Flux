@@ -20,8 +20,9 @@ Flux is an experimental compiled language for building native applications and s
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
 - parsing for functions, typed bindings, calls, `if`, and exclusive range `for` loops;
+- explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, and `void`;
-- function signature and argument validation;
+- function signature, return, and argument validation;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
 - CLI commands for checking, emitting C, and building a native executable;
@@ -57,10 +58,29 @@ Check without producing a binary:
 cargo run -- check examples/hello.flux
 ```
 
+## Multi-value returns
+
+Flux keeps multi-values explicit and does not make general tuple values part of ordinary expressions. Functions may declare multiple return values and callers destructure them into explicitly typed bindings:
+
+```flux
+fn divide(value: i64, by: i64) -> (i64, bool) {
+    if by == 0:
+        return 0, false
+    return value / by, true
+}
+
+fn main() -> i64 {
+    let result: i64, ok: bool = divide(84, 2)
+    return 0
+}
+```
+
+This is the foundation for Flux's recoverable-error model. A built-in error value/type and propagation syntax are still pending; exceptions are not part of the design.
+
 ## Near-term roadmap
 
-1. Replace string diagnostics with source spans and structured diagnostics.
-2. Implement explicit multi-value returns and the built-in `error` / nullable-error model.
+1. Add the built-in error / nullable-error model on top of explicit multi-value returns.
+2. Replace string diagnostics with source spans and structured diagnostics.
 3. Add structs, ownership moves, borrows, and the first borrow checker.
 4. Introduce Flux typed IR and a direct optimizing native backend.
 5. Add packages/modules and stable ABI rules.
