@@ -5,6 +5,7 @@ use crate::typecheck::{self, Signature, Signatures};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
+    TypeAlias,
     Struct,
     StructField,
     Function,
@@ -37,6 +38,14 @@ impl SemanticDatabase {
 
     pub fn from_analyzed(program: Program, signatures: Signatures) -> Self {
         let mut symbols = Vec::new();
+        for alias in &program.aliases {
+            symbols.push(SemanticSymbol {
+                name: alias.name.clone(),
+                kind: SymbolKind::TypeAlias,
+                ty: Some(alias.target.clone()),
+                span: alias.name_span,
+            });
+        }
         for definition in &program.structs {
             symbols.push(SemanticSymbol {
                 name: definition.name.clone(),

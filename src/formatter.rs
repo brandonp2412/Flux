@@ -7,6 +7,12 @@ use crate::parser;
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
     let mut formatted = HashMap::new();
+    for alias in &program.aliases {
+        formatted.insert(
+            alias.line,
+            format!("type {} = {}", alias.name, alias.target.name()),
+        );
+    }
     for definition in &program.structs {
         format_struct(definition, &mut formatted);
     }

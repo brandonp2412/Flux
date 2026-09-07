@@ -148,6 +148,104 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_zero_cost_type_aliases_for_primitives_and_structs() {
+    let source = r#"
+type UserId = i64
+type Person = User
+type Account = Person
+
+struct User {
+    id: UserId
+    name: str
+}
+
+fn user_id(user: Account) -> UserId {
+    return user.id
+}
+
+fn main() -> i64 {
+    let user: Person = User { id: 7, name: "Ada" }
+    print(user_id(user))
+    return 0
+}
+"#;
+
+    check_source(source).expect("aliases should typecheck transparently");
+    let generated = compile_to_c(source).expect("aliases should lower to concrete native types");
+    assert!(generated.contains("int64_t flux__field_id;"));
+    assert!(generated.contains("int64_t user_id(struct flux__type_User user)"));
+    assert!(!generated.contains("flux__type_UserId"));
+    assert!(!generated.contains("flux__type_Person"));
+    assert!(!generated.contains("flux__type_Account"));
+}
+
+#[test]
+fn rejects_invalid_type_aliases() {
+    let cycle = r#"
+type A = B
+type B = A
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let diagnostics = check_source_all(cycle).expect_err("alias cycle should fail");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("type alias 'A' is recursive"))
+    );
+
+    let unknown = r#"
+type UserId = Missing
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unknown).expect_err("unknown alias target should fail");
+    assert!(error.message.contains("unknown type 'Missing'"));
+
+    let conflict = r#"
+type User = i64
+struct User {
+    value: i64
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let diagnostics = check_source_all(conflict).expect_err("alias/struct conflict should fail");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("struct 'User' conflicts with a type alias")
+    }));
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_type_aliases() {
+    let source = "type UserId=i64\nfn identity(value:UserId)->UserId {\n return value\n}\nfn main()->i64 {\n return identity(7)\n}\n";
+    let expected = "type UserId = i64\nfn identity(value: UserId) -> UserId {\n    return value\n}\nfn main() -> i64 {\n    return identity(7)\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("alias source should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(401))
+        .expect("alias source should analyze");
+    let alias = database
+        .symbols_named("UserId")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::TypeAlias)
+        .expect("alias should be indexed");
+    assert_eq!(alias.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, alias.span), "UserId");
+    assert_eq!(
+        database
+            .signature("identity")
+            .expect("function signature should exist")
+            .params,
+        vec![fluxc::ast::Type::I64]
+    );
+}
+
+#[test]
 fn accepts_struct_values_literals_field_access_and_nested_layout() {
     let source = r#"
 struct Profile {

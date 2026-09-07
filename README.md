@@ -22,7 +22,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 
 - parsing for functions, structs, typed bindings, calls, field access, `if` / `elif` / `else`, and exclusive range `for` loops;
 - explicit multi-value function returns and strictly typed destructuring bindings;
-- static checking for `i64`, `bool`, `str`, `error`, `void`, and named struct value types;
+- static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, and transparent concrete type aliases;
 - struct literals, field access, and `Type { ..base, field: value }` functional updates with exact field validation and native by-value lowering;
 - function signature, return, and argument validation;
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
@@ -30,7 +30,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, and building a native executable;
-- compiler tests and runnable native examples, including nested structs.
+- compiler tests and runnable native examples, including nested structs and zero-cost type aliases.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

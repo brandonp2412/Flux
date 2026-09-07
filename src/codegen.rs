@@ -25,12 +25,12 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("    return a / b;\n");
     out.push_str("}\n\n");
 
-    for definition in struct_emit_order(program)? {
+    for definition in struct_emit_order(program, signatures)? {
         out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
         for field in &definition.fields {
             out.push_str(&format!(
                 "    {} {};\n",
-                c_type(&field.ty),
+                c_type(&field.ty, signatures),
                 field_c_name(&field.name)
             ));
         }
@@ -47,7 +47,7 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
             let tag = multi_return_struct_name(&function.name);
             out.push_str(&format!("struct {tag} {{\n"));
             for (index, ty) in function.returns.iter().enumerate() {
-                out.push_str(&format!("    {} v{index};\n", c_type(ty)));
+                out.push_str(&format!("    {} v{index};\n", c_type(ty, signatures)));
             }
             out.push_str("};\n");
         }
@@ -61,7 +61,7 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     }
 
     for function in &program.functions {
-        out.push_str(&function_prototype(function));
+        out.push_str(&function_prototype(function, signatures));
         out.push_str(";\n");
     }
     out.push('\n');
@@ -75,11 +75,11 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     Ok(out)
 }
 
-fn function_prototype(function: &Function) -> String {
+fn function_prototype(function: &Function, signatures: &Signatures) -> String {
     let ret = if function.name == "main" {
         "int".to_string()
     } else {
-        c_function_return_type(function)
+        c_function_return_type(function, signatures)
     };
     let params = if function.params.is_empty() {
         "void".to_string()
@@ -87,7 +87,7 @@ fn function_prototype(function: &Function) -> String {
         function
             .params
             .iter()
-            .map(|param| format!("{} {}", c_type(&param.ty), param.name))
+            .map(|param| format!("{} {}", c_type(&param.ty, signatures), param.name))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -100,11 +100,11 @@ fn emit_function(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
-    out.push_str(&function_prototype(function));
+    out.push_str(&function_prototype(function, signatures));
     out.push_str(" {\n");
     let mut env = HashMap::new();
     for param in &function.params {
-        env.insert(param.name.clone(), param.ty.clone());
+        env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
     emit_block(
         out,
@@ -133,8 +133,12 @@ fn emit_block(
         match &stmt.kind {
             StmtKind::Let { name, ty, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
-                out.push_str(&format!("{pad}{} {name} = {};\n", c_type(ty), value.code));
-                env.insert(name.clone(), ty.clone());
+                out.push_str(&format!(
+                    "{pad}{} {name} = {};\n",
+                    c_type(ty, signatures),
+                    value.code
+                ));
+                env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::LetDestructure {
                 bindings,
@@ -163,10 +167,10 @@ fn emit_block(
                 for (index, binding) in bindings.iter().enumerate() {
                     out.push_str(&format!(
                         "{pad}{} {} = {temp}.v{index};\n",
-                        c_type(&binding.ty),
+                        c_type(&binding.ty, signatures),
                         binding.name
                     ));
-                    env.insert(binding.name.clone(), binding.ty.clone());
+                    env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                 }
             }
             StmtKind::Return(values) if values.is_empty() => {
@@ -485,10 +489,10 @@ fn emit_multi_expr(
     ))
 }
 
-fn c_function_return_type(function: &Function) -> String {
+fn c_function_return_type(function: &Function, signatures: &Signatures) -> String {
     match function.returns.as_slice() {
         [] => "void".to_string(),
-        [ty] => c_type(ty),
+        [ty] => c_type(ty, signatures),
         _ => format!("struct {}", multi_return_struct_name(&function.name)),
     }
 }
@@ -497,14 +501,14 @@ fn multi_return_struct_name(function_name: &str) -> String {
     format!("flux__ret_{function_name}")
 }
 
-fn c_type(ty: &Type) -> String {
-    match ty {
+fn c_type(ty: &Type, signatures: &Signatures) -> String {
+    match signatures.canonical_type(ty) {
         Type::I64 => "int64_t".to_string(),
         Type::Bool => "bool".to_string(),
         Type::Str => "const char *".to_string(),
         Type::Error => "const char *".to_string(),
         Type::Void => "void".to_string(),
-        Type::Named(name) => format!("struct {}", struct_c_name(name)),
+        Type::Named(name) => format!("struct {}", struct_c_name(&name)),
     }
 }
 
@@ -596,7 +600,7 @@ fn collect_update_helpers_from_expr(
                             .expect("type checking guarantees update field exists");
                         helpers.push_str(&format!(
                             ", {} value_{}",
-                            c_type(&signature.ty),
+                            c_type(&signature.ty, signatures),
                             field.name
                         ));
                     }
@@ -648,7 +652,10 @@ fn struct_update_helper_name(name: &str, fields: &[crate::ast::StructLiteralFiel
     format!("flux__update_{name}__{suffix}")
 }
 
-fn struct_emit_order(program: &Program) -> Result<Vec<&StructDef>, Diagnostic> {
+fn struct_emit_order<'a>(
+    program: &'a Program,
+    signatures: &Signatures,
+) -> Result<Vec<&'a StructDef>, Diagnostic> {
     let definitions = program
         .structs
         .iter()
@@ -665,6 +672,7 @@ fn struct_emit_order(program: &Program) -> Result<Vec<&StructDef>, Diagnostic> {
             &mut visiting,
             &mut emitted,
             &mut order,
+            signatures,
         )?;
     }
     Ok(order)
@@ -676,6 +684,7 @@ fn visit_struct<'a>(
     visiting: &mut HashSet<&'a str>,
     emitted: &mut HashSet<&'a str>,
     order: &mut Vec<&'a StructDef>,
+    signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     if emitted.contains(definition.name.as_str()) {
         return Ok(());
@@ -692,10 +701,17 @@ fn visit_struct<'a>(
     }
 
     for field in &definition.fields {
-        if let Type::Named(name) = &field.ty
+        if let Type::Named(name) = signatures.canonical_type(&field.ty)
             && let Some(dependency) = definitions.get(name.as_str())
         {
-            visit_struct(dependency, definitions, visiting, emitted, order)?;
+            visit_struct(
+                dependency,
+                definitions,
+                visiting,
+                emitted,
+                order,
+                signatures,
+            )?;
         }
     }
 

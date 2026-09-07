@@ -104,6 +104,17 @@ fn load_config(path: str) -> (str, error) {
 
 This form is intentionally narrow. The final destructured value must have type `error`, and the call's full multi-value return shape must exactly match the enclosing function. The call is evaluated once. If the final error value is non-`nil`, the exact multi-value result is returned immediately; otherwise the values are destructured and execution continues. This is explicit control flow rather than exception propagation.
 
+## Type aliases
+
+Concrete type aliases use `type Name = Target`. They are transparent compile-time names, not new runtime wrapper types:
+
+```flux
+type UserId = i64
+type Person = User
+```
+
+Aliases may refer forward to structs and may chain through other aliases. The compiler resolves them to a concrete primitive or struct type for static checking and native lowering while preserving the alias spelling in source formatting and semantic tooling. Recursive alias cycles and unknown final targets are compile-time errors. Flux aliases are deliberately non-generic.
+
 ## Generics
 
 Flux deliberately has no generics in the source language. This is a design constraint, not a deferred feature.

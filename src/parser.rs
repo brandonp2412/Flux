@@ -1,6 +1,6 @@
 use crate::ast::{
     BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, StructDef,
-    StructField, StructLiteralField, Type, UnaryOp,
+    StructField, StructLiteralField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -93,6 +93,7 @@ pub fn parse_all_with_source(
 
 pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
+    let mut aliases = Vec::new();
     let mut structs = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
@@ -104,6 +105,15 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 line.number,
                 "top-level declarations must not be indented",
             ));
+            index += 1;
+            continue;
+        }
+
+        if line.text.starts_with("type ") {
+            match parse_type_alias(line) {
+                Ok(alias) => aliases.push(alias),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
             index += 1;
             continue;
         }
@@ -185,7 +195,11 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     }
 
     if diagnostics.is_empty() {
-        Ok(Program { structs, functions })
+        Ok(Program {
+            aliases,
+            structs,
+            functions,
+        })
     } else {
         Err(diagnostics)
     }
@@ -201,6 +215,11 @@ fn source_fingerprint(source: &str) -> u64 {
 }
 
 fn attach_program_source(program: &mut Program, source_id: SourceId) {
+    for alias in &mut program.aliases {
+        alias.span = alias.span.with_source(source_id);
+        alias.name_span = alias.name_span.with_source(source_id);
+        alias.target_span = alias.target_span.with_source(source_id);
+    }
     for definition in &mut program.structs {
         definition.span = definition.span.with_source(source_id);
         definition.keyword_span = definition.keyword_span.with_source(source_id);
@@ -361,13 +380,45 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
             if line.text == "}" {
                 return index + 1;
             }
-            if line.text.starts_with("fn ") || line.text.starts_with("struct ") {
+            if line.text.starts_with("fn ")
+                || line.text.starts_with("struct ")
+                || line.text.starts_with("type ")
+            {
                 return index;
             }
         }
         index += 1;
     }
     index
+}
+
+fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
+    let Some(rest) = line.text.strip_prefix("type ") else {
+        return Err(diag(line.number, "expected type alias declaration"));
+    };
+    let Some(eq_offset) = rest.find('=') else {
+        return Err(diag(
+            line.number,
+            "type aliases use 'type Name = Target' syntax",
+        ));
+    };
+    let raw_name = &rest[..eq_offset];
+    let raw_target = &rest[eq_offset + 1..];
+    let (name, name_column) = trim_with_column(raw_name, 6);
+    validate_identifier(name, line.number)?;
+    let (target_text, target_column) = trim_with_column(raw_target, 6 + eq_offset + 1);
+    let target = parse_type(target_text, line.number)?;
+    if target == Type::Void {
+        return Err(diag(line.number, "type aliases cannot target void"));
+    }
+    Ok(TypeAlias {
+        name: name.to_string(),
+        name_span: SourceSpan::new(line.number, name_column, name.len()),
+        target,
+        target_span: SourceSpan::new(line.number, target_column, target_text.len()),
+        line: line.number,
+        span: line.span(),
+    })
 }
 
 fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructDef, Diagnostic> {
@@ -1042,6 +1093,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
     if matches!(
         input,
         "fn" | "struct"
+            | "type"
             | "let"
             | "return"
             | "if"

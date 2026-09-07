@@ -33,6 +33,7 @@ impl StructSignature {
 pub struct Signatures {
     functions: HashMap<String, Signature>,
     structs: HashMap<String, StructSignature>,
+    aliases: HashMap<String, Type>,
 }
 
 impl Signatures {
@@ -46,6 +47,21 @@ impl Signatures {
 
     pub fn structs(&self) -> &HashMap<String, StructSignature> {
         &self.structs
+    }
+
+    pub fn type_alias(&self, name: &str) -> Option<&Type> {
+        self.aliases.get(name)
+    }
+
+    pub fn canonical_type(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(name) => self
+                .aliases
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            _ => ty.clone(),
+        }
     }
 
     fn contains_function(&self, name: &str) -> bool {
@@ -70,7 +86,55 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     let mut signatures = Signatures::default();
     let mut diagnostics = Vec::new();
 
+    let mut alias_targets = HashMap::new();
+    for alias in &program.aliases {
+        if matches!(
+            alias.name.as_str(),
+            "i64" | "bool" | "str" | "error" | "void"
+        ) {
+            diagnostics.push(diag(
+                alias.name_span,
+                &format!("type alias '{}' conflicts with a built-in type", alias.name),
+            ));
+            continue;
+        }
+        if alias_targets
+            .insert(alias.name.clone(), alias.target.clone())
+            .is_some()
+        {
+            diagnostics.push(diag(
+                alias.name_span,
+                &format!("duplicate type alias '{}'", alias.name),
+            ));
+        }
+    }
+
+    for alias in &program.aliases {
+        if !alias_targets.contains_key(&alias.name) {
+            continue;
+        }
+        match resolve_alias_target(&alias.target, &alias_targets, &mut vec![alias.name.clone()]) {
+            Ok(target) => {
+                signatures.aliases.insert(alias.name.clone(), target);
+            }
+            Err(chain) => diagnostics.push(
+                diag(
+                    alias.target_span,
+                    &format!("type alias '{}' is recursive", alias.name),
+                )
+                .with_note(format!("alias cycle: {}", chain.join(" -> "))),
+            ),
+        }
+    }
+
     for definition in &program.structs {
+        if signatures.aliases.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("struct '{}' conflicts with a type alias", definition.name),
+            ));
+            continue;
+        }
         if signatures.structs.contains_key(&definition.name) {
             diagnostics.push(diag(
                 definition.name_span,
@@ -81,25 +145,35 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         signatures.structs.insert(
             definition.name.clone(),
             StructSignature {
-                fields: definition
-                    .fields
-                    .iter()
-                    .map(|field| StructFieldSignature {
-                        name: field.name.clone(),
-                        ty: field.ty.clone(),
-                        span: field.name_span,
-                    })
-                    .collect(),
+                fields: Vec::new(),
                 span: definition.name_span,
             },
         );
     }
 
     for definition in &program.structs {
+        let fields = definition
+            .fields
+            .iter()
+            .map(|field| StructFieldSignature {
+                name: field.name.clone(),
+                ty: signatures.canonical_type(&field.ty),
+                span: field.name_span,
+            })
+            .collect::<Vec<_>>();
+        if let Some(signature) = signatures.structs.get_mut(&definition.name) {
+            signature.fields = fields;
+        }
         for field in &definition.fields {
             if let Err(diagnostic) = require_known_type(field.type_span, &field.ty, &signatures) {
                 diagnostics.push(diagnostic);
             }
+        }
+    }
+
+    for alias in &program.aliases {
+        if let Err(diagnostic) = require_known_type(alias.target_span, &alias.target, &signatures) {
+            diagnostics.push(diagnostic);
         }
     }
 
@@ -115,6 +189,13 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("function '{}' conflicts with a struct name", function.name),
+            ));
+            continue;
+        }
+        if signatures.aliases.contains_key(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
+                &format!("function '{}' conflicts with a type alias", function.name),
             ));
             continue;
         }
@@ -146,9 +227,13 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 params: function
                     .params
                     .iter()
-                    .map(|param| param.ty.clone())
+                    .map(|param| signatures.canonical_type(&param.ty))
                     .collect(),
-                returns: function.returns.clone(),
+                returns: function
+                    .returns
+                    .iter()
+                    .map(|ty| signatures.canonical_type(ty))
+                    .collect(),
                 span: function.name_span,
             },
         );
@@ -194,13 +279,18 @@ fn check_function_all(
 ) {
     let mut env = HashMap::new();
     for param in &function.params {
-        env.insert(param.name.clone(), param.ty.clone());
+        env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
+    let return_types = function
+        .returns
+        .iter()
+        .map(|ty| signatures.canonical_type(ty))
+        .collect::<Vec<_>>();
 
     check_block_all(
         &function.body,
         &mut env,
-        &function.returns,
+        &return_types,
         signatures,
         diagnostics,
     );
@@ -245,14 +335,17 @@ fn check_block_all(
                 }
                 match type_of_expr(expr, env, signatures) {
                     Ok(actual) => {
-                        if let Err(diagnostic) = require_type(expr.span, ty, &actual, "binding") {
+                        let declared = signatures.canonical_type(ty);
+                        if let Err(diagnostic) =
+                            require_type(expr.span, &declared, &actual, "binding")
+                        {
                             diagnostics.push(diagnostic);
                         }
                     }
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 if !duplicate {
-                    env.insert(name.clone(), ty.clone());
+                    env.insert(name.clone(), signatures.canonical_type(ty));
                 }
             }
             StmtKind::LetDestructure {
@@ -288,9 +381,10 @@ fn check_block_all(
                         ));
                     }
                     for (binding, actual) in bindings.iter().zip(actuals) {
+                        let declared = signatures.canonical_type(&binding.ty);
                         if let Err(diagnostic) = require_type(
                             stmt.span,
-                            &binding.ty,
+                            &declared,
                             actual,
                             &format!("destructured binding '{}'", binding.name),
                         ) {
@@ -306,12 +400,16 @@ fn check_block_all(
                             &format!("'{}' is already defined in this scope", binding.name),
                         ));
                     } else {
-                        env.insert(binding.name.clone(), binding.ty.clone());
+                        env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                     }
                 }
 
                 if *else_return {
-                    if bindings.last().map(|binding| &binding.ty) != Some(&Type::Error) {
+                    if bindings
+                        .last()
+                        .map(|binding| signatures.canonical_type(&binding.ty))
+                        != Some(Type::Error)
+                    {
                         diagnostics.push(diag(
                             stmt.span,
                             "'else return' requires the final destructured value to have type error",
@@ -726,13 +824,35 @@ fn return_types_name(types: &[Type]) -> String {
     }
 }
 
+fn resolve_alias_target(
+    ty: &Type,
+    aliases: &HashMap<String, Type>,
+    chain: &mut Vec<String>,
+) -> Result<Type, Vec<String>> {
+    let Type::Named(name) = ty else {
+        return Ok(ty.clone());
+    };
+    let Some(target) = aliases.get(name) else {
+        return Ok(ty.clone());
+    };
+    if let Some(index) = chain.iter().position(|entry| entry == name) {
+        let mut cycle = chain[index..].to_vec();
+        cycle.push(name.clone());
+        return Err(cycle);
+    }
+    chain.push(name.clone());
+    let resolved = resolve_alias_target(target, aliases, chain);
+    chain.pop();
+    resolved
+}
+
 fn require_known_type(
     span: SourceSpan,
     ty: &Type,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    match ty {
-        Type::Named(name) if signatures.struct_type(name).is_none() => {
+    match signatures.canonical_type(ty) {
+        Type::Named(name) if signatures.struct_type(&name).is_none() => {
             Err(diag(span, &format!("unknown type '{name}'")))
         }
         _ => Ok(()),
