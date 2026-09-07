@@ -1,4 +1,4 @@
-use fluxc::{DiagnosticStage, check_source, compile_to_c};
+use fluxc::{DiagnosticStage, check_source, check_source_all, compile_to_c};
 
 #[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
@@ -53,6 +53,42 @@ fn main() -> i64 {
     assert!(error.message.contains("unexpected character '@'"));
     let span = error.span.expect("parse error should have a token span");
     assert_eq!((span.line, span.column, span.length), (3, 24, 1));
+}
+
+#[test]
+fn reports_multiple_parse_diagnostics_after_recovery() {
+    let source = r#"
+fn broken() -> i64
+    return 1
+}
+
+fn main() -> i64 {
+    let count: i64 = 1 @ 2
+    return 0
+}
+"#;
+
+    let diagnostics = check_source_all(source).expect_err("both parse errors should be reported");
+    assert_eq!(diagnostics.len(), 2);
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("functions must open their body with '{'")
+    );
+    assert!(diagnostics[1].message.contains("unexpected character '@'"));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.stage == DiagnosticStage::Parse)
+    );
+
+    let second_span = diagnostics[1]
+        .span
+        .expect("recovered expression diagnostic should retain its span");
+    assert_eq!(
+        (second_span.line, second_span.column, second_span.length),
+        (7, 24, 1)
+    );
 }
 
 #[test]

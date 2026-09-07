@@ -24,7 +24,13 @@ fn run() -> Result<(), String> {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            fluxc::check_source(&source).map_err(|diagnostic| diagnostic.to_string())?;
+            fluxc::check_source_all(&source).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
             println!("ok: {}", path.display());
             Ok(())
         }

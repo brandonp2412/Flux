@@ -13,7 +13,16 @@ pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
 }
 
 pub fn check_source(source: &str) -> Result<(), Diagnostic> {
-    let program = parser::parse(source)?;
-    typecheck::check(&program)?;
+    check_source_all(source).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .next()
+            .expect("check_source_all always returns at least one diagnostic on failure")
+    })
+}
+
+pub fn check_source_all(source: &str) -> Result<(), Vec<Diagnostic>> {
+    let program = parser::parse_all(source)?;
+    typecheck::check(&program).map_err(|diagnostic| vec![diagnostic])?;
     Ok(())
 }

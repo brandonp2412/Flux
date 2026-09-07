@@ -17,35 +17,63 @@ impl Line {
 }
 
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
-    let lines = preprocess(source)?;
+    parse_all(source).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .next()
+            .expect("parse_all always returns at least one diagnostic on failure")
+    })
+}
+
+pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
+    let (lines, mut diagnostics) = preprocess(source);
     let mut functions = Vec::new();
     let mut index = 0;
 
     while index < lines.len() {
         let line = &lines[index];
         if line.indent != 0 {
-            return Err(diag(
+            diagnostics.push(diag(
                 line.number,
                 "top-level declarations must not be indented",
             ));
+            index += 1;
+            continue;
         }
 
-        let (name, params, returns) = parse_function_header(&line.text, line.number)?;
+        let (name, params, returns) = match parse_function_header(&line.text, line.number) {
+            Ok(header) => header,
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                index = recover_after_malformed_function(&lines, index + 1);
+                continue;
+            }
+        };
         let function_line = line.number;
+        let function_span = line.span();
         index += 1;
 
         let body = if index < lines.len() && lines[index].indent > 0 {
             let body_indent = lines[index].indent;
-            parse_block(&lines, &mut index, body_indent)?
+            match parse_block(&lines, &mut index, body_indent) {
+                Ok(body) => body,
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_function(&lines, index);
+                    continue;
+                }
+            }
         } else {
             Vec::new()
         };
 
         if index >= lines.len() || lines[index].indent != 0 || lines[index].text != "}" {
-            return Err(diag(
+            diagnostics.push(diag(
                 function_line,
                 "function body must end with a top-level '}'",
             ));
+            index = recover_after_malformed_function(&lines, index);
+            continue;
         }
         index += 1;
 
@@ -55,29 +83,35 @@ pub fn parse(source: &str) -> Result<Program, Diagnostic> {
             returns,
             body,
             line: function_line,
-            span: line.span(),
+            span: function_span,
         });
     }
 
-    if functions.is_empty() {
-        return Err(Diagnostic::global(
+    if functions.is_empty() && diagnostics.is_empty() {
+        diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
             "Flux source contains no functions",
         ));
     }
 
-    Ok(Program { functions })
+    if diagnostics.is_empty() {
+        Ok(Program { functions })
+    } else {
+        Err(diagnostics)
+    }
 }
 
-fn preprocess(source: &str) -> Result<Vec<Line>, Diagnostic> {
+fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
     let mut lines = Vec::new();
+    let mut diagnostics = Vec::new();
     for (index, raw) in source.lines().enumerate() {
         let number = index + 1;
         if raw.contains('\t') {
-            return Err(diag(
+            diagnostics.push(diag(
                 number,
                 "tabs are not allowed for indentation; use spaces",
             ));
+            continue;
         }
 
         let indent = raw.bytes().take_while(|byte| *byte == b' ').count();
@@ -93,7 +127,23 @@ fn preprocess(source: &str) -> Result<Vec<Line>, Diagnostic> {
             text: text.to_string(),
         });
     }
-    Ok(lines)
+    (lines, diagnostics)
+}
+
+fn recover_after_malformed_function(lines: &[Line], mut index: usize) -> usize {
+    while index < lines.len() {
+        let line = &lines[index];
+        if line.indent == 0 {
+            if line.text == "}" {
+                return index + 1;
+            }
+            if line.text.starts_with("fn ") {
+                return index;
+            }
+        }
+        index += 1;
+    }
+    index
 }
 
 fn strip_comment(input: &str) -> &str {
