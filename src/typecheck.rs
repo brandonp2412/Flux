@@ -98,7 +98,11 @@ fn check_block(
                 require_type(stmt.span, ty, &actual, "binding")?;
                 env.insert(name.clone(), ty.clone());
             }
-            StmtKind::LetDestructure { bindings, expr } => {
+            StmtKind::LetDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
                 let actuals = value_types_of_expr(expr, env, signatures)?;
                 if actuals.len() != bindings.len() {
                     return Err(diag(
@@ -123,6 +127,24 @@ fn check_block(
                         actual,
                         &format!("destructured binding '{}'", binding.name),
                     )?;
+                }
+                if *else_return {
+                    if bindings.last().map(|binding| &binding.ty) != Some(&Type::Error) {
+                        return Err(diag(
+                            stmt.span,
+                            "'else return' requires the final destructured value to have type error",
+                        ));
+                    }
+                    if actuals.as_slice() != return_types {
+                        return Err(diag(
+                            stmt.span,
+                            &format!(
+                                "'else return' can only forward an exact return shape: function returns {}, call returns {}",
+                                return_types_name(return_types),
+                                return_types_name(&actuals)
+                            ),
+                        ));
+                    }
                 }
                 for binding in bindings {
                     env.insert(binding.name.clone(), binding.ty.clone());

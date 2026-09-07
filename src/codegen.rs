@@ -117,11 +117,30 @@ fn emit_block(
                 out.push_str(&format!("{pad}{} {name} = {};\n", c_type(ty), value.code));
                 env.insert(name.clone(), ty.clone());
             }
-            StmtKind::LetDestructure { bindings, expr } => {
+            StmtKind::LetDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
                 let (value, tag) = emit_multi_expr(expr, env, signatures)?;
                 let temp = format!("flux__multi_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                if *else_return {
+                    let error_index = bindings.len() - 1;
+                    let return_tag = multi_return_struct_name(&current_function.name);
+                    let return_temp = format!("flux__return_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
+                    out.push_str(&format!("{pad}    struct {return_tag} {return_temp};\n"));
+                    for index in 0..bindings.len() {
+                        out.push_str(&format!(
+                            "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
+                        ));
+                    }
+                    out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
                 for (index, binding) in bindings.iter().enumerate() {
                     out.push_str(&format!(
                         "{pad}{} {} = {temp}.v{index};\n",

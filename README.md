@@ -86,6 +86,18 @@ fn load_config(path: str) -> (str, error) {
 
 Forwarding is positional and strictly checked: both arity and every return type must match the enclosing function signature.
 
+When a function needs the successful values before returning, Flux provides a narrow explicit propagation form:
+
+```flux
+fn load_config(path: str) -> (str, error) {
+    let data: str, err: error = load(path) else return
+    print(data)
+    return data, nil
+}
+```
+
+`else return` is only valid on a multi-value destructuring binding when the final value is `error` and the called function's complete return shape exactly matches the enclosing function. It evaluates the call once, returns that exact result when the error is non-`nil`, and otherwise continues with the destructured bindings. It is ordinary control flow, not exception handling or stack unwinding.
+
 ```flux
 fn load(path: str) -> (str, error) {
     if path == "":
@@ -105,12 +117,11 @@ fn main() -> i64 {
 ## Near-term roadmap
 
 1. Refine diagnostics to token-level spans and add multi-diagnostic recovery for editor tooling.
-2. Add a small explicit error-propagation shorthand that lowers to ordinary control flow.
-3. Add structs, ownership moves, borrows, and the first borrow checker.
-4. Introduce Flux typed IR and a direct optimizing native backend.
-5. Add packages/modules and stable ABI rules.
-6. Build the LSP on the same parser/type database as the compiler.
-7. Define debug metadata and profiler hooks before optimizing them away.
-8. Implement the flat UI grammar and grid layout engine after the core ownership/IR model is stable.
+2. Add structs, ownership moves, borrows, and the first borrow checker.
+3. Introduce Flux typed IR and a direct optimizing native backend.
+4. Add packages/modules and stable ABI rules.
+5. Build the LSP on the same parser/type database as the compiler.
+6. Define debug metadata and profiler hooks before optimizing them away.
+7. Implement the flat UI grammar and grid layout engine after the core ownership/IR model is stable.
 
 See `docs/language.md` for the evolving language specification.

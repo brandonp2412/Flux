@@ -71,6 +71,18 @@ The bootstrap representation stores only an error message. The language-level ty
 
 A function may directly forward another function's multi-value result with `return call(...)` when the complete return shape matches exactly. This is compile-time checked positionally and lowers to ordinary native return values; it does not introduce exceptions, stack unwinding, or general tuple values.
 
+When successful values are needed before the enclosing function returns, a destructuring binding may use `else return`:
+
+```flux
+fn load_config(path: str) -> (str, error) {
+    let data: str, err: error = load(path) else return
+    print(data)
+    return data, nil
+}
+```
+
+This form is intentionally narrow. The final destructured value must have type `error`, and the call's full multi-value return shape must exactly match the enclosing function. The call is evaluated once. If the final error value is non-`nil`, the exact multi-value result is returned immediately; otherwise the values are destructured and execution continues. This is explicit control flow rather than exception propagation.
+
 ## Generics
 
 Flux deliberately has no generics in the source language. This is a design constraint, not a deferred feature.

@@ -5,7 +5,8 @@ fn load(path: str) -> (str, error) {
 }
 
 fn load_config(path: str) -> (str, error) {
-    return load(path)
+    let data: str, err: error = load(path) else return
+    return data, nil
 }
 
 fn main() -> i64 {

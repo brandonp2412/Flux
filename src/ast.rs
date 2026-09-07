@@ -76,6 +76,7 @@ pub enum StmtKind {
     LetDestructure {
         bindings: Vec<Binding>,
         expr: Expr,
+        else_return: bool,
     },
     Return(Vec<Expr>),
     Expr(Expr),

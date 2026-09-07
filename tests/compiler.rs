@@ -261,6 +261,112 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_explicit_else_return_error_propagation() {
+    let source = r#"
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "config", nil
+}
+
+fn load_config(path: str) -> (str, error) {
+    let data: str, err: error = load(path) else return
+    print(data)
+    return data, nil
+}
+
+fn main() -> i64 {
+    let data: str, err: error = load_config("settings")
+    if err != nil:
+        print(err)
+    return 0
+}
+"#;
+
+    check_source(source).expect("explicit error propagation should typecheck");
+    let generated = compile_to_c(source).expect("explicit error propagation should compile");
+    assert!(generated.contains(".v1 != NULL"));
+    assert!(generated.contains("return flux__return_"));
+}
+
+#[test]
+fn rejects_else_return_without_final_error() {
+    let source = r#"
+fn pair() -> (i64, bool) {
+    return 1, true
+}
+
+fn forward() -> (i64, bool) {
+    let value: i64, ok: bool = pair() else return
+    return value, ok
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("else return needs a final error value");
+    assert!(
+        error
+            .message
+            .contains("final destructured value to have type error")
+    );
+}
+
+#[test]
+fn rejects_else_return_when_return_shape_differs() {
+    let source = r#"
+fn load() -> (str, error) {
+    return "config", nil
+}
+
+fn load_count() -> (i64, error) {
+    let data: str, err: error = load() else return
+    print(data)
+    return 1, nil
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("else return must forward the exact shape");
+    assert!(
+        error
+            .message
+            .contains("can only forward an exact return shape")
+    );
+}
+
+#[test]
+fn rejects_else_return_on_scalar_binding() {
+    let source = r#"
+fn load() -> (str, error) {
+    return "config", nil
+}
+
+fn load_config() -> (str, error) {
+    let data: str = load() else return
+    return data, nil
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("else return requires destructuring");
+    assert!(
+        error
+            .message
+            .contains("requires a multi-value destructuring binding")
+    );
+    assert_eq!(error.stage, DiagnosticStage::Parse);
+}
+
+#[test]
 fn rejects_multi_value_return_forwarding_type_mismatch() {
     let source = r#"
 fn pair() -> (i64, bool) {

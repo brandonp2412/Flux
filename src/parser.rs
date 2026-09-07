@@ -333,13 +333,26 @@ fn parse_nested_block(
 fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnostic> {
     let line = span.line;
     if let Some(rest) = input.strip_prefix("let ") {
-        let Some((binding_src, expr_src)) = rest.split_once('=') else {
+        let Some((binding_src, raw_expr_src)) = rest.split_once('=') else {
             return Err(diag(line, "let bindings require '= expression'"));
         };
+        let raw_expr_src = raw_expr_src.trim();
+        let (expr_src, else_return) =
+            if let Some(expr_src) = raw_expr_src.strip_suffix(" else return") {
+                (expr_src.trim_end(), true)
+            } else {
+                (raw_expr_src, false)
+            };
         let raw_bindings = split_top_level_commas(binding_src);
         if raw_bindings.len() == 1 {
+            if else_return {
+                return Err(diag(
+                    line,
+                    "'else return' requires a multi-value destructuring binding",
+                ));
+            }
             let binding = parse_binding(raw_bindings[0], line)?;
-            let expr = parse_expression(expr_src.trim(), line)?;
+            let expr = parse_expression(expr_src, line)?;
             return Ok(Stmt {
                 line,
                 span,
@@ -365,11 +378,15 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             }
             bindings.push(binding);
         }
-        let expr = parse_expression(expr_src.trim(), line)?;
+        let expr = parse_expression(expr_src, line)?;
         return Ok(Stmt {
             line,
             span,
-            kind: StmtKind::LetDestructure { bindings, expr },
+            kind: StmtKind::LetDestructure {
+                bindings,
+                expr,
+                else_return,
+            },
         });
     }
 
