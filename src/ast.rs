@@ -40,8 +40,12 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
     pub params: Vec<Param>,
     pub returns: Vec<Type>,
+    pub return_span: SourceSpan,
+    pub return_type_spans: Vec<SourceSpan>,
     pub body: Vec<Stmt>,
     pub line: usize,
     pub span: SourceSpan,
@@ -50,19 +54,24 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub name_span: SourceSpan,
     pub ty: Type,
+    pub type_span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub name: String,
+    pub name_span: SourceSpan,
     pub ty: Type,
+    pub type_span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub line: usize,
     pub span: SourceSpan,
+    pub keyword_span: SourceSpan,
     pub kind: StmtKind,
 }
 
@@ -70,7 +79,9 @@ pub struct Stmt {
 pub enum StmtKind {
     Let {
         name: String,
+        name_span: SourceSpan,
         ty: Type,
+        type_span: SourceSpan,
         expr: Expr,
     },
     LetDestructure {
@@ -84,9 +95,11 @@ pub enum StmtKind {
         cond: Expr,
         body: Vec<Stmt>,
         else_body: Vec<Stmt>,
+        else_keyword_span: Option<SourceSpan>,
     },
     ForRange {
         name: String,
+        name_span: SourceSpan,
         start: Expr,
         end: Expr,
         body: Vec<Stmt>,

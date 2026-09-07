@@ -2,6 +2,7 @@ pub mod ast;
 pub mod codegen;
 pub mod diagnostic;
 pub mod parser;
+pub mod semantic;
 pub mod typecheck;
 
 pub use diagnostic::{

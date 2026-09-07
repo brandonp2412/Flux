@@ -123,7 +123,7 @@ fn check_block_all(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr } => {
+            StmtKind::Let { name, ty, expr, .. } => {
                 let duplicate = env.contains_key(name);
                 if duplicate {
                     diagnostics.push(diag(
@@ -270,6 +270,7 @@ fn check_block_all(
                 cond,
                 body,
                 else_body,
+                ..
             } => {
                 match type_of_expr(cond, env, signatures) {
                     Ok(cond_type) => {
@@ -297,6 +298,7 @@ fn check_block_all(
                 start,
                 end,
                 body,
+                ..
             } => {
                 let shadows = env.contains_key(name);
                 if shadows {

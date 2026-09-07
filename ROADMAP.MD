@@ -69,16 +69,16 @@ Implemented on `main`:
 
 The parser and semantic layer must become robust enough that every later subsystem can share the same source model.
 
-Parser recovery synchronizes at function boundaries, and type checking now continues across independent statements/functions while retaining declared binding types after invalid initializers to suppress misleading follow-on errors. The batch API is now suitable for editor diagnostic collection; next focus is stable source identity and machine-readable diagnostics.
+Parser recovery synchronizes at function boundaries, and type checking continues across independent statements/functions while suppressing misleading cascades. Diagnostics now carry stable source identity, rich labels/notes/fixes, and JSON transport. Declaration names, parameter/binding types, return types, statement keywords, branch keywords, loop variables, and expressions retain precise spans. Editor consumers can keep parse snapshots keyed by stable source IDs/fingerprints and cheaply reuse unchanged parses. Next focus is the shared semantic query database and deterministic formatter.
 
 - [x] Multi-diagnostic parser recovery instead of stopping at the first syntax error.
 - [x] Multi-diagnostic type checking where safe to continue.
 - [x] Stable file/source identifiers in spans, not only line/column.
-- [ ] Full token ranges for declarations, bindings, types, and control-flow constructs.
+- [x] Full token ranges for declarations, bindings, types, and control-flow constructs.
 - [x] Diagnostic labels/notes/fix suggestions.
 - [x] Machine-readable diagnostic output.
-- [ ] Incremental parse API suitable for editor use.
-- [ ] Semantic query database shared by compiler and LSP.
+- [x] Incremental parse snapshot API suitable for editor use, with stable source identity, source fingerprints, unchanged-source reuse, and reparsing on edits.
+- [x] Semantic query database shared by compiler and LSP, indexing function/parameter/binding/loop symbols and analyzed signatures from one typed program.
 - [ ] Deterministic formatter and canonical Flux formatting rules.
 
 # Milestone 2 — Functional language core

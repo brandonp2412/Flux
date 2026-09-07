@@ -16,6 +16,46 @@ impl Line {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ParseSnapshot {
+    pub source_id: SourceId,
+    pub fingerprint: u64,
+    pub program: Option<Program>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ParseSnapshot {
+    pub fn is_valid(&self) -> bool {
+        self.diagnostics.is_empty() && self.program.is_some()
+    }
+}
+
+pub fn parse_snapshot(source: &str, source_id: SourceId) -> ParseSnapshot {
+    let fingerprint = source_fingerprint(source);
+    match parse_all_with_source(source, source_id) {
+        Ok(program) => ParseSnapshot {
+            source_id,
+            fingerprint,
+            program: Some(program),
+            diagnostics: Vec::new(),
+        },
+        Err(diagnostics) => ParseSnapshot {
+            source_id,
+            fingerprint,
+            program: None,
+            diagnostics,
+        },
+    }
+}
+
+pub fn reparse_snapshot(previous: &ParseSnapshot, source: &str) -> ParseSnapshot {
+    let fingerprint = source_fingerprint(source);
+    if fingerprint == previous.fingerprint {
+        return previous.clone();
+    }
+    parse_snapshot(source, previous.source_id)
+}
+
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     parse_all(source).map_err(|diagnostics| {
         diagnostics
@@ -66,7 +106,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        let (name, params, returns) = match parse_function_header(&line.text, line.number) {
+        let header = match parse_function_header(&line.text, line.number) {
             Ok(header) => header,
             Err(diagnostic) => {
                 diagnostics.push(diagnostic);
@@ -74,6 +114,14 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 continue;
             }
         };
+        let FunctionHeader {
+            name,
+            name_span,
+            params,
+            returns,
+            return_span,
+            return_type_spans,
+        } = header;
         let function_line = line.number;
         let function_span = line.span();
         index += 1;
@@ -104,8 +152,12 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
 
         functions.push(Function {
             name,
+            name_span,
+            keyword_span: SourceSpan::new(function_line, 1, 2),
             params,
             returns,
+            return_span,
+            return_type_spans,
             body,
             line: function_line,
             span: function_span,
@@ -126,9 +178,28 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     }
 }
 
+fn source_fingerprint(source: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn attach_program_source(program: &mut Program, source_id: SourceId) {
     for function in &mut program.functions {
         function.span = function.span.with_source(source_id);
+        function.keyword_span = function.keyword_span.with_source(source_id);
+        function.name_span = function.name_span.with_source(source_id);
+        function.return_span = function.return_span.with_source(source_id);
+        for span in &mut function.return_type_spans {
+            *span = span.with_source(source_id);
+        }
+        for param in &mut function.params {
+            param.name_span = param.name_span.with_source(source_id);
+            param.type_span = param.type_span.with_source(source_id);
+        }
         attach_block_source(&mut function.body, source_id);
     }
 }
@@ -136,8 +207,23 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
 fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
     for stmt in body {
         stmt.span = stmt.span.with_source(source_id);
+        stmt.keyword_span = stmt.keyword_span.with_source(source_id);
         match &mut stmt.kind {
-            StmtKind::Let { expr, .. } | StmtKind::LetDestructure { expr, .. } => {
+            StmtKind::Let {
+                name_span,
+                type_span,
+                expr,
+                ..
+            } => {
+                *name_span = name_span.with_source(source_id);
+                *type_span = type_span.with_source(source_id);
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::LetDestructure { bindings, expr, .. } => {
+                for binding in bindings {
+                    binding.name_span = binding.name_span.with_source(source_id);
+                    binding.type_span = binding.type_span.with_source(source_id);
+                }
                 attach_expr_source(expr, source_id);
             }
             StmtKind::Return(expressions) => {
@@ -150,14 +236,23 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 cond,
                 body,
                 else_body,
+                else_keyword_span,
             } => {
+                if let Some(span) = else_keyword_span {
+                    *span = span.with_source(source_id);
+                }
                 attach_expr_source(cond, source_id);
                 attach_block_source(body, source_id);
                 attach_block_source(else_body, source_id);
             }
             StmtKind::ForRange {
-                start, end, body, ..
+                name_span,
+                start,
+                end,
+                body,
+                ..
             } => {
+                *name_span = name_span.with_source(source_id);
                 attach_expr_source(start, source_id);
                 attach_expr_source(end, source_id);
                 attach_block_source(body, source_id);
@@ -255,10 +350,16 @@ fn strip_comment(input: &str) -> &str {
     input
 }
 
-fn parse_function_header(
-    input: &str,
-    line: usize,
-) -> Result<(String, Vec<Param>, Vec<Type>), Diagnostic> {
+struct FunctionHeader {
+    name: String,
+    name_span: SourceSpan,
+    params: Vec<Param>,
+    returns: Vec<Type>,
+    return_span: SourceSpan,
+    return_type_spans: Vec<SourceSpan>,
+}
+
+fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Diagnostic> {
     let Some(rest) = input.strip_prefix("fn ") else {
         return Err(diag(
             line,
@@ -268,8 +369,10 @@ fn parse_function_header(
     let Some(open) = rest.find('(') else {
         return Err(diag(line, "expected '(' after function name"));
     };
-    let name = rest[..open].trim();
+    let raw_name = &rest[..open];
+    let name = raw_name.trim();
     validate_identifier(name, line)?;
+    let name_span = SourceSpan::new(line, 4 + raw_name.find(name).unwrap_or(0), name.len());
 
     let Some(close_rel) = rest[open + 1..].find(')') else {
         return Err(diag(line, "expected ')' after function parameters"));
@@ -292,17 +395,32 @@ fn parse_function_header(
         )
         .with_fix(insertion, " {", "insert the function body opener"));
     };
-    let returns = parse_return_types(ret_src.trim(), line)?;
+    let return_text = ret_src.trim();
+    let returns = parse_return_types(return_text, line)?;
+    let return_span = SourceSpan::new(
+        line,
+        input
+            .find(return_text)
+            .map(|offset| offset + 1)
+            .unwrap_or(1),
+        return_text.len(),
+    );
+    let return_type_spans = return_type_spans(return_text, return_span);
 
     let mut params = Vec::new();
     if !params_src.trim().is_empty() {
+        let params_base = 4 + open + 1;
+        let mut param_offset = 0usize;
         for raw_param in params_src.split(',') {
             let Some((raw_name, raw_ty)) = raw_param.split_once(':') else {
                 return Err(diag(line, "parameters use 'name: type' syntax"));
             };
             let param_name = raw_name.trim();
             validate_identifier(param_name, line)?;
-            let ty = parse_type(raw_ty.trim(), line)?;
+            let type_text = raw_ty.trim();
+            let ty = parse_type(type_text, line)?;
+            let name_offset = raw_param.find(param_name).unwrap_or(0);
+            let type_offset = raw_param.find(type_text).unwrap_or(raw_param.len());
             if ty == Type::Void {
                 return Err(diag(line, "parameters cannot have type void"));
             }
@@ -311,12 +429,56 @@ fn parse_function_header(
             }
             params.push(Param {
                 name: param_name.to_string(),
+                name_span: SourceSpan::new(
+                    line,
+                    params_base + param_offset + name_offset,
+                    param_name.len(),
+                ),
                 ty,
+                type_span: SourceSpan::new(
+                    line,
+                    params_base + param_offset + type_offset,
+                    type_text.len(),
+                ),
             });
+            param_offset += raw_param.len() + 1;
         }
     }
 
-    Ok((name.to_string(), params, returns))
+    Ok(FunctionHeader {
+        name: name.to_string(),
+        name_span,
+        params,
+        returns,
+        return_span,
+        return_type_spans,
+    })
+}
+
+fn return_type_spans(return_text: &str, return_span: SourceSpan) -> Vec<SourceSpan> {
+    let Some(inner) = return_text
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return vec![return_span];
+    };
+
+    let mut spans = Vec::new();
+    let mut search_from = 0usize;
+    for raw in split_top_level_commas(inner) {
+        let ty = raw.trim();
+        let relative = inner[search_from..]
+            .find(ty)
+            .map(|offset| search_from + offset)
+            .unwrap_or(search_from);
+        spans.push(SourceSpan::new(
+            return_span.line,
+            return_span.column + 1 + relative,
+            ty.len(),
+        ));
+        search_from = relative + ty.len();
+    }
+    spans
 }
 
 fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<Stmt>, Diagnostic> {
@@ -377,8 +539,14 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             Stmt {
                 line: stmt_line,
                 span: line.span(),
+                keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 3),
                 kind: StmtKind::ForRange {
                     name: name.to_string(),
+                    name_span: SourceSpan::new(
+                        stmt_line,
+                        expression_column(&line.text, name, line.indent + 1),
+                        name.len(),
+                    ),
                     start,
                     end,
                     body: nested,
@@ -415,15 +583,17 @@ fn parse_if_statement(
     let stmt_span = line.span();
     *index += 1;
     let body = parse_nested_block(lines, index, indent, stmt_line, "if")?;
-    let else_body = parse_if_tail(lines, index, indent)?;
+    let (else_body, else_keyword_span) = parse_if_tail(lines, index, indent)?;
 
     Ok(Stmt {
         line: stmt_line,
         span: stmt_span,
+        keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 2),
         kind: StmtKind::If {
             cond,
             body,
             else_body,
+            else_keyword_span,
         },
     })
 }
@@ -432,9 +602,9 @@ fn parse_if_tail(
     lines: &[Line],
     index: &mut usize,
     indent: usize,
-) -> Result<Vec<Stmt>, Diagnostic> {
+) -> Result<(Vec<Stmt>, Option<SourceSpan>), Diagnostic> {
     if *index >= lines.len() || lines[*index].indent != indent {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
     let line = &lines[*index];
@@ -452,25 +622,32 @@ fn parse_if_tail(
         let stmt_span = line.span();
         *index += 1;
         let body = parse_nested_block(lines, index, indent, stmt_line, "elif")?;
-        let else_body = parse_if_tail(lines, index, indent)?;
-        return Ok(vec![Stmt {
-            line: stmt_line,
-            span: stmt_span,
-            kind: StmtKind::If {
-                cond,
-                body,
-                else_body,
-            },
-        }]);
+        let (else_body, else_keyword_span) = parse_if_tail(lines, index, indent)?;
+        return Ok((
+            vec![Stmt {
+                line: stmt_line,
+                span: stmt_span,
+                keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 4),
+                kind: StmtKind::If {
+                    cond,
+                    body,
+                    else_body,
+                    else_keyword_span,
+                },
+            }],
+            Some(SourceSpan::new(stmt_line, line.indent + 1, 4)),
+        ));
     }
 
     if line.text == "else:" {
         let stmt_line = line.number;
+        let keyword_span = SourceSpan::new(stmt_line, line.indent + 1, 4);
         *index += 1;
-        return parse_nested_block(lines, index, indent, stmt_line, "else");
+        let body = parse_nested_block(lines, index, indent, stmt_line, "else")?;
+        return Ok((body, Some(keyword_span)));
     }
 
-    Ok(Vec::new())
+    Ok((Vec::new(), None))
 }
 
 fn parse_nested_block(
@@ -511,7 +688,12 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                     "'else return' requires a multi-value destructuring binding",
                 ));
             }
-            let binding = parse_binding(raw_bindings[0], line)?;
+            let raw_binding = raw_bindings[0].trim();
+            let binding = parse_binding(
+                raw_binding,
+                line,
+                expression_column(input, raw_binding, span.column),
+            )?;
             let expr = parse_expression_at(
                 expr_src,
                 line,
@@ -520,9 +702,12 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             return Ok(Stmt {
                 line,
                 span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
                 kind: StmtKind::Let {
                     name: binding.name,
+                    name_span: binding.name_span,
                     ty: binding.ty,
+                    type_span: binding.type_span,
                     expr,
                 },
             });
@@ -530,7 +715,12 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
 
         let mut bindings = Vec::with_capacity(raw_bindings.len());
         for raw_binding in raw_bindings {
-            let binding = parse_binding(raw_binding, line)?;
+            let raw_binding = raw_binding.trim();
+            let binding = parse_binding(
+                raw_binding,
+                line,
+                expression_column(input, raw_binding, span.column),
+            )?;
             if bindings
                 .iter()
                 .any(|existing: &Binding| existing.name == binding.name)
@@ -550,6 +740,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         return Ok(Stmt {
             line,
             span,
+            keyword_span: SourceSpan::new(line, span.column, 3),
             kind: StmtKind::LetDestructure {
                 bindings,
                 expr,
@@ -562,6 +753,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         return Ok(Stmt {
             line,
             span,
+            keyword_span: SourceSpan::new(line, span.column, 6),
             kind: StmtKind::Return(Vec::new()),
         });
     }
@@ -576,6 +768,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         return Ok(Stmt {
             line,
             span,
+            keyword_span: SourceSpan::new(line, span.column, 6),
             kind: StmtKind::Return(expressions),
         });
     }
@@ -583,11 +776,12 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
     Ok(Stmt {
         line,
         span,
+        keyword_span: SourceSpan::new(line, span.column, 0),
         kind: StmtKind::Expr(parse_expression_at(input, line, span.column)?),
     })
 }
 
-fn parse_binding(input: &str, line: usize) -> Result<Binding, Diagnostic> {
+fn parse_binding(input: &str, line: usize, column: usize) -> Result<Binding, Diagnostic> {
     let Some((name_src, ty_src)) = input.split_once(':') else {
         return Err(diag(
             line,
@@ -596,17 +790,31 @@ fn parse_binding(input: &str, line: usize) -> Result<Binding, Diagnostic> {
     };
     let name = name_src.trim();
     validate_identifier(name, line)?;
-    let ty = parse_type(ty_src.trim(), line)?;
+    let type_text = ty_src.trim();
+    let ty = parse_type(type_text, line)?;
     if ty == Type::Void {
         return Err(diag(line, "variables cannot have type void"));
     }
     Ok(Binding {
         name: name.to_string(),
+        name_span: SourceSpan::new(line, column + name_src.find(name).unwrap_or(0), name.len()),
         ty,
+        type_span: SourceSpan::new(
+            line,
+            column + input.find(type_text).unwrap_or(0),
+            type_text.len(),
+        ),
     })
 }
 
 fn split_top_level_commas(input: &str) -> Vec<&str> {
+    split_top_level_commas_with_offsets(input)
+        .into_iter()
+        .map(|(part, _)| part)
+        .collect()
+}
+
+fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
     let bytes = input.as_bytes();
     let mut parts = Vec::new();
     let mut start = 0usize;
@@ -634,13 +842,13 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
-                parts.push(&input[start..index]);
+                parts.push((&input[start..index], start));
                 start = index + 1;
             }
             _ => {}
         }
     }
-    parts.push(&input[start..]);
+    parts.push((&input[start..], start));
     parts
 }
 

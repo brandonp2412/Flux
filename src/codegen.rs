@@ -112,7 +112,7 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr } => {
+            StmtKind::Let { name, ty, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{} {name} = {};\n", c_type(ty), value.code));
                 env.insert(name.clone(), ty.clone());
@@ -194,6 +194,7 @@ fn emit_block(
                 cond,
                 body,
                 else_body,
+                ..
             } => {
                 let cond = emit_expr(cond, env, signatures)?;
                 out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
@@ -229,6 +230,7 @@ fn emit_block(
                 start,
                 end,
                 body,
+                ..
             } => {
                 let start = emit_expr(start, env, signatures)?;
                 let end = emit_expr(end, env, signatures)?;

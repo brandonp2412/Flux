@@ -148,6 +148,108 @@ fn main() -> i64 {
 }
 
 #[test]
+fn semantic_database_shares_symbols_and_signatures_for_editor_queries() {
+    let source = "fn double(value: i64) -> i64 {\n    let result: i64 = value * 2\n    return result\n}\n\nfn main() -> i64 {\n    for i in 0..2:\n        print(double(i))\n    return 0\n}\n";
+    let source_id = SourceId::new(101);
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, source_id)
+        .expect("valid source should build a semantic database");
+
+    let signature = database
+        .signature("double")
+        .expect("signature should exist");
+    assert_eq!(signature.params, vec![fluxc::ast::Type::I64]);
+    assert_eq!(signature.returns, vec![fluxc::ast::Type::I64]);
+
+    let function = database
+        .symbols_named("double")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Function)
+        .expect("function symbol should exist");
+    assert_eq!(span_text(source, function.span), "double");
+
+    let result = database
+        .symbols_named("result")
+        .next()
+        .expect("binding symbol should exist");
+    assert_eq!(result.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(source, result.span), "result");
+    assert_eq!(
+        database
+            .symbol_at(source_id, result.span.line, result.span.column)
+            .expect("position query should resolve the binding")
+            .name,
+        "result"
+    );
+
+    let loop_variable = database
+        .symbols_named("i")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::LoopVariable)
+        .expect("loop variable should be indexed");
+    assert_eq!(loop_variable.ty, Some(fluxc::ast::Type::I64));
+}
+
+#[test]
+fn editor_parse_snapshot_reuses_unchanged_source_and_reparses_changes() {
+    let source = "fn main() -> i64 {\n    return 0\n}\n";
+    let source_id = SourceId::new(88);
+    let snapshot = fluxc::parser::parse_snapshot(source, source_id);
+    assert!(snapshot.is_valid());
+    let unchanged = fluxc::parser::reparse_snapshot(&snapshot, source);
+    assert_eq!(unchanged.fingerprint, snapshot.fingerprint);
+    assert_eq!(unchanged.source_id, source_id);
+    assert!(unchanged.is_valid());
+
+    let broken = "fn main() -> i64 {\n    return true\n}\n";
+    let changed = fluxc::parser::reparse_snapshot(&snapshot, broken);
+    assert_ne!(changed.fingerprint, snapshot.fingerprint);
+    assert!(
+        changed.is_valid(),
+        "parse snapshots only report syntax errors"
+    );
+    let program = changed.program.expect("changed source should parse");
+    let diagnostics = fluxc::typecheck::check_all(&program)
+        .expect_err("changed program should retain its later type error");
+    assert!(diagnostics[0].message.contains("expected i64, got bool"));
+}
+
+#[test]
+fn exposes_precise_declaration_binding_and_type_spans() {
+    let source = "fn add(value: i64) -> i64 {\n    let doubled: i64 = value * 2\n    for i in 0..2:\n        print(i)\n    return doubled\n}\n";
+    let source_id = SourceId::new(91);
+    let program = fluxc::parser::parse_with_source(source, source_id).expect("source should parse");
+    let function = &program.functions[0];
+
+    assert_eq!(span_text(source, function.name_span), "add");
+    assert_eq!(span_text(source, function.params[0].name_span), "value");
+    assert_eq!(span_text(source, function.params[0].type_span), "i64");
+    assert_eq!(span_text(source, function.return_span), "i64");
+
+    let fluxc::ast::StmtKind::Let {
+        name_span,
+        type_span,
+        ..
+    } = &function.body[0].kind
+    else {
+        panic!("expected let binding");
+    };
+    assert_eq!(span_text(source, *name_span), "doubled");
+    assert_eq!(span_text(source, *type_span), "i64");
+
+    let fluxc::ast::StmtKind::ForRange { name_span, .. } = &function.body[1].kind else {
+        panic!("expected range loop");
+    };
+    assert_eq!(span_text(source, *name_span), "i");
+    assert_eq!(name_span.source_id, source_id);
+}
+
+fn span_text(source: &str, span: fluxc::SourceSpan) -> &str {
+    let line = source
+        .lines()
+        .nth(span.line - 1)
+        .expect("span line should exist");
+    &line[span.column - 1..span.column - 1 + span.length]
+}
+
+#[test]
 fn reports_token_level_expression_parse_spans() {
     let source = r#"
 fn main() -> i64 {
