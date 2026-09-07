@@ -61,6 +61,12 @@ Check without producing a binary:
 cargo run -- check examples/hello.flux
 ```
 
+Tooling/CI can request structured diagnostics without parsing human text:
+
+```sh
+cargo run -- check examples/hello.flux --json
+```
+
 ## Multi-value returns
 
 Flux keeps multi-values explicit and does not make general tuple values part of ordinary expressions. Functions may declare multiple return values and callers destructure them into explicitly typed bindings:

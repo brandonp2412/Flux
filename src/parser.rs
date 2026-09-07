@@ -284,7 +284,13 @@ fn parse_function_header(
         ));
     };
     let Some(ret_src) = ret_src.trim().strip_suffix('{') else {
-        return Err(diag(line, "functions must open their body with '{'"));
+        let insertion = SourceSpan::new(line, input.len() + 1, 0);
+        return Err(Diagnostic::new(
+            DiagnosticStage::Parse,
+            SourceSpan::line(line),
+            "functions must open their body with '{'",
+        )
+        .with_fix(insertion, " {", "insert the function body opener"));
     };
     let returns = parse_return_types(ret_src.trim(), line)?;
 

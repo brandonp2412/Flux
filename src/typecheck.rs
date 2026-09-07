@@ -7,6 +7,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 pub struct Signature {
     pub params: Vec<Type>,
     pub returns: Vec<Type>,
+    pub span: SourceSpan,
 }
 
 pub type Signatures = HashMap<String, Signature>;
@@ -45,20 +46,29 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                     .map(|param| param.ty.clone())
                     .collect(),
                 returns: function.returns.clone(),
+                span: function.span,
             },
         );
     }
 
     match signatures.get("main") {
-        None => diagnostics.push(Diagnostic::global(
-            DiagnosticStage::Type,
-            "program requires fn main() -> i64 { ... }",
-        )),
-        Some(main) if !main.params.is_empty() || main.returns != vec![Type::I64] => {
-            diagnostics.push(Diagnostic::global(
+        None => diagnostics.push(
+            Diagnostic::global(
                 DiagnosticStage::Type,
-                "main must have signature fn main() -> i64",
-            ));
+                "program requires fn main() -> i64 { ... }",
+            )
+            .with_note("native executables enter Flux through a parameterless main returning i64"),
+        ),
+        Some(main) if !main.params.is_empty() || main.returns != vec![Type::I64] => {
+            diagnostics.push(
+                Diagnostic::global(
+                    DiagnosticStage::Type,
+                    "main must have signature fn main() -> i64",
+                )
+                .with_note(
+                    "main currently receives no parameters and returns the process exit code",
+                ),
+            );
         }
         Some(_) => {}
     }
@@ -449,16 +459,20 @@ fn check_call(
                 signature.params.len(),
                 args.len()
             ),
-        ));
+        )
+        .with_label(signature.span, format!("'{name}' is declared here")));
     }
     for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
         let actual = type_of_expr(arg, env, signatures)?;
         require_type(
-            span,
+            arg.span,
             expected,
             &actual,
             &format!("argument {} to '{name}'", index + 1),
-        )?;
+        )
+        .map_err(|diagnostic| {
+            diagnostic.with_label(signature.span, format!("'{name}' is declared here"))
+        })?;
     }
     Ok(signature.returns.clone())
 }

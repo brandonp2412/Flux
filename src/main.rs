@@ -3,43 +3,77 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("fluxc: {message}");
-            ExitCode::FAILURE
-        }
+enum CliError {
+    Message(String),
+    Reported,
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
     }
 }
 
-fn run() -> Result<(), String> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::Message(message)) => {
+            eprintln!("fluxc: {message}");
+            ExitCode::FAILURE
+        }
+        Err(CliError::Reported) => ExitCode::FAILURE,
+    }
+}
+
+fn run() -> Result<(), CliError> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
-        return Err(usage());
+        return Err(CliError::Message(usage()));
     }
 
     match args[0].as_str() {
         "check" => {
             let path = require_source(&args)?;
+            let json = check_json_mode(&args[2..])?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            fluxc::check_source_all(&source).map_err(|diagnostics| {
-                diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })?;
-            println!("ok: {}", path.display());
-            Ok(())
+            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
+            match fluxc::check_source_all_with_id(&source, source_id) {
+                Ok(()) if json => {
+                    println!(
+                        "{{\"ok\":true,\"source_id\":{},\"diagnostics\":[]}}",
+                        source_id.value()
+                    );
+                    Ok(())
+                }
+                Ok(()) => {
+                    println!("ok: {}", path.display());
+                    Ok(())
+                }
+                Err(diagnostics) if json => {
+                    println!(
+                        "{{\"ok\":false,\"source_id\":{},\"diagnostics\":{}}}",
+                        source_id.value(),
+                        fluxc::diagnostics_to_json(&diagnostics)
+                    );
+                    Err(CliError::Reported)
+                }
+                Err(diagnostics) => Err(CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+            }
         }
         "emit-c" => {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let generated =
-                fluxc::compile_to_c(&source).map_err(|diagnostic| diagnostic.to_string())?;
+            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
+            let generated = fluxc::compile_to_c_with_source(&source, source_id)
+                .map_err(|diagnostic| diagnostic.to_string())?;
             if let Some(output) = output_path(&args[2..])? {
                 fs::write(&output, generated)
                     .map_err(|error| format!("failed to write '{}': {error}", output.display()))?;
@@ -52,14 +86,23 @@ fn run() -> Result<(), String> {
             let path = require_source(&args)?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let generated =
-                fluxc::compile_to_c(&source).map_err(|diagnostic| diagnostic.to_string())?;
+            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
+            let generated = fluxc::compile_to_c_with_source(&source, source_id)
+                .map_err(|diagnostic| diagnostic.to_string())?;
             let output = output_path(&args[2..])?.unwrap_or_else(|| default_binary_path(path));
             build_native(&generated, &output)?;
             println!("built: {}", output.display());
             Ok(())
         }
-        _ => Err(usage()),
+        _ => Err(CliError::Message(usage())),
+    }
+}
+
+fn check_json_mode(args: &[String]) -> Result<bool, String> {
+    match args {
+        [] => Ok(false),
+        [flag] if flag == "--json" => Ok(true),
+        _ => Err("check syntax is 'check <file.flux> [--json]'".to_string()),
     }
 }
 
@@ -113,5 +156,5 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux> | fluxc emit-c <file.flux> [-o file.c] | fluxc build <file.flux> [-o binary]".to_string()
+    "usage: fluxc check <file.flux> [--json] | fluxc emit-c <file.flux> [-o file.c] | fluxc build <file.flux> [-o binary]".to_string()
 }

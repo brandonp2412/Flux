@@ -4,7 +4,10 @@ pub mod diagnostic;
 pub mod parser;
 pub mod typecheck;
 
-pub use diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
+pub use diagnostic::{
+    Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage, SourceId, SourceSpan,
+    diagnostics_to_json,
+};
 
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
     let program = parser::parse(source)?;

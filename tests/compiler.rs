@@ -1,6 +1,9 @@
+use std::fs;
+use std::process::Command;
+
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
-    compile_to_c,
+    compile_to_c, diagnostics_to_json,
 };
 
 #[test]
@@ -194,6 +197,68 @@ fn main() -> i64 {
         (second_span.line, second_span.column, second_span.length),
         (7, 24, 1)
     );
+}
+
+#[test]
+fn diagnostics_carry_labels_notes_fixes_and_machine_json() {
+    let missing_brace = r#"
+fn main() -> i64
+    return 0
+}
+"#;
+    let error = check_source(missing_brace).expect_err("missing brace should offer a fix");
+    assert_eq!(error.fixes.len(), 1);
+    assert_eq!(error.fixes[0].replacement, " {");
+    assert!(error.fixes[0].message.contains("body opener"));
+
+    let bad_argument = r#"
+fn identity(value: i64) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    return identity(false)
+}
+"#;
+    let error = check_source(bad_argument).expect_err("bad call argument should be labelled");
+    assert_eq!(error.labels.len(), 1);
+    assert!(error.labels[0].message.contains("identity"));
+    assert_eq!(error.labels[0].span.line, 2);
+
+    let json = diagnostics_to_json(&[error]);
+    assert!(json.starts_with("[{") && json.ends_with("]"));
+    assert!(json.contains("\"stage\":\"type\""));
+    assert!(json.contains("\"labels\":[{"));
+    assert!(json.contains("\"source_id\":0"));
+}
+
+#[test]
+fn check_json_cli_emits_clean_machine_readable_output() {
+    let path = std::env::temp_dir().join(format!("flux-json-{}.flux", std::process::id()));
+    fs::write(
+        &path,
+        "fn main() -> i64 {\n    let count: i64 = false\n    return 0\n}\n",
+    )
+    .expect("temporary Flux source should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&path)
+        .arg("--json")
+        .output()
+        .expect("fluxc should run");
+    let _ = fs::remove_file(&path);
+
+    assert!(!output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not mix human stderr output"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("JSON output must be UTF-8");
+    assert!(stdout.starts_with("{\"ok\":false,\"source_id\":"));
+    assert!(stdout.contains("\"diagnostics\":[{"));
+    assert!(stdout.contains("\"stage\":\"type\""));
+    assert!(stdout.trim_end().ends_with("}"));
 }
 
 #[test]
