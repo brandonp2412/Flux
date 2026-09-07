@@ -25,6 +25,25 @@ pub struct StructSignature {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone)]
+pub struct EnumVariantSignature {
+    pub name: String,
+    pub payloads: Vec<Type>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumSignature {
+    pub variants: Vec<EnumVariantSignature>,
+    pub span: SourceSpan,
+}
+
+impl EnumSignature {
+    pub fn variant(&self, name: &str) -> Option<&EnumVariantSignature> {
+        self.variants.iter().find(|variant| variant.name == name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstantValue {
     I64(i64),
@@ -59,6 +78,7 @@ impl StructSignature {
 pub struct Signatures {
     functions: HashMap<String, Signature>,
     structs: HashMap<String, StructSignature>,
+    enums: HashMap<String, EnumSignature>,
     aliases: HashMap<String, Type>,
     constants: HashMap<String, ConstantSignature>,
 }
@@ -74,6 +94,14 @@ impl Signatures {
 
     pub fn structs(&self) -> &HashMap<String, StructSignature> {
         &self.structs
+    }
+
+    pub fn enum_type(&self, name: &str) -> Option<&EnumSignature> {
+        self.enums.get(name)
+    }
+
+    pub fn enums(&self) -> &HashMap<String, EnumSignature> {
+        &self.enums
     }
 
     pub fn type_alias(&self, name: &str) -> Option<&Type> {
@@ -182,6 +210,37 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         );
     }
 
+    for definition in &program.enums {
+        if signatures.aliases.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("enum '{}' conflicts with a type alias", definition.name),
+            ));
+            continue;
+        }
+        if signatures.structs.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("enum '{}' conflicts with a struct name", definition.name),
+            ));
+            continue;
+        }
+        if signatures.enums.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("duplicate enum '{}'", definition.name),
+            ));
+            continue;
+        }
+        signatures.enums.insert(
+            definition.name.clone(),
+            EnumSignature {
+                variants: Vec::new(),
+                span: definition.name_span,
+            },
+        );
+    }
+
     for definition in &program.structs {
         let fields = definition
             .fields
@@ -202,6 +261,34 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    for definition in &program.enums {
+        let variants = definition
+            .variants
+            .iter()
+            .map(|variant| EnumVariantSignature {
+                name: variant.name.clone(),
+                payloads: variant
+                    .payloads
+                    .iter()
+                    .map(|payload| signatures.canonical_type(&payload.ty))
+                    .collect(),
+                span: variant.name_span,
+            })
+            .collect::<Vec<_>>();
+        if let Some(signature) = signatures.enums.get_mut(&definition.name) {
+            signature.variants = variants;
+        }
+        for variant in &definition.variants {
+            for payload in &variant.payloads {
+                if let Err(diagnostic) =
+                    require_known_type(payload.type_span, &payload.ty, &signatures)
+                {
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
     for alias in &program.aliases {
         if let Err(diagnostic) = require_known_type(alias.target_span, &alias.target, &signatures) {
             diagnostics.push(diagnostic);
@@ -212,6 +299,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     for constant in &program.constants {
         if signatures.aliases.contains_key(&constant.name)
             || signatures.structs.contains_key(&constant.name)
+            || signatures.enums.contains_key(&constant.name)
         {
             diagnostics.push(diag(
                 constant.name_span,
@@ -271,6 +359,13 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("function '{}' conflicts with a struct name", function.name),
+            ));
+            continue;
+        }
+        if signatures.enums.contains_key(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
+                &format!("function '{}' conflicts with an enum name", function.name),
             ));
             continue;
         }
@@ -698,6 +793,55 @@ pub fn type_of_expr(
                 )),
             }
         }
+        ExprKind::EnumVariant {
+            enum_name,
+            enum_span,
+            variant,
+            variant_span,
+            args,
+        } => {
+            let Some(definition) = signatures.enum_type(enum_name) else {
+                return Err(diag(*enum_span, &format!("unknown enum '{enum_name}'")));
+            };
+            let Some(variant_definition) = definition.variant(variant) else {
+                return Err(diag(
+                    *variant_span,
+                    &format!("enum '{enum_name}' has no variant '{variant}'"),
+                )
+                .with_label(definition.span, format!("'{enum_name}' is declared here")));
+            };
+            if args.len() != variant_definition.payloads.len() {
+                return Err(diag(
+                    expr.span,
+                    &format!(
+                        "variant '{enum_name}.{variant}' expects {} payload value{}, got {}",
+                        variant_definition.payloads.len(),
+                        if variant_definition.payloads.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        args.len()
+                    ),
+                )
+                .with_label(
+                    variant_definition.span,
+                    format!("'{variant}' is declared here"),
+                ));
+            }
+            for (index, (arg, expected)) in
+                args.iter().zip(&variant_definition.payloads).enumerate()
+            {
+                let actual = type_of_expr(arg, env, signatures)?;
+                require_type(
+                    arg.span,
+                    expected,
+                    &actual,
+                    &format!("payload {} of '{}.{variant}'", index + 1, enum_name),
+                )?;
+            }
+            Ok(Type::Named(enum_name.clone()))
+        }
         ExprKind::StructLiteral {
             name,
             name_span,
@@ -1015,6 +1159,7 @@ fn evaluate_constant_expr(
         }
         ExprKind::Nil
         | ExprKind::Call { .. }
+        | ExprKind::EnumVariant { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. } => Err(diag(
             expr.span,
@@ -1145,7 +1290,9 @@ fn require_known_type(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     match signatures.canonical_type(ty) {
-        Type::Named(name) if signatures.struct_type(&name).is_none() => {
+        Type::Named(name)
+            if signatures.struct_type(&name).is_none() && signatures.enum_type(&name).is_none() =>
+        {
             Err(diag(span, &format!("unknown type '{name}'")))
         }
         _ => Ok(()),

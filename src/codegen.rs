@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, StructDef, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, Program, Stmt, StmtKind, StructDef, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{ConstantValue, Signatures, type_of_expr};
@@ -25,21 +25,19 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("    return a / b;\n");
     out.push_str("}\n\n");
 
-    for definition in struct_emit_order(program, signatures)? {
-        out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
-        for field in &definition.fields {
-            out.push_str(&format!(
-                "    {} {};\n",
-                c_type(&field.ty, signatures),
-                field_c_name(&field.name)
-            ));
+    for definition in value_type_emit_order(program, signatures)? {
+        match definition {
+            ValueDef::Struct(definition) => {
+                emit_struct_definition(&mut out, definition, signatures)
+            }
+            ValueDef::Enum(definition) => emit_enum_definition(&mut out, definition, signatures),
         }
-        out.push_str("};\n");
     }
-    if !program.structs.is_empty() {
+    if !program.structs.is_empty() || !program.enums.is_empty() {
         out.push('\n');
     }
 
+    out.push_str(&enum_variant_helpers(program, signatures));
     out.push_str(&struct_update_helpers(program, signatures));
 
     for function in &program.functions {
@@ -378,6 +376,25 @@ fn emit_expr(
                 ty,
             }
         }
+        ExprKind::EnumVariant {
+            enum_name,
+            variant,
+            args,
+            ..
+        } => {
+            let mut rendered = Vec::with_capacity(args.len());
+            for arg in args {
+                rendered.push(emit_expr(arg, env, signatures)?.code);
+            }
+            EmittedExpr {
+                code: format!(
+                    "{}({})",
+                    enum_variant_helper_name(enum_name, variant),
+                    rendered.join(", ")
+                ),
+                ty: Type::Named(enum_name.clone()),
+            }
+        }
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {
@@ -635,7 +652,7 @@ fn collect_update_helpers_from_expr(
             collect_update_helpers_from_expr(left, signatures, emitted, helpers);
             collect_update_helpers_from_expr(right, signatures, emitted, helpers);
         }
-        ExprKind::Call { args, .. } => {
+        ExprKind::Call { args, .. } | ExprKind::EnumVariant { args, .. } => {
             for arg in args {
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
             }
@@ -661,22 +678,172 @@ fn struct_update_helper_name(name: &str, fields: &[crate::ast::StructLiteralFiel
     format!("flux__update_{name}__{suffix}")
 }
 
-fn struct_emit_order<'a>(
+fn emit_struct_definition(out: &mut String, definition: &StructDef, signatures: &Signatures) {
+    out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
+    for field in &definition.fields {
+        out.push_str(&format!(
+            "    {} {};\n",
+            c_type(&field.ty, signatures),
+            field_c_name(&field.name)
+        ));
+    }
+    out.push_str("};\n");
+}
+
+fn emit_enum_definition(out: &mut String, definition: &EnumDef, signatures: &Signatures) {
+    let tag_type = enum_tag_type_name(&definition.name);
+    out.push_str(&format!("enum {tag_type} {{\n"));
+    for variant in &definition.variants {
+        out.push_str(&format!(
+            "    {},\n",
+            enum_tag_value_name(&definition.name, &variant.name)
+        ));
+    }
+    out.push_str("};\n");
+    out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
+    out.push_str(&format!("    enum {tag_type} tag;\n"));
+    if definition
+        .variants
+        .iter()
+        .any(|variant| !variant.payloads.is_empty())
+    {
+        out.push_str("    union {\n");
+        for variant in &definition.variants {
+            if variant.payloads.is_empty() {
+                continue;
+            }
+            out.push_str("        struct {\n");
+            for (index, payload) in variant.payloads.iter().enumerate() {
+                out.push_str(&format!(
+                    "            {} v{index};\n",
+                    c_type(&payload.ty, signatures)
+                ));
+            }
+            out.push_str(&format!(
+                "        }} {};\n",
+                enum_payload_member_name(&variant.name)
+            ));
+        }
+        out.push_str("    } payload;\n");
+    }
+    out.push_str("};\n");
+}
+
+fn enum_variant_helpers(program: &Program, signatures: &Signatures) -> String {
+    let mut out = String::new();
+    for definition in &program.enums {
+        for variant in &definition.variants {
+            let helper = enum_variant_helper_name(&definition.name, &variant.name);
+            out.push_str(&format!(
+                "static inline struct {} {helper}(",
+                struct_c_name(&definition.name)
+            ));
+            if variant.payloads.is_empty() {
+                out.push_str("void");
+            } else {
+                out.push_str(
+                    &variant
+                        .payloads
+                        .iter()
+                        .enumerate()
+                        .map(|(index, payload)| {
+                            format!("{} v{index}", c_type(&payload.ty, signatures))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            out.push_str(") {\n");
+            out.push_str(&format!(
+                "    struct {} value = {{ .tag = {} }};\n",
+                struct_c_name(&definition.name),
+                enum_tag_value_name(&definition.name, &variant.name)
+            ));
+            for index in 0..variant.payloads.len() {
+                out.push_str(&format!(
+                    "    value.payload.{}.v{index} = v{index};\n",
+                    enum_payload_member_name(&variant.name)
+                ));
+            }
+            out.push_str("    return value;\n}\n");
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+fn enum_tag_type_name(name: &str) -> String {
+    format!("flux__tag_{name}")
+}
+
+fn enum_tag_value_name(enum_name: &str, variant: &str) -> String {
+    format!("flux__tag_{enum_name}_{variant}")
+}
+
+fn enum_payload_member_name(variant: &str) -> String {
+    format!("flux__payload_{variant}")
+}
+
+fn enum_variant_helper_name(enum_name: &str, variant: &str) -> String {
+    format!("flux__variant_{enum_name}_{variant}")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ValueDef<'a> {
+    Struct(&'a StructDef),
+    Enum(&'a EnumDef),
+}
+
+impl ValueDef<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Struct(definition) => &definition.name,
+            Self::Enum(definition) => &definition.name,
+        }
+    }
+
+    fn span(&self) -> SourceSpan {
+        match self {
+            Self::Struct(definition) => definition.name_span,
+            Self::Enum(definition) => definition.name_span,
+        }
+    }
+}
+
+fn value_type_emit_order<'a>(
     program: &'a Program,
     signatures: &Signatures,
-) -> Result<Vec<&'a StructDef>, Diagnostic> {
+) -> Result<Vec<ValueDef<'a>>, Diagnostic> {
     let definitions = program
         .structs
         .iter()
-        .map(|definition| (definition.name.as_str(), definition))
+        .map(|definition| (definition.name.as_str(), ValueDef::Struct(definition)))
+        .chain(
+            program
+                .enums
+                .iter()
+                .map(|definition| (definition.name.as_str(), ValueDef::Enum(definition))),
+        )
         .collect::<HashMap<_, _>>();
     let mut visiting = HashSet::new();
     let mut emitted = HashSet::new();
-    let mut order = Vec::with_capacity(program.structs.len());
+    let mut order = Vec::with_capacity(definitions.len());
 
     for definition in &program.structs {
-        visit_struct(
-            definition,
+        visit_value_type(
+            ValueDef::Struct(definition),
+            &definitions,
+            &mut visiting,
+            &mut emitted,
+            &mut order,
+            signatures,
+        )?;
+    }
+    for definition in &program.enums {
+        visit_value_type(
+            ValueDef::Enum(definition),
             &definitions,
             &mut visiting,
             &mut emitted,
@@ -687,34 +854,46 @@ fn struct_emit_order<'a>(
     Ok(order)
 }
 
-fn visit_struct<'a>(
-    definition: &'a StructDef,
-    definitions: &HashMap<&str, &'a StructDef>,
-    visiting: &mut HashSet<&'a str>,
-    emitted: &mut HashSet<&'a str>,
-    order: &mut Vec<&'a StructDef>,
+fn visit_value_type<'a>(
+    definition: ValueDef<'a>,
+    definitions: &HashMap<&str, ValueDef<'a>>,
+    visiting: &mut HashSet<String>,
+    emitted: &mut HashSet<String>,
+    order: &mut Vec<ValueDef<'a>>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    if emitted.contains(definition.name.as_str()) {
+    let name = definition.name();
+    if emitted.contains(name) {
         return Ok(());
     }
-    if !visiting.insert(definition.name.as_str()) {
+    if !visiting.insert(name.to_string()) {
         return Err(diag(
-            definition.name_span,
-            &format!(
-                "struct '{}' participates in a recursive by-value cycle",
-                definition.name
-            ),
+            definition.span(),
+            &format!("type '{name}' participates in a recursive by-value cycle"),
         )
-        .with_note("recursive value structs need an indirection/ownership type, which is not implemented yet"));
+        .with_note(
+            "recursive values need an explicit indirection/ownership type, which is not implemented yet",
+        ));
     }
 
-    for field in &definition.fields {
-        if let Type::Named(name) = signatures.canonical_type(&field.ty)
-            && let Some(dependency) = definitions.get(name.as_str())
+    let dependencies = match definition {
+        ValueDef::Struct(definition) => definition
+            .fields
+            .iter()
+            .map(|field| &field.ty)
+            .collect::<Vec<_>>(),
+        ValueDef::Enum(definition) => definition
+            .variants
+            .iter()
+            .flat_map(|variant| variant.payloads.iter().map(|payload| &payload.ty))
+            .collect::<Vec<_>>(),
+    };
+    for dependency_type in dependencies {
+        if let Type::Named(dependency_name) = signatures.canonical_type(dependency_type)
+            && let Some(dependency) = definitions.get(dependency_name.as_str())
         {
-            visit_struct(
-                dependency,
+            visit_value_type(
+                *dependency,
                 definitions,
                 visiting,
                 emitted,
@@ -724,8 +903,8 @@ fn visit_struct<'a>(
         }
     }
 
-    visiting.remove(definition.name.as_str());
-    emitted.insert(definition.name.as_str());
+    visiting.remove(name);
+    emitted.insert(name.to_string());
     order.push(definition);
     Ok(())
 }

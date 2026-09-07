@@ -7,6 +7,8 @@ use crate::typecheck::{self, Signature, Signatures};
 pub enum SymbolKind {
     TypeAlias,
     Constant,
+    Enum,
+    EnumVariant,
     Struct,
     StructField,
     Function,
@@ -54,6 +56,22 @@ impl SemanticDatabase {
                 ty: Some(constant.ty.clone()),
                 span: constant.name_span,
             });
+        }
+        for definition in &program.enums {
+            symbols.push(SemanticSymbol {
+                name: definition.name.clone(),
+                kind: SymbolKind::Enum,
+                ty: None,
+                span: definition.name_span,
+            });
+            for variant in &definition.variants {
+                symbols.push(SemanticSymbol {
+                    name: variant.name.clone(),
+                    kind: SymbolKind::EnumVariant,
+                    ty: Some(Type::Named(definition.name.clone())),
+                    span: variant.name_span,
+                });
+            }
         }
         for definition in &program.structs {
             symbols.push(SemanticSymbol {

@@ -148,6 +148,153 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_closed_enums_with_typed_payloads_and_native_tags() {
+    let source = r#"
+enum Outcome {
+    Ok(i64)
+    Error(str, i64)
+    Pending
+}
+
+fn pass(value: Outcome) -> Outcome {
+    return value
+}
+
+fn main() -> i64 {
+    let first: Outcome = Outcome.Ok(42)
+    let second: Outcome = Outcome.Error("nope", 7)
+    let third: Outcome = Outcome.Pending()
+    let carried: Outcome = pass(first)
+    print(1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("enum constructors should typecheck");
+    let generated = compile_to_c(source).expect("enum constructors should lower natively");
+    assert!(generated.contains("enum flux__tag_Outcome"));
+    assert!(generated.contains("struct flux__type_Outcome"));
+    assert!(generated.contains("union {"));
+    assert!(generated.contains("flux__tag_Outcome_Ok"));
+    assert!(generated.contains("flux__variant_Outcome_Ok(INT64_C(42))"));
+    assert!(generated.contains("flux__variant_Outcome_Error(\"nope\", INT64_C(7))"));
+    assert!(generated.contains("flux__variant_Outcome_Pending()"));
+}
+
+#[test]
+fn supports_forward_dependencies_between_structs_and_enums() {
+    let source = r#"
+struct Envelope {
+    outcome: Outcome
+}
+
+enum Outcome {
+    Ok(User)
+    Empty
+}
+
+struct User {
+    name: str
+}
+
+fn main() -> i64 {
+    let user: User = User { name: "Ada" }
+    let outcome: Outcome = Outcome.Ok(user)
+    let envelope: Envelope = Envelope { outcome: outcome }
+    print(1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("cross value-type references should typecheck");
+    let generated = compile_to_c(source).expect("cross value-type references should lower");
+    let user = generated.find("struct flux__type_User {").unwrap();
+    let outcome = generated.find("struct flux__type_Outcome {").unwrap();
+    let envelope = generated.find("struct flux__type_Envelope {").unwrap();
+    assert!(user < outcome && outcome < envelope);
+}
+
+#[test]
+fn rejects_invalid_enum_construction_and_recursive_value_cycles() {
+    let bad_variant = r#"
+enum Outcome {
+    Ok(i64)
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Nope(1)
+    return 0
+}
+"#;
+    let error = check_source(bad_variant).expect_err("unknown enum variant should fail");
+    assert!(error.message.contains("has no variant 'Nope'"));
+
+    let bad_arity = r#"
+enum Outcome {
+    Ok(i64)
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Ok()
+    return 0
+}
+"#;
+    let error = check_source(bad_arity).expect_err("wrong payload arity should fail");
+    assert!(error.message.contains("expects 1 payload value, got 0"));
+
+    let bad_type = r#"
+enum Outcome {
+    Ok(i64)
+}
+fn main() -> i64 {
+    let value: Outcome = Outcome.Ok(false)
+    return 0
+}
+"#;
+    let error = check_source(bad_type).expect_err("wrong payload type should fail");
+    assert!(error.message.contains("expected i64, got bool"));
+
+    let cycle = r#"
+struct Boxed {
+    value: Loop
+}
+
+enum Loop {
+    Again(Boxed)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = compile_to_c(cycle).expect_err("enum/struct recursive value cycle should fail");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("recursive by-value cycle"));
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_enums() {
+    let source = "enum Outcome {\n Ok(i64)\n Pending\n}\nfn main()->i64 {\n let value:Outcome=Outcome.Ok(42)\n return 0\n}\n";
+    let expected = "enum Outcome {\n    Ok(i64)\n    Pending\n}\nfn main() -> i64 {\n    let value: Outcome = Outcome.Ok(42)\n    return 0\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("enum source should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(601))
+        .expect("enum source should analyze");
+    let definition = database
+        .symbols_named("Outcome")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Enum)
+        .expect("enum should be indexed");
+    assert_eq!(span_text(&formatted, definition.span), "Outcome");
+    let variant = database
+        .symbols_named("Ok")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::EnumVariant)
+        .expect("enum variant should be indexed");
+    assert_eq!(
+        variant.ty,
+        Some(fluxc::ast::Type::Named("Outcome".to_string()))
+    );
+}
+
+#[test]
 fn folds_compile_time_constants_and_inlines_them_natively() {
     let source = r#"
 type Count = i64

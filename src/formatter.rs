@@ -24,6 +24,9 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
             ),
         );
     }
+    for definition in &program.enums {
+        format_enum(definition, &mut formatted);
+    }
     for definition in &program.structs {
         format_struct(definition, &mut formatted);
     }
@@ -76,6 +79,24 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     }
 
     Ok(format!("{}\n", output.join("\n")))
+}
+
+fn format_enum(definition: &crate::ast::EnumDef, lines: &mut HashMap<usize, String>) {
+    lines.insert(definition.line, format!("enum {} {{", definition.name));
+    for variant in &definition.variants {
+        let payloads = variant
+            .payloads
+            .iter()
+            .map(|payload| payload.ty.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rendered = if payloads.is_empty() {
+            variant.name.clone()
+        } else {
+            format!("{}({payloads})", variant.name)
+        };
+        lines.insert(variant.name_span.line, format!("    {rendered}"));
+    }
 }
 
 fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, String>) {
@@ -222,6 +243,18 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Var(name) => name.clone(),
         ExprKind::Call { name, args } => format!(
             "{name}({})",
+            args.iter()
+                .map(|arg| format_expr(arg, 0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExprKind::EnumVariant {
+            enum_name,
+            variant,
+            args,
+            ..
+        } => format!(
+            "{enum_name}.{variant}({})",
             args.iter()
                 .map(|arg| format_expr(arg, 0))
                 .collect::<Vec<_>>()

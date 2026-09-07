@@ -1,6 +1,7 @@
 use crate::ast::{
-    BinOp, Binding, ConstantDef, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind,
-    StructDef, StructField, StructLiteralField, Type, TypeAlias, UnaryOp,
+    BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
+    Param, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField, Type, TypeAlias,
+    UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -95,6 +96,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
     let mut aliases = Vec::new();
     let mut structs = Vec::new();
+    let mut enums = Vec::new();
     let mut constants = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
@@ -131,6 +133,17 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         if line.text.starts_with("struct ") {
             match parse_struct_declaration(&lines, &mut index) {
                 Ok(definition) => structs.push(definition),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                }
+            }
+            continue;
+        }
+
+        if line.text.starts_with("enum ") {
+            match parse_enum_declaration(&lines, &mut index) {
+                Ok(definition) => enums.push(definition),
                 Err(diagnostic) => {
                     diagnostics.push(diagnostic);
                     index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
@@ -208,6 +221,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         Ok(Program {
             aliases,
             structs,
+            enums,
             constants,
             functions,
         })
@@ -230,6 +244,17 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         alias.span = alias.span.with_source(source_id);
         alias.name_span = alias.name_span.with_source(source_id);
         alias.target_span = alias.target_span.with_source(source_id);
+    }
+    for definition in &mut program.enums {
+        definition.span = definition.span.with_source(source_id);
+        definition.keyword_span = definition.keyword_span.with_source(source_id);
+        definition.name_span = definition.name_span.with_source(source_id);
+        for variant in &mut definition.variants {
+            variant.name_span = variant.name_span.with_source(source_id);
+            for payload in &mut variant.payloads {
+                payload.type_span = payload.type_span.with_source(source_id);
+            }
+        }
     }
     for constant in &mut program.constants {
         constant.span = constant.span.with_source(source_id);
@@ -342,6 +367,18 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(&mut field.value, source_id);
             }
         }
+        ExprKind::EnumVariant {
+            enum_span,
+            variant_span,
+            args,
+            ..
+        } => {
+            *enum_span = enum_span.with_source(source_id);
+            *variant_span = variant_span.with_source(source_id);
+            for arg in args {
+                attach_expr_source(arg, source_id);
+            }
+        }
         ExprKind::Field {
             base, name_span, ..
         } => {
@@ -399,6 +436,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
             }
             if line.text.starts_with("fn ")
                 || line.text.starts_with("struct ")
+                || line.text.starts_with("enum ")
                 || line.text.starts_with("type ")
                 || line.text.starts_with("const ")
             {
@@ -463,6 +501,117 @@ fn parse_constant(line: &Line) -> Result<ConstantDef, Diagnostic> {
         value,
         line: line.number,
         span: line.span(),
+    })
+}
+
+fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, Diagnostic> {
+    let header = &lines[*index];
+    let Some(rest) = header.text.strip_prefix("enum ") else {
+        return Err(diag(header.number, "expected enum declaration"));
+    };
+    let Some(raw_name) = rest.strip_suffix('{') else {
+        return Err(diag(
+            header.number,
+            "enum declarations must open their body with '{'",
+        ));
+    };
+    let name = raw_name.trim();
+    validate_identifier(name, header.number)?;
+    let leading = raw_name.len() - raw_name.trim_start().len();
+    let name_span = SourceSpan::new(header.number, 6 + leading, name.len());
+    let definition_span = header.span();
+    *index += 1;
+
+    let mut variants = Vec::new();
+    if *index < lines.len() && lines[*index].indent > 0 {
+        let variant_indent = lines[*index].indent;
+        while *index < lines.len() {
+            let line = &lines[*index];
+            if line.indent < variant_indent {
+                break;
+            }
+            if line.indent > variant_indent {
+                return Err(diag(line.number, "unexpected indentation in enum body"));
+            }
+            if line.text == "}" {
+                break;
+            }
+
+            let text = line.text.trim();
+            let (variant_name, payload_source, payload_column) = if let Some(open) = text.find('(')
+            {
+                let Some(inner) = text.strip_suffix(')') else {
+                    return Err(diag(line.number, "enum variant payload must end with ')'"));
+                };
+                let variant_name = text[..open].trim();
+                let payload_source = &inner[open + 1..];
+                let payload_column = line.indent + 1 + open + 1;
+                (variant_name, Some(payload_source), payload_column)
+            } else {
+                (text, None, line.indent + 1 + text.len())
+            };
+            validate_identifier(variant_name, line.number)?;
+            if variants
+                .iter()
+                .any(|variant: &EnumVariant| variant.name == variant_name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate enum variant '{variant_name}'"),
+                ));
+            }
+            let variant_offset = line.text.find(variant_name).unwrap_or(0);
+            let mut payloads = Vec::new();
+            if let Some(payload_source) = payload_source
+                && !payload_source.trim().is_empty()
+            {
+                for (raw_payload, offset) in split_top_level_commas_with_offsets(payload_source) {
+                    let (type_text, type_column) =
+                        trim_with_column(raw_payload, payload_column + offset);
+                    let ty = parse_type(type_text, line.number)?;
+                    if ty == Type::Void {
+                        return Err(diag(line.number, "enum payloads cannot have type void"));
+                    }
+                    payloads.push(EnumPayload {
+                        ty,
+                        type_span: SourceSpan::new(line.number, type_column, type_text.len()),
+                    });
+                }
+            }
+            variants.push(EnumVariant {
+                name: variant_name.to_string(),
+                name_span: SourceSpan::new(
+                    line.number,
+                    line.indent + 1 + variant_offset,
+                    variant_name.len(),
+                ),
+                payloads,
+            });
+            *index += 1;
+        }
+    }
+
+    if variants.is_empty() {
+        return Err(diag(
+            header.number,
+            "enum declarations require at least one variant",
+        ));
+    }
+    if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
+        return Err(diag(
+            header.number,
+            "enum body must end with a top-level '}'",
+        ));
+    }
+    *index += 1;
+
+    Ok(EnumDef {
+        name: name.to_string(),
+        name_span,
+        keyword_span: SourceSpan::new(header.number, 1, 4),
+        variants,
+        line: header.number,
+        span: definition_span,
     })
 }
 
@@ -1138,6 +1287,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
     if matches!(
         input,
         "fn" | "struct"
+            | "enum"
             | "type"
             | "const"
             | "let"
@@ -1457,6 +1607,68 @@ impl ExprParser<'_> {
                 ));
             };
             self.index += 1;
+            if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::LParen)
+            ) {
+                let ExprKind::Var(enum_name) = &expr.kind else {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        field.span,
+                        "only enum variants may be called through '.'",
+                    ));
+                };
+                let enum_name = enum_name.clone();
+                let enum_span = expr.span;
+                self.index += 1;
+                let mut args = Vec::new();
+                if !matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::RParen)
+                ) {
+                    loop {
+                        args.push(self.parse_binary(1)?);
+                        match self.tokens.get(self.index).map(|token| &token.kind) {
+                            Some(TokenKind::Comma) => self.index += 1,
+                            Some(TokenKind::RParen) => break,
+                            _ => {
+                                return Err(diag(
+                                    self.line,
+                                    "expected ',' or ')' in enum variant payload",
+                                ));
+                            }
+                        }
+                    }
+                }
+                let Some(close) = self.tokens.get(self.index) else {
+                    return Err(diag(self.line, "expected ')' after enum variant payload"));
+                };
+                if !matches!(close.kind, TokenKind::RParen) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ')' after enum variant payload",
+                    ));
+                }
+                let close_span = close.span;
+                self.index += 1;
+                expr = Expr {
+                    line: self.line,
+                    span: SourceSpan::new(
+                        self.line,
+                        enum_span.column,
+                        close_span.column + close_span.length - enum_span.column,
+                    ),
+                    kind: ExprKind::EnumVariant {
+                        enum_name,
+                        enum_span,
+                        variant: name,
+                        variant_span: field.span,
+                        args,
+                    },
+                };
+                continue;
+            }
             let span = SourceSpan::new(
                 self.line,
                 expr.span.column,

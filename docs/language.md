@@ -104,6 +104,26 @@ fn load_config(path: str) -> (str, error) {
 
 This form is intentionally narrow. The final destructured value must have type `error`, and the call's full multi-value return shape must exactly match the enclosing function. The call is evaluated once. If the final error value is non-`nil`, the exact multi-value result is returned immediately; otherwise the values are destructured and execution continues. This is explicit control flow rather than exception propagation.
 
+## Closed enums and tagged unions
+
+Closed enums are named value types with a fixed set of variants. Variants may carry zero or more positional payload values:
+
+```flux
+enum Outcome {
+    Ok(i64)
+    Error(str)
+    Pending
+}
+
+fn load() -> Outcome {
+    return Outcome.Ok(42)
+}
+```
+
+Construction is always namespace-qualified as `Enum.Variant(...)`; payloadless variants still use `()` so variant construction remains syntactically distinct from ordinary field access. Payload arity and types are checked statically. Enum and struct definitions may refer to each other forward by value when the resulting layout is acyclic. Recursive by-value cycles are rejected until Flux has explicit ownership/indirection types.
+
+The bootstrap backend lowers each enum to a native tag plus a union containing only the payload storage required by payload-bearing variants. Typed inline constructors build the tagged value; there is no object hierarchy, reflection, heap allocation, or hidden dynamic dispatch. Pattern matching and exhaustive `match` are the intended way to inspect enum values.
+
 ## Compile-time constants
 
 Top-level constants use `const name: type = expression`. Constants are evaluated by the compiler and substituted directly into generated code rather than emitted as mutable/runtime globals:

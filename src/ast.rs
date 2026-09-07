@@ -48,6 +48,7 @@ fn is_type_identifier(input: &str) -> bool {
 pub struct Program {
     pub aliases: Vec<TypeAlias>,
     pub structs: Vec<StructDef>,
+    pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
     pub functions: Vec<Function>,
 }
@@ -71,6 +72,29 @@ pub struct ConstantDef {
     pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub variants: Vec<EnumVariant>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub payloads: Vec<EnumPayload>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumPayload {
+    pub ty: Type,
+    pub type_span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +207,13 @@ pub enum ExprKind {
         name_span: SourceSpan,
         base: Option<Box<Expr>>,
         fields: Vec<StructLiteralField>,
+    },
+    EnumVariant {
+        enum_name: String,
+        enum_span: SourceSpan,
+        variant: String,
+        variant_span: SourceSpan,
+        args: Vec<Expr>,
     },
     Field {
         base: Box<Expr>,

@@ -89,7 +89,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 - [x] `struct` value types with named fields, nested acyclic value layout, native C lowering, formatter support, and semantic indexing.
 - [x] Struct literals, field access, and functional update/copy syntax with single evaluation of the base value.
-- [ ] Closed enums / tagged unions with payloads.
+- [x] Closed enums / tagged unions with typed positional payloads, namespace-qualified constructors, semantic indexing, deterministic native tagged-union lowering, and cross-value-type cycle diagnostics.
 - [ ] Exhaustive `match` expressions and statements.
 - [ ] Pattern matching over structs, enums, lists, and multi-values.
 - [ ] Destructuring bindings beyond multi-return calls.
