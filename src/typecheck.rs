@@ -159,11 +159,17 @@ fn check_block(
             StmtKind::Expr(expr) => {
                 type_of_expr(expr, env, signatures)?;
             }
-            StmtKind::If { cond, body } => {
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+            } => {
                 let cond_type = type_of_expr(cond, env, signatures)?;
                 require_type(stmt.span, &Type::Bool, &cond_type, "if condition")?;
-                let mut nested = env.clone();
-                check_block(body, &mut nested, return_types, signatures)?;
+                let mut then_env = env.clone();
+                check_block(body, &mut then_env, return_types, signatures)?;
+                let mut else_env = env.clone();
+                check_block(else_body, &mut else_env, return_types, signatures)?;
             }
             StmtKind::ForRange {
                 name,
@@ -332,6 +338,14 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Return(_) => return true,
+            StmtKind::If {
+                body, else_body, ..
+            } if !else_body.is_empty()
+                && block_guarantees_return(body)
+                && block_guarantees_return(else_body) =>
+            {
+                return true;
+            }
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
             | StmtKind::Let { .. }

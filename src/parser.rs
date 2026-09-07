@@ -193,19 +193,17 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
         }
 
         let stmt = if line.text.starts_with("if ") && line.text.ends_with(':') {
-            let cond_src = line.text[3..line.text.len() - 1].trim();
-            if cond_src.is_empty() {
-                return Err(diag(line.number, "if requires a condition"));
-            }
-            let cond = parse_expression(cond_src, line.number)?;
-            let stmt_line = line.number;
-            *index += 1;
-            let nested = parse_nested_block(lines, index, indent, stmt_line, "if")?;
-            Stmt {
-                line: stmt_line,
-                span: line.span(),
-                kind: StmtKind::If { cond, body: nested },
-            }
+            parse_if_statement(lines, index, indent)?
+        } else if line.text.starts_with("elif ") {
+            return Err(diag(
+                line.number,
+                "elif must immediately follow an if or elif block",
+            ));
+        } else if line.text == "else" || line.text == "else:" || line.text.starts_with("else ") {
+            return Err(diag(
+                line.number,
+                "else must immediately follow an if or elif block",
+            ));
         } else if line.text.starts_with("for ") && line.text.ends_with(':') {
             let stmt_line = line.number;
             let inner = line.text[4..line.text.len() - 1].trim();
@@ -244,6 +242,75 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
     }
 
     Ok(body)
+}
+
+fn parse_if_statement(
+    lines: &[Line],
+    index: &mut usize,
+    indent: usize,
+) -> Result<Stmt, Diagnostic> {
+    let line = &lines[*index];
+    let cond_src = line.text[3..line.text.len() - 1].trim();
+    if cond_src.is_empty() {
+        return Err(diag(line.number, "if requires a condition"));
+    }
+    let cond = parse_expression(cond_src, line.number)?;
+    let stmt_line = line.number;
+    let stmt_span = line.span();
+    *index += 1;
+    let body = parse_nested_block(lines, index, indent, stmt_line, "if")?;
+    let else_body = parse_if_tail(lines, index, indent)?;
+
+    Ok(Stmt {
+        line: stmt_line,
+        span: stmt_span,
+        kind: StmtKind::If {
+            cond,
+            body,
+            else_body,
+        },
+    })
+}
+
+fn parse_if_tail(
+    lines: &[Line],
+    index: &mut usize,
+    indent: usize,
+) -> Result<Vec<Stmt>, Diagnostic> {
+    if *index >= lines.len() || lines[*index].indent != indent {
+        return Ok(Vec::new());
+    }
+
+    let line = &lines[*index];
+    if line.text.starts_with("elif ") && line.text.ends_with(':') {
+        let cond_src = line.text[5..line.text.len() - 1].trim();
+        if cond_src.is_empty() {
+            return Err(diag(line.number, "elif requires a condition"));
+        }
+        let cond = parse_expression(cond_src, line.number)?;
+        let stmt_line = line.number;
+        let stmt_span = line.span();
+        *index += 1;
+        let body = parse_nested_block(lines, index, indent, stmt_line, "elif")?;
+        let else_body = parse_if_tail(lines, index, indent)?;
+        return Ok(vec![Stmt {
+            line: stmt_line,
+            span: stmt_span,
+            kind: StmtKind::If {
+                cond,
+                body,
+                else_body,
+            },
+        }]);
+    }
+
+    if line.text == "else:" {
+        let stmt_line = line.number;
+        *index += 1;
+        return parse_nested_block(lines, index, indent, stmt_line, "else");
+    }
+
+    Ok(Vec::new())
 }
 
 fn parse_nested_block(
@@ -484,7 +551,17 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
     }
     if matches!(
         input,
-        "fn" | "let" | "return" | "if" | "for" | "in" | "true" | "false" | "nil" | "error"
+        "fn" | "let"
+            | "return"
+            | "if"
+            | "elif"
+            | "else"
+            | "for"
+            | "in"
+            | "true"
+            | "false"
+            | "nil"
+            | "error"
     ) {
         return Err(diag(line, &format!("'{input}' is reserved")));
     }

@@ -19,7 +19,7 @@ Flux is an experimental compiled language for building native applications and s
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
-- parsing for functions, typed bindings, calls, `if`, and exclusive range `for` loops;
+- parsing for functions, typed bindings, calls, `if` / `elif` / `else`, and exclusive range `for` loops;
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, and `void`;
 - function signature, return, and argument validation;
@@ -105,7 +105,7 @@ fn main() -> i64 {
 ## Near-term roadmap
 
 1. Refine diagnostics to token-level spans and add multi-diagnostic recovery for editor tooling.
-2. Add `else` / `elif` and a small explicit error-propagation shorthand that lowers to ordinary control flow.
+2. Add a small explicit error-propagation shorthand that lowers to ordinary control flow.
 3. Add structs, ownership moves, borrows, and the first borrow checker.
 4. Introduce Flux typed IR and a direct optimizing native backend.
 5. Add packages/modules and stable ABI rules.

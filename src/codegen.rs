@@ -171,20 +171,39 @@ fn emit_block(
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{};\n", value.code));
             }
-            StmtKind::If { cond, body } => {
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+            } => {
                 let cond = emit_expr(cond, env, signatures)?;
                 out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
-                let mut nested = env.clone();
+                let mut then_env = env.clone();
                 emit_block(
                     out,
                     body,
                     depth + 1,
-                    &mut nested,
+                    &mut then_env,
                     signatures,
                     temp_counter,
                     current_function,
                 )?;
-                out.push_str(&format!("{pad}}}\n"));
+                if else_body.is_empty() {
+                    out.push_str(&format!("{pad}}}\n"));
+                } else {
+                    out.push_str(&format!("{pad}}} else {{\n"));
+                    let mut else_env = env.clone();
+                    emit_block(
+                        out,
+                        else_body,
+                        depth + 1,
+                        &mut else_env,
+                        signatures,
+                        temp_counter,
+                        current_function,
+                    )?;
+                    out.push_str(&format!("{pad}}}\n"));
+                }
             }
             StmtKind::ForRange {
                 name,

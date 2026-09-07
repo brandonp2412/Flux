@@ -82,6 +82,7 @@ pub enum StmtKind {
     If {
         cond: Expr,
         body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
     },
     ForRange {
         name: String,

@@ -118,13 +118,14 @@ Currently implemented:
 Currently implemented:
 
 - `if condition:` with an indented body;
+- `elif condition:` and `else:` attached to the preceding conditional chain;
+- exhaustive `if` / `elif` / `else` return analysis, so a fully returning chain satisfies a function's return requirement;
 - `for name in start..end:` with an exclusive integer range;
 - `return`;
 - expression statements.
 
 Planned:
 
-- `else` / `elif`;
 - `while`;
 - `break` / `continue`;
 - exhaustive `match` for closed enum-like types.

@@ -75,6 +75,76 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_elif_else_and_exhaustive_branch_returns() {
+    let source = r#"
+fn classify(value: i64) -> str {
+    if value < 0:
+        return "negative"
+    elif value == 0:
+        return "zero"
+    else:
+        return "positive"
+}
+
+fn main() -> i64 {
+    print(classify(4))
+    return 0
+}
+"#;
+
+    check_source(source).expect("complete branch chain should typecheck and return");
+    let generated = compile_to_c(source).expect("branch chain should compile");
+    assert!(generated.matches("else {").count() >= 2);
+    assert!(generated.contains("if (value < INT64_C(0))"));
+    assert!(generated.contains("if (value == INT64_C(0))"));
+}
+
+#[test]
+fn rejects_non_boolean_elif_condition() {
+    let source = r#"
+fn main() -> i64 {
+    if false:
+        print("no")
+    elif 1:
+        print("still no")
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("elif condition must be bool");
+    assert!(
+        error
+            .message
+            .contains("if condition: expected bool, got i64")
+    );
+    let span = error.span.expect("elif diagnostic should retain its span");
+    assert_eq!((span.line, span.column), (5, 5));
+}
+
+#[test]
+fn rejects_stray_else_and_elif() {
+    let stray_else = r#"
+fn main() -> i64 {
+    else:
+        return 1
+    return 0
+}
+"#;
+    let error = check_source(stray_else).expect_err("stray else must fail");
+    assert!(error.message.contains("else must immediately follow"));
+
+    let stray_elif = r#"
+fn main() -> i64 {
+    elif true:
+        return 1
+    return 0
+}
+"#;
+    let error = check_source(stray_elif).expect_err("stray elif must fail");
+    assert!(error.message.contains("elif must immediately follow"));
+}
+
+#[test]
 fn accepts_multi_value_returns_and_typed_destructuring() {
     let source = r#"
 fn divide(value: i64, by: i64) -> (i64, bool) {
