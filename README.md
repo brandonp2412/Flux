@@ -116,7 +116,7 @@ fn main() -> i64 {
 
 ## Near-term roadmap
 
-1. Refine diagnostics to token-level spans and add multi-diagnostic recovery for editor tooling.
+1. Add multi-diagnostic recovery for editor tooling now that expression diagnostics retain token-level spans.
 2. Add structs, ownership moves, borrows, and the first borrow checker.
 3. Introduce Flux typed IR and a direct optimizing native backend.
 4. Add packages/modules and stable ABI rules.

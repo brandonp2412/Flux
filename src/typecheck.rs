@@ -95,7 +95,7 @@ fn check_block(
                     ));
                 }
                 let actual = type_of_expr(expr, env, signatures)?;
-                require_type(stmt.span, ty, &actual, "binding")?;
+                require_type(expr.span, ty, &actual, "binding")?;
                 env.insert(name.clone(), ty.clone());
             }
             StmtKind::LetDestructure {
@@ -187,7 +187,7 @@ fn check_block(
                 else_body,
             } => {
                 let cond_type = type_of_expr(cond, env, signatures)?;
-                require_type(stmt.span, &Type::Bool, &cond_type, "if condition")?;
+                require_type(cond.span, &Type::Bool, &cond_type, "if condition")?;
                 let mut then_env = env.clone();
                 check_block(body, &mut then_env, return_types, signatures)?;
                 let mut else_env = env.clone();
@@ -207,8 +207,8 @@ fn check_block(
                 }
                 let start_type = type_of_expr(start, env, signatures)?;
                 let end_type = type_of_expr(end, env, signatures)?;
-                require_type(stmt.span, &Type::I64, &start_type, "range start")?;
-                require_type(stmt.span, &Type::I64, &end_type, "range end")?;
+                require_type(start.span, &Type::I64, &start_type, "range start")?;
+                require_type(end.span, &Type::I64, &end_type, "range end")?;
                 let mut nested = env.clone();
                 nested.insert(name.clone(), Type::I64);
                 check_block(body, &mut nested, return_types, signatures)?;

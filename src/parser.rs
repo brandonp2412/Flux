@@ -218,8 +218,18 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                     "for loops currently require an exclusive range 'start..end'",
                 ));
             };
-            let start = parse_expression(start_src.trim(), stmt_line)?;
-            let end = parse_expression(end_src.trim(), stmt_line)?;
+            let start_src = start_src.trim();
+            let end_src = end_src.trim();
+            let start = parse_expression_at(
+                start_src,
+                stmt_line,
+                expression_column(&line.text, start_src, line.indent + 1),
+            )?;
+            let end = parse_expression_at(
+                end_src,
+                stmt_line,
+                expression_column(&line.text, end_src, line.indent + 1),
+            )?;
             *index += 1;
             let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
             Stmt {
@@ -254,7 +264,11 @@ fn parse_if_statement(
     if cond_src.is_empty() {
         return Err(diag(line.number, "if requires a condition"));
     }
-    let cond = parse_expression(cond_src, line.number)?;
+    let cond = parse_expression_at(
+        cond_src,
+        line.number,
+        expression_column(&line.text, cond_src, line.indent + 1),
+    )?;
     let stmt_line = line.number;
     let stmt_span = line.span();
     *index += 1;
@@ -287,7 +301,11 @@ fn parse_if_tail(
         if cond_src.is_empty() {
             return Err(diag(line.number, "elif requires a condition"));
         }
-        let cond = parse_expression(cond_src, line.number)?;
+        let cond = parse_expression_at(
+            cond_src,
+            line.number,
+            expression_column(&line.text, cond_src, line.indent + 1),
+        )?;
         let stmt_line = line.number;
         let stmt_span = line.span();
         *index += 1;
@@ -352,7 +370,11 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                 ));
             }
             let binding = parse_binding(raw_bindings[0], line)?;
-            let expr = parse_expression(expr_src, line)?;
+            let expr = parse_expression_at(
+                expr_src,
+                line,
+                expression_column(input, expr_src, span.column),
+            )?;
             return Ok(Stmt {
                 line,
                 span,
@@ -378,7 +400,11 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             }
             bindings.push(binding);
         }
-        let expr = parse_expression(expr_src, line)?;
+        let expr = parse_expression_at(
+            expr_src,
+            line,
+            expression_column(input, expr_src, span.column),
+        )?;
         return Ok(Stmt {
             line,
             span,
@@ -400,7 +426,10 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
     if let Some(expr_src) = input.strip_prefix("return ") {
         let expressions = split_top_level_commas(expr_src)
             .into_iter()
-            .map(|part| parse_expression(part.trim(), line))
+            .map(|part| {
+                let part = part.trim();
+                parse_expression_at(part, line, expression_column(input, part, span.column))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(Stmt {
             line,
@@ -412,7 +441,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
     Ok(Stmt {
         line,
         span,
-        kind: StmtKind::Expr(parse_expression(input, line)?),
+        kind: StmtKind::Expr(parse_expression_at(input, line, span.column)?),
     })
 }
 
@@ -586,7 +615,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Token {
+enum TokenKind {
     Int(i64),
     Str(String),
     Ident(String),
@@ -611,8 +640,21 @@ enum Token {
     Comma,
 }
 
-fn parse_expression(input: &str, line: usize) -> Result<Expr, Diagnostic> {
-    let tokens = lex_expression(input, line)?;
+#[derive(Debug, Clone, PartialEq)]
+struct Token {
+    kind: TokenKind,
+    span: SourceSpan,
+}
+
+fn expression_column(haystack: &str, needle: &str, base_column: usize) -> usize {
+    haystack
+        .find(needle)
+        .map(|offset| base_column + offset)
+        .unwrap_or(base_column)
+}
+
+fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+    let tokens = lex_expression(input, line, column)?;
     let mut parser = ExprParser {
         tokens: &tokens,
         index: 0,
@@ -620,12 +662,17 @@ fn parse_expression(input: &str, line: usize) -> Result<Expr, Diagnostic> {
     };
     let expr = parser.parse_binary(1)?;
     if parser.index != tokens.len() {
-        return Err(diag(line, "unexpected token after expression"));
+        let span = tokens[parser.index].span;
+        return Err(Diagnostic::new(
+            DiagnosticStage::Parse,
+            span,
+            "unexpected token after expression",
+        ));
     }
     Ok(expr)
 }
 
-fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, Diagnostic> {
+fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>, Diagnostic> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0usize;
@@ -637,19 +684,20 @@ fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
 
-        if byte.is_ascii_digit() {
-            let start = index;
+        let start = index;
+        let kind = if byte.is_ascii_digit() {
             while index < bytes.len() && bytes[index].is_ascii_digit() {
                 index += 1;
             }
-            let value = input[start..index]
-                .parse::<i64>()
-                .map_err(|_| diag(line, "integer literal is outside i64 range"))?;
-            tokens.push(Token::Int(value));
-            continue;
-        }
-
-        if byte == b'"' {
+            let value = input[start..index].parse::<i64>().map_err(|_| {
+                Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    SourceSpan::new(line, column + start, index - start),
+                    "integer literal is outside i64 range",
+                )
+            })?;
+            TokenKind::Int(value)
+        } else if byte == b'"' {
             index += 1;
             let mut value = String::new();
             let mut closed = false;
@@ -672,9 +720,10 @@ fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, Diagnostic> {
                             b'"' => '"',
                             b'\\' => '\\',
                             other => {
-                                return Err(diag(
-                                    line,
-                                    &format!("unsupported escape '\\{}'", other as char),
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    SourceSpan::new(line, column + index, 1),
+                                    format!("unsupported escape '\\{}'", other as char),
                                 ));
                             }
                         };
@@ -694,60 +743,68 @@ fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, Diagnostic> {
                 }
             }
             if !closed {
-                return Err(diag(line, "unterminated string literal"));
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    SourceSpan::new(line, column + start, input.len() - start),
+                    "unterminated string literal",
+                ));
             }
-            tokens.push(Token::Str(value));
-            continue;
-        }
-
-        if byte == b'_' || byte.is_ascii_alphabetic() {
-            let start = index;
+            TokenKind::Str(value)
+        } else if byte == b'_' || byte.is_ascii_alphabetic() {
             index += 1;
             while index < bytes.len()
                 && (bytes[index] == b'_' || bytes[index].is_ascii_alphanumeric())
             {
                 index += 1;
             }
-            let ident = &input[start..index];
-            tokens.push(match ident {
-                "true" => Token::True,
-                "false" => Token::False,
-                "nil" => Token::Nil,
-                _ => Token::Ident(ident.to_string()),
-            });
-            continue;
-        }
-
-        let (token, width) = match byte {
-            b'+' => (Token::Plus, 1),
-            b'-' => (Token::Minus, 1),
-            b'*' => (Token::Star, 1),
-            b'/' => (Token::Slash, 1),
-            b'(' => (Token::LParen, 1),
-            b')' => (Token::RParen, 1),
-            b',' => (Token::Comma, 1),
-            b'!' if bytes.get(index + 1) == Some(&b'=') => (Token::NotEq, 2),
-            b'!' => (Token::Bang, 1),
-            b'=' if bytes.get(index + 1) == Some(&b'=') => (Token::EqEq, 2),
-            b'<' if bytes.get(index + 1) == Some(&b'=') => (Token::Le, 2),
-            b'<' => (Token::Lt, 1),
-            b'>' if bytes.get(index + 1) == Some(&b'=') => (Token::Ge, 2),
-            b'>' => (Token::Gt, 1),
-            b'&' if bytes.get(index + 1) == Some(&b'&') => (Token::AndAnd, 2),
-            b'|' if bytes.get(index + 1) == Some(&b'|') => (Token::OrOr, 2),
-            other => {
-                return Err(diag(
-                    line,
-                    &format!("unexpected character '{}' in expression", other as char),
-                ));
+            match &input[start..index] {
+                "true" => TokenKind::True,
+                "false" => TokenKind::False,
+                "nil" => TokenKind::Nil,
+                ident => TokenKind::Ident(ident.to_string()),
             }
+        } else {
+            let (kind, width) = match byte {
+                b'+' => (TokenKind::Plus, 1),
+                b'-' => (TokenKind::Minus, 1),
+                b'*' => (TokenKind::Star, 1),
+                b'/' => (TokenKind::Slash, 1),
+                b'(' => (TokenKind::LParen, 1),
+                b')' => (TokenKind::RParen, 1),
+                b',' => (TokenKind::Comma, 1),
+                b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
+                b'!' => (TokenKind::Bang, 1),
+                b'=' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::EqEq, 2),
+                b'<' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::Le, 2),
+                b'<' => (TokenKind::Lt, 1),
+                b'>' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::Ge, 2),
+                b'>' => (TokenKind::Gt, 1),
+                b'&' if bytes.get(index + 1) == Some(&b'&') => (TokenKind::AndAnd, 2),
+                b'|' if bytes.get(index + 1) == Some(&b'|') => (TokenKind::OrOr, 2),
+                other => {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        SourceSpan::new(line, column + index, 1),
+                        format!("unexpected character '{}' in expression", other as char),
+                    ));
+                }
+            };
+            index += width;
+            kind
         };
-        tokens.push(token);
-        index += width;
+
+        tokens.push(Token {
+            kind,
+            span: SourceSpan::new(line, column + start, index - start),
+        });
     }
 
     if tokens.is_empty() {
-        return Err(diag(line, "expected expression"));
+        return Err(Diagnostic::new(
+            DiagnosticStage::Parse,
+            SourceSpan::new(line, column, 1),
+            "expected expression",
+        ));
     }
     Ok(tokens)
 }
@@ -767,9 +824,14 @@ impl ExprParser<'_> {
             }
             self.index += 1;
             let right = self.parse_binary(precedence + 1)?;
+            let span = SourceSpan::new(
+                self.line,
+                left.span.column,
+                right.span.column + right.span.length - left.span.column,
+            );
             left = Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span,
                 kind: ExprKind::Binary {
                     left: Box::new(left),
                     op,
@@ -781,24 +843,42 @@ impl ExprParser<'_> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
-        if matches!(self.tokens.get(self.index), Some(Token::Minus)) {
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Minus)
+        ) {
+            let op_span = self.tokens[self.index].span;
             self.index += 1;
             let expr = self.parse_unary()?;
+            let span = SourceSpan::new(
+                self.line,
+                op_span.column,
+                expr.span.column + expr.span.length - op_span.column,
+            );
             return Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span,
                 kind: ExprKind::Unary {
                     op: UnaryOp::Neg,
                     expr: Box::new(expr),
                 },
             });
         }
-        if matches!(self.tokens.get(self.index), Some(Token::Bang)) {
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Bang)
+        ) {
+            let op_span = self.tokens[self.index].span;
             self.index += 1;
             let expr = self.parse_unary()?;
+            let span = SourceSpan::new(
+                self.line,
+                op_span.column,
+                expr.span.column + expr.span.length - op_span.column,
+            );
             return Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span,
                 kind: ExprKind::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(expr),
@@ -813,49 +893,56 @@ impl ExprParser<'_> {
             return Err(diag(self.line, "expected expression"));
         };
         self.index += 1;
+        let token_span = token.span;
 
-        match token {
-            Token::Int(value) => Ok(Expr {
+        match token.kind {
+            TokenKind::Int(value) => Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span: token_span,
                 kind: ExprKind::Int(value),
             }),
-            Token::Str(value) => Ok(Expr {
+            TokenKind::Str(value) => Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span: token_span,
                 kind: ExprKind::Str(value),
             }),
-            Token::True => Ok(Expr {
+            TokenKind::True => Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span: token_span,
                 kind: ExprKind::Bool(true),
             }),
-            Token::False => Ok(Expr {
+            TokenKind::False => Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span: token_span,
                 kind: ExprKind::Bool(false),
             }),
-            Token::Nil => Ok(Expr {
+            TokenKind::Nil => Ok(Expr {
                 line: self.line,
-                span: SourceSpan::line(self.line),
+                span: token_span,
                 kind: ExprKind::Nil,
             }),
-            Token::Ident(name) => {
-                if !matches!(self.tokens.get(self.index), Some(Token::LParen)) {
+            TokenKind::Ident(name) => {
+                if !matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::LParen)
+                ) {
                     return Ok(Expr {
                         line: self.line,
-                        span: SourceSpan::line(self.line),
+                        span: token_span,
                         kind: ExprKind::Var(name),
                     });
                 }
                 self.index += 1;
                 let mut args = Vec::new();
-                if !matches!(self.tokens.get(self.index), Some(Token::RParen)) {
+                if !matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::RParen)
+                ) {
                     loop {
                         args.push(self.parse_binary(1)?);
-                        match self.tokens.get(self.index) {
-                            Some(Token::Comma) => self.index += 1,
-                            Some(Token::RParen) => break,
+                        match self.tokens.get(self.index).map(|token| &token.kind) {
+                            Some(TokenKind::Comma) => self.index += 1,
+                            Some(TokenKind::RParen) => break,
                             _ => {
                                 return Err(diag(
                                     self.line,
@@ -865,42 +952,71 @@ impl ExprParser<'_> {
                         }
                     }
                 }
-                if !matches!(self.tokens.get(self.index), Some(Token::RParen)) {
+                let Some(close) = self.tokens.get(self.index) else {
                     return Err(diag(self.line, "expected ')' after call arguments"));
+                };
+                if !matches!(close.kind, TokenKind::RParen) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ')' after call arguments",
+                    ));
                 }
+                let close_span = close.span;
                 self.index += 1;
                 Ok(Expr {
                     line: self.line,
-                    span: SourceSpan::line(self.line),
+                    span: SourceSpan::new(
+                        self.line,
+                        token_span.column,
+                        close_span.column + close_span.length - token_span.column,
+                    ),
                     kind: ExprKind::Call { name, args },
                 })
             }
-            Token::LParen => {
-                let expr = self.parse_binary(1)?;
-                if !matches!(self.tokens.get(self.index), Some(Token::RParen)) {
+            TokenKind::LParen => {
+                let mut expr = self.parse_binary(1)?;
+                let Some(close) = self.tokens.get(self.index) else {
                     return Err(diag(self.line, "expected ')'"));
+                };
+                if !matches!(close.kind, TokenKind::RParen) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ')'",
+                    ));
                 }
+                let close_span = close.span;
                 self.index += 1;
+                expr.span = SourceSpan::new(
+                    self.line,
+                    token_span.column,
+                    close_span.column + close_span.length - token_span.column,
+                );
                 Ok(expr)
             }
-            _ => Err(diag(self.line, "expected expression")),
+            _ => Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                token_span,
+                "expected expression",
+            )),
         }
     }
 
     fn peek_binary(&self) -> Option<(BinOp, u8)> {
-        Some(match self.tokens.get(self.index)? {
-            Token::OrOr => (BinOp::Or, 1),
-            Token::AndAnd => (BinOp::And, 2),
-            Token::EqEq => (BinOp::Eq, 3),
-            Token::NotEq => (BinOp::Ne, 3),
-            Token::Lt => (BinOp::Lt, 4),
-            Token::Le => (BinOp::Le, 4),
-            Token::Gt => (BinOp::Gt, 4),
-            Token::Ge => (BinOp::Ge, 4),
-            Token::Plus => (BinOp::Add, 5),
-            Token::Minus => (BinOp::Sub, 5),
-            Token::Star => (BinOp::Mul, 6),
-            Token::Slash => (BinOp::Div, 6),
+        Some(match &self.tokens.get(self.index)?.kind {
+            TokenKind::OrOr => (BinOp::Or, 1),
+            TokenKind::AndAnd => (BinOp::And, 2),
+            TokenKind::EqEq => (BinOp::Eq, 3),
+            TokenKind::NotEq => (BinOp::Ne, 3),
+            TokenKind::Lt => (BinOp::Lt, 4),
+            TokenKind::Le => (BinOp::Le, 4),
+            TokenKind::Gt => (BinOp::Gt, 4),
+            TokenKind::Ge => (BinOp::Ge, 4),
+            TokenKind::Plus => (BinOp::Add, 5),
+            TokenKind::Minus => (BinOp::Sub, 5),
+            TokenKind::Star => (BinOp::Mul, 6),
+            TokenKind::Slash => (BinOp::Div, 6),
             _ => return None,
         })
     }

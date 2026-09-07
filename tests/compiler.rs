@@ -36,7 +36,23 @@ fn main() -> i64 {
     let span = error
         .span
         .expect("type diagnostic should have a source span");
-    assert_eq!((span.line, span.column), (3, 5));
+    assert_eq!((span.line, span.column, span.length), (3, 22, 4));
+}
+
+#[test]
+fn reports_token_level_expression_parse_spans() {
+    let source = r#"
+fn main() -> i64 {
+    let count: i64 = 1 @ 2
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("invalid expression token should fail");
+    assert_eq!(error.stage, DiagnosticStage::Parse);
+    assert!(error.message.contains("unexpected character '@'"));
+    let span = error.span.expect("parse error should have a token span");
+    assert_eq!((span.line, span.column, span.length), (3, 24, 1));
 }
 
 #[test]
@@ -118,7 +134,7 @@ fn main() -> i64 {
             .contains("if condition: expected bool, got i64")
     );
     let span = error.span.expect("elif diagnostic should retain its span");
-    assert_eq!((span.line, span.column), (5, 5));
+    assert_eq!((span.line, span.column, span.length), (5, 10, 1));
 }
 
 #[test]
