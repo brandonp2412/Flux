@@ -122,22 +122,29 @@ fn check_block(
                 }
             }
             StmtKind::Return(expressions) => {
-                if expressions.len() != return_types.len() {
+                let actuals = if expressions.len() == 1 {
+                    value_types_of_expr(&expressions[0], env, signatures)?
+                } else {
+                    expressions
+                        .iter()
+                        .map(|expr| type_of_expr(expr, env, signatures))
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                if actuals.len() != return_types.len() {
                     return Err(diag(
                         stmt.line,
                         &format!(
                             "return expects {} values, got {}",
                             return_types.len(),
-                            expressions.len()
+                            actuals.len()
                         ),
                     ));
                 }
-                for (index, (expr, expected)) in expressions.iter().zip(return_types).enumerate() {
-                    let actual = type_of_expr(expr, env, signatures)?;
+                for (index, (actual, expected)) in actuals.iter().zip(return_types).enumerate() {
                     require_type(
                         stmt.line,
                         expected,
-                        &actual,
+                        actual,
                         &format!("return value {}", index + 1),
                     )?;
                 }

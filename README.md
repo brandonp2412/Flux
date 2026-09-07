@@ -75,7 +75,15 @@ fn main() -> i64 {
 }
 ```
 
-This is the foundation for Flux's recoverable-error model. Flux now has a built-in `error` type: `nil` means no error, while `error("message")` constructs a recoverable failure. `error` is compiler-known rather than a generic result container, so the model stays explicit and compatible with Flux's no-generics constraint. Exceptions are not part of the design.
+This is the foundation for Flux's recoverable-error model. Flux now has a built-in `error` type: `nil` means no error, while `error("message")` constructs a recoverable failure. `error` is compiler-known rather than a generic result container, so the model stays explicit and compatible with Flux's no-generics constraint. Exceptions are not part of the design. Multi-value results can also be forwarded directly when the caller returns the exact same shape, so wrappers stay concise without hidden control flow:
+
+```flux
+fn load_config(path: str) -> (str, error) {
+    return load(path)
+}
+```
+
+Forwarding is positional and strictly checked: both arity and every return type must match the enclosing function signature.
 
 ```flux
 fn load(path: str) -> (str, error) {

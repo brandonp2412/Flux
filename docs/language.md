@@ -67,7 +67,9 @@ fn main() -> i64 {
 }
 ```
 
-The bootstrap representation stores only an error message. The language-level type is opaque so richer error metadata can be introduced later without turning errors into strings. A future propagation shorthand may reduce repetitive error forwarding, but it must still compile to explicit control flow rather than stack unwinding.
+The bootstrap representation stores only an error message. The language-level type is opaque so richer error metadata can be introduced later without turning errors into strings.
+
+A function may directly forward another function's multi-value result with `return call(...)` when the complete return shape matches exactly. This is compile-time checked positionally and lowers to ordinary native return values; it does not introduce exceptions, stack unwinding, or general tuple values.
 
 ## Generics
 

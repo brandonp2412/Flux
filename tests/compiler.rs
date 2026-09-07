@@ -137,6 +137,54 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_multi_value_return_forwarding() {
+    let source = r#"
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "config", nil
+}
+
+fn load_config(path: str) -> (str, error) {
+    return load(path)
+}
+
+fn main() -> i64 {
+    let data: str, err: error = load_config("settings")
+    if err != nil:
+        print(err)
+    print(data)
+    return 0
+}
+"#;
+
+    check_source(source).expect("multi-value forwarding should typecheck");
+    let generated = compile_to_c(source).expect("multi-value forwarding should compile");
+    assert!(generated.contains("flux__forward_"));
+    assert!(generated.contains("struct flux__ret_load_config"));
+}
+
+#[test]
+fn rejects_multi_value_return_forwarding_type_mismatch() {
+    let source = r#"
+fn pair() -> (i64, bool) {
+    return 1, true
+}
+
+fn forward() -> (i64, error) {
+    return pair()
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("forwarded return types must match exactly");
+    assert!(error.contains("return value 2: expected error, got bool"));
+}
+
+#[test]
 fn rejects_multi_return_arity_mismatch() {
     let source = r#"
 fn pair() -> (i64, bool) {

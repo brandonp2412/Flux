@@ -133,6 +133,24 @@ fn emit_block(
             StmtKind::Return(values) if values.is_empty() => {
                 out.push_str(&format!("{pad}return;\n"));
             }
+            StmtKind::Return(values) if values.len() == 1 && current_function.returns.len() > 1 => {
+                let (value, source_tag) = emit_multi_expr(&values[0], env, signatures)?;
+                let source_temp = format!("flux__forward_{}", *temp_counter);
+                *temp_counter += 1;
+                let return_tag = multi_return_struct_name(&current_function.name);
+                let return_temp = format!("flux__return_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}struct {source_tag} {source_temp} = {value};\n"
+                ));
+                out.push_str(&format!("{pad}struct {return_tag} {return_temp};\n"));
+                for index in 0..current_function.returns.len() {
+                    out.push_str(&format!(
+                        "{pad}{return_temp}.v{index} = {source_temp}.v{index};\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}return {return_temp};\n"));
+            }
             StmtKind::Return(values) if values.len() == 1 => {
                 let value = emit_expr(&values[0], env, signatures)?;
                 out.push_str(&format!("{pad}return {};\n", value.code));
