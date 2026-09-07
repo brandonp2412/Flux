@@ -23,7 +23,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parsing for functions, structs, typed bindings, calls, field access, `if` / `elif` / `else`, and exclusive range `for` loops;
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, `void`, and named struct value types;
-- struct literals with exact field validation, nested value layouts, and native by-value lowering;
+- struct literals, field access, and `Type { ..base, field: value }` functional updates with exact field validation and native by-value lowering;
 - function signature, return, and argument validation;
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;

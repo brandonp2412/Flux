@@ -509,11 +509,21 @@ pub fn type_of_expr(
         ExprKind::StructLiteral {
             name,
             name_span,
+            base,
             fields,
         } => {
             let Some(definition) = signatures.struct_type(name) else {
                 return Err(diag(*name_span, &format!("unknown struct '{name}'")));
             };
+            if let Some(base) = base {
+                let base_ty = type_of_expr(base, env, signatures)?;
+                require_type(
+                    base.span,
+                    &Type::Named(name.clone()),
+                    &base_ty,
+                    &format!("{name} update base"),
+                )?;
+            }
             let mut seen = HashSet::new();
             for field in fields {
                 if !seen.insert(field.name.as_str()) {
@@ -543,7 +553,7 @@ pub fn type_of_expr(
                 .filter(|field| !seen.contains(field.name.as_str()))
                 .map(|field| field.name.as_str())
                 .collect::<Vec<_>>();
-            if !missing.is_empty() {
+            if base.is_none() && !missing.is_empty() {
                 return Err(diag(
                     expr.span,
                     &format!(

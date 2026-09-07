@@ -40,6 +40,8 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
         out.push('\n');
     }
 
+    out.push_str(&struct_update_helpers(program, signatures));
+
     for function in &program.functions {
         if function.returns.len() > 1 {
             let tag = multi_return_struct_name(&function.name);
@@ -363,19 +365,38 @@ fn emit_expr(
                 ty,
             }
         }
-        ExprKind::StructLiteral { name, fields, .. } => {
-            let mut rendered = Vec::with_capacity(fields.len());
-            for field in fields {
-                let value = emit_expr(&field.value, env, signatures)?;
-                rendered.push(format!(".{} = {}", field_c_name(&field.name), value.code));
-            }
-            EmittedExpr {
-                code: format!(
-                    "((struct {}){{ {} }})",
-                    struct_c_name(name),
-                    rendered.join(", ")
-                ),
-                ty: Type::Named(name.clone()),
+        ExprKind::StructLiteral {
+            name, base, fields, ..
+        } => {
+            if let Some(base) = base {
+                let base = emit_expr(base, env, signatures)?;
+                let mut args = Vec::with_capacity(fields.len() + 1);
+                args.push(base.code);
+                for field in fields {
+                    args.push(emit_expr(&field.value, env, signatures)?.code);
+                }
+                EmittedExpr {
+                    code: format!(
+                        "{}({})",
+                        struct_update_helper_name(name, fields),
+                        args.join(", ")
+                    ),
+                    ty: Type::Named(name.clone()),
+                }
+            } else {
+                let mut rendered = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let value = emit_expr(&field.value, env, signatures)?;
+                    rendered.push(format!(".{} = {}", field_c_name(&field.name), value.code));
+                }
+                EmittedExpr {
+                    code: format!(
+                        "((struct {}){{ {} }})",
+                        struct_c_name(name),
+                        rendered.join(", ")
+                    ),
+                    ty: Type::Named(name.clone()),
+                }
             }
         }
         ExprKind::Field { base, name, .. } => {
@@ -493,6 +514,138 @@ fn struct_c_name(name: &str) -> String {
 
 fn field_c_name(name: &str) -> String {
     format!("flux__field_{name}")
+}
+
+fn struct_update_helpers(program: &Program, signatures: &Signatures) -> String {
+    let mut helpers = String::new();
+    let mut emitted = HashSet::new();
+    for function in &program.functions {
+        collect_update_helpers_from_block(&function.body, signatures, &mut emitted, &mut helpers);
+    }
+    if !helpers.is_empty() {
+        helpers.push('\n');
+    }
+    helpers
+}
+
+fn collect_update_helpers_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    emitted: &mut HashSet<String>,
+    helpers: &mut String,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. } | StmtKind::LetDestructure { expr, .. } => {
+                collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
+            }
+            StmtKind::Return(values) => {
+                for expr in values {
+                    collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
+                }
+            }
+            StmtKind::Expr(expr) => {
+                collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_update_helpers_from_expr(cond, signatures, emitted, helpers);
+                collect_update_helpers_from_block(body, signatures, emitted, helpers);
+                collect_update_helpers_from_block(else_body, signatures, emitted, helpers);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_update_helpers_from_expr(start, signatures, emitted, helpers);
+                collect_update_helpers_from_expr(end, signatures, emitted, helpers);
+                collect_update_helpers_from_block(body, signatures, emitted, helpers);
+            }
+        }
+    }
+}
+
+fn collect_update_helpers_from_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+    emitted: &mut HashSet<String>,
+    helpers: &mut String,
+) {
+    match &expr.kind {
+        ExprKind::StructLiteral {
+            name, base, fields, ..
+        } => {
+            if let Some(base) = base {
+                collect_update_helpers_from_expr(base, signatures, emitted, helpers);
+                let helper_name = struct_update_helper_name(name, fields);
+                if emitted.insert(helper_name.clone()) {
+                    let definition = signatures
+                        .struct_type(name)
+                        .expect("type checking guarantees update struct exists");
+                    helpers.push_str(&format!(
+                        "static inline struct {} {helper_name}(struct {} base",
+                        struct_c_name(name),
+                        struct_c_name(name)
+                    ));
+                    for field in fields {
+                        let signature = definition
+                            .field(&field.name)
+                            .expect("type checking guarantees update field exists");
+                        helpers.push_str(&format!(
+                            ", {} value_{}",
+                            c_type(&signature.ty),
+                            field.name
+                        ));
+                    }
+                    helpers.push_str(") {\n");
+                    for field in fields {
+                        helpers.push_str(&format!(
+                            "    base.{} = value_{};\n",
+                            field_c_name(&field.name),
+                            field.name
+                        ));
+                    }
+                    helpers.push_str("    return base;\n}\n");
+                }
+            }
+            for field in fields {
+                collect_update_helpers_from_expr(&field.value, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_update_helpers_from_expr(base, signatures, emitted, helpers);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_update_helpers_from_expr(left, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(right, signatures, emitted, helpers);
+        }
+        ExprKind::Call { args, .. } => {
+            for arg in args {
+                collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn struct_update_helper_name(name: &str, fields: &[crate::ast::StructLiteralField]) -> String {
+    let suffix = if fields.is_empty() {
+        "copy".to_string()
+    } else {
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>()
+            .join("__")
+    };
+    format!("flux__update_{name}__{suffix}")
 }
 
 fn struct_emit_order(program: &Program) -> Result<Vec<&StructDef>, Diagnostic> {

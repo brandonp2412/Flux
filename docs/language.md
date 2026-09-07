@@ -62,7 +62,7 @@ fn birthday(user: User) -> User {
 
 Struct literals must provide each declared field exactly once with the declared type. Unknown fields, missing fields, duplicate fields, and unknown named types are compile-time errors. Field access is statically resolved. Structs may contain other structs by value and are emitted in dependency order; recursive by-value layouts are rejected because they have infinite size. Indirect recursive structures will be introduced only together with explicit ownership/reference semantics.
 
-Struct values lower to native value structs in the bootstrap C backend. Copy/update sugar is not implemented yet; when introduced it must evaluate its source value once and preserve the same explicit value semantics.
+Struct values lower to native value structs in the bootstrap C backend. Functional updates use `Type { ..base, field: value }`. The base may be any expression, is evaluated exactly once, and is copied by value before the listed fields are replaced. The bootstrap backend lowers update shapes through generated typed inline helpers rather than relying on non-standard C expression extensions.
 
 ## Error handling
 

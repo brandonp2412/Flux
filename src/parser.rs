@@ -292,9 +292,15 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             }
         }
         ExprKind::StructLiteral {
-            name_span, fields, ..
+            name_span,
+            base,
+            fields,
+            ..
         } => {
             *name_span = name_span.with_source(source_id);
+            if let Some(base) = base {
+                attach_expr_source(base, source_id);
+            }
             for field in fields {
                 field.name_span = field.name_span.with_source(source_id);
                 attach_expr_source(&mut field.value, source_id);
@@ -1498,7 +1504,28 @@ impl ExprParser<'_> {
         name_span: SourceSpan,
     ) -> Result<Expr, Diagnostic> {
         self.index += 1;
+        let mut base = None;
         let mut fields = Vec::new();
+        if matches!(
+            (
+                self.tokens.get(self.index).map(|token| &token.kind),
+                self.tokens.get(self.index + 1).map(|token| &token.kind),
+            ),
+            (Some(TokenKind::Dot), Some(TokenKind::Dot))
+        ) {
+            self.index += 2;
+            base = Some(Box::new(self.parse_binary(1)?));
+            match self.tokens.get(self.index).map(|token| &token.kind) {
+                Some(TokenKind::Comma) => self.index += 1,
+                Some(TokenKind::RBrace) => {}
+                _ => {
+                    return Err(diag(
+                        self.line,
+                        "expected ',' or '}' after struct update base",
+                    ));
+                }
+            }
+        }
         if !matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
             Some(TokenKind::RBrace)
@@ -1569,6 +1596,7 @@ impl ExprParser<'_> {
             kind: ExprKind::StructLiteral {
                 name,
                 name_span,
+                base,
                 fields,
             },
         })

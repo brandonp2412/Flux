@@ -190,6 +190,60 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_functional_struct_updates_with_single_base_evaluation() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+
+fn make_user(age: i64) -> User {
+    return User { name: "Ada", age: age }
+}
+
+fn main() -> i64 {
+    let older: User = User { ..make_user(41), age: 42 }
+    print(older.name)
+    print(older.age)
+    return 0
+}
+"#;
+
+    check_source(source).expect("struct update should typecheck");
+    let generated = compile_to_c(source).expect("struct update should compile");
+    assert!(generated.contains(
+        "static inline struct flux__type_User flux__update_User__age(struct flux__type_User base, int64_t value_age)"
+    ));
+    assert!(generated.contains("flux__update_User__age(make_user(INT64_C(41)), INT64_C(42))"));
+}
+
+#[test]
+fn rejects_struct_updates_from_the_wrong_base_type() {
+    let source = r#"
+struct User {
+    age: i64
+}
+
+struct Profile {
+    active: bool
+}
+
+fn main() -> i64 {
+    let profile: Profile = Profile { active: true }
+    let user: User = User { ..profile, age: 42 }
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("wrong update base should fail");
+    assert!(
+        error
+            .message
+            .contains("User update base: expected User, got Profile")
+    );
+}
+
+#[test]
 fn rejects_invalid_struct_literals_and_field_access() {
     let missing = r#"
 struct User {
@@ -274,8 +328,8 @@ fn main() -> i64 {
 
 #[test]
 fn formatter_handles_struct_declarations_and_literals() {
-    let source = "struct User {\n name:str\n age:i64\n}\nfn main()->i64 {\n let user:User=User{name:\"Ada\",age:41}\n print(user.name)\n return 0\n}\n";
-    let expected = "struct User {\n    name: str\n    age: i64\n}\nfn main() -> i64 {\n    let user: User = User { name: \"Ada\", age: 41 }\n    print(user.name)\n    return 0\n}\n";
+    let source = "struct User {\n name:str\n age:i64\n}\nfn main()->i64 {\n let user:User=User{name:\"Ada\",age:41}\n let older:User=User{..user,age:42}\n print(older.name)\n return 0\n}\n";
+    let expected = "struct User {\n    name: str\n    age: i64\n}\nfn main() -> i64 {\n    let user: User = User { name: \"Ada\", age: 41 }\n    let older: User = User { ..user, age: 42 }\n    print(older.name)\n    return 0\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("struct source should format");
     assert_eq!(formatted, expected);
 }

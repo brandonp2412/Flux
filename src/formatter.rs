@@ -210,14 +210,20 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        ExprKind::StructLiteral { name, fields, .. } => format!(
-            "{name} {{ {} }}",
-            fields
-                .iter()
-                .map(|field| format!("{}: {}", field.name, format_expr(&field.value, 0)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        ExprKind::StructLiteral {
+            name, base, fields, ..
+        } => {
+            let mut parts = Vec::with_capacity(fields.len() + usize::from(base.is_some()));
+            if let Some(base) = base {
+                parts.push(format!("..{}", format_expr(base, 0)));
+            }
+            parts.extend(
+                fields
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name, format_expr(&field.value, 0))),
+            );
+            format!("{name} {{ {} }}", parts.join(", "))
+        }
         ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 7)),
         ExprKind::Unary { op, expr } => {
             let operator = match op {

@@ -158,6 +158,7 @@ pub enum ExprKind {
     StructLiteral {
         name: String,
         name_span: SourceSpan,
+        base: Option<Box<Expr>>,
         fields: Vec<StructLiteralField>,
     },
     Field {
