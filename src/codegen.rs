@@ -15,6 +15,8 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Stri
         "static inline void flux_print_bool(bool value) { puts(value ? \"true\" : \"false\"); }\n",
     );
     out.push_str("static inline void flux_print_str(const char *value) { puts(value); }\n");
+    out.push_str("static inline void flux_print_error(const char *value) { puts(value ? value : \"nil\"); }\n");
+    out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
     out.push_str("    return a / b;\n");
@@ -220,6 +222,10 @@ fn emit_expr(
             code: c_string(value),
             ty: Type::Str,
         },
+        ExprKind::Nil => EmittedExpr {
+            code: "NULL".to_string(),
+            ty: Type::Error,
+        },
         ExprKind::Var(name) => EmittedExpr {
             code: name.clone(),
             ty: env.get(name).cloned().ok_or_else(|| {
@@ -235,11 +241,19 @@ fn emit_expr(
                 Type::I64 => "flux_print_i64",
                 Type::Bool => "flux_print_bool",
                 Type::Str => "flux_print_str",
+                Type::Error => "flux_print_error",
                 Type::Void => return Err(format!("line {}: cannot print void", expr.line)),
             };
             EmittedExpr {
                 code: format!("{helper}({})", arg.code),
                 ty: Type::Void,
+            }
+        }
+        ExprKind::Call { name, args } if name == "error" => {
+            let message = emit_expr(&args[0], env, signatures)?;
+            EmittedExpr {
+                code: message.code,
+                ty: Type::Error,
             }
         }
         ExprKind::Call { name, args } => {
@@ -294,6 +308,13 @@ fn emit_expr(
             } else if matches!(op, BinOp::Eq | BinOp::Ne) && left.ty == Type::Str {
                 let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
                 format!("(strcmp({}, {}) {comparator} 0)", left.code, right.code)
+            } else if matches!(op, BinOp::Eq | BinOp::Ne) && left.ty == Type::Error {
+                let equality = format!("flux_error_eq({}, {})", left.code, right.code);
+                if matches!(op, BinOp::Eq) {
+                    equality
+                } else {
+                    format!("(!{equality})")
+                }
             } else {
                 format!("({} {} {})", left.code, c_operator(*op), right.code)
             };
@@ -356,6 +377,7 @@ fn c_type(ty: &Type) -> &'static str {
         Type::I64 => "int64_t",
         Type::Bool => "bool",
         Type::Str => "const char *",
+        Type::Error => "const char *",
         Type::Void => "void",
     }
 }

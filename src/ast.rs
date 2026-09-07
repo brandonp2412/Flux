@@ -3,6 +3,7 @@ pub enum Type {
     I64,
     Bool,
     Str,
+    Error,
     Void,
 }
 
@@ -12,6 +13,7 @@ impl Type {
             "i64" => Some(Self::I64),
             "bool" => Some(Self::Bool),
             "str" => Some(Self::Str),
+            "error" => Some(Self::Error),
             "void" => Some(Self::Void),
             _ => None,
         }
@@ -22,6 +24,7 @@ impl Type {
             Self::I64 => "i64",
             Self::Bool => "bool",
             Self::Str => "str",
+            Self::Error => "error",
             Self::Void => "void",
         }
     }
@@ -95,6 +98,7 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Str(String),
+    Nil,
     Var(String),
     Call {
         name: String,

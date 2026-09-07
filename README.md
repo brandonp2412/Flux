@@ -21,7 +21,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 
 - parsing for functions, typed bindings, calls, `if`, and exclusive range `for` loops;
 - explicit multi-value function returns and strictly typed destructuring bindings;
-- static checking for `i64`, `bool`, `str`, and `void`;
+- static checking for `i64`, `bool`, `str`, `error`, and `void`;
 - function signature, return, and argument validation;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
@@ -75,12 +75,28 @@ fn main() -> i64 {
 }
 ```
 
-This is the foundation for Flux's recoverable-error model. A built-in error value/type and propagation syntax are still pending; exceptions are not part of the design.
+This is the foundation for Flux's recoverable-error model. Flux now has a built-in `error` type: `nil` means no error, while `error("message")` constructs a recoverable failure. `error` is compiler-known rather than a generic result container, so the model stays explicit and compatible with Flux's no-generics constraint. Exceptions are not part of the design.
+
+```flux
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "configuration loaded", nil
+}
+
+fn main() -> i64 {
+    let data: str, err: error = load("settings.flux")
+    if err != nil:
+        print(err)
+    print(data)
+    return 0
+}
+```
 
 ## Near-term roadmap
 
-1. Add the built-in error / nullable-error model on top of explicit multi-value returns.
-2. Replace string diagnostics with source spans and structured diagnostics.
+1. Replace string diagnostics with source spans and structured diagnostics.
+2. Add `else` / `elif` and a small explicit error-propagation shorthand that lowers to ordinary control flow.
 3. Add structs, ownership moves, borrows, and the first borrow checker.
 4. Introduce Flux typed IR and a direct optimizing native backend.
 5. Add packages/modules and stable ABI rules.

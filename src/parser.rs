@@ -465,7 +465,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), String> {
     }
     if matches!(
         input,
-        "fn" | "let" | "return" | "if" | "for" | "in" | "true" | "false"
+        "fn" | "let" | "return" | "if" | "for" | "in" | "true" | "false" | "nil" | "error"
     ) {
         return Err(diag(line, &format!("'{input}' is reserved")));
     }
@@ -479,6 +479,7 @@ enum Token {
     Ident(String),
     True,
     False,
+    Nil,
     Plus,
     Minus,
     Star,
@@ -598,6 +599,7 @@ fn lex_expression(input: &str, line: usize) -> Result<Vec<Token>, String> {
             tokens.push(match ident {
                 "true" => Token::True,
                 "false" => Token::False,
+                "nil" => Token::Nil,
                 _ => Token::Ident(ident.to_string()),
             });
             continue;
@@ -712,6 +714,10 @@ impl ExprParser<'_> {
             Token::False => Ok(Expr {
                 line: self.line,
                 kind: ExprKind::Bool(false),
+            }),
+            Token::Nil => Ok(Expr {
+                line: self.line,
+                kind: ExprKind::Nil,
             }),
             Token::Ident(name) => {
                 if !matches!(self.tokens.get(self.index), Some(Token::LParen)) {

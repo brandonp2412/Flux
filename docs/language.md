@@ -47,28 +47,27 @@ The bootstrap compiler intentionally performs no implicit `bool`/integer/string 
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
 
-The model uses explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. Multi-value returns and typed destructuring are implemented in the bootstrap compiler:
+The model uses explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. Multi-values are deliberately not general-purpose tuple values. A function returning multiple values must be consumed by a destructuring binding, and every binding type is checked positionally at compile time. This keeps the feature narrow, predictable, and easy to lower efficiently.
+
+Recoverable failures use the compiler-known `error` type. `nil` is the only no-error value, and `error("message")` constructs an error. `error` is intentionally not a generic `Result<T, E>` or general optional type; Flux has no generics, and normal error handling stays explicit in function signatures and control flow:
 
 ```flux
-fn divide(value: i64, by: i64) -> (i64, bool) {
-    if by == 0:
-        return 0, false
-    return value / by, true
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "configuration loaded", nil
 }
 
 fn main() -> i64 {
-    let result: i64, ok: bool = divide(84, 2)
-    if ok:
-        print(result)
+    let data: str, err: error = load("settings.flux")
+    if err != nil:
+        print(err)
+    print(data)
     return 0
 }
 ```
 
-Multi-values are deliberately not general-purpose tuple values. A function returning multiple values must be consumed by a destructuring binding, and every binding type is checked positionally at compile time. This keeps the feature narrow, predictable, and easy to lower efficiently.
-
-The next error-handling step is a built-in nullable error value/type, conceptually allowing APIs such as `fn read_config(path: str) -> (str, error?)`. `error?` will not be a generic `Result<T, E>`; Flux has no generics, so ordinary failure handling must not depend on generic result containers.
-
-A future propagation shorthand may reduce repetitive error forwarding, but it must still compile to explicit control flow rather than stack unwinding.
+The bootstrap representation stores only an error message. The language-level type is opaque so richer error metadata can be introduced later without turning errors into strings. A future propagation shorthand may reduce repetitive error forwarding, but it must still compile to explicit control flow rather than stack unwinding.
 
 ## Generics
 
@@ -105,9 +104,12 @@ Currently implemented:
 - `i64`
 - `bool`
 - `str`
+- `error`
 - `void`
 
 `str` is currently an immutable string view/literal type in the bootstrap compiler. An owned string type will be introduced together with ownership semantics.
+
+`error` is a compiler-known recoverable-error value. It is nullable only through the dedicated `nil` literal; `nil` does not type as an integer, boolean, string, or general null pointer.
 
 ## Control flow
 

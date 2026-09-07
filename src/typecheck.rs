@@ -185,6 +185,7 @@ pub fn type_of_expr(
         ExprKind::Int(_) => Ok(Type::I64),
         ExprKind::Bool(_) => Ok(Type::Bool),
         ExprKind::Str(_) => Ok(Type::Str),
+        ExprKind::Nil => Ok(Type::Error),
         ExprKind::Var(name) => env
             .get(name)
             .cloned()
@@ -194,13 +195,21 @@ pub fn type_of_expr(
                 return Err(diag(expr.line, "print expects exactly one argument"));
             }
             let ty = type_of_expr(&args[0], env, signatures)?;
-            if !matches!(ty, Type::I64 | Type::Bool | Type::Str) {
+            if !matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
                 return Err(diag(
                     expr.line,
                     &format!("print does not support {}", ty.name()),
                 ));
             }
             Ok(Type::Void)
+        }
+        ExprKind::Call { name, args } if name == "error" => {
+            if args.len() != 1 {
+                return Err(diag(expr.line, "error expects exactly one string argument"));
+            }
+            let ty = type_of_expr(&args[0], env, signatures)?;
+            require_type(expr.line, &Type::Str, &ty, "error message")?;
+            Ok(Type::Error)
         }
         ExprKind::Call { name, args } => {
             let returns = check_call(expr.line, name, args, env, signatures)?;
@@ -266,7 +275,7 @@ fn value_types_of_expr(
     signatures: &Signatures,
 ) -> Result<Vec<Type>, String> {
     match &expr.kind {
-        ExprKind::Call { name, args } if name != "print" => {
+        ExprKind::Call { name, args } if name != "print" && name != "error" => {
             check_call(expr.line, name, args, env, signatures)
         }
         _ => Ok(vec![type_of_expr(expr, env, signatures)?]),

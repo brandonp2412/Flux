@@ -167,3 +167,70 @@ fn main() -> i64 {
     let error = check_source(source).expect_err("return value types must match exactly");
     assert!(error.contains("return value 1: expected i64, got bool"));
 }
+
+#[test]
+fn accepts_typed_error_returns_and_nil_checks() {
+    let source = r#"
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "config", nil
+}
+
+fn main() -> i64 {
+    let data: str, err: error = load("settings")
+    if err != nil:
+        print(err)
+    print(data)
+    return 0
+}
+"#;
+
+    check_source(source).expect("error-return program should typecheck");
+    let generated = compile_to_c(source).expect("error-return program should compile");
+    assert!(generated.contains("flux_error_eq"));
+    assert!(generated.contains("NULL"));
+    assert!(generated.contains("flux_print_error"));
+}
+
+#[test]
+fn rejects_non_string_error_message() {
+    let source = r#"
+fn main() -> i64 {
+    let err: error = error(42)
+    print(err)
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("error messages must be strings");
+    assert!(error.contains("error message: expected str, got i64"));
+}
+
+#[test]
+fn rejects_nil_in_non_error_binding() {
+    let source = r#"
+fn main() -> i64 {
+    let value: i64 = nil
+    return value
+}
+"#;
+
+    let error = check_source(source).expect_err("nil should only type as error");
+    assert!(error.contains("binding: expected i64, got error"));
+}
+
+#[test]
+fn rejects_error_comparison_with_string() {
+    let source = r#"
+fn main() -> i64 {
+    let err: error = error("failed")
+    if err == "failed":
+        print(err)
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("error values must not compare as strings");
+    assert!(error.contains("equality operand: expected error, got str"));
+}
