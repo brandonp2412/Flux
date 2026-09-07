@@ -253,6 +253,45 @@ fn exposes_precise_declaration_binding_and_type_spans() {
     assert_eq!(name_span.source_id, source_id);
 }
 
+#[test]
+fn precise_spans_distinguish_repeated_text_occurrences() {
+    let source = "fn same(same: str) -> str {\n    for i in same..same:\n        print(i)\n    return same, same\n}\n";
+    let program = fluxc::parser::parse(source).expect("source should parse");
+    let function = &program.functions[0];
+
+    assert_eq!(span_text(source, function.name_span), "same");
+    assert_eq!(span_text(source, function.params[0].name_span), "same");
+    assert_eq!(span_text(source, function.params[0].type_span), "str");
+    assert_eq!(span_text(source, function.return_span), "str");
+    assert!(function.return_span.column > function.params[0].type_span.column);
+
+    let fluxc::ast::StmtKind::ForRange { start, end, .. } = &function.body[0].kind else {
+        panic!("expected range loop");
+    };
+    assert_eq!(span_text(source, start.span), "same");
+    assert_eq!(span_text(source, end.span), "same");
+    assert!(end.span.column > start.span.column);
+
+    let fluxc::ast::StmtKind::Return(values) = &function.body[1].kind else {
+        panic!("expected return statement");
+    };
+    assert_eq!(values.len(), 2);
+    assert_eq!(span_text(source, values[0].span), "same");
+    assert_eq!(span_text(source, values[1].span), "same");
+    assert!(values[1].span.column > values[0].span.column);
+}
+
+#[test]
+fn multi_return_type_spans_track_each_repeated_type() {
+    let source = "fn pair() -> (i64, i64) {\n    return 1, 2\n}\n";
+    let program = fluxc::parser::parse(source).expect("source should parse");
+    let spans = &program.functions[0].return_type_spans;
+    assert_eq!(spans.len(), 2);
+    assert_eq!(span_text(source, spans[0]), "i64");
+    assert_eq!(span_text(source, spans[1]), "i64");
+    assert!(spans[1].column > spans[0].column);
+}
+
 fn span_text(source: &str, span: fluxc::SourceSpan) -> &str {
     let line = source
         .lines()
