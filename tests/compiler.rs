@@ -1,4 +1,7 @@
-use fluxc::{DiagnosticStage, check_source, check_source_all, compile_to_c};
+use fluxc::{
+    DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
+    compile_to_c,
+};
 
 #[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
@@ -88,6 +91,57 @@ fn main() -> i64 {
             .iter()
             .any(|diagnostic| diagnostic.message.contains("unknown binding 'count'"))
     );
+}
+
+#[test]
+fn preserves_source_identity_across_parse_and_type_diagnostics() {
+    let parse_source = r#"
+fn main() -> i64 {
+    let count: i64 = 1 @ 2
+    return 0
+}
+"#;
+    let parse_id = SourceId::new(41);
+    let diagnostics = check_source_all_with_id(parse_source, parse_id)
+        .expect_err("parse diagnostic should carry the caller source id");
+    assert_eq!(diagnostics[0].span.unwrap().source_id, parse_id);
+
+    let type_source = r#"
+fn main() -> i64 {
+    let count: i64 = false
+    return 0
+}
+"#;
+    let type_id = SourceId::new(42);
+    let diagnostics = check_source_all_with_id(type_source, type_id)
+        .expect_err("type diagnostic should inherit the AST source id");
+    assert_eq!(diagnostics[0].stage, DiagnosticStage::Type);
+    assert_eq!(diagnostics[0].span.unwrap().source_id, type_id);
+}
+
+#[test]
+fn attaches_source_identity_to_nested_ast_spans() {
+    let source = r#"
+fn main() -> i64 {
+    if 1 + 2 < 4:
+        return 0
+    return 1
+}
+"#;
+    let source_id = SourceId::new(77);
+    let program = fluxc::parser::parse_with_source(source, source_id).expect("source should parse");
+    let function = &program.functions[0];
+    assert_eq!(function.span.source_id, source_id);
+    assert_eq!(function.body[0].span.source_id, source_id);
+    let fluxc::ast::StmtKind::If { cond, .. } = &function.body[0].kind else {
+        panic!("expected if statement");
+    };
+    assert_eq!(cond.span.source_id, source_id);
+    let fluxc::ast::ExprKind::Binary { left, right, .. } = &cond.kind else {
+        panic!("expected binary condition");
+    };
+    assert_eq!(left.span.source_id, source_id);
+    assert_eq!(right.span.source_id, source_id);
 }
 
 #[test]

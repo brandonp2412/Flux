@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, Type, UnaryOp,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
 #[derive(Debug, Clone)]
 struct Line {
@@ -23,6 +23,31 @@ pub fn parse(source: &str) -> Result<Program, Diagnostic> {
             .next()
             .expect("parse_all always returns at least one diagnostic on failure")
     })
+}
+
+pub fn parse_with_source(source: &str, source_id: SourceId) -> Result<Program, Diagnostic> {
+    parse_all_with_source(source, source_id).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .next()
+            .expect("parse_all_with_source always returns diagnostics on failure")
+    })
+}
+
+pub fn parse_all_with_source(
+    source: &str,
+    source_id: SourceId,
+) -> Result<Program, Vec<Diagnostic>> {
+    match parse_all(source) {
+        Ok(mut program) => {
+            attach_program_source(&mut program, source_id);
+            Ok(program)
+        }
+        Err(diagnostics) => Err(diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.with_source(source_id))
+            .collect()),
+    }
 }
 
 pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
@@ -98,6 +123,67 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         Ok(Program { functions })
     } else {
         Err(diagnostics)
+    }
+}
+
+fn attach_program_source(program: &mut Program, source_id: SourceId) {
+    for function in &mut program.functions {
+        function.span = function.span.with_source(source_id);
+        attach_block_source(&mut function.body, source_id);
+    }
+}
+
+fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
+    for stmt in body {
+        stmt.span = stmt.span.with_source(source_id);
+        match &mut stmt.kind {
+            StmtKind::Let { expr, .. } | StmtKind::LetDestructure { expr, .. } => {
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::Return(expressions) => {
+                for expr in expressions {
+                    attach_expr_source(expr, source_id);
+                }
+            }
+            StmtKind::Expr(expr) => attach_expr_source(expr, source_id),
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+            } => {
+                attach_expr_source(cond, source_id);
+                attach_block_source(body, source_id);
+                attach_block_source(else_body, source_id);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                attach_expr_source(start, source_id);
+                attach_expr_source(end, source_id);
+                attach_block_source(body, source_id);
+            }
+        }
+    }
+}
+
+fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
+    expr.span = expr.span.with_source(source_id);
+    match &mut expr.kind {
+        ExprKind::Call { args, .. } => {
+            for arg in args {
+                attach_expr_source(arg, source_id);
+            }
+        }
+        ExprKind::Unary { expr, .. } => attach_expr_source(expr, source_id),
+        ExprKind::Binary { left, right, .. } => {
+            attach_expr_source(left, source_id);
+            attach_expr_source(right, source_id);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
     }
 }
 

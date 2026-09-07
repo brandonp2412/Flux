@@ -1,7 +1,32 @@
 use std::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct SourceId(u32);
+
+impl SourceId {
+    pub const UNKNOWN: Self = Self(0);
+
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_name(name: &str) -> Self {
+        let mut hash = 0x811c9dc5u32;
+        for byte in name.as_bytes() {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x01000193);
+        }
+        if hash == 0 { Self(1) } else { Self(hash) }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceSpan {
+    pub source_id: SourceId,
     pub line: usize,
     pub column: usize,
     pub length: usize,
@@ -10,6 +35,7 @@ pub struct SourceSpan {
 impl SourceSpan {
     pub const fn new(line: usize, column: usize, length: usize) -> Self {
         Self {
+            source_id: SourceId::UNKNOWN,
             line,
             column,
             length,
@@ -18,6 +44,11 @@ impl SourceSpan {
 
     pub const fn line(line: usize) -> Self {
         Self::new(line, 1, 1)
+    }
+
+    pub const fn with_source(mut self, source_id: SourceId) -> Self {
+        self.source_id = source_id;
+        self
     }
 }
 
@@ -60,6 +91,11 @@ impl Diagnostic {
             message: message.into(),
             span: None,
         }
+    }
+
+    pub fn with_source(mut self, source_id: SourceId) -> Self {
+        self.span = self.span.map(|span| span.with_source(source_id));
+        self
     }
 }
 

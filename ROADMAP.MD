@@ -57,6 +57,7 @@ Implemented on `main`:
 - [x] Token-level expression source spans.
 - [x] Multi-diagnostic parser recovery across malformed functions with batch check diagnostics.
 - [x] Multi-diagnostic type checking with safe statement/function continuation and cascade suppression.
+- [x] Stable source IDs carried through AST spans and diagnostics, with caller-supplied or deterministic IDs.
 - [x] Bootstrap C lowering through optimized Clang native compilation.
 - [x] Native end-to-end examples and compiler tests.
 
@@ -70,7 +71,7 @@ Parser recovery synchronizes at function boundaries, and type checking now conti
 
 - [x] Multi-diagnostic parser recovery instead of stopping at the first syntax error.
 - [x] Multi-diagnostic type checking where safe to continue.
-- [ ] Stable file/source identifiers in spans, not only line/column.
+- [x] Stable file/source identifiers in spans, not only line/column.
 - [ ] Full token ranges for declarations, bindings, types, and control-flow constructs.
 - [ ] Diagnostic labels/notes/fix suggestions.
 - [ ] Machine-readable diagnostic output.
