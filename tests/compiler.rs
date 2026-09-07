@@ -148,6 +148,113 @@ fn main() -> i64 {
 }
 
 #[test]
+fn folds_compile_time_constants_and_inlines_them_natively() {
+    let source = r#"
+type Count = i64
+const ANSWER: Count = BASE + 2
+const BASE: Count = 40
+const ENABLED: bool = ANSWER == 42 && true
+const LABEL: str = "Flux"
+const SHORT_CIRCUIT: bool = false && (1 / 0 == 0)
+
+fn main() -> i64 {
+    print(LABEL)
+    if ENABLED:
+        print(ANSWER)
+    print(SHORT_CIRCUIT)
+    return 0
+}
+"#;
+
+    check_source(source).expect("constant expressions should typecheck and fold");
+    let generated = compile_to_c(source).expect("constants should compile to inline values");
+    assert!(generated.contains("flux_print_str(\"Flux\")"));
+    assert!(generated.contains("flux_print_i64(INT64_C(42))"));
+    assert!(generated.contains("flux_print_bool(false)"));
+    assert!(!generated.contains("static const"));
+}
+
+#[test]
+fn rejects_invalid_compile_time_constants() {
+    let cycle = r#"
+const A: i64 = B
+const B: i64 = A
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let diagnostics = check_source_all(cycle).expect_err("constant cycle should fail");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("constant 'A' is recursive") })
+    );
+
+    let division = r#"
+const BAD: i64 = 1 / 0
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(division).expect_err("constant division by zero should fail");
+    assert!(error.message.contains("division by zero"));
+
+    let wrong_type = r#"
+const BAD: bool = 42
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(wrong_type).expect_err("constant type mismatch should fail");
+    assert!(
+        error
+            .message
+            .contains("constant 'BAD': expected bool, got i64")
+    );
+
+    let unsupported = r#"
+fn value() -> i64 {
+    return 1
+}
+const BAD: i64 = value()
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unsupported).expect_err("constant function calls should fail");
+    assert!(
+        error
+            .message
+            .contains("constant expressions currently support")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_constants() {
+    let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
+    let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("constant source should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(501))
+        .expect("constant source should analyze");
+    let constant = database
+        .symbols_named("ANSWER")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Constant)
+        .expect("constant should be indexed");
+    assert_eq!(constant.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, constant.span), "ANSWER");
+    assert_eq!(
+        database
+            .signatures()
+            .constant("ANSWER")
+            .expect("constant value should be available")
+            .value,
+        fluxc::typecheck::ConstantValue::I64(42)
+    );
+}
+
+#[test]
 fn accepts_zero_cost_type_aliases_for_primitives_and_structs() {
     let source = r#"
 type UserId = i64

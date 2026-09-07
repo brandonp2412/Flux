@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp};
+use crate::ast::{
+    BinOp, ConstantDef, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp,
+};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,30 @@ pub struct StructSignature {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstantValue {
+    I64(i64),
+    Bool(bool),
+    Str(String),
+}
+
+impl ConstantValue {
+    pub fn ty(&self) -> Type {
+        match self {
+            Self::I64(_) => Type::I64,
+            Self::Bool(_) => Type::Bool,
+            Self::Str(_) => Type::Str,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstantSignature {
+    pub ty: Type,
+    pub value: ConstantValue,
+    pub span: SourceSpan,
+}
+
 impl StructSignature {
     pub fn field(&self, name: &str) -> Option<&StructFieldSignature> {
         self.fields.iter().find(|field| field.name == name)
@@ -34,6 +60,7 @@ pub struct Signatures {
     functions: HashMap<String, Signature>,
     structs: HashMap<String, StructSignature>,
     aliases: HashMap<String, Type>,
+    constants: HashMap<String, ConstantSignature>,
 }
 
 impl Signatures {
@@ -51,6 +78,10 @@ impl Signatures {
 
     pub fn type_alias(&self, name: &str) -> Option<&Type> {
         self.aliases.get(name)
+    }
+
+    pub fn constant(&self, name: &str) -> Option<&ConstantSignature> {
+        self.constants.get(name)
     }
 
     pub fn canonical_type(&self, ty: &Type) -> Type {
@@ -177,6 +208,57 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    let mut constant_defs = HashMap::new();
+    for constant in &program.constants {
+        if signatures.aliases.contains_key(&constant.name)
+            || signatures.structs.contains_key(&constant.name)
+        {
+            diagnostics.push(diag(
+                constant.name_span,
+                &format!("constant '{}' conflicts with a type name", constant.name),
+            ));
+            continue;
+        }
+        if constant_defs
+            .insert(constant.name.as_str(), constant)
+            .is_some()
+        {
+            diagnostics.push(diag(
+                constant.name_span,
+                &format!("duplicate constant '{}'", constant.name),
+            ));
+        }
+        if let Err(diagnostic) = require_known_type(constant.type_span, &constant.ty, &signatures) {
+            diagnostics.push(diagnostic);
+        }
+        let declared = signatures.canonical_type(&constant.ty);
+        if !matches!(declared, Type::I64 | Type::Bool | Type::Str) {
+            diagnostics.push(diag(
+                constant.type_span,
+                "compile-time constants currently support i64, bool, and str",
+            ));
+        }
+    }
+
+    let mut constant_cache = HashMap::new();
+    for constant in &program.constants {
+        if !constant_defs.contains_key(constant.name.as_str()) {
+            continue;
+        }
+        let mut stack = Vec::new();
+        match evaluate_constant(
+            constant.name.as_str(),
+            &constant_defs,
+            &signatures,
+            &mut constant_cache,
+            &mut stack,
+        ) {
+            Ok(_) => {}
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+    signatures.constants = constant_cache;
+
     for function in &program.functions {
         if function.name == "print" || function.name == "error" {
             diagnostics.push(diag(
@@ -196,6 +278,13 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("function '{}' conflicts with a type alias", function.name),
+            ));
+            continue;
+        }
+        if signatures.constants.contains_key(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
+                &format!("function '{}' conflicts with a constant", function.name),
             ));
             continue;
         }
@@ -568,7 +657,12 @@ pub fn type_of_expr(
         ExprKind::Var(name) => env
             .get(name)
             .cloned()
-            .ok_or_else(|| diag(expr.span, &format!("unknown binding '{name}'"))),
+            .or_else(|| {
+                signatures
+                    .constant(name)
+                    .map(|constant| constant.ty.clone())
+            })
+            .ok_or_else(|| diag(expr.span, &format!("unknown binding or constant '{name}'"))),
         ExprKind::Call { name, args } if name == "print" => {
             if args.len() != 1 {
                 return Err(diag(expr.span, "print expects exactly one argument"));
@@ -822,6 +916,205 @@ fn return_types_name(types: &[Type]) -> String {
             types.iter().map(Type::name).collect::<Vec<_>>().join(", ")
         ),
     }
+}
+
+fn evaluate_constant(
+    name: &str,
+    definitions: &HashMap<&str, &ConstantDef>,
+    signatures: &Signatures,
+    cache: &mut HashMap<String, ConstantSignature>,
+    stack: &mut Vec<String>,
+) -> Result<ConstantSignature, Diagnostic> {
+    if let Some(value) = cache.get(name) {
+        return Ok(value.clone());
+    }
+    let definition = definitions
+        .get(name)
+        .expect("constant evaluation starts from known definitions");
+    if let Some(index) = stack.iter().position(|entry| entry == name) {
+        let mut cycle = stack[index..].to_vec();
+        cycle.push(name.to_string());
+        return Err(diag(
+            definition.name_span,
+            &format!("constant '{name}' is recursive"),
+        )
+        .with_note(format!("constant cycle: {}", cycle.join(" -> "))));
+    }
+    stack.push(name.to_string());
+    let value = evaluate_constant_expr(&definition.value, definitions, signatures, cache, stack)?;
+    stack.pop();
+
+    let declared = signatures.canonical_type(&definition.ty);
+    require_type(
+        definition.value.span,
+        &declared,
+        &value.ty(),
+        &format!("constant '{name}'"),
+    )?;
+    let signature = ConstantSignature {
+        ty: declared,
+        value,
+        span: definition.name_span,
+    };
+    cache.insert(name.to_string(), signature.clone());
+    Ok(signature)
+}
+
+fn evaluate_constant_expr(
+    expr: &Expr,
+    definitions: &HashMap<&str, &ConstantDef>,
+    signatures: &Signatures,
+    cache: &mut HashMap<String, ConstantSignature>,
+    stack: &mut Vec<String>,
+) -> Result<ConstantValue, Diagnostic> {
+    match &expr.kind {
+        ExprKind::Int(value) => Ok(ConstantValue::I64(*value)),
+        ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
+        ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
+        ExprKind::Var(name) => {
+            if !definitions.contains_key(name.as_str()) {
+                return Err(diag(
+                    expr.span,
+                    &format!("unknown constant '{name}' in constant expression"),
+                ));
+            }
+            evaluate_constant(name, definitions, signatures, cache, stack)
+                .map(|constant| constant.value)
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let value = evaluate_constant_expr(inner, definitions, signatures, cache, stack)?;
+            match (op, value) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    Ok(ConstantValue::I64(value.wrapping_neg()))
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => Ok(ConstantValue::Bool(!value)),
+                (UnaryOp::Neg, actual) => Err(constant_type_error(
+                    expr.span,
+                    "unary '-'",
+                    &Type::I64,
+                    &actual.ty(),
+                )),
+                (UnaryOp::Not, actual) => Err(constant_type_error(
+                    expr.span,
+                    "unary '!'",
+                    &Type::Bool,
+                    &actual.ty(),
+                )),
+            }
+        }
+        ExprKind::Binary { left, op, right } => {
+            let left = evaluate_constant_expr(left, definitions, signatures, cache, stack)?;
+            if matches!(op, BinOp::And) && left == ConstantValue::Bool(false) {
+                return Ok(ConstantValue::Bool(false));
+            }
+            if matches!(op, BinOp::Or) && left == ConstantValue::Bool(true) {
+                return Ok(ConstantValue::Bool(true));
+            }
+            let right = evaluate_constant_expr(right, definitions, signatures, cache, stack)?;
+            evaluate_constant_binary(expr.span, *op, left, right)
+        }
+        ExprKind::Nil
+        | ExprKind::Call { .. }
+        | ExprKind::StructLiteral { .. }
+        | ExprKind::Field { .. } => Err(diag(
+            expr.span,
+            "constant expressions currently support primitive literals, constant references, and primitive operators",
+        )),
+    }
+}
+
+fn evaluate_constant_binary(
+    span: SourceSpan,
+    op: BinOp,
+    left: ConstantValue,
+    right: ConstantValue,
+) -> Result<ConstantValue, Diagnostic> {
+    match (op, left, right) {
+        (BinOp::Add, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::I64(left.wrapping_add(right)))
+        }
+        (BinOp::Sub, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::I64(left.wrapping_sub(right)))
+        }
+        (BinOp::Mul, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::I64(left.wrapping_mul(right)))
+        }
+        (BinOp::Div, ConstantValue::I64(_), ConstantValue::I64(0)) => {
+            Err(diag(span, "constant integer division by zero is invalid"))
+        }
+        (BinOp::Div, ConstantValue::I64(i64::MIN), ConstantValue::I64(-1)) => {
+            Err(diag(span, "constant integer division overflows i64"))
+        }
+        (BinOp::Div, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::I64(left / right))
+        }
+        (BinOp::Lt, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left < right))
+        }
+        (BinOp::Le, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left <= right))
+        }
+        (BinOp::Gt, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left > right))
+        }
+        (BinOp::Ge, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left >= right))
+        }
+        (BinOp::Eq, left, right) if left.ty() == right.ty() => {
+            Ok(ConstantValue::Bool(left == right))
+        }
+        (BinOp::Ne, left, right) if left.ty() == right.ty() => {
+            Ok(ConstantValue::Bool(left != right))
+        }
+        (BinOp::And, ConstantValue::Bool(left), ConstantValue::Bool(right)) => {
+            Ok(ConstantValue::Bool(left && right))
+        }
+        (BinOp::Or, ConstantValue::Bool(left), ConstantValue::Bool(right)) => {
+            Ok(ConstantValue::Bool(left || right))
+        }
+        (op, left, right) => Err(diag(
+            span,
+            &format!(
+                "constant operator '{}' does not support {} and {}",
+                constant_operator_name(op),
+                left.ty().name(),
+                right.ty().name()
+            ),
+        )),
+    }
+}
+
+fn constant_operator_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+    }
+}
+
+fn constant_type_error(
+    span: SourceSpan,
+    context: &str,
+    expected: &Type,
+    actual: &Type,
+) -> Diagnostic {
+    diag(
+        span,
+        &format!(
+            "{context}: expected {}, got {}",
+            expected.name(),
+            actual.name()
+        ),
+    )
 }
 
 fn resolve_alias_target(

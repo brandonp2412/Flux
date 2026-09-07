@@ -48,6 +48,7 @@ fn is_type_identifier(input: &str) -> bool {
 pub struct Program {
     pub aliases: Vec<TypeAlias>,
     pub structs: Vec<StructDef>,
+    pub constants: Vec<ConstantDef>,
     pub functions: Vec<Function>,
 }
 
@@ -57,6 +58,17 @@ pub struct TypeAlias {
     pub name_span: SourceSpan,
     pub target: Type,
     pub target_span: SourceSpan,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstantDef {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub ty: Type,
+    pub type_span: SourceSpan,
+    pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,
 }

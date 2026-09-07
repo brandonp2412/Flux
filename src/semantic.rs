@@ -6,6 +6,7 @@ use crate::typecheck::{self, Signature, Signatures};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
     TypeAlias,
+    Constant,
     Struct,
     StructField,
     Function,
@@ -44,6 +45,14 @@ impl SemanticDatabase {
                 kind: SymbolKind::TypeAlias,
                 ty: Some(alias.target.clone()),
                 span: alias.name_span,
+            });
+        }
+        for constant in &program.constants {
+            symbols.push(SemanticSymbol {
+                name: constant.name.clone(),
+                kind: SymbolKind::Constant,
+                ty: Some(constant.ty.clone()),
+                span: constant.name_span,
             });
         }
         for definition in &program.structs {

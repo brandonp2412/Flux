@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Binding, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind, StructDef,
-    StructField, StructLiteralField, Type, TypeAlias, UnaryOp,
+    BinOp, Binding, ConstantDef, Expr, ExprKind, Function, Param, Program, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -95,6 +95,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
     let mut aliases = Vec::new();
     let mut structs = Vec::new();
+    let mut constants = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
 
@@ -112,6 +113,15 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         if line.text.starts_with("type ") {
             match parse_type_alias(line) {
                 Ok(alias) => aliases.push(alias),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            index += 1;
+            continue;
+        }
+
+        if line.text.starts_with("const ") {
+            match parse_constant(line) {
+                Ok(constant) => constants.push(constant),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
             index += 1;
@@ -198,6 +208,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         Ok(Program {
             aliases,
             structs,
+            constants,
             functions,
         })
     } else {
@@ -219,6 +230,12 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         alias.span = alias.span.with_source(source_id);
         alias.name_span = alias.name_span.with_source(source_id);
         alias.target_span = alias.target_span.with_source(source_id);
+    }
+    for constant in &mut program.constants {
+        constant.span = constant.span.with_source(source_id);
+        constant.name_span = constant.name_span.with_source(source_id);
+        constant.type_span = constant.type_span.with_source(source_id);
+        attach_expr_source(&mut constant.value, source_id);
     }
     for definition in &mut program.structs {
         definition.span = definition.span.with_source(source_id);
@@ -383,6 +400,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
             if line.text.starts_with("fn ")
                 || line.text.starts_with("struct ")
                 || line.text.starts_with("type ")
+                || line.text.starts_with("const ")
             {
                 return index;
             }
@@ -416,6 +434,33 @@ fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
         name_span: SourceSpan::new(line.number, name_column, name.len()),
         target,
         target_span: SourceSpan::new(line.number, target_column, target_text.len()),
+        line: line.number,
+        span: line.span(),
+    })
+}
+
+fn parse_constant(line: &Line) -> Result<ConstantDef, Diagnostic> {
+    let Some(rest) = line.text.strip_prefix("const ") else {
+        return Err(diag(line.number, "expected constant declaration"));
+    };
+    let Some(eq_offset) = rest.find('=') else {
+        return Err(diag(
+            line.number,
+            "constants use 'const name: type = expression' syntax",
+        ));
+    };
+    let binding_src = &rest[..eq_offset];
+    let raw_value = &rest[eq_offset + 1..];
+    let binding = parse_binding(binding_src.trim(), line.number, 7)?;
+    let raw_value_column = 7 + eq_offset + 1;
+    let (value_src, value_column) = trim_with_column(raw_value, raw_value_column);
+    let value = parse_expression_at(value_src, line.number, value_column)?;
+    Ok(ConstantDef {
+        name: binding.name,
+        name_span: binding.name_span,
+        ty: binding.ty,
+        type_span: binding.type_span,
+        value,
         line: line.number,
         span: line.span(),
     })
@@ -1094,6 +1139,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
         input,
         "fn" | "struct"
             | "type"
+            | "const"
             | "let"
             | "return"
             | "if"

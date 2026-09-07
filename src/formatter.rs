@@ -13,6 +13,17 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
             format!("type {} = {}", alias.name, alias.target.name()),
         );
     }
+    for constant in &program.constants {
+        formatted.insert(
+            constant.line,
+            format!(
+                "const {}: {} = {}",
+                constant.name,
+                constant.ty.name(),
+                format_expr(&constant.value, 0)
+            ),
+        );
+    }
     for definition in &program.structs {
         format_struct(definition, &mut formatted);
     }

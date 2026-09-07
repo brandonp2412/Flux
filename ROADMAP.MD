@@ -94,7 +94,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [ ] Pattern matching over structs, enums, lists, and multi-values.
 - [ ] Destructuring bindings beyond multi-return calls.
 - [x] Transparent concrete type aliases with forward/chained resolution, cycle diagnostics, formatter/tooling support, and zero runtime representation.
-- [ ] Compile-time constants and constant expressions.
+- [x] Compile-time constants with forward references, constant folding, cycle diagnostics, alias-aware typing, and zero-runtime-storage lowering for `i64`, `bool`, and `str`.
 
 ## Interfaces and capabilities
 

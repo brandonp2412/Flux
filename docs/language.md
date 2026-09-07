@@ -104,6 +104,18 @@ fn load_config(path: str) -> (str, error) {
 
 This form is intentionally narrow. The final destructured value must have type `error`, and the call's full multi-value return shape must exactly match the enclosing function. The call is evaluated once. If the final error value is non-`nil`, the exact multi-value result is returned immediately; otherwise the values are destructured and execution continues. This is explicit control flow rather than exception propagation.
 
+## Compile-time constants
+
+Top-level constants use `const name: type = expression`. Constants are evaluated by the compiler and substituted directly into generated code rather than emitted as mutable/runtime globals:
+
+```flux
+const BASE: i64 = 40
+const ANSWER: i64 = BASE + 2
+const ENABLED: bool = ANSWER == 42
+```
+
+The current constant evaluator supports `i64`, `bool`, and `str`, including forward constant references, primitive unary/binary operators, comparisons, equality, and boolean short-circuiting. Integer arithmetic follows Flux runtime integer semantics: addition/subtraction/multiplication wrap as signed `i64`, while division by zero and `i64::MIN / -1` are compile-time errors. Constant cycles, unknown references, type mismatches, function calls, struct values, and other runtime-only expressions are rejected.
+
 ## Type aliases
 
 Concrete type aliases use `type Name = Target`. They are transparent compile-time names, not new runtime wrapper types:

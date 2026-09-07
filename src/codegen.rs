@@ -4,7 +4,7 @@ use crate::ast::{
     BinOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, StructDef, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
-use crate::typecheck::{Signatures, type_of_expr};
+use crate::typecheck::{ConstantValue, Signatures, type_of_expr};
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     let mut out = String::new();
@@ -308,15 +308,24 @@ fn emit_expr(
             code: "NULL".to_string(),
             ty: Type::Error,
         },
-        ExprKind::Var(name) => EmittedExpr {
-            code: name.clone(),
-            ty: env.get(name).cloned().ok_or_else(|| {
-                diag(
+        ExprKind::Var(name) => {
+            if let Some(ty) = env.get(name) {
+                EmittedExpr {
+                    code: name.clone(),
+                    ty: ty.clone(),
+                }
+            } else if let Some(constant) = signatures.constant(name) {
+                EmittedExpr {
+                    code: constant_c_value(&constant.value),
+                    ty: constant.ty.clone(),
+                }
+            } else {
+                return Err(diag(
                     expr.span,
-                    &format!("unknown binding '{name}' during code generation"),
-                )
-            })?,
-        },
+                    &format!("unknown binding or constant '{name}' during code generation"),
+                ));
+            }
+        }
         ExprKind::Call { name, args } if name == "print" => {
             let arg = emit_expr(&args[0], env, signatures)?;
             let helper = match arg.ty {
@@ -748,6 +757,14 @@ fn c_operator(op: BinOp) -> &'static str {
 
 fn diag(span: SourceSpan, message: &str) -> Diagnostic {
     Diagnostic::new(DiagnosticStage::Codegen, span, message)
+}
+
+fn constant_c_value(value: &ConstantValue) -> String {
+    match value {
+        ConstantValue::I64(value) => format!("INT64_C({value})"),
+        ConstantValue::Bool(value) => if *value { "true" } else { "false" }.to_string(),
+        ConstantValue::Str(value) => c_string(value),
+    }
 }
 
 fn c_string(value: &str) -> String {
