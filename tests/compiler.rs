@@ -4251,3 +4251,120 @@ fn main() -> i64 {
             .contains("equality operand: expected error, got str")
     );
 }
+
+#[test]
+fn supports_explicit_mutable_bindings_and_while_loops() {
+    let source = r#"
+fn main() -> i64 {
+    var count: i64 = 0
+    var total: i64 = 0
+    while count < 6:
+        count = count + 1
+        if count == 3:
+            continue
+        total = total + count
+        if total > 10:
+            break
+    return total
+}
+"#;
+
+    check_source(source).expect("explicit mutation and while should typecheck");
+    let generated = compile_to_c(source).expect("explicit mutation and while should compile");
+    assert!(generated.contains("while (flux__local_count < INT64_C(6))"));
+    assert!(generated.contains("flux__local_count = (flux__local_count + INT64_C(1));"));
+    assert!(generated.contains("continue;"));
+    assert!(generated.contains("break;"));
+}
+
+#[test]
+fn mutation_is_explicit_and_statically_typed() {
+    let immutable = r#"
+fn main() -> i64 {
+    let count: i64 = 0
+    count = 1
+    return count
+}
+"#;
+    let error = check_source(immutable).expect_err("let bindings must remain immutable");
+    assert!(
+        error
+            .message
+            .contains("cannot assign to immutable binding 'count'")
+    );
+    assert!(error.message.contains("declare it with 'var'"));
+
+    let parameter = r#"
+fn bump(count: i64) -> i64 {
+    count = count + 1
+    return count
+}
+fn main() -> i64 { bump(1) }
+"#;
+    let error = check_source(parameter).expect_err("parameters must remain immutable");
+    assert!(
+        error
+            .message
+            .contains("cannot assign to immutable binding 'count'")
+    );
+
+    let wrong_type = r#"
+fn main() -> i64 {
+    var count: i64 = 0
+    count = false
+    return count
+}
+"#;
+    let error = check_source(wrong_type).expect_err("assignment must preserve declared type");
+    assert!(error.message.contains("assignment: expected i64, got bool"));
+
+    let unknown = r#"
+fn main() -> i64 {
+    missing = 1
+    return 0
+}
+"#;
+    let error = check_source(unknown).expect_err("assignment needs an existing binding");
+    assert!(error.message.contains("unknown binding 'missing'"));
+
+    let bad_condition = r#"
+fn main() -> i64 {
+    var count: i64 = 0
+    while count:
+        count = count + 1
+    return count
+}
+"#;
+    let error = check_source(bad_condition).expect_err("while conditions must be boolean");
+    assert!(
+        error
+            .message
+            .contains("while condition: expected bool, got i64")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_explicit_mutability() {
+    let source = r#"
+fn main() -> i64 {
+  var count:i64=0
+  while count<2:
+    count=count+1
+  return count
+}
+"#;
+    let formatted = fluxc::formatter::format_source(source).expect("mutation source should format");
+    assert!(formatted.contains("    var count: i64 = 0"));
+    assert!(formatted.contains("    while count < 2:"));
+    assert!(formatted.contains("        count = count + 1"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(77))
+        .expect("mutation source should analyze");
+    let mutable = database
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name == "count")
+        .expect("mutable binding should be indexed");
+    assert_eq!(mutable.kind, fluxc::semantic::SymbolKind::MutableBinding);
+    assert_eq!(mutable.ty, Some(fluxc::ast::Type::I64));
+}

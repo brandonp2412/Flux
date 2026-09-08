@@ -437,9 +437,21 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 type_span,
                 expr,
                 ..
+            }
+            | StmtKind::Var {
+                name_span,
+                type_span,
+                expr,
+                ..
             } => {
                 *name_span = name_span.with_source(source_id);
                 *type_span = type_span.with_source(source_id);
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::Assign {
+                name_span, expr, ..
+            } => {
+                *name_span = name_span.with_source(source_id);
                 attach_expr_source(expr, source_id);
             }
             StmtKind::LetDestructure { bindings, expr, .. } => {
@@ -491,6 +503,10 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 *name_span = name_span.with_source(source_id);
                 attach_expr_source(start, source_id);
                 attach_expr_source(end, source_id);
+                attach_block_source(body, source_id);
+            }
+            StmtKind::While { cond, body } => {
+                attach_expr_source(cond, source_id);
                 attach_block_source(body, source_id);
             }
             StmtKind::Match { value, arms } => {
@@ -1958,6 +1974,22 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                 line.number,
                 "else must immediately follow an if or elif block",
             ));
+        } else if line.text.starts_with("while ") && line.text.ends_with(':') {
+            let stmt_line = line.number;
+            let raw_cond = &line.text[6..line.text.len() - 1];
+            let (cond_src, cond_column) = trim_with_column(raw_cond, line.indent + 7);
+            if cond_src.is_empty() {
+                return Err(diag(stmt_line, "while requires a condition"));
+            }
+            let cond = parse_expression_at(cond_src, stmt_line, cond_column)?;
+            *index += 1;
+            let nested = parse_nested_block(lines, index, indent, stmt_line, "while")?;
+            Stmt {
+                line: stmt_line,
+                span: line.span(),
+                keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 5),
+                kind: StmtKind::While { cond, body: nested },
+            }
         } else if line.text.starts_with("for ") && line.text.ends_with(':') {
             let stmt_line = line.number;
             let raw_inner = &line.text[4..line.text.len() - 1];
@@ -2393,6 +2425,30 @@ fn parse_nested_block(
 
 fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnostic> {
     let line = span.line;
+    if let Some(rest) = input.strip_prefix("var ") {
+        let Some(eq_offset) = rest.find('=') else {
+            return Err(diag(line, "var bindings require '= expression'"));
+        };
+        let binding_src = &rest[..eq_offset];
+        let raw_expr_src = &rest[eq_offset + 1..];
+        let (expr_src, expr_column) =
+            trim_with_column(raw_expr_src, span.column + 4 + eq_offset + 1);
+        let (raw_binding, binding_column) = trim_with_column(binding_src, span.column + 4);
+        let binding = parse_binding(raw_binding, line, binding_column)?;
+        let expr = parse_expression_at(expr_src, line, expr_column)?;
+        return Ok(Stmt {
+            line,
+            span,
+            keyword_span: SourceSpan::new(line, span.column, 3),
+            kind: StmtKind::Var {
+                name: binding.name,
+                name_span: binding.name_span,
+                ty: binding.ty,
+                type_span: binding.type_span,
+                expr,
+            },
+        });
+    }
     if let Some(rest) = input.strip_prefix("let ") {
         let Some(eq_offset) = rest.find('=') else {
             return Err(diag(line, "let bindings require '= expression'"));
@@ -2482,6 +2538,27 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                 bindings,
                 expr,
                 else_return,
+            },
+        });
+    }
+
+    if let Some(eq_offset) = find_assignment_operator(input) {
+        let (name, name_column) = trim_with_column(&input[..eq_offset], span.column);
+        validate_identifier(name, line)?;
+        let (expr_src, expr_column) =
+            trim_with_column(&input[eq_offset + 1..], span.column + eq_offset + 1);
+        if expr_src.is_empty() {
+            return Err(diag(line, "assignment requires an expression"));
+        }
+        let expr = parse_expression_at(expr_src, line, expr_column)?;
+        return Ok(Stmt {
+            line,
+            span,
+            keyword_span: SourceSpan::new(line, name_column, name.len()),
+            kind: StmtKind::Assign {
+                name: name.to_string(),
+                name_span: SourceSpan::new(line, name_column, name.len()),
+                expr,
             },
         });
     }
@@ -2673,6 +2750,45 @@ fn parse_binding(input: &str, line: usize, column: usize) -> Result<Binding, Dia
     })
 }
 
+fn find_assignment_operator(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match byte {
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0
+                && bytes.get(index.wrapping_sub(1)) != Some(&b'!')
+                && bytes.get(index.wrapping_sub(1)) != Some(&b'<')
+                && bytes.get(index.wrapping_sub(1)) != Some(&b'>')
+                && bytes.get(index.wrapping_sub(1)) != Some(&b'=')
+                && bytes.get(index + 1) != Some(&b'=') =>
+            {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn split_top_level_commas(input: &str) -> Vec<&str> {
     split_top_level_commas_with_offsets(input)
         .into_iter()
@@ -2829,7 +2945,9 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "elif"
             | "else"
             | "for"
+            | "while"
             | "in"
+            | "var"
             | "break"
             | "continue"
             | "true"

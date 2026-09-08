@@ -20,7 +20,8 @@ Flux is an experimental compiled language for building native applications and s
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
-- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive range `for` loops, and statically scoped `break` / `continue`;
+- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive range `for` loops, indentation-based `while` loops, and statically scoped `break` / `continue`;
+- immutable `let` bindings by default plus explicit typed local mutation through `var` and statically checked assignment;
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, transparent concrete type aliases, and compile-time constants;
 - struct literals, field access, `Type { ..base, field: value }` functional updates, and struct destructuring patterns with inferred field types and single-evaluation native lowering;
@@ -36,7 +37,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, and building a native executable, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
-- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
+- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

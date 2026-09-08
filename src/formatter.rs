@@ -342,11 +342,34 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 );
                 format_match_expr_arms(arms, depth + 1, lines);
             }
+            StmtKind::Var { name, ty, expr, .. } if matches!(expr.kind, ExprKind::Match { .. }) => {
+                let ExprKind::Match { value, arms } = &expr.kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}var {name}: {} = match {}:",
+                        ty.name(),
+                        format_expr(value, 0)
+                    ),
+                );
+                format_match_expr_arms(arms, depth + 1, lines);
+            }
             StmtKind::Let { name, ty, expr, .. } => {
                 lines.insert(
                     stmt.line,
                     format!("{pad}let {name}: {} = {}", ty.name(), format_expr(expr, 0)),
                 );
+            }
+            StmtKind::Var { name, ty, expr, .. } => {
+                lines.insert(
+                    stmt.line,
+                    format!("{pad}var {name}: {} = {}", ty.name(), format_expr(expr, 0)),
+                );
+            }
+            StmtKind::Assign { name, expr, .. } => {
+                lines.insert(stmt.line, format!("{pad}{name} = {}", format_expr(expr, 0)));
             }
             StmtKind::LetDestructure {
                 bindings,
@@ -449,6 +472,10 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                         lines,
                     );
                 }
+            }
+            StmtKind::While { cond, body } => {
+                lines.insert(stmt.line, format!("{pad}while {}:", format_expr(cond, 0)));
+                format_block(body, depth + 1, lines);
             }
             StmtKind::ForRange {
                 name,

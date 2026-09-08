@@ -31,7 +31,7 @@ Do not let the roadmap become an aspirational document that diverges from the co
 - [x] No classes or inheritance in Flux.
 - [x] No mixins or class-oriented extension hierarchy.
 - [x] No widget/controller/view-model object hierarchies in UI code.
-- [ ] Immutable values by default; mutation is explicit and locally visible.
+- [x] Immutable values by default; local mutation is explicit and locally visible through typed `var` bindings and assignment; ordinary `let` bindings, parameters, destructured bindings, and loop variables remain immutable.
 - [ ] Rust-class memory-safety goals without requiring Rust-level annotation density in normal application code.
 - [ ] Native AOT output for application and server targets.
 - [ ] Portable source should lower to real platform implementations rather than a browser/VM/widget-emulation wrapper.
@@ -109,7 +109,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 ## Control flow
 
 - [x] `break` / `continue` in `for` loops with static scope validation through nested `if` / `match` blocks and native lowering.
-- [ ] `while` loops once explicit local mutation/state semantics make them useful rather than ornamental.
+- [x] Indentation-based `while` loops with statically boolean conditions, loop-scoped `break` / `continue`, and native lowering; useful mutation is explicit through typed `var` bindings rather than making ordinary bindings mutable.
 - [x] Value-producing conditional/match expressions for functional code.
   - [x] Value-producing `match` expressions.
   - [x] Python-style value-producing conditional expressions (`a if condition else b`) with strict branch typing and native conditional lowering.
@@ -240,7 +240,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
 - [ ] Concise range syntax beyond current `start..end` where appropriate.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
-- [ ] Assignment expressions only where they remain readable and analyzable.
+- [ ] Assignment expressions only where they remain readable and analyzable. Ordinary assignment is now a statement restricted to explicitly mutable `var` bindings; do not conflate that with value-producing assignment expressions.
 - [ ] Strong constant folding for literal/expression-heavy syntax.
 
 ## Async/generator ergonomics

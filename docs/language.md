@@ -44,7 +44,7 @@ fn main() -> i64 {
 
 Tabs are not valid indentation. Blocks must use consistent indentation at each nesting level.
 
-Bindings are explicitly typed:
+Bindings are explicitly typed and immutable by default:
 
 ```flux
 let count: i64 = 4
@@ -52,7 +52,18 @@ let enabled: bool = true
 let label: str = "Flux"
 ```
 
-The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
+Local mutation must be declared explicitly with `var`. Reassignment preserves the declared static type, and immutable `let` bindings, parameters, destructured bindings, and `for` loop variables cannot be assigned to:
+
+```flux
+fn count_to(limit: i64) -> i64 {
+    var count: i64 = 0
+    while count < limit:
+        count = count + 1
+    return count
+}
+```
+
+`while` conditions must have type `bool`; `break` and `continue` use the same statically checked loop scope as `for`. Assignment is a statement, not a value-producing expression. The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
 
 ## Flat grid views
 

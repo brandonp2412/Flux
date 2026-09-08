@@ -154,13 +154,15 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } if matches!(expr.kind, ExprKind::Match { .. }) => {
+            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
+                if matches!(expr.kind, ExprKind::Match { .. }) =>
+            {
                 let target = local_c_name(name);
                 out.push_str(&format!("{pad}{} {target};\n", c_type(ty, signatures)));
                 emit_match_expr_into(out, expr, &target, depth, env, signatures, temp_counter)?;
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
-            StmtKind::Let { name, ty, expr, .. } => {
+            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
@@ -169,6 +171,10 @@ fn emit_block(
                     value.code
                 ));
                 env.insert(name.clone(), signatures.canonical_type(ty));
+            }
+            StmtKind::Assign { name, expr, .. } => {
+                let value = emit_expr(expr, env, signatures)?;
+                out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value.code));
             }
             StmtKind::LetDestructure {
                 bindings,
@@ -331,6 +337,21 @@ fn emit_block(
                     )?;
                     out.push_str(&format!("{pad}}}\n"));
                 }
+            }
+            StmtKind::While { cond, body } => {
+                let cond = emit_expr(cond, env, signatures)?;
+                out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond.code)));
+                let mut nested = env.clone();
+                emit_block(
+                    out,
+                    body,
+                    depth + 1,
+                    &mut nested,
+                    signatures,
+                    temp_counter,
+                    current_function,
+                )?;
+                out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::ForRange {
                 name,
@@ -1475,13 +1496,16 @@ fn collect_function_types_from_block(
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { ty, .. } => collect_function_type(ty, signatures, types),
+            StmtKind::Let { ty, .. } | StmtKind::Var { ty, .. } => {
+                collect_function_type(ty, signatures, types)
+            }
             StmtKind::LetDestructure { bindings, .. } => {
                 for binding in bindings {
                     collect_function_type(&binding.ty, signatures, types);
                 }
             }
             StmtKind::LetStructDestructure { .. }
+            | StmtKind::Assign { .. }
             | StmtKind::Return(_)
             | StmtKind::Break
             | StmtKind::Continue
@@ -1492,7 +1516,7 @@ fn collect_function_types_from_block(
                 collect_function_types_from_block(body, signatures, types);
                 collect_function_types_from_block(else_body, signatures, types);
             }
-            StmtKind::ForRange { body, .. } => {
+            StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } => {
                 collect_function_types_from_block(body, signatures, types);
             }
             StmtKind::Match { arms, .. } => {
@@ -1559,6 +1583,8 @@ fn collect_update_helpers_from_block(
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
             | StmtKind::LetDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
@@ -1581,6 +1607,10 @@ fn collect_update_helpers_from_block(
                 collect_update_helpers_from_expr(cond, signatures, emitted, helpers);
                 collect_update_helpers_from_block(body, signatures, emitted, helpers);
                 collect_update_helpers_from_block(else_body, signatures, emitted, helpers);
+            }
+            StmtKind::While { cond, body } => {
+                collect_update_helpers_from_expr(cond, signatures, emitted, helpers);
+                collect_update_helpers_from_block(body, signatures, emitted, helpers);
             }
             StmtKind::ForRange {
                 start, end, body, ..

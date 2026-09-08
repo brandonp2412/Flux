@@ -21,6 +21,7 @@ pub enum SymbolKind {
     Function,
     Parameter,
     Binding,
+    MutableBinding,
     PatternBinding,
     LoopVariable,
 }
@@ -396,13 +397,27 @@ fn collect_block_symbols(
                 ty,
                 expr,
                 ..
+            }
+            | StmtKind::Var {
+                name,
+                name_span,
+                ty,
+                expr,
+                ..
             } => {
                 symbols.push(SemanticSymbol {
                     name: name.clone(),
-                    kind: SymbolKind::Binding,
+                    kind: if matches!(stmt.kind, StmtKind::Var { .. }) {
+                        SymbolKind::MutableBinding
+                    } else {
+                        SymbolKind::Binding
+                    },
                     ty: Some(ty.clone()),
                     span: *name_span,
                 });
+                collect_expr_pattern_symbols(expr, symbols, signatures);
+            }
+            StmtKind::Assign { expr, .. } => {
                 collect_expr_pattern_symbols(expr, symbols, signatures);
             }
             StmtKind::LetDestructure { bindings, .. } => {
@@ -432,6 +447,9 @@ fn collect_block_symbols(
             } => {
                 collect_block_symbols(body, symbols, signatures);
                 collect_block_symbols(else_body, symbols, signatures);
+            }
+            StmtKind::While { body, .. } => {
+                collect_block_symbols(body, symbols, signatures);
             }
             StmtKind::ForRange {
                 name,

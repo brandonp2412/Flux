@@ -373,6 +373,18 @@ pub enum StmtKind {
         type_span: SourceSpan,
         expr: Expr,
     },
+    Var {
+        name: String,
+        name_span: SourceSpan,
+        ty: Type,
+        type_span: SourceSpan,
+        expr: Expr,
+    },
+    Assign {
+        name: String,
+        name_span: SourceSpan,
+        expr: Expr,
+    },
     LetDestructure {
         bindings: Vec<Binding>,
         expr: Expr,
@@ -399,6 +411,10 @@ pub enum StmtKind {
         name_span: SourceSpan,
         start: Expr,
         end: Expr,
+        body: Vec<Stmt>,
+    },
+    While {
+        cond: Expr,
         body: Vec<Stmt>,
     },
     Match {

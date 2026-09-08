@@ -1277,6 +1277,7 @@ fn check_function_all(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut env = HashMap::new();
+    let mut mutable = HashSet::new();
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
@@ -1289,6 +1290,7 @@ fn check_function_all(
     check_block_all(
         &function.body,
         &mut env,
+        &mut mutable,
         &return_types,
         signatures,
         diagnostics,
@@ -1310,6 +1312,7 @@ fn check_function_all(
 fn check_block_all(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
     return_types: &[Type],
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1318,6 +1321,13 @@ fn check_block_all(
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let {
+                name,
+                ty,
+                type_span,
+                expr,
+                ..
+            }
+            | StmtKind::Var {
                 name,
                 ty,
                 type_span,
@@ -1347,6 +1357,38 @@ fn check_block_all(
                 }
                 if !duplicate {
                     env.insert(name.clone(), signatures.canonical_type(ty));
+                    if matches!(stmt.kind, StmtKind::Var { .. }) {
+                        mutable.insert(name.clone());
+                    }
+                }
+            }
+            StmtKind::Assign {
+                name,
+                name_span,
+                expr,
+            } => {
+                let Some(expected) = env.get(name).cloned() else {
+                    diagnostics.push(diag(*name_span, &format!("unknown binding '{name}'")));
+                    continue;
+                };
+                if !mutable.contains(name) {
+                    diagnostics.push(diag(
+                        *name_span,
+                        &format!(
+                            "cannot assign to immutable binding '{name}'; declare it with 'var'"
+                        ),
+                    ));
+                    continue;
+                }
+                match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) =
+                            require_type(expr.span, &expected, &actual, "assignment")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
                 }
             }
             StmtKind::LetDestructure {
@@ -1551,18 +1593,22 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 let mut then_env = env.clone();
+                let mut then_mutable = mutable.clone();
                 check_block_all(
                     body,
                     &mut then_env,
+                    &mut then_mutable,
                     return_types,
                     signatures,
                     diagnostics,
                     loop_depth,
                 );
                 let mut else_env = env.clone();
+                let mut else_mutable = mutable.clone();
                 check_block_all(
                     else_body,
                     &mut else_env,
+                    &mut else_mutable,
                     return_types,
                     signatures,
                     diagnostics,
@@ -1604,12 +1650,37 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
                 }
                 check_block_all(
                     body,
                     &mut nested,
+                    &mut nested_mutable,
+                    return_types,
+                    signatures,
+                    diagnostics,
+                    loop_depth + 1,
+                );
+            }
+            StmtKind::While { cond, body } => {
+                match type_of_expr(cond, env, signatures) {
+                    Ok(cond_type) => {
+                        if let Err(diagnostic) =
+                            require_type(cond.span, &Type::Bool, &cond_type, "while condition")
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
+                check_block_all(
+                    body,
+                    &mut nested,
+                    &mut nested_mutable,
                     return_types,
                     signatures,
                     diagnostics,
@@ -1743,9 +1814,11 @@ fn check_block_all(
                             }
                         }
                     }
+                    let mut nested_mutable = mutable.clone();
                     check_block_all(
                         &arm.body,
                         &mut nested,
+                        &mut nested_mutable,
                         return_types,
                         signatures,
                         diagnostics,
@@ -2576,8 +2649,11 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             }
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
+            | StmtKind::While { .. }
             | StmtKind::Match { .. }
             | StmtKind::Let { .. }
+            | StmtKind::Var { .. }
+            | StmtKind::Assign { .. }
             | StmtKind::LetDestructure { .. }
             | StmtKind::LetStructDestructure { .. }
             | StmtKind::Break
