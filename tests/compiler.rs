@@ -1174,6 +1174,10 @@ fn main() -> i64 {
     let doubled: i64[] = [value * 2 for value in values if value > 2]
     print doubled[0]
     print doubled[-1]
+    let window: i64[] = values | skip 1 | take 3
+    print window.length
+    print window.first
+    print window.last
     return 0
 }
 "#;
@@ -1191,15 +1195,47 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_at(flux__local_values, INT64_C(-1)"));
     assert!(generated.contains("flux_list_single(flux__local_one)"));
     assert!(generated.contains("Flux runtime error: list.single requires exactly one element"));
+    assert!(generated.contains("flux_list_skip("));
+    assert!(generated.contains("flux_list_take("));
+    assert!(generated.contains("Flux runtime error: list count must be non-negative"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");
     assert!(formatted.contains("let values: i64[] = [1, 2, 3, 4, 5]"));
     assert!(formatted.contains("let middle: i64[] = values[1:4]"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
+    assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
     assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_take_and_skip_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let value: i64[] = take(7, 1)
+    print value.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("take should require a list");
+    assert!(
+        error
+            .message
+            .contains("take expects a list as its first argument, got i64")
+    );
+
+    let bad_count = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let value: i64[] = skip(values, true)
+    print value.length
+    return 0
+}
+"#;
+    let error = check_source(bad_count).expect_err("skip count should be i64");
+    assert!(error.message.contains("skip count: expected i64, got bool"));
 }
 
 #[test]

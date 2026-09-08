@@ -664,6 +664,20 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
         push_completion_item(&mut items, &mut seen, builtin, 22, "built-in Flux type");
     }
     push_completion_item(&mut items, &mut seen, "print", 3, "fn print(value) -> void");
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "take",
+        3,
+        "fn take(list: T[], count: i64) -> T[]",
+    );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "skip",
+        3,
+        "fn skip(list: T[], count: i64) -> T[]",
+    );
 
     let Ok(program) = crate::parser::parse_all(source) else {
         return items;
@@ -1746,6 +1760,14 @@ fn signature_help_for_document_cached(
             "error",
             &["message: str"],
             "error",
+            active_parameter,
+        ));
+    }
+    if call_name == "take" || call_name == "skip" {
+        return Some(signature_help_for_builtin(
+            call_name,
+            &["list: T[]", "count: i64"],
+            "T[]",
             active_parameter,
         ));
     }
@@ -5155,6 +5177,9 @@ mod tests {
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
+        assert!(json.contains("\"label\":\"take\""));
+        assert!(json.contains("fn take(list: T[], count: i64) -> T[]"));
+        assert!(json.contains("\"label\":\"skip\""));
     }
 
     #[test]

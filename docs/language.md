@@ -474,6 +474,7 @@ let present: bool = values.is_not_empty
 let first: i64 = values.first
 let last: i64 = values.last
 let one: i64 = values[2:3].single
+let window: i64[] = values | skip 1 | take 3
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -485,6 +486,8 @@ for index, value in values:
 Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices use an exclusive end, accept omitted or negative bounds, and clip bounds to the valid list extent in the same style as Python. Slices are zero-copy views over the source list storage. Compiler-known list values also expose `length: i64`, `is_empty: bool`, and `is_not_empty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
 
 Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
+
+`take(list, count)` and `skip(list, count)` are compiler-known typed sequence functions. They preserve the concrete list element type, require an `i64` count, clamp oversized counts to the available length, and reject negative counts with an explicit Flux runtime error. Both lower to zero-copy list views, so pipelines such as `values | skip 1 | take 3` do not allocate or copy list elements.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

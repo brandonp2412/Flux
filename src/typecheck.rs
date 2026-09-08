@@ -602,7 +602,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     signatures.constants = constant_cache;
 
     for function in &program.functions {
-        if function.name == "print" || function.name == "error" {
+        if matches!(function.name.as_str(), "print" | "error" | "take" | "skip") {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("'{}' is a built-in function name", function.name),
@@ -2933,6 +2933,42 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "take" || name == "skip" => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} does not accept named arguments"),
+                ));
+            }
+            if args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} expects exactly two arguments: a list and an i64 count"),
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            if !matches!(list_ty, Type::List(_)) {
+                return Err(diag(
+                    args[0].span,
+                    &format!(
+                        "{name} expects a list as its first argument, got {}",
+                        list_ty.name()
+                    ),
+                ));
+            }
+            let count_ty = type_of_expr(&args[1], env, signatures)?;
+            require_type(
+                args[1].span,
+                &Type::I64,
+                &count_ty,
+                &format!("{name} count"),
+            )?;
+            Ok(list_ty)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "print" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "print does not accept named arguments"));
@@ -3412,7 +3448,9 @@ fn value_types_of_expr(
             };
             value_types_of_expr(&call, env, signatures)
         }
-        ExprKind::Call { name, .. } if signatures.interface(name).is_some() => {
+        ExprKind::Call { name, .. }
+            if signatures.interface(name).is_some() || matches!(name.as_str(), "take" | "skip") =>
+        {
             Ok(vec![type_of_expr(expr, env, signatures)?])
         }
         ExprKind::Call {

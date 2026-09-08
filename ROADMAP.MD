@@ -208,7 +208,8 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [ ] Safe first/last forms for possibly empty collections instead of hidden runtime traps.
 - [x] List slices/ranges with clear bounds semantics: `[start:end]`, omitted bounds, negative bounds, and clipping use Python-style exclusive-end behavior.
 - [x] Typed list iteration with `for value in list:` and indexed `for index, value in list:` forms; the source is evaluated once and the index is `i64`.
-- [ ] `map`, `filter`/`where`, `fold`, `reduce`, `any`, `every`, `take`, `skip`, and related functional sequence operations.
+- [ ] `map`, `filter`/`where`, `fold`, `reduce`, `any`, `every`, and related functional sequence operations.
+- [x] Zero-copy `take(list, count)` / `skip(list, count)` sequence views, designed to compose naturally through typed pipelines such as `values | skip 1 | take 3`; counts are `i64`, oversized counts clamp, and negative counts fail explicitly at runtime.
 - [ ] Lazy iteration where it avoids needless allocations.
 
 `first`, `last`, etc. may use property-like syntax on compiler-known collection types while lowering to ordinary functions. This is syntax ergonomics, not an object model.

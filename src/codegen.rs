@@ -41,6 +41,9 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
     out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { return (void *)((char *)list.data + flux_list_index(list.len, index) * elem_size); }\n");
     out.push_str("static inline void *flux_list_single(struct flux__list list) { if (list.len != 1) { fputs(\"Flux runtime error: list.single requires exactly one element\\n\", stderr); abort(); } return list.data; }\n");
+    out.push_str("static inline size_t flux_list_count(size_t len, int64_t count) { if (count < 0) { fputs(\"Flux runtime error: list count must be non-negative\\n\", stderr); abort(); } uint64_t value = (uint64_t)count; return value > (uint64_t)len ? len : (size_t)value; }\n");
+    out.push_str("static inline struct flux__list flux_list_take(struct flux__list list, int64_t count) { list.len = flux_list_count(list.len, count); return list; }\n");
+    out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); list.data = (void *)((char *)list.data + skipped * elem_size); list.len -= skipped; return list; }\n");
     out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; }\n");
     out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, size_t elem_size) { int64_t first = flux_slice_bound(list.len, has_start, start, false); int64_t last = flux_slice_bound(list.len, has_end, end, true); if (last < first) last = first; struct flux__list result = { .data = (void *)((char *)list.data + (size_t)first * elem_size), .len = (size_t)(last - first) }; return result; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
@@ -2860,6 +2863,33 @@ fn emit_expr(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
             ));
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "take" || name == "skip" => {
+            if !named_args.is_empty() || args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    "invalid list view call reached code generation",
+                ));
+            }
+            let list = emit_expr(&args[0], env, signatures)?;
+            let count = emit_expr(&args[1], env, signatures)?;
+            let Type::List(element) = &list.ty else {
+                return Err(diag(expr.span, "list view call requires a list value"));
+            };
+            let code = if name == "take" {
+                format!("flux_list_take({}, {})", list.code, count.code)
+            } else {
+                let element_c = c_type(element, signatures);
+                format!(
+                    "flux_list_skip({}, {}, sizeof({element_c}))",
+                    list.code, count.code
+                )
+            };
+            EmittedExpr { code, ty: list.ty }
         }
         ExprKind::Call { name, args, .. } if name == "print" => {
             let arg = emit_expr(&args[0], env, signatures)?;

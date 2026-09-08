@@ -13,6 +13,10 @@ fn main() -> i64 {
     let doubled: i64[] = [value * 2 for value in values if value > 2]
     print doubled[0]
     print doubled[-1]
+    let window: i64[] = values | skip 1 | take 3
+    print window.length
+    print window.first
+    print window.last
     for value in middle:
         print value
     for index, value in middle:
