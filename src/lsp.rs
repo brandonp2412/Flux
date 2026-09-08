@@ -1133,6 +1133,24 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
     None
 }
 
+fn struct_field_for_position<'a>(
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    program: &'a crate::ast::Program,
+) -> Option<&'a crate::ast::StructField> {
+    let line = source.lines().nth(line_index)?;
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let field_name = identifier_at(line, byte)?;
+    let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
+    let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
+    struct_definition_for_type(&type_name, program)?
+        .fields
+        .iter()
+        .find(|field| field.name == field_name)
+}
+
 fn member_receiver_type_name(
     source: &str,
     line_index: usize,
@@ -2527,6 +2545,17 @@ fn definition_for_document_cached(
         ) {
             return Some(definition);
         }
+        if let Some(field) =
+            struct_field_for_position(source, line_index, character, encoding, database.program())
+        {
+            let target = sources
+                .iter()
+                .find(|candidate| candidate.source_id == field.name_span.source_id)?;
+            return Some(object([
+                ("uri", JsonValue::String(file_uri_from_path(&target.path))),
+                ("range", lsp_range(field.name_span, &target.text, encoding)),
+            ]));
+        }
         let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
         let target = sources
             .iter()
@@ -2551,6 +2580,14 @@ fn definition_for_document_cached(
         return Some(definition);
     }
     let database = database?;
+    if let Some(field) =
+        struct_field_for_position(source, line_index, character, encoding, database.program())
+    {
+        return Some(object([
+            ("uri", JsonValue::String(uri.to_string())),
+            ("range", lsp_range(field.name_span, source, encoding)),
+        ]));
+    }
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
     Some(object([
         ("uri", JsonValue::String(uri.to_string())),
@@ -2940,10 +2977,34 @@ fn hover_for_document_cached(
         standalone_database = analyzed_document(uri, source)?;
         &standalone_database
     };
-    let symbol = symbol_for_position(database, uri, source, line_index, character, encoding)?;
-    let description = hover_description(symbol, database);
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte = byte_offset_for_encoded_column(line, character, encoding);
+    if let Some(field) =
+        struct_field_for_position(source, line_index, character, encoding, database.program())
+    {
+        let hovered_name = identifier_at(line, byte).unwrap_or(&field.name);
+        let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
+        let hovered_span = SourceSpan::new(line_index + 1, hovered_start + 1, hovered_name.len());
+        return Some(object([
+            (
+                "contents",
+                object([
+                    ("kind", JsonValue::String("markdown".to_string())),
+                    (
+                        "value",
+                        JsonValue::String(format!(
+                            "```flux\nfield {}: {}\n```",
+                            field.name,
+                            field.ty.name()
+                        )),
+                    ),
+                ]),
+            ),
+            ("range", lsp_range(hovered_span, source, encoding)),
+        ]));
+    }
+    let symbol = symbol_for_position(database, uri, source, line_index, character, encoding)?;
+    let description = hover_description(symbol, database);
     let hovered_name = identifier_at(line, byte).unwrap_or(&symbol.name);
     let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
     let hovered_span = SourceSpan::new(line_index + 1, hovered_start + 1, hovered_name.len());
@@ -4421,6 +4482,57 @@ mod tests {
         assert!(print_help.contains("fn print(value: i64 | bool | str | error) -> void"));
         let error_help = help_for("error(");
         assert!(error_help.contains("fn error(message: str) -> error"));
+    }
+
+    #[test]
+    fn struct_member_hover_and_definition_use_receiver_type() {
+        let uri = "file:///tmp/struct-member-navigation.flux";
+        let source = "struct Profile {\n    name: str\n}\nstruct Other {\n    name: i64\n}\nstruct User {\n    profile: Profile\n}\nfn describe(user: User) -> str {\n    return user.profile.name\n}\nfn main() -> i64 { 0 }\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("user.profile.name"))
+            .expect("member usage line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let character = line.find("name").expect("member name should exist") + 1;
+        let database = crate::semantic::SemanticDatabase::analyze(source, source_id_for_uri(uri))
+            .expect("member navigation source should analyze");
+        assert!(
+            struct_field_for_position(
+                source,
+                line_index,
+                character,
+                PositionEncoding::Utf8,
+                database.program(),
+            )
+            .is_some(),
+            "receiver-aware field lookup should resolve the nested field"
+        );
+
+        let hover = hover_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            character,
+            PositionEncoding::Utf8,
+        )
+        .expect("typed struct member should hover")
+        .to_json();
+        assert!(hover.contains("field name: str"));
+
+        let definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            character,
+            PositionEncoding::Utf8,
+        )
+        .expect("typed struct member should navigate")
+        .to_json();
+        assert!(definition.contains("\"line\":1"));
+        assert!(definition.contains("\"character\":4"));
     }
 
     #[test]
