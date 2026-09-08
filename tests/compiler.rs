@@ -3729,6 +3729,29 @@ app Counter
 }
 
 #[test]
+fn toggle_control_binds_native_checked_state_and_functional_transition() {
+    let source = r#"
+view Settings {
+    grid columns: 1fr
+    grid rows: auto
+    state enabled: bool = false
+    Toggle enabled_toggle at 1,1
+        label: "Enabled"
+        checked: enabled
+        on_change: enabled => !enabled
+}
+app Settings
+"#;
+    check_source(source).expect("toggle state transition should typecheck");
+    let generated = compile_to_c(source).expect("toggle should lower to native GTK4 control");
+    assert!(generated.contains("gtk_check_button_new_with_label(\"Enabled\")"));
+    assert!(generated.contains("gtk_check_button_set_active"));
+    assert!(generated.contains("\"toggled\""));
+    assert!(generated.contains("flux__ui_state_enabled = (!(flux__ui_state_enabled));"));
+    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_enabled_toggle), flux__ui_state_enabled)"));
+}
+
+#[test]
 fn i64_view_state_supports_arithmetic_transitions_and_derived_properties() {
     let source = r#"
 view Counter {

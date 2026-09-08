@@ -400,6 +400,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
 - [ ] Toggles/check/radio controls.
+  - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons. Radio/group semantics remain pending.
 - [ ] Lists/grids with virtualization.
 - [ ] Scrolling.
 - [ ] Overlays/popovers/tooltips.
@@ -645,9 +646,9 @@ Web is a supported target, not the implementation substrate for native apps.
 
 # Milestone 22 — Testing
 
-- [ ] `flux test`.
+- [x] Bootstrap `flux test`: direct `.flux` tests or sorted package `tests/*.flux` programs compile through the ordinary checker/native backend and pass only on a successful real process exit; GUI `app` tests are rejected in this headless integration slice.
 - [ ] Unit tests.
-- [ ] Integration tests.
+- [x] Bootstrap integration tests use ordinary headless `fn main() -> i64` Flux programs; `flux new` scaffolds `tests/smoke.flux` so a new package is immediately testable. Richer assertions/fixtures and package-source test imports remain follow-up work rather than hidden test-only language magic.
 - [ ] UI tests.
 - [ ] Golden/screenshot tests.
 - [ ] Accessibility tests.
@@ -730,7 +731,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux run`: the user-facing command provides the automatic development watch/build/restart loop and hot-reload status contract.
 - [x] Bootstrap `fluxc build` compatibility entry remains available while the product CLI transitions to `flux`.
 - [x] `flux build`: user-facing native builds support debug/profile/release modes and package/source targets.
-- [ ] `flux test`.
+- [x] `flux test`: user-facing native integration-test discovery/execution for direct `.flux` tests and package `tests/*.flux`, with debug/profile/release mode selection and real exit-status reporting.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
 - [ ] `flux devices`.

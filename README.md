@@ -50,7 +50,7 @@ Scaffold a minimal native GUI package that is immediately ready for the P0 dogfo
 ./tools/flux-nvim my-flux-app/src/main.flux
 ```
 
-Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
+Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `flux new` also creates `tests/smoke.flux`, so the package can immediately exercise the bootstrap integration-test runner with `./tools/flux test my-flux-app`. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
 
 ## Example
 
@@ -92,6 +92,13 @@ The first native GUI dogfood example uses `app HelloApp(...)` instead of `fn mai
 `examples/hello_app.flux` opens a real native window containing `Text` and `Button` plus explicit view-local state. Its button uses the functional transition `on_press: clicked => !clicked`; the compiler type-checks that next-state expression and the Linux runtime refreshes the state-derived native label/button properties without rebuilding the window/grid. `examples/counter_app.flux` extends the same model to `i64` state and `count => count + 1`, with state-derived conditional labels. Bootstrap native UI state intentionally remains limited to safe scalar `bool`/`i64` values until owned strings and aggregate ownership semantics exist. GTK4 is a bootstrap Linux platform backend, not a source-language widget model: Flux code remains flat/function-first and does not import or construct GTK objects. The backend uses GTK's native Wayland integration when launched on Wayland.
 
 The bootstrap runner watches imported Flux modules automatically, debounces rapid saves, recompiles on change, and restarts only after a successful replacement build. Compiler errors keep the last good process untouched and the watcher remains active until the next save. State-preserving hot apply is a later development-ABI milestone; the current runner is the controlled-restart foundation for it.
+
+Run native Flux integration tests. A package target discovers sorted `tests/*.flux` programs; a direct `.flux` target runs that one test. Each test is an ordinary headless `fn main() -> i64` program and passes only when its native process exits successfully:
+
+```sh
+./tools/flux test examples/package
+./tools/flux test examples/hello.flux
+```
 
 Check or explicitly analyze without producing a binary:
 
