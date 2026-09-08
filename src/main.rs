@@ -33,10 +33,11 @@ fn run() -> Result<(), CliError> {
 
     match args[0].as_str() {
         "check" => {
-            let path = require_source(&args)?;
+            let path = require_target(&args)?;
             let json = check_json_mode(&args[2..])?;
-            let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            let source_id = fluxc::SourceId::from_name(canonical.to_string_lossy().as_ref());
+            let resolved =
+                fluxc::project::resolve_entry(path).unwrap_or_else(|_| path.to_path_buf());
+            let source_id = fluxc::SourceId::from_name(resolved.to_string_lossy().as_ref());
             match fluxc::project::check(path) {
                 Ok(()) if json => {
                     println!(
@@ -104,7 +105,7 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         "emit-c" => {
-            let path = require_source(&args)?;
+            let path = require_target(&args)?;
             let generated =
                 fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
             if let Some(output) = output_path(&args[2..])? {
@@ -116,10 +117,21 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         "build" => {
-            let path = require_source(&args)?;
+            let path = require_target(&args)?;
             let generated =
                 fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
-            let output = output_path(&args[2..])?.unwrap_or_else(|| default_binary_path(path));
+            let output = if let Some(output) = output_path(&args[2..])? {
+                output
+            } else {
+                let entry = fluxc::project::resolve_entry(path).map_err(|diagnostics| {
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })?;
+                default_binary_path(&entry)
+            };
             build_native(&generated, &output)?;
             println!("built: {}", output.display());
             Ok(())
@@ -136,11 +148,15 @@ fn check_json_mode(args: &[String]) -> Result<bool, String> {
     }
 }
 
-fn require_source(args: &[String]) -> Result<&Path, String> {
+fn require_target(args: &[String]) -> Result<&Path, String> {
     if args.len() < 2 {
         return Err(usage());
     }
     Ok(Path::new(&args[1]))
+}
+
+fn require_source(args: &[String]) -> Result<&Path, String> {
+    require_target(args)
 }
 
 fn output_path(args: &[String]) -> Result<Option<PathBuf>, String> {
@@ -186,5 +202,5 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux> [-o file.c] | fluxc build <file.flux> [-o binary]".to_string()
+    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary]".to_string()
 }

@@ -33,7 +33,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
-- CLI commands for checking, deterministic formatting, emitting C, and building a native executable;
+- CLI commands for checking, deterministic formatting, emitting C, and building a native executable, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
 - compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, and higher-order functions.
 
@@ -78,6 +78,22 @@ Tooling/CI can request structured diagnostics without parsing human text:
 
 ```sh
 cargo run -- check examples/hello.flux --json
+```
+
+Packages can select their entry source with `flux.toml`:
+
+```toml
+[package]
+name = "package-example"
+version = "0.1.0"
+entry = "src/main.flux"
+```
+
+The package directory or manifest can then be passed directly to project-aware commands:
+
+```sh
+cargo run -- check examples/package
+cargo run -- build examples/package -o package-example
 ```
 
 ## Multi-value returns

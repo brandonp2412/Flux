@@ -141,7 +141,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 
 - [x] Modules and imports using explicit relative `.flux` paths, deterministic recursive loading, duplicate suppression, preserved per-file source IDs, transitive merged semantic/type checking, formatter support, and project-aware CLI check/build/emit-C.
 - [x] Explicit public/private visibility: top-level functions, constants, aliases, structs, enums, and interfaces are module-private by default; `pub` exports cross-file API, public signatures cannot leak private named types, formatter/source spans preserve visibility, and imports/implementation blocks cannot be `pub`.
-- [ ] Package manifest (`flux.toml`).
+- [x] Package manifest (`flux.toml`) with dependency-free `[package]` parsing, required `name`/`entry`, optional `version`, strict schema diagnostics, validated package-root containment, checked-in native example coverage, and project-aware CLI targeting by source file, package directory, or manifest path.
 - [ ] Stable module naming rules; initial imports are explicit normalized relative file paths, with named module rules following the package manifest.
 - [x] Cyclic dependency diagnostics with the cycle reported at the importing path span and the resolved cycle chain attached as a note.
 - [ ] Package-level constants/resources.

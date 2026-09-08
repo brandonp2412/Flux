@@ -2722,6 +2722,119 @@ fn check_json_cli_emits_clean_machine_readable_output() {
 }
 
 #[test]
+fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
+    let root = std::env::temp_dir().join(format!("flux-package-manifest-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary package directory should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("manifest should be writable");
+    let entry = root.join("src/main.flux");
+    fs::write(
+        &entry,
+        "fn main() -> i64 {\n    print(42)\n    return 0\n}\n",
+    )
+    .expect("package entry should be writable");
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("manifest should parse");
+    assert_eq!(parsed.name, "sample");
+    assert_eq!(parsed.version.as_deref(), Some("0.1.0"));
+    assert_eq!(parsed.entry, fs::canonicalize(&entry).unwrap());
+    assert_eq!(
+        fluxc::project::resolve_entry(&root).expect("directory should resolve through flux.toml"),
+        parsed.entry
+    );
+    assert_eq!(
+        fluxc::project::resolve_entry(&manifest).expect("manifest path should resolve its entry"),
+        parsed.entry
+    );
+
+    for target in [&root, &manifest] {
+        let binary = root.join(if target == &root {
+            "from-dir"
+        } else {
+            "from-manifest"
+        });
+        let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .arg("build")
+            .arg(target)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("fluxc build should run");
+        assert!(
+            output.status.success(),
+            "package build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let run = Command::new(&binary)
+            .output()
+            .expect("package binary should run");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_manifest_rejects_invalid_schema_and_escaping_entries() {
+    let root = std::env::temp_dir().join(format!("flux-package-errors-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary package directory should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+
+    let missing_name = root.join("missing-name.toml");
+    fs::write(&missing_name, "[package]\nentry = \"src/main.flux\"\n")
+        .expect("invalid manifest should be writable");
+    let errors = fluxc::project::read_manifest(&missing_name)
+        .expect_err("manifest without package name must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("requires a non-empty [package].name")
+    }));
+
+    let unknown = root.join("unknown.toml");
+    fs::write(
+        &unknown,
+        "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\nlicense = \"MIT\"\n",
+    )
+    .expect("invalid manifest should be writable");
+    let errors = fluxc::project::read_manifest(&unknown)
+        .expect_err("unknown package fields must fail until specified");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unknown [package] field 'license'"))
+    );
+
+    let outside = root.join("outside.flux");
+    fs::write(&outside, "fn main() -> i64 { 0 }\n").expect("outside source should be writable");
+    let nested = root.join("package");
+    fs::create_dir_all(&nested).expect("nested package should be writable");
+    let escaping = nested.join("flux.toml");
+    fs::write(
+        &escaping,
+        "[package]\nname = \"escape\"\nentry = \"../outside.flux\"\n",
+    )
+    .expect("escaping manifest should be writable");
+    let errors = fluxc::project::read_manifest(&escaping)
+        .expect_err("package entries may not escape the package root");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("must remain inside the package root")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn project_imports_compile_transitively_through_cli() {
     let root = std::env::temp_dir().join(format!("flux-project-imports-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

@@ -64,7 +64,18 @@ import "service.flux"
 
 Imports resolve relative to the importing file, must remain relative, and must end in `.flux`. The project loader recursively parses each source exactly once, preserves a distinct stable source ID for diagnostics, detects import cycles, and then type-checks the merged program as one compilation unit. Imports are transitive, but imported declarations remain module-private unless explicitly exported.
 
-Top-level functions, constants, type aliases, structs, enums, and interfaces are private to their source module by default. Prefix a declaration with `pub` to make it usable from another module, for example `pub fn parse(...)`, `pub struct User`, or `pub interface Readable`. Private declarations remain freely usable inside their own source file. Public APIs cannot expose private named types through function signatures, public aliases, struct fields, enum payloads, or interface capabilities, and public interfaces cannot compose private interfaces. `pub` is not valid on imports or interface implementation blocks. The current module namespace remains deliberately flat, so public imported declarations are referenced by their declared names and duplicate-declaration diagnostics apply across the full import graph. Named module namespaces, package manifests, and package-level naming rules are later steps. `fluxc check`, `fluxc emit-c`, and `fluxc build` are project-aware and operate on the complete import graph; `fluxc format` formats the selected source file only and preserves `pub` visibility.
+Top-level functions, constants, type aliases, structs, enums, and interfaces are private to their source module by default. Prefix a declaration with `pub` to make it usable from another module, for example `pub fn parse(...)`, `pub struct User`, or `pub interface Readable`. Private declarations remain freely usable inside their own source file. Public APIs cannot expose private named types through function signatures, public aliases, struct fields, enum payloads, or interface capabilities, and public interfaces cannot compose private interfaces. `pub` is not valid on imports or interface implementation blocks. The current module namespace remains deliberately flat, so public imported declarations are referenced by their declared names and duplicate-declaration diagnostics apply across the full import graph. Named module namespaces and package-level naming rules are later steps. `fluxc check`, `fluxc emit-c`, and `fluxc build` are project-aware and operate on the complete import graph; `fluxc format` formats the selected source file only and preserves `pub` visibility.
+
+A package may define a `flux.toml` manifest. The bootstrap manifest is intentionally small and dependency-free:
+
+```toml
+[package]
+name = "example"
+version = "0.1.0"
+entry = "src/main.flux"
+```
+
+`name` and `entry` are required quoted strings; `version` is optional. The entry path must be relative, end in `.flux`, exist, and remain inside the package root after canonical path resolution. Package fields outside this currently specified schema are rejected so unsupported metadata is not silently ignored. `fluxc check`, `fluxc emit-c`, and `fluxc build` accept a direct `.flux` entry as before, a package directory containing `flux.toml`, or the `flux.toml` path itself. The manifest selects the entry graph only; it does not yet introduce named module namespaces, dependency resolution, or a package ABI.
 
 ## Struct values
 

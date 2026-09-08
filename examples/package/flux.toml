@@ -1,0 +1,4 @@
+[package]
+name = "package-example"
+version = "0.1.0"
+entry = "src/main.flux"
