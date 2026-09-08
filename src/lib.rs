@@ -2,6 +2,7 @@ pub mod ast;
 pub mod codegen;
 pub mod diagnostic;
 pub mod formatter;
+pub mod lsp;
 pub mod parser;
 pub mod project;
 pub mod semantic;

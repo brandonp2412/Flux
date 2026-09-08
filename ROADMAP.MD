@@ -626,6 +626,8 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 23 — LSP and editor experience
 
 - [ ] Diagnostics. Reuse the same structured diagnostic model and source spans as the terminal renderer; do not create a separate editor-only error model.
+  - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
+  - [ ] Workspace/import-aware unsaved-buffer diagnostics. Until overlay analysis exists, buffers containing imports intentionally publish parse diagnostics only rather than type-checking without their module context.
 - [ ] Completion.
 - [ ] Signature help.
 - [ ] Hover/type information.
@@ -637,7 +639,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Code actions/fixes.
 - [ ] Inlay hints where they add value.
 - [ ] Incremental workspace analysis.
-- [ ] Package/module awareness.
+- [ ] Package/module awareness, including overlay-aware analysis across multiple unsaved imported buffers.
 - [ ] UI syntax awareness.
 - [ ] Hot-reload status integration.
 

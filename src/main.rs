@@ -163,6 +163,13 @@ fn run() -> Result<(), CliError> {
             }
             run_development(path)
         }
+        "lsp" => {
+            if args.len() != 1 {
+                return Err(CliError::Message("lsp syntax is 'lsp'".to_string()));
+            }
+            fluxc::lsp::run_stdio()
+                .map_err(|error| CliError::Message(format!("language server failed: {error}")))
+        }
         _ => Err(CliError::Message(usage())),
     }
 }
@@ -511,5 +518,5 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] | fluxc run <file.flux|package-dir|flux.toml>".to_string()
+    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] | fluxc run <file.flux|package-dir|flux.toml> | fluxc lsp".to_string()
 }

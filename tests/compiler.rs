@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -2813,6 +2814,65 @@ fn wait_for_log(path: &std::path::Path, needles: &[&str], timeout: Duration) {
         );
         thread::sleep(Duration::from_millis(40));
     }
+}
+
+#[test]
+fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
+    let uri = "file:///tmp/flux-lsp-test.flux";
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]}}}}"#;
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    let open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"flux","version":1,"text":"fn main() -> i64 {{\n    let count: i64 = false\n    return count\n}}\n"}}}}}}"#
+    );
+    let change = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":"fn main() -> i64 {{\n    let count: i64 = 1\n    return count\n}}\n"}}]}}}}"#
+    );
+    let close = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didClose","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
+    );
+    let shutdown = r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+    let input = [
+        initialize,
+        initialized,
+        &open,
+        &change,
+        &close,
+        shutdown,
+        exit,
+    ]
+    .into_iter()
+    .map(lsp_frame)
+    .collect::<String>();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("fluxc lsp should start");
+    child
+        .stdin
+        .as_mut()
+        .expect("LSP stdin should be piped")
+        .write_all(input.as_bytes())
+        .expect("LSP input should be writable");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("LSP should exit cleanly");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
+    assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));
+    assert!(stdout.contains("textDocument/publishDiagnostics"));
+    assert!(stdout.contains("binding: expected i64, got bool"));
+    assert!(stdout.contains("\"severity\":1"));
+    assert!(stdout.matches("\"diagnostics\":[]").count() >= 2);
+    assert!(stdout.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":null"));
+}
+
+fn lsp_frame(payload: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{payload}", payload.len())
 }
 
 #[test]

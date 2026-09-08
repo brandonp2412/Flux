@@ -35,7 +35,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
-- CLI commands for checking, deterministic formatting, emitting C, building native executables, and automatically running/rebuilding development targets, including package-root/`flux.toml` targets;
+- CLI commands for checking, deterministic formatting, emitting C, building native executables, automatically running/rebuilding development targets, and serving bootstrap LSP diagnostics over stdio, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
 - compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
 
@@ -85,6 +85,14 @@ Format source deterministically, or verify canonical formatting in CI:
 cargo run -- format examples/hello.flux
 cargo run -- format examples/hello.flux --check
 ```
+
+Editors can launch the bootstrap language server over stdio:
+
+```sh
+cargo run -- lsp
+```
+
+The current LSP slice publishes parse/type diagnostics for standalone open buffers using the same source spans, labels, and fix metadata as the compiler. Workspace/import overlay analysis, completion, navigation, highlighting, formatting, and code actions remain later LSP milestones.
 
 Tooling/CI can request structured diagnostics without parsing human text:
 
