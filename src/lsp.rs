@@ -1064,29 +1064,30 @@ fn signature_help_for_document(
         .sum::<usize>()
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
-    let (name, active_parameter) = active_call(prefix)?;
+    let (call_name, active_parameter) = active_call(prefix)?;
     let project_analysis = analyzed_project_document(uri, documents);
-    let standalone = project_analysis
-        .is_none()
-        .then(|| crate::parser::parse_all(source).ok())
-        .flatten();
-    let function = project_analysis
-        .as_ref()
-        .and_then(|(database, _)| {
-            database
-                .program()
-                .functions
-                .iter()
-                .find(|function| function.name == name)
-        })
-        .or_else(|| {
-            standalone.as_ref().and_then(|program| {
-                program
-                    .functions
-                    .iter()
-                    .find(|function| function.name == name)
-            })
-        })?;
+    let standalone_database;
+    let database = if let Some((database, _)) = project_analysis.as_ref() {
+        database
+    } else {
+        standalone_database = analyzed_document(uri, source)?;
+        &standalone_database
+    };
+    if let Some((namespace, member)) = call_name.split_once('.') {
+        let interface = database.signatures().interface(namespace)?;
+        let signature = interface.functions.get(member)?;
+        return Some(signature_help_for_interface_capability(
+            namespace,
+            member,
+            signature,
+            active_parameter,
+        ));
+    }
+    let function = database
+        .program()
+        .functions
+        .iter()
+        .find(|function| function.name == call_name)?;
     let label = format_ast_function_signature(function);
     let parameters = function
         .params
@@ -1112,6 +1113,55 @@ fn signature_help_for_document(
             JsonValue::Number(active_parameter.min(function.params.len().saturating_sub(1)) as i64),
         ),
     ]))
+}
+
+fn signature_help_for_interface_capability(
+    interface_name: &str,
+    member_name: &str,
+    signature: &crate::typecheck::Signature,
+    active_parameter: usize,
+) -> JsonValue {
+    let mut labels = vec![format!("receiver: {interface_name}")];
+    labels.extend(
+        signature
+            .param_details
+            .iter()
+            .map(|param| format!("{}: {}", param.name, param.ty.name())),
+    );
+    let returns = match signature.returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => ty.name(),
+        values => format!(
+            "({})",
+            values
+                .iter()
+                .map(crate::ast::Type::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let label = format!(
+        "fn {interface_name}.{member_name}({}) -> {returns}",
+        labels.join(", ")
+    );
+    let parameters = labels
+        .into_iter()
+        .map(|label| object([("label", JsonValue::String(label))]))
+        .collect::<Vec<_>>();
+    object([
+        (
+            "signatures",
+            JsonValue::Array(vec![object([
+                ("label", JsonValue::String(label)),
+                ("parameters", JsonValue::Array(parameters)),
+            ])]),
+        ),
+        ("activeSignature", JsonValue::Number(0)),
+        (
+            "activeParameter",
+            JsonValue::Number(active_parameter.min(signature.param_details.len()) as i64),
+        ),
+    ])
 }
 
 fn active_call(prefix: &str) -> Option<(&str, usize)> {
@@ -1158,7 +1208,9 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
         name_end -= 1;
     }
     let mut name_start = name_end;
-    while name_start > 0 && is_identifier_byte(bytes[name_start - 1]) {
+    while name_start > 0
+        && (is_identifier_byte(bytes[name_start - 1]) || bytes[name_start - 1] == b'.')
+    {
         name_start -= 1;
     }
     if name_start == name_end {
@@ -2928,6 +2980,35 @@ mod tests {
         assert!(json.contains("var total: i64"));
         assert!(!json.contains("\"label\":\"hidden\""));
         assert!(!json.contains("\"label\":\"other\""));
+    }
+
+    #[test]
+    fn signature_help_supports_interface_capability_call_shape() {
+        let uri = "file:///tmp/interface-signature.flux";
+        let source = "interface Storage {\n    fn load(path: str) -> (str, error)\n}\nstruct Memory {\n    value: str\n}\nfn memory_load(storage: Memory, path: str) -> (str, error) {\n    return path, nil\n}\nimpl Storage for Memory {\n    load: memory_load\n}\nfn main() -> i64 {\n    let memory: Memory = Memory { value: \"x\" }\n    let storage: Storage = Storage(memory)\n    let data: str, err: error = Storage.load(storage, \"settings\")\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let call_line_index = source
+            .lines()
+            .position(|line| line.contains("Storage.load"))
+            .expect("capability call line should exist");
+        let call_line = source.lines().nth(call_line_index).unwrap();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            call_line_index,
+            call_line.len().saturating_sub(1),
+            PositionEncoding::Utf8,
+        )
+        .expect("interface capability call should have signature help")
+        .to_json();
+        assert!(
+            help.contains("fn Storage.load(receiver: Storage, path: str) -&gt; (str, error)")
+                || help.contains("fn Storage.load(receiver: Storage, path: str) -> (str, error)")
+        );
+        assert!(help.contains("\"label\":\"receiver: Storage\""));
+        assert!(help.contains("\"label\":\"path: str\""));
+        assert!(help.contains("\"activeParameter\":1"));
     }
 
     #[test]
