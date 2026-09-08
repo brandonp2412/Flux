@@ -1094,6 +1094,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
             "visible" => return Some(Type::Bool),
+            "tooltip" => return Some(Type::Str),
             "min_width" | "min_height" => return Some(Type::I64),
             _ => {}
         }
@@ -1175,6 +1176,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "bold",
             "color",
             "visible",
+            "tooltip",
             "min_width",
             "min_height",
         ],
@@ -1184,6 +1186,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "primary",
             "on_press",
             "visible",
+            "tooltip",
             "min_width",
             "min_height",
         ],
@@ -1197,6 +1200,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "on_change",
             "on_submit",
             "visible",
+            "tooltip",
             "min_width",
             "min_height",
         ],
@@ -1206,6 +1210,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "enabled",
             "on_change",
             "visible",
+            "tooltip",
             "min_width",
             "min_height",
         ],
@@ -1215,12 +1220,13 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "enabled",
             "on_select",
             "visible",
+            "tooltip",
             "min_width",
             "min_height",
         ],
-        "Nav" | "Chart" | "Content" => &["label", "visible", "min_width", "min_height"],
-        "Card" => &["title", "visible", "min_width", "min_height"],
-        "Header" => &["text", "visible", "min_width", "min_height"],
+        "Nav" | "Chart" | "Content" => &["label", "visible", "tooltip", "min_width", "min_height"],
+        "Card" => &["title", "visible", "tooltip", "min_width", "min_height"],
+        "Header" => &["text", "visible", "tooltip", "min_width", "min_height"],
         _ => &[],
     }
 }

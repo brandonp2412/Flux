@@ -550,6 +550,12 @@ fn emit_linux_gtk_application(
             }
             _ => unreachable!("unsupported app element rejected before lowering"),
         }
+        if let Some(property) = view_property(element, "tooltip") {
+            let tooltip = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_widget_set_tooltip_text({variable}, {tooltip});\n"
+            ));
+        }
         emit_grid_sizing(out, view, element, &variable, signatures)?;
         out.push_str(&format!(
             "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",

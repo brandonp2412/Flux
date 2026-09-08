@@ -412,6 +412,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [x] Scrolling.
   - [x] Flat root grids may declare `grid scroll: true`; Linux lowers the existing grid into a native `GtkScrolledWindow` with automatic scrollbars while Flux source remains a flat sibling element set with no scroll-wrapper widget hierarchy.
 - [ ] Overlays/popovers/tooltips.
+  - [x] Bootstrap common `tooltip: str` property is statically typed/LSP-visible on built-in elements and lowers directly to native GTK tooltip text on the existing control, without adding a source-level wrapper/overlay object. Rich/custom tooltip content, popovers, and explicit overlay positioning remain pending.
 - [ ] Dialogs/sheets.
 - [ ] Menus/context menus.
 - [ ] Native platform control mapping where beneficial without exposing platform classes to Flux code.

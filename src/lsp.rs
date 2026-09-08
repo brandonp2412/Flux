@@ -4215,7 +4215,7 @@ mod tests {
             .expect("built-in element hover should survive incomplete source")
             .to_json();
         assert!(element.contains(
-            "element Text { text: str, selectable: bool, size: i64, bold: bool, color: str, visible: bool, min_width: i64, min_height: i64 }"
+            "element Text { text: str, selectable: bool, size: i64, bold: bool, color: str, visible: bool, tooltip: str, min_width: i64, min_height: i64 }"
         ));
 
         let property = hover_for_document(uri, source, &documents, 4, 10, PositionEncoding::Utf8)
