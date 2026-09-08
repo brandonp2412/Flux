@@ -42,7 +42,9 @@ fn main() -> i64 {
 }
 ```
 
-Tabs are not valid indentation. Blocks must use consistent indentation at each nesting level.
+Tabs are not valid indentation. Blocks must use consistent indentation at each nesting level. Flux has no comment syntax: `#` outside a string is a parse error. Flux also has no ternary/conditional expression form; value selection uses ordinary `if` control flow or exhaustive `match` expressions.
+
+Flux has no lint-warning tier: an unused parameter or binding is a compile error unless its name begins with `_` to mark it intentionally ignored.
 
 Bindings are explicitly typed and immutable by default:
 
@@ -506,22 +508,51 @@ Currently implemented:
 - `break` and `continue` inside loops, including through nested `if` / `match` blocks;
 - exhaustive enum `match` statements with typed positional payload bindings;
 - value-producing enum `match` expressions in bindings and returns;
-- Python-style conditional expressions, `a if condition else b`;
 - `return`;
 - expression statements.
 
-Conditional expressions require a `bool` condition and both branches must produce the same non-`void` type. They are right-associative, so `a if first else b if second else c` works naturally. The native backend lowers them to target-native conditional control flow, preserving lazy evaluation of the unselected branch.
+Flux intentionally has no ternary expression. Branching that returns a value remains explicit:
 
 ```flux
 fn label(enabled: bool) -> str {
-    return "enabled" if enabled else "disabled"
+    if enabled:
+        return "enabled"
+    return "disabled"
 }
 ```
 
-Planned:
+`while` is implemented for explicitly mutable local state. Broader list/record patterns remain planned as those value types mature.
 
-- `while` once explicit local mutation/state semantics make it useful;
-- broader list/record patterns as those value types mature.
+## Shell-inspired typed call flow
+
+Function calls may omit parentheses when positional arguments are sufficient:
+
+```flux
+print "hello"
+scale value 2
+```
+
+A single `|` forms a typed value pipeline. The left-hand result becomes the first positional argument to the next function; it does not capture or parse process stdout:
+
+```flux
+let result: i64 = increment 2 | scale 5
+print result
+```
+
+Shell-style redirection serializes a scalar function result to a typed `str` path. `>` truncates and `>>` appends. Supported bootstrap result types are `i64`, `bool`, `str`, and `error`:
+
+```flux
+message > "result.txt"
+message >> "result.txt"
+```
+
+A trailing `&` detaches a call or pipeline statement. The current native bootstrap uses POSIX process primitives only in programs that actually contain background execution:
+
+```flux
+work 42 | report &
+```
+
+Parenthesized calls remain valid and are required for named arguments. These shell-inspired forms are typed function syntax, not a subprocess command language.
 
 ## Native compilation architecture
 

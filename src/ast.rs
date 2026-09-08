@@ -442,6 +442,11 @@ pub enum StmtKind {
     Break,
     Continue,
     Expr(Expr),
+    Shell {
+        expr: Expr,
+        redirect: Option<ShellRedirect>,
+        background: bool,
+    },
     If {
         cond: Expr,
         body: Vec<Stmt>,
@@ -463,6 +468,18 @@ pub enum StmtKind {
         value: Expr,
         arms: Vec<MatchArm>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellRedirect {
+    pub path: Expr,
+    pub mode: ShellRedirectMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellRedirectMode {
+    Truncate,
+    Append,
 }
 
 #[derive(Debug, Clone)]
@@ -534,6 +551,17 @@ pub enum ExprKind {
         name: String,
         args: Vec<Expr>,
         named_args: Vec<NamedArg>,
+    },
+    ShellCall {
+        name: String,
+        name_span: SourceSpan,
+        args: Vec<Expr>,
+    },
+    Pipe {
+        input: Box<Expr>,
+        name: String,
+        name_span: SourceSpan,
+        args: Vec<Expr>,
     },
     StructLiteral {
         name: String,

@@ -1056,6 +1056,107 @@ fn main() -> i64 {
 }
 
 #[test]
+fn shell_style_calls_pipelines_redirection_and_background_are_typed_and_native() {
+    let source = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn scale(value: i64, factor: i64) -> i64 {
+    return value * factor
+}
+
+fn message() -> str {
+    return "hello"
+}
+
+fn main() -> i64 {
+    let result: i64 = increment 2 | scale 5
+    print result
+    message > "/tmp/flux-shell-output.txt"
+    message >> "/tmp/flux-shell-output.txt"
+    increment 1 | print &
+    return result
+}
+"#;
+
+    check_source(source).expect("shell-style syntax should typecheck");
+    let generated = compile_to_c(source).expect("shell-style syntax should lower natively");
+    assert!(generated.contains("flux__fn_scale(flux__fn_increment(INT64_C(2)), INT64_C(5))"));
+    assert!(
+        generated.contains(
+            "flux_redirect_str(\"/tmp/flux-shell-output.txt\", false, flux__fn_message())"
+        )
+    );
+    assert!(
+        generated.contains(
+            "flux_redirect_str(\"/tmp/flux-shell-output.txt\", true, flux__fn_message())"
+        )
+    );
+    assert!(generated.contains("pid_t flux__bg_pid_"));
+    assert!(generated.contains("waitpid("));
+
+    let formatted = fluxc::formatter::format_source(source).expect("shell syntax should format");
+    assert!(formatted.contains("let result: i64 = increment 2 | scale 5"));
+    assert!(formatted.contains("print result"));
+    assert!(formatted.contains("message > \"/tmp/flux-shell-output.txt\""));
+    assert!(formatted.contains("message >> \"/tmp/flux-shell-output.txt\""));
+    assert!(formatted.contains("increment 1 | print &"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted shell syntax should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_typed_shell_operations() {
+    let bad_pipe = r#"
+fn text() -> str {
+    return "x"
+}
+fn consume(value: i64) -> i64 {
+    return value
+}
+fn main() -> i64 {
+    return text | consume
+}
+"#;
+    let error = check_source(bad_pipe).expect_err("pipeline types must match");
+    assert!(error.message.contains("expected i64, got str"));
+
+    let bad_path = r#"
+fn value() -> i64 {
+    return 1
+}
+fn main() -> i64 {
+    value > true
+    return 0
+}
+"#;
+    let error = check_source(bad_path).expect_err("redirection path must be str");
+    assert!(
+        error
+            .message
+            .contains("redirection path: expected str, got bool")
+    );
+
+    let bad_value = r#"
+fn log() -> void {
+    print "x"
+}
+fn main() -> i64 {
+    log > "/tmp/out"
+    return 0
+}
+"#;
+    let error = check_source(bad_value).expect_err("void cannot be redirected");
+    assert!(
+        error
+            .message
+            .contains("redirection requires a scalar result, got void")
+    );
+}
+
+#[test]
 fn rejects_invalid_concise_single_expression_functions() {
     let void_body = r#"
 fn log(value: str) -> void { print(value) }

@@ -1878,7 +1878,8 @@ fn collect_binding_declarations(
             | StmtKind::Return(_)
             | StmtKind::Break
             | StmtKind::Continue
-            | StmtKind::Expr(_) => {}
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
         }
     }
 }
@@ -1924,6 +1925,12 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
                 }
             }
             StmtKind::Expr(expr) => collect_expr_reads(expr, reads),
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_expr_reads(expr, reads);
+                if let Some(redirect) = redirect {
+                    collect_expr_reads(&redirect.path, reads);
+                }
+            }
             StmtKind::If {
                 cond,
                 body,
@@ -1972,6 +1979,21 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             }
             for arg in named_args {
                 collect_expr_reads(&arg.value, reads);
+            }
+        }
+        ExprKind::ShellCall { name, args, .. } => {
+            reads.insert(name.clone());
+            for arg in args {
+                collect_expr_reads(arg, reads);
+            }
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            collect_expr_reads(input, reads);
+            reads.insert(name.clone());
+            for arg in args {
+                collect_expr_reads(arg, reads);
             }
         }
         ExprKind::QualifiedCall {
@@ -2285,6 +2307,35 @@ fn check_block_all(
                     diagnostics.push(diagnostic);
                 }
             }
+            StmtKind::Shell { expr, redirect, .. } => match type_of_expr(expr, env, signatures) {
+                Ok(result_ty) => {
+                    if let Some(redirect) = redirect {
+                        match type_of_expr(&redirect.path, env, signatures) {
+                            Ok(path_ty) => {
+                                if let Err(diagnostic) = require_type(
+                                    redirect.path.span,
+                                    &Type::Str,
+                                    &path_ty,
+                                    "redirection path",
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
+                            }
+                            Err(diagnostic) => diagnostics.push(diagnostic),
+                        }
+                        if !matches!(result_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
+                            diagnostics.push(diag(
+                                expr.span,
+                                &format!(
+                                    "redirection requires a scalar result, got {}",
+                                    result_ty.name()
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            },
             StmtKind::If {
                 cond,
                 body,
@@ -2554,6 +2605,32 @@ fn check_block_all(
     }
 }
 
+fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signatures) -> Expr {
+    let ExprKind::Var(name) = &input.kind else {
+        return input.clone();
+    };
+    let zero_arg_declared = signatures
+        .get(name)
+        .is_some_and(|signature| signature.params.is_empty());
+    let zero_arg_value = matches!(
+        env.get(name),
+        Some(Type::Function { params, .. }) if params.is_empty()
+    );
+    if zero_arg_declared || zero_arg_value {
+        Expr {
+            line: input.line,
+            span: input.span,
+            kind: ExprKind::Call {
+                name: name.clone(),
+                args: Vec::new(),
+                named_args: Vec::new(),
+            },
+        }
+    } else {
+        input.clone()
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -2597,6 +2674,35 @@ pub fn type_of_expr(
                 expr.span,
                 &format!("unknown binding, constant, or function '{name}'"),
             ))
+        }
+        ExprKind::ShellCall { name, args, .. } => {
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: args.clone(),
+                    named_args: Vec::new(),
+                },
+            };
+            type_of_expr(&call, env, signatures)
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(pipe_input_expr(input, env, signatures));
+            call_args.extend(args.iter().cloned());
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: call_args,
+                    named_args: Vec::new(),
+                },
+            };
+            type_of_expr(&call, env, signatures)
         }
         ExprKind::Call {
             name,
@@ -3041,6 +3147,35 @@ fn value_types_of_expr(
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
     match &expr.kind {
+        ExprKind::ShellCall { name, args, .. } => {
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: args.clone(),
+                    named_args: Vec::new(),
+                },
+            };
+            value_types_of_expr(&call, env, signatures)
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(pipe_input_expr(input, env, signatures));
+            call_args.extend(args.iter().cloned());
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: call_args,
+                    named_args: Vec::new(),
+                },
+            };
+            value_types_of_expr(&call, env, signatures)
+        }
         ExprKind::Call { name, .. } if signatures.interface(name).is_some() => {
             Ok(vec![type_of_expr(expr, env, signatures)?])
         }
@@ -3380,7 +3515,8 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::LetStructDestructure { .. }
             | StmtKind::Break
             | StmtKind::Continue
-            | StmtKind::Expr(_) => {}
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
         }
     }
     false
@@ -3475,6 +3611,8 @@ fn evaluate_default_expr(
         }
         ExprKind::Nil
         | ExprKind::Call { .. }
+        | ExprKind::ShellCall { .. }
+        | ExprKind::Pipe { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
@@ -3612,6 +3750,8 @@ fn evaluate_constant_expr(
         }
         ExprKind::Nil
         | ExprKind::Call { .. }
+        | ExprKind::ShellCall { .. }
+        | ExprKind::Pipe { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }

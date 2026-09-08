@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, GridTrack, MatchPattern, Stmt, StmtKind, StructPatternField,
-    Type, UnaryOp,
+    BinOp, Expr, ExprKind, Function, GridTrack, MatchPattern, ShellRedirectMode, Stmt, StmtKind,
+    StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -468,6 +468,24 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
             StmtKind::Expr(expr) => {
                 lines.insert(stmt.line, format!("{pad}{}", format_expr(expr, 0)));
             }
+            StmtKind::Shell {
+                expr,
+                redirect,
+                background,
+            } => {
+                let mut text = format!("{pad}{}", format_expr(expr, 0));
+                if let Some(redirect) = redirect {
+                    text.push_str(match redirect.mode {
+                        ShellRedirectMode::Truncate => " > ",
+                        ShellRedirectMode::Append => " >> ",
+                    });
+                    text.push_str(&format_expr(&redirect.path, 0));
+                }
+                if *background {
+                    text.push_str(" &");
+                }
+                lines.insert(stmt.line, text);
+            }
             StmtKind::If {
                 cond,
                 body,
@@ -626,6 +644,39 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Str(value) => format_string(value),
         ExprKind::Nil => "nil".to_string(),
         ExprKind::Var(name) => name.clone(),
+        ExprKind::ShellCall { name, args, .. } => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                format!(
+                    "{name} {}",
+                    args.iter()
+                        .map(|arg| format_expr(arg, 7))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            let mut text = format!("{} | {name}", format_expr(input, 0));
+            if !args.is_empty() {
+                text.push(' ');
+                text.push_str(
+                    &args
+                        .iter()
+                        .map(|arg| format_expr(arg, 7))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
+            if parent_precedence > 0 {
+                format!("({text})")
+            } else {
+                text
+            }
+        }
         ExprKind::Call {
             name,
             args,

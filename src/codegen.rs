@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, Stmt, StmtKind,
-    StructDef, StructPatternField, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, ShellRedirectMode,
+    Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
@@ -14,6 +14,12 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
+    if program_uses_background(program) {
+        out.push_str("#include <errno.h>\n");
+        out.push_str("#include <sys/types.h>\n");
+        out.push_str("#include <sys/wait.h>\n");
+        out.push_str("#include <unistd.h>\n");
+    }
     if program.application.is_some() {
         out.push_str("#include <gtk/gtk.h>\n");
     }
@@ -24,6 +30,11 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     );
     out.push_str("static inline void flux_print_str(const char *value) { puts(value); }\n");
     out.push_str("static inline void flux_print_error(const char *value) { puts(value ? value : \"nil\"); }\n");
+    out.push_str("static inline FILE *flux_open_redirect(const char *path, bool append) { FILE *file = fopen(path, append ? \"a\" : \"w\"); if (file == NULL) { perror(path); abort(); } return file; }\n");
+    out.push_str("static inline void flux_redirect_i64(const char *path, bool append, int64_t value) { FILE *file = flux_open_redirect(path, append); fprintf(file, \"%lld\\n\", (long long)value); fclose(file); }\n");
+    out.push_str("static inline void flux_redirect_bool(const char *path, bool append, bool value) { FILE *file = flux_open_redirect(path, append); fputs(value ? \"true\\n\" : \"false\\n\", file); fclose(file); }\n");
+    out.push_str("static inline void flux_redirect_str(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value, file); fputc('\\n', file); fclose(file); }\n");
+    out.push_str("static inline void flux_redirect_error(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value ? value : \"nil\", file); fputc('\\n', file); fclose(file); }\n");
     out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
@@ -2159,6 +2170,65 @@ fn emit_block(
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{};\n", value.code));
             }
+            StmtKind::Shell {
+                expr,
+                redirect,
+                background,
+            } => {
+                let value = emit_expr(expr, env, signatures)?;
+                let emit_command = |out: &mut String,
+                                    command_pad: &str|
+                 -> Result<(), Diagnostic> {
+                    if let Some(redirect) = redirect {
+                        let path = emit_expr(&redirect.path, env, signatures)?;
+                        let helper = match value.ty {
+                            Type::I64 => "flux_redirect_i64",
+                            Type::Bool => "flux_redirect_bool",
+                            Type::Str => "flux_redirect_str",
+                            Type::Error => "flux_redirect_error",
+                            _ => {
+                                return Err(diag(
+                                    expr.span,
+                                    "redirection reached code generation with a non-scalar result",
+                                ));
+                            }
+                        };
+                        let append = matches!(redirect.mode, ShellRedirectMode::Append);
+                        out.push_str(&format!(
+                            "{command_pad}{helper}({}, {}, {});\n",
+                            path.code,
+                            if append { "true" } else { "false" },
+                            value.code
+                        ));
+                    } else {
+                        out.push_str(&format!("{command_pad}{};\n", value.code));
+                    }
+                    Ok(())
+                };
+                if *background {
+                    let pid = format!("flux__bg_pid_{}", *temp_counter);
+                    *temp_counter += 1;
+                    let worker = format!("flux__bg_worker_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}pid_t {pid} = fork();\n"));
+                    out.push_str(&format!(
+                        "{pad}if ({pid} < 0) {{ perror(\"fork\"); abort(); }}\n"
+                    ));
+                    out.push_str(&format!("{pad}if ({pid} == 0) {{\n"));
+                    out.push_str(&format!("{pad}    pid_t {worker} = fork();\n"));
+                    out.push_str(&format!("{pad}    if ({worker} < 0) _exit(127);\n"));
+                    out.push_str(&format!("{pad}    if ({worker} > 0) _exit(0);\n"));
+                    emit_command(out, &format!("{pad}    "))?;
+                    out.push_str(&format!("{pad}    fflush(NULL);\n"));
+                    out.push_str(&format!("{pad}    _exit(0);\n"));
+                    out.push_str(&format!("{pad}}}\n"));
+                    out.push_str(&format!(
+                        "{pad}while (waitpid({pid}, NULL, 0) < 0 && errno == EINTR) {{}}\n"
+                    ));
+                } else {
+                    emit_command(out, &pad)?;
+                }
+            }
             StmtKind::If {
                 cond,
                 body,
@@ -2470,6 +2540,32 @@ fn emit_struct_pattern_bindings(
     Ok(())
 }
 
+fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signatures) -> Expr {
+    let ExprKind::Var(name) = &input.kind else {
+        return input.clone();
+    };
+    let zero_arg_declared = signatures
+        .get(name)
+        .is_some_and(|signature| signature.params.is_empty());
+    let zero_arg_value = matches!(
+        env.get(name),
+        Some(Type::Function { params, .. }) if params.is_empty()
+    );
+    if zero_arg_declared || zero_arg_value {
+        Expr {
+            line: input.line,
+            span: input.span,
+            kind: ExprKind::Call {
+                name: name.clone(),
+                args: Vec::new(),
+                named_args: Vec::new(),
+            },
+        }
+    } else {
+        input.clone()
+    }
+}
+
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -2519,6 +2615,35 @@ fn emit_expr(
                     ),
                 ));
             }
+        }
+        ExprKind::ShellCall { name, args, .. } => {
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: args.clone(),
+                    named_args: Vec::new(),
+                },
+            };
+            return emit_expr(&call, env, signatures);
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(pipe_input_expr(input, env, signatures));
+            call_args.extend(args.iter().cloned());
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: call_args,
+                    named_args: Vec::new(),
+                },
+            };
+            return emit_expr(&call, env, signatures);
         }
         ExprKind::Call { name, args, .. } if name == "print" => {
             let arg = emit_expr(&args[0], env, signatures)?;
@@ -3345,6 +3470,27 @@ fn collect_function_type(ty: &Type, signatures: &Signatures, types: &mut HashSet
     }
 }
 
+fn program_uses_background(program: &Program) -> bool {
+    program
+        .functions
+        .iter()
+        .any(|function| block_uses_background(&function.body))
+}
+
+fn block_uses_background(body: &[Stmt]) -> bool {
+    body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Shell { background, .. } => *background,
+        StmtKind::If {
+            body, else_body, ..
+        } => block_uses_background(body) || block_uses_background(else_body),
+        StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } => {
+            block_uses_background(body)
+        }
+        StmtKind::Match { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
+        _ => false,
+    })
+}
+
 fn collect_function_types_from_block(
     body: &[Stmt],
     signatures: &Signatures,
@@ -3365,7 +3511,8 @@ fn collect_function_types_from_block(
             | StmtKind::Return(_)
             | StmtKind::Break
             | StmtKind::Continue
-            | StmtKind::Expr(_) => {}
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
             StmtKind::If {
                 body, else_body, ..
             } => {
@@ -3453,6 +3600,12 @@ fn collect_update_helpers_from_block(
             StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Expr(expr) => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
+                if let Some(redirect) = redirect {
+                    collect_update_helpers_from_expr(&redirect.path, signatures, emitted, helpers);
+                }
             }
             StmtKind::If {
                 cond,
@@ -3562,6 +3715,17 @@ fn collect_update_helpers_from_expr(
             }
             for arg in named_args {
                 collect_update_helpers_from_expr(&arg.value, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_update_helpers_from_expr(input, signatures, emitted, helpers);
+            for arg in args {
+                collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
             }
         }
         ExprKind::QualifiedCall {

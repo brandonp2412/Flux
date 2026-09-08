@@ -367,6 +367,17 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&arg.value, symbols, signatures);
             }
         }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_expr_pattern_symbols(arg, symbols, signatures);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_expr_pattern_symbols(input, symbols, signatures);
+            for arg in args {
+                collect_expr_pattern_symbols(arg, symbols, signatures);
+            }
+        }
         ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
@@ -521,6 +532,12 @@ fn collect_block_symbols(
                 }
             }
             StmtKind::Expr(expr) => collect_expr_pattern_symbols(expr, symbols, signatures),
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_expr_pattern_symbols(expr, symbols, signatures);
+                if let Some(redirect) = redirect {
+                    collect_expr_pattern_symbols(&redirect.path, symbols, signatures);
+                }
+            }
             StmtKind::Break | StmtKind::Continue => {}
         }
     }

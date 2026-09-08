@@ -7,7 +7,8 @@ Flux is an experimental compiled language for building native applications and s
 - Python-like readability and low ceremony.
 - Function bodies are delimited by `{}`.
 - Control-flow bodies use indentation (`if`, `for`, etc.).
-- Strict static typing; implicit type coercions are deliberately minimized.
+- Strict static typing; implicit type coercions are deliberately minimized, unused bindings are compile errors, and Flux has no warning-only lint tier.
+- No comment syntax and no ternary/conditional expression syntax.
 - Function-first architecture built from data, functions, and interfaces rather than classes, inheritance, mixins, or widget/controller object hierarchies.
 - No generics in the Flux language.
 - No exception / try-catch model. Recoverable failures are represented explicitly in return values.
@@ -29,6 +30,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - exhaustive enum `match` statements with typed payload bindings, guaranteed-return analysis, and single-evaluation native `switch` lowering;
 - positional and named-only function parameters with required named arguments, compile-time defaults, and zero-runtime-overhead call reordering;
 - first-class named function values and concrete `fn(...) -> ...` function types, lowered to typed native function pointers without callable objects;
+- shell-inspired typed call flow: parentheses-free positional calls, `|` value pipelines, scalar-result `>`/`>>` file redirection, and trailing `&` detached execution without turning functions into untyped subprocess commands;
 - function signature, return, and argument validation;
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
 - terminal diagnostics that show the offending source, exact carets, related declaration labels and suggested fixes, automatically colorize interactive terminals, and wrap/crop to the current terminal width;
@@ -37,7 +39,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, building native executables, automatically running/rebuilding development targets, and serving bootstrap LSP diagnostics over stdio, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
-- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, parameterized view composition, and native GTK4/Wayland Text/Button/TextInput/Image/Toggle/Radio controls with typed callback dispatch, live text-change/submit callbacks, hover/leave/focus events, button keyboard shortcuts, autofocus, password masking, maximum input length, file-backed images, tooltips, accessible labels/descriptions, Pango-backed family/slant/decoration/spacing typography, static or state-driven transforms, and read-only window/orientation/display-scale bindings for responsive property expressions.
+- compiler tests and runnable native examples, including typed shell-style call flow, nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, parameterized view composition, and native GTK4/Wayland Text/Button/TextInput/Image/Toggle/Radio controls with typed callback dispatch, live text-change/submit callbacks, hover/leave/focus events, button keyboard shortcuts, autofocus, password masking, maximum input length, file-backed images, tooltips, accessible labels/descriptions, Pango-backed family/slant/decoration/spacing typography, static or state-driven transforms, and read-only window/orientation/display-scale bindings for responsive property expressions.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

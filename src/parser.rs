@@ -2,9 +2,10 @@ use crate::ast::{
     ApplicationDef, ApplicationMetadataField, BinOp, Binding, ConstantDef, EnumDef, EnumPayload,
     EnumVariant, Expr, ExprKind, Function, GridLayout, GridTrack, ImportDef, InterfaceDef,
     InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, MatchArm,
-    MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
-    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
-    UnaryOp, ViewDef, ViewElement, ViewProperty, ViewState, ViewStateTransition,
+    MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, ShellRedirect,
+    ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
+    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement, ViewProperty, ViewState,
+    ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -515,6 +516,12 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
             }
             StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Expr(expr) => attach_expr_source(expr, source_id),
+            StmtKind::Shell { expr, redirect, .. } => {
+                attach_expr_source(expr, source_id);
+                if let Some(redirect) = redirect {
+                    attach_expr_source(&mut redirect.path, source_id);
+                }
+            }
             StmtKind::If {
                 cond,
                 body,
@@ -582,6 +589,26 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             for arg in named_args {
                 arg.name_span = arg.name_span.with_source(source_id);
                 attach_expr_source(&mut arg.value, source_id);
+            }
+        }
+        ExprKind::ShellCall {
+            name_span, args, ..
+        } => {
+            *name_span = name_span.with_source(source_id);
+            for arg in args {
+                attach_expr_source(arg, source_id);
+            }
+        }
+        ExprKind::Pipe {
+            input,
+            name_span,
+            args,
+            ..
+        } => {
+            attach_expr_source(input, source_id);
+            *name_span = name_span.with_source(source_id);
+            for arg in args {
+                attach_expr_source(arg, source_id);
             }
         }
         ExprKind::StructLiteral {
@@ -725,6 +752,26 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             for arg in named_args {
                 arg.name_span.column += offset;
                 shift_expr_columns(&mut arg.value, offset);
+            }
+        }
+        ExprKind::ShellCall {
+            name_span, args, ..
+        } => {
+            name_span.column += offset;
+            for arg in args {
+                shift_expr_columns(arg, offset);
+            }
+        }
+        ExprKind::Pipe {
+            input,
+            name_span,
+            args,
+            ..
+        } => {
+            shift_expr_columns(input, offset);
+            name_span.column += offset;
+            for arg in args {
+                shift_expr_columns(arg, offset);
             }
         }
         ExprKind::StructLiteral {
@@ -2852,6 +2899,28 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         });
     }
 
+    if let Some(shell) = parse_shell_statement(input, span)? {
+        return Ok(shell);
+    }
+
+    if validate_identifier(input, line).is_ok() {
+        let expr = Expr {
+            line,
+            span,
+            kind: ExprKind::ShellCall {
+                name: input.to_string(),
+                name_span: span,
+                args: Vec::new(),
+            },
+        };
+        return Ok(Stmt {
+            line,
+            span,
+            keyword_span: span,
+            kind: StmtKind::Expr(expr),
+        });
+    }
+
     let expr = parse_expression_at(input, line, span.column)?;
     Ok(Stmt {
         line,
@@ -2859,6 +2928,125 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         keyword_span: expr.span,
         kind: StmtKind::Expr(expr),
     })
+}
+
+fn parse_shell_statement(input: &str, span: SourceSpan) -> Result<Option<Stmt>, Diagnostic> {
+    let line = span.line;
+    let mut command = input.trim_end();
+    let mut background = false;
+    if let Some(prefix) = command.strip_suffix('&')
+        && !prefix.ends_with('&')
+        && prefix.chars().last().is_some_and(char::is_whitespace)
+    {
+        background = true;
+        command = prefix.trim_end();
+    }
+
+    let mut redirect = None;
+    if let Some((operator_offset, append)) = find_shell_redirect(command) {
+        let operator_width = if append { 2 } else { 1 };
+        let left = command[..operator_offset].trim_end();
+        let raw_path = &command[operator_offset + operator_width..];
+        let path_leading = raw_path.len() - raw_path.trim_start().len();
+        let path_src = raw_path.trim();
+        if left.is_empty() || path_src.is_empty() {
+            return Err(diag(
+                line,
+                "redirection uses 'command > path' or 'command >> path'",
+            ));
+        }
+        let path_column = span.column + operator_offset + operator_width + path_leading;
+        redirect = Some(ShellRedirect {
+            path: parse_expression_at(path_src, line, path_column)?,
+            mode: if append {
+                ShellRedirectMode::Append
+            } else {
+                ShellRedirectMode::Truncate
+            },
+        });
+        command = left;
+    }
+
+    if !background && redirect.is_none() {
+        return Ok(None);
+    }
+    let leading = command.len() - command.trim_start().len();
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(diag(
+            line,
+            "shell statement requires a function call or pipeline",
+        ));
+    }
+    let command_column = span.column + leading;
+    let expr = if split_top_level_shell_pipes(command).len() > 1 {
+        parse_expression_at(command, line, command_column)?
+    } else {
+        match parse_shell_call_at(command, line, command_column, true)? {
+            Some(expr) => expr,
+            None => parse_expression_at(command, line, command_column)?,
+        }
+    };
+    Ok(Some(Stmt {
+        line,
+        span,
+        keyword_span: expr.span,
+        kind: StmtKind::Shell {
+            expr,
+            redirect,
+            background,
+        },
+    }))
+}
+
+fn find_shell_redirect(input: &str) -> Option<(usize, bool)> {
+    let bytes = input.as_bytes();
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' => paren += 1,
+                b')' => paren = paren.saturating_sub(1),
+                b'{' => brace += 1,
+                b'}' => brace = brace.saturating_sub(1),
+                b'[' => bracket += 1,
+                b']' => bracket = bracket.saturating_sub(1),
+                b'>' if paren == 0 && brace == 0 && bracket == 0 => {
+                    let before_space = index > 0 && bytes[index - 1].is_ascii_whitespace();
+                    let append = bytes.get(index + 1) == Some(&b'>');
+                    let after = index + if append { 2 } else { 1 };
+                    let after_space = bytes.get(after).is_some_and(u8::is_ascii_whitespace);
+                    if before_space && after_space {
+                        return Some((index, append));
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 fn attach_struct_pattern_field_source(field: &mut StructPatternField, source_id: SourceId) {
@@ -3254,6 +3442,49 @@ fn expression_column(haystack: &str, needle: &str, base_column: usize) -> usize 
 }
 
 fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+    let pipe_parts = split_top_level_shell_pipes(input);
+    if pipe_parts.len() > 1 {
+        let (first, first_offset) = pipe_parts[0];
+        let (first, first_column) = trim_with_column(first, column + first_offset);
+        let mut expr = match parse_shell_call_at(first, line, first_column, false)? {
+            Some(expr) => expr,
+            None => parse_regular_expression_at(first, line, first_column)?,
+        };
+        for (stage, offset) in pipe_parts.into_iter().skip(1) {
+            let (stage, stage_column) = trim_with_column(stage, column + offset);
+            if stage.is_empty() {
+                return Err(diag(line, "pipeline requires a function after '|'"));
+            }
+            let (name, name_span, args) = parse_pipe_stage(stage, line, stage_column)?;
+            let end = args
+                .last()
+                .map(|arg| arg.span.column + arg.span.length)
+                .unwrap_or(name_span.column + name_span.length);
+            let start = expr.span.column;
+            expr = Expr {
+                line,
+                span: SourceSpan::new(line, start, end.saturating_sub(start)),
+                kind: ExprKind::Pipe {
+                    input: Box::new(expr),
+                    name,
+                    name_span,
+                    args,
+                },
+            };
+        }
+        return Ok(expr);
+    }
+    if let Some(expr) = parse_shell_call_at(input, line, column, false)? {
+        return Ok(expr);
+    }
+    parse_regular_expression_at(input, line, column)
+}
+
+fn parse_regular_expression_at(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<Expr, Diagnostic> {
     let tokens = lex_expression(input, line, column)?;
     let mut parser = ExprParser {
         tokens: &tokens,
@@ -3271,6 +3502,186 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
         return Err(Diagnostic::new(DiagnosticStage::Parse, token.span, message));
     }
     Ok(expr)
+}
+
+fn parse_shell_call_at(
+    input: &str,
+    line: usize,
+    column: usize,
+    allow_bare: bool,
+) -> Result<Option<Expr>, Diagnostic> {
+    let parts = split_top_level_shell_words(input);
+    if parts.is_empty() || (parts.len() == 1 && !allow_bare) {
+        return Ok(None);
+    }
+    let (raw_name, name_offset) = parts[0];
+    let name = raw_name.trim();
+    if validate_identifier(name, line).is_err() {
+        return Ok(None);
+    }
+    if parts.len() > 1 {
+        let next = parts[1].0.trim_start();
+        if next.starts_with(['+', '-', '*', '/', '<', '>', '=', '!', '&', '|', '{']) {
+            return Ok(None);
+        }
+    }
+    let name_span = SourceSpan::new(line, column + name_offset, name.len());
+    let mut args = Vec::new();
+    for (raw_arg, offset) in parts.into_iter().skip(1) {
+        let (arg, arg_column) = trim_with_column(raw_arg, column + offset);
+        args.push(parse_regular_expression_at(arg, line, arg_column)?);
+    }
+    let end = args
+        .last()
+        .map(|arg| arg.span.column + arg.span.length)
+        .unwrap_or(name_span.column + name_span.length);
+    Ok(Some(Expr {
+        line,
+        span: SourceSpan::new(line, name_span.column, end - name_span.column),
+        kind: ExprKind::ShellCall {
+            name: name.to_string(),
+            name_span,
+            args,
+        },
+    }))
+}
+
+fn parse_pipe_stage(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<(String, SourceSpan, Vec<Expr>), Diagnostic> {
+    if let Some(shell) = parse_shell_call_at(input, line, column, true)? {
+        let ExprKind::ShellCall {
+            name,
+            name_span,
+            args,
+        } = shell.kind
+        else {
+            unreachable!()
+        };
+        return Ok((name, name_span, args));
+    }
+    let regular = parse_regular_expression_at(input, line, column)?;
+    match regular.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() => {
+            let name_span = SourceSpan::new(line, regular.span.column, name.len());
+            Ok((name, name_span, args))
+        }
+        ExprKind::Var(name) => Ok((name.clone(), regular.span, Vec::new())),
+        _ => Err(Diagnostic::new(
+            DiagnosticStage::Parse,
+            regular.span,
+            "pipeline stages must be function calls or function names",
+        )),
+    }
+}
+
+fn split_top_level_shell_pipes(input: &str) -> Vec<(&str, usize)> {
+    let mut parts = Vec::new();
+    let bytes = input.as_bytes();
+    let mut start = 0usize;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' => paren += 1,
+                b')' => paren = paren.saturating_sub(1),
+                b'{' => brace += 1,
+                b'}' => brace = brace.saturating_sub(1),
+                b'[' => bracket += 1,
+                b']' => bracket = bracket.saturating_sub(1),
+                b'|' if paren == 0 && brace == 0 && bracket == 0 => {
+                    let prev_pipe = index > 0 && bytes[index - 1] == b'|';
+                    let next_pipe = bytes.get(index + 1) == Some(&b'|');
+                    if !prev_pipe && !next_pipe {
+                        parts.push((&input[start..index], start));
+                        start = index + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    parts.push((&input[start..], start));
+    parts
+}
+
+fn split_top_level_shell_words(input: &str) -> Vec<(&str, usize)> {
+    let bytes = input.as_bytes();
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index <= bytes.len() {
+        let at_end = index == bytes.len();
+        let byte = (!at_end).then(|| bytes[index]);
+        let top_space = byte.is_some_and(|b| b.is_ascii_whitespace())
+            && paren == 0
+            && brace == 0
+            && bracket == 0
+            && !in_string;
+        if at_end || top_space {
+            if let Some(word_start) = start.take() {
+                words.push((&input[word_start..index], word_start));
+            }
+            index += 1;
+            continue;
+        }
+        if start.is_none() {
+            start = Some(index);
+        }
+        let byte = byte.expect("not at end");
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' && in_string {
+            escaped = true;
+        } else if byte == b'"' {
+            in_string = !in_string;
+        } else if !in_string {
+            match byte {
+                b'(' => paren += 1,
+                b')' => paren = paren.saturating_sub(1),
+                b'{' => brace += 1,
+                b'}' => brace = brace.saturating_sub(1),
+                b'[' => bracket += 1,
+                b']' => bracket = bracket.saturating_sub(1),
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    words
 }
 
 fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>, Diagnostic> {

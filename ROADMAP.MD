@@ -255,6 +255,11 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 
 ## Expression ergonomics
 
+- [x] Shell-inspired typed call flow without subprocess semantics:
+  - [x] Parentheses-free function calls such as `print "hello"` and `scale value 2`.
+  - [x] Typed value pipelines such as `source | transform | consume`, passing each return value as the next call's first argument.
+  - [x] `>` / `>>` scalar-result redirection to a typed `str` path, truncating or appending respectively.
+  - [x] Trailing `&` detached background execution for call/pipeline statements; the current native bootstrap lowers this through POSIX process primitives only when a program actually uses background execution.
 - [ ] String interpolation. Runtime interpolation is sequenced after owned-string/buffer semantics: the bootstrap `str` currently lowers to borrowed native string pointers, so Flux must not introduce hidden scratch-buffer allocation/lifetime behavior merely for interpolation syntax. Compile-time interpolation may arrive earlier only if it shares the eventual syntax and semantics cleanly.
 - [ ] Multiline strings.
 - [ ] Raw strings.
