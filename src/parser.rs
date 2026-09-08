@@ -327,6 +327,7 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                     attach_expr_source(expr, source_id);
                 }
             }
+            StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Expr(expr) => attach_expr_source(expr, source_id),
             StmtKind::If {
                 cond,
@@ -1237,6 +1238,22 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         });
     }
 
+    if input == "break" {
+        return Ok(Stmt {
+            line,
+            span,
+            keyword_span: SourceSpan::new(line, span.column, 5),
+            kind: StmtKind::Break,
+        });
+    }
+    if input == "continue" {
+        return Ok(Stmt {
+            line,
+            span,
+            keyword_span: SourceSpan::new(line, span.column, 8),
+            kind: StmtKind::Continue,
+        });
+    }
     if input == "return" {
         return Ok(Stmt {
             line,
@@ -1539,6 +1556,8 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "else"
             | "for"
             | "in"
+            | "break"
+            | "continue"
             | "true"
             | "false"
             | "nil"

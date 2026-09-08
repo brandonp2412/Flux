@@ -28,6 +28,59 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_break_and_continue_inside_nested_loop_control_flow() {
+    let source = r#"
+enum Decision {
+    Keep
+    Skip
+}
+
+fn main() -> i64 {
+    for i in 0..6:
+        if i == 2:
+            continue
+        match Decision.Keep():
+            Decision.Keep():
+                if i == 4:
+                    break
+            Decision.Skip():
+                continue
+        print(i)
+    return 0
+}
+"#;
+
+    check_source(source).expect("break/continue should be valid inside loop-nested blocks");
+    let generated = compile_to_c(source).expect("loop control should lower natively");
+    assert!(generated.contains("continue;"));
+    assert!(generated.contains("break;"));
+}
+
+#[test]
+fn rejects_break_and_continue_outside_loops() {
+    let source = r#"
+fn main() -> i64 {
+    break
+    continue
+    return 0
+}
+"#;
+
+    let diagnostics = check_source_all(source).expect_err("loop control outside loops should fail");
+    assert_eq!(diagnostics.len(), 2);
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("'break' is only valid inside a loop")
+    );
+    assert!(
+        diagnostics[1]
+            .message
+            .contains("'continue' is only valid inside a loop")
+    );
+}
+
+#[test]
 fn rejects_type_mismatches() {
     let source = r#"
 fn main() -> i64 {

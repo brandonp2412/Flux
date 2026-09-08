@@ -244,6 +244,8 @@ fn emit_block(
                 }
                 out.push_str(&format!("{pad}return {temp};\n"));
             }
+            StmtKind::Break => out.push_str(&format!("{pad}break;\n")),
+            StmtKind::Continue => out.push_str(&format!("{pad}continue;\n")),
             StmtKind::Expr(expr) => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{};\n", value.code));
@@ -669,6 +671,7 @@ fn collect_update_helpers_from_block(
                     collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
                 }
             }
+            StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Expr(expr) => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
             }

@@ -246,7 +246,7 @@ fn collect_block_symbols(
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }
             }
-            StmtKind::Return(_) | StmtKind::Expr(_) => {}
+            StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Expr(_) => {}
         }
     }
 }

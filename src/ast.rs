@@ -174,6 +174,8 @@ pub enum StmtKind {
         expr: Expr,
     },
     Return(Vec<Expr>),
+    Break,
+    Continue,
     Expr(Expr),
     If {
         cond: Expr,

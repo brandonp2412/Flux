@@ -103,6 +103,12 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [x] Transparent concrete type aliases with forward/chained resolution, cycle diagnostics, formatter/tooling support, and zero runtime representation.
 - [x] Compile-time constants with forward references, constant folding, cycle diagnostics, alias-aware typing, and zero-runtime-storage lowering for `i64`, `bool`, and `str`.
 
+## Control flow
+
+- [x] `break` / `continue` in `for` loops with static scope validation through nested `if` / `match` blocks and native lowering.
+- [ ] `while` loops once explicit local mutation/state semantics make them useful rather than ornamental.
+- [ ] Value-producing conditional/match expressions for functional code.
+
 ## Interfaces and capabilities
 
 - [ ] `interface` declarations consisting of function signatures/capabilities.

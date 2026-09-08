@@ -250,14 +250,14 @@ Currently implemented:
 - `elif condition:` and `else:` attached to the preceding conditional chain;
 - exhaustive `if` / `elif` / `else` return analysis, so a fully returning chain satisfies a function's return requirement;
 - `for name in start..end:` with an exclusive integer range;
+- `break` and `continue` inside loops, including through nested `if` / `match` blocks;
 - exhaustive enum `match` statements with typed positional payload bindings;
 - `return`;
 - expression statements.
 
 Planned:
 
-- `while`;
-- `break` / `continue`;
+- `while` once explicit local mutation/state semantics make it useful;
 - `match` expressions that produce values;
 - broader struct/list/record patterns as those value types mature.
 

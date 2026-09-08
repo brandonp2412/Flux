@@ -477,6 +477,7 @@ fn check_function_all(
         &return_types,
         signatures,
         diagnostics,
+        0,
     );
 
     if !function.returns.is_empty() && !block_guarantees_return(&function.body) {
@@ -497,6 +498,7 @@ fn check_block_all(
     return_types: &[Type],
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
+    loop_depth: usize,
 ) {
     for stmt in body {
         match &stmt.kind {
@@ -721,6 +723,22 @@ fn check_block_all(
                     }
                 }
             }
+            StmtKind::Break => {
+                if loop_depth == 0 {
+                    diagnostics.push(diag(
+                        stmt.keyword_span,
+                        "'break' is only valid inside a loop",
+                    ));
+                }
+            }
+            StmtKind::Continue => {
+                if loop_depth == 0 {
+                    diagnostics.push(diag(
+                        stmt.keyword_span,
+                        "'continue' is only valid inside a loop",
+                    ));
+                }
+            }
             StmtKind::Expr(expr) => {
                 if let Err(diagnostic) = type_of_expr(expr, env, signatures) {
                     diagnostics.push(diagnostic);
@@ -743,7 +761,14 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 let mut then_env = env.clone();
-                check_block_all(body, &mut then_env, return_types, signatures, diagnostics);
+                check_block_all(
+                    body,
+                    &mut then_env,
+                    return_types,
+                    signatures,
+                    diagnostics,
+                    loop_depth,
+                );
                 let mut else_env = env.clone();
                 check_block_all(
                     else_body,
@@ -751,6 +776,7 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    loop_depth,
                 );
             }
             StmtKind::ForRange {
@@ -791,7 +817,14 @@ fn check_block_all(
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
                 }
-                check_block_all(body, &mut nested, return_types, signatures, diagnostics);
+                check_block_all(
+                    body,
+                    &mut nested,
+                    return_types,
+                    signatures,
+                    diagnostics,
+                    loop_depth + 1,
+                );
             }
             StmtKind::Match { value, arms } => {
                 let value_ty = match type_of_expr(value, env, signatures) {
@@ -881,6 +914,7 @@ fn check_block_all(
                         return_types,
                         signatures,
                         diagnostics,
+                        loop_depth,
                     );
                 }
                 let missing = definition
@@ -1217,6 +1251,8 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::Let { .. }
             | StmtKind::LetDestructure { .. }
             | StmtKind::LetStructDestructure { .. }
+            | StmtKind::Break
+            | StmtKind::Continue
             | StmtKind::Expr(_) => {}
         }
     }

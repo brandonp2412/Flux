@@ -190,6 +190,12 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     lines.insert(stmt.line, format!("{pad}return {values}"));
                 }
             }
+            StmtKind::Break => {
+                lines.insert(stmt.line, format!("{pad}break"));
+            }
+            StmtKind::Continue => {
+                lines.insert(stmt.line, format!("{pad}continue"));
+            }
             StmtKind::Expr(expr) => {
                 lines.insert(stmt.line, format!("{pad}{}", format_expr(expr, 0)));
             }
