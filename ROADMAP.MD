@@ -742,9 +742,9 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux test`: user-facing native integration-test discovery/execution for direct `.flux` tests and package `tests/*.flux`, with debug/profile/release mode selection and real exit-status reporting.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
-- [ ] `flux devices`.
+- [x] `flux devices`: the bootstrap CLI reports the currently runnable Linux desktop target and whether an active Wayland/X11 display makes it launch-ready, without pretending unsupported mobile/desktop backends are devices yet.
 - [x] `flux doctor`: bootstrap Linux doctor reports host support, Clang, GTK4, optional Neovim dogfood availability, and the active Wayland/X11 display before native app testing.
-- [ ] `flux clean`.
+- [x] `flux clean`: target-aware cleanup removes the default native build artifact plus the runner's last-known development-status artifact and is safely idempotent when nothing exists.
 - [ ] `flux package`.
 - [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
 - [ ] Cross-compilation configuration.

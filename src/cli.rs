@@ -239,11 +239,26 @@ fn run() -> Result<(), CliError> {
             }
             run_tests(path, options.mode)
         }
+        "devices" => {
+            if args.len() != 1 {
+                return Err(CliError::Message("devices syntax is 'devices'".to_string()));
+            }
+            run_devices()
+        }
         "doctor" => {
             if args.len() != 1 {
                 return Err(CliError::Message("doctor syntax is 'doctor'".to_string()));
             }
             run_doctor()
+        }
+        "clean" => {
+            let path = require_target(&args)?;
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "clean syntax is 'clean <file.flux|package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            clean_target(path)
         }
         "lsp" => {
             if args.len() != 1 {
@@ -872,6 +887,53 @@ fn analysis_json_mode(command: &str, args: &[String]) -> Result<bool, String> {
     }
 }
 
+fn run_devices() -> Result<(), CliError> {
+    println!("Flux devices");
+    if !cfg!(target_os = "linux") {
+        println!("  no runnable devices: the current bootstrap application backend targets Linux");
+        return Ok(());
+    }
+
+    let (display, status) = if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
+        (format!("Wayland ({})", display.to_string_lossy()), "ready")
+    } else if let Some(display) = env::var_os("DISPLAY") {
+        (format!("X11 ({})", display.to_string_lossy()), "ready")
+    } else {
+        ("no active graphical display".to_string(), "unavailable")
+    };
+    println!("  linux-desktop  {status:11} GTK4 · {display}");
+    Ok(())
+}
+
+fn clean_target(target: &Path) -> Result<(), CliError> {
+    let entry = fluxc::project::resolve_entry(target).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let binary = default_binary_path(&entry);
+    let status = fluxc::project::development_status_path(target).ok();
+    let mut removed = Vec::new();
+    for path in std::iter::once(binary).chain(status) {
+        if !path.exists() {
+            continue;
+        }
+        fs::remove_file(&path)
+            .map_err(|error| format!("failed to remove '{}': {error}", path.display()))?;
+        removed.push(path);
+    }
+    if removed.is_empty() {
+        println!("clean: nothing to remove for {}", target.display());
+    } else {
+        for path in removed {
+            println!("removed: {}", path.display());
+        }
+    }
+    Ok(())
+}
+
 fn run_doctor() -> Result<(), CliError> {
     println!("Flux doctor");
     let mut required_ok = true;
@@ -1064,7 +1126,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} doctor | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 

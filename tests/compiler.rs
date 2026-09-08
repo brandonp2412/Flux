@@ -3229,6 +3229,74 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
 }
 
 #[test]
+fn flux_devices_reports_the_bootstrap_linux_target() {
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("devices")
+        .output()
+        .expect("flux devices should run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("device output should be UTF-8");
+    assert!(stdout.starts_with("Flux devices\n"));
+    if cfg!(target_os = "linux") {
+        assert!(stdout.contains("linux-desktop"));
+        assert!(stdout.contains("GTK4"));
+    }
+}
+
+#[test]
+fn flux_clean_removes_default_build_and_development_status_artifacts() {
+    let root = std::env::temp_dir().join(format!("flux-clean-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("clean test source directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"clean-test\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("clean test manifest should be writable");
+    let entry = root.join("src/main.flux");
+    fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("clean test entry should be writable");
+
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .output()
+        .expect("flux build should run");
+    assert!(
+        built.status.success(),
+        "clean fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let binary = entry.with_extension("");
+    assert!(binary.exists());
+    let status = fluxc::project::development_status_path(&root)
+        .expect("clean fixture should have a status path");
+    fs::write(&status, "{}\n").expect("status fixture should be writable");
+
+    let cleaned = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("clean")
+        .arg(&root)
+        .output()
+        .expect("flux clean should run");
+    assert!(
+        cleaned.status.success(),
+        "flux clean failed: {}",
+        String::from_utf8_lossy(&cleaned.stderr)
+    );
+    assert!(!binary.exists());
+    assert!(!status.exists());
+
+    let cleaned_again = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("clean")
+        .arg(&root)
+        .output()
+        .expect("second flux clean should run");
+    assert!(cleaned_again.status.success());
+    assert!(String::from_utf8_lossy(&cleaned_again.stdout).contains("nothing to remove"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn flux_test_propagates_native_nonzero_exit_status() {
     let path = std::env::temp_dir().join(format!("flux-failing-test-{}.flux", std::process::id()));
     fs::write(&path, "fn main() -> i64 {\n    return 7\n}\n")

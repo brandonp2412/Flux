@@ -107,11 +107,15 @@ Check or explicitly analyze without producing a binary:
 ./tools/flux analyze examples/hello.flux
 ```
 
-Before first native GUI dogfooding on a machine, verify the current Linux prerequisites and editor/display environment:
+Inspect the currently runnable Flux target, verify native GUI prerequisites, and clean generated target artifacts when needed:
 
 ```sh
+./tools/flux devices
 ./tools/flux doctor
+./tools/flux clean examples/package
 ```
+
+`flux devices` currently reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
 
