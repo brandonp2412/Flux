@@ -500,9 +500,10 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
   - [x] Native text family/slant/decoration/spacing controls: compile-time `font_family`, `italic`, `underline`, `strikethrough`, `letter_spacing`, and `line_height_percent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.
   - [x] Native text layout/overflow controls: `text_align` (`left`/`center`/`right`/`fill`), state-aware `wrap`, compile-time `wrap_mode` (`word`/`char`/`word_char`), `ellipsize` (`none`/`start`/`middle`/`end`), and positive `max_lines` lower directly to `GtkLabel`/Pango layout controls. Variable font axes, richer weight/style enums, and responsive typography remain future typography work.
-- [ ] Spacing.
+- [x] Spacing.
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
   - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
+  - [x] Every built-in element also has compile-time non-negative inner `padding` with `padding_top`/`padding_bottom`/`padding_start`/`padding_end` overrides, lowered into the existing native element stylesheet without introducing wrapper controls.
 - [ ] Borders/radii.
   - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
 - [x] Shadows.

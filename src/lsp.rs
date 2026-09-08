@@ -4458,6 +4458,8 @@ mod tests {
         assert!(text_properties.contains("Text.line_height_percent: i64"));
         assert!(text_properties.contains("\"label\":\"wrap_mode\""));
         assert!(text_properties.contains("Text.wrap_mode: str"));
+        assert!(text_properties.contains("\"label\":\"padding_start\""));
+        assert!(text_properties.contains("Text.padding_start: i64"));
         assert!(!text_properties.contains("\"label\":\"text\",\"kind\":10"));
 
         let custom_properties = JsonValue::Array(completion_items_at_position(

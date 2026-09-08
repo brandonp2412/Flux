@@ -1470,6 +1470,22 @@ fn emit_element_style(
         }
         declarations.push(format!("{css_name}: {value};"));
     }
+    let padding = static_non_negative_style_i64(element, "padding", signatures)?;
+    for (property_name, css_name) in [
+        ("padding_top", "padding-top"),
+        ("padding_bottom", "padding-bottom"),
+        ("padding_start", "padding-left"),
+        ("padding_end", "padding-right"),
+    ] {
+        let value = if view_property(element, property_name).is_some() {
+            static_non_negative_style_i64(element, property_name, signatures)?
+        } else {
+            padding
+        };
+        if let Some(value) = value {
+            declarations.push(format!("{css_name}: {value}px;"));
+        }
+    }
     for (property_name, css_name) in [
         ("border_width", "border-width"),
         ("radius", "border-radius"),
@@ -1655,6 +1671,24 @@ fn emit_dynamic_transform_refresh(
         widget_name,
     ));
     Ok(())
+}
+
+fn static_non_negative_style_i64(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    signatures: &Signatures,
+) -> Result<Option<i64>, Diagnostic> {
+    let value = static_style_i64(element, property_name, signatures)?;
+    if let Some(value) = value
+        && value < 0
+    {
+        let span = view_property(element, property_name)
+            .expect("style value exists when validation runs")
+            .value
+            .span;
+        return Err(diag(span, &format!("{property_name} must be non-negative")));
+    }
+    Ok(value)
 }
 
 fn static_style_i64(

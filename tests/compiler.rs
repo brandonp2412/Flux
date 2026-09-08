@@ -4170,6 +4170,8 @@ view Styled {
         border_color: "#1E3A8AFF"
         border_width: 2
         radius: 12
+        padding: 8
+        padding_start: 20
 }
 app Styled
 "##;
@@ -4181,6 +4183,10 @@ app Styled
     assert!(generated.contains("border-width: 2px;"));
     assert!(generated.contains("border-radius: 12px;"));
     assert!(generated.contains("border-style: solid;"));
+    assert!(generated.contains("padding-top: 8px;"));
+    assert!(generated.contains("padding-bottom: 8px;"));
+    assert!(generated.contains("padding-left: 20px;"));
+    assert!(generated.contains("padding-right: 8px;"));
     assert!(generated.contains("GTK_STYLE_PROVIDER_PRIORITY_APPLICATION"));
 
     let invalid = r#"
@@ -4199,6 +4205,20 @@ app Styled
             .message
             .contains("background_color must use '#RRGGBB'")
     );
+
+    let bad_padding = r#"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Bad"
+        padding: -1
+}
+app Styled
+"#;
+    check_source(bad_padding).expect("padding typechecks before native range validation");
+    let error = compile_to_c(bad_padding).expect_err("negative padding must fail");
+    assert!(error.message.contains("padding must be non-negative"));
 }
 
 #[test]

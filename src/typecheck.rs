@@ -1114,6 +1114,11 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "margin_bottom"
             | "margin_start"
             | "margin_end"
+            | "padding"
+            | "padding_top"
+            | "padding_bottom"
+            | "padding_start"
+            | "padding_end"
             | "border_width"
             | "radius"
             | "shadow_blur"
@@ -1243,6 +1248,11 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "margin_bottom",
     "margin_start",
     "margin_end",
+    "padding",
+    "padding_top",
+    "padding_bottom",
+    "padding_start",
+    "padding_end",
     "background_color",
     "border_color",
     "border_width",
