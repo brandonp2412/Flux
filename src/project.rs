@@ -30,7 +30,14 @@ pub struct PackageManifest {
 }
 
 pub fn load(target: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {
-    let report = load_report(target)?;
+    load_with_overlays(target, &HashMap::new())
+}
+
+pub fn load_with_overlays(
+    target: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {
+    let report = load_report_with_overlays(target, overlays)?;
     if report.diagnostics.is_empty() {
         Ok((report.program, report.sources))
     } else {
@@ -42,10 +49,6 @@ struct ProjectLoadReport {
     program: Program,
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
-}
-
-fn load_report(target: &Path) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    load_report_with_overlays(target, &HashMap::new())
 }
 
 fn load_report_with_overlays(

@@ -224,7 +224,9 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let hover = match (uri, line, character) {
                         (Some(uri), Some(line), Some(character)) => {
                             documents.get(uri).and_then(|source| {
-                                hover_for_document(uri, source, line, character, encoding)
+                                hover_for_document(
+                                    uri, source, &documents, line, character, encoding,
+                                )
                             })
                         }
                         _ => None,
@@ -277,7 +279,9 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params"))
                         .and_then(|(uri, line, character)| {
                             documents.get(uri).map(|source| {
-                                references_for_document(uri, source, line, character, encoding)
+                                references_for_document(
+                                    uri, source, &documents, line, character, encoding,
+                                )
                             })
                         })
                         .unwrap_or_default();
@@ -296,7 +300,9 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(params).and_then(|(uri, line, character)| {
                         let new_name = new_name?;
                         documents.get(uri).and_then(|source| {
-                            rename_for_document(uri, source, line, character, new_name, encoding)
+                            rename_for_document(
+                                uri, source, &documents, line, character, new_name, encoding,
+                            )
                         })
                     });
                     write_message(
@@ -313,8 +319,8 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(|doc| doc.get("uri"))
                         .and_then(JsonValue::as_str);
                     let items = uri
-                        .and_then(|uri| documents.get(uri))
-                        .map(|source| completion_items(source))
+                        .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
+                        .map(|(uri, source)| completion_items_for_document(uri, source, &documents))
                         .unwrap_or_else(|| completion_items(""));
                     write_message(
                         &mut writer,
@@ -327,7 +333,9 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params")).and_then(
                         |(uri, line, character)| {
                             documents.get(uri).and_then(|source| {
-                                signature_help_for_document(source, line, character, encoding)
+                                signature_help_for_document(
+                                    uri, source, &documents, line, character, encoding,
+                                )
                             })
                         },
                     );
@@ -613,8 +621,109 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     items
 }
 
-fn signature_help_for_document(
+fn completion_items_for_document(
+    uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
+) -> Vec<JsonValue> {
+    let mut items = completion_items(source);
+    let mut seen = items
+        .iter()
+        .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    let Some(path) = file_uri_path(uri).and_then(|path| std::fs::canonicalize(path).ok()) else {
+        return items;
+    };
+    let overlays = document_overlays(documents);
+    let Ok((program, _)) = crate::project::load_with_overlays(&path, &overlays) else {
+        return items;
+    };
+    let current_id = SourceId::from_name(path.to_string_lossy().as_ref());
+    for alias in &program.aliases {
+        if alias.name_span.source_id == current_id || alias.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &alias.name,
+                18,
+                &format!("type {} = {}", alias.name, alias.target.name()),
+            );
+        }
+    }
+    for interface in &program.interfaces {
+        if interface.name_span.source_id == current_id || interface.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &interface.name,
+                8,
+                &format!("interface {}", interface.name),
+            );
+        }
+    }
+    for definition in &program.structs {
+        if definition.name_span.source_id == current_id || definition.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &definition.name,
+                22,
+                &format!("struct {}", definition.name),
+            );
+        }
+    }
+    for definition in &program.enums {
+        if definition.name_span.source_id == current_id || definition.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &definition.name,
+                13,
+                &format!("enum {}", definition.name),
+            );
+        }
+    }
+    for constant in &program.constants {
+        if constant.name_span.source_id == current_id || constant.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &constant.name,
+                21,
+                &format!("const {}: {}", constant.name, constant.ty.name()),
+            );
+        }
+    }
+    for view in &program.views {
+        if view.name_span.source_id == current_id || view.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &view.name,
+                22,
+                &format!("view {}", view.name),
+            );
+        }
+    }
+    for function in &program.functions {
+        if function.name_span.source_id == current_id || function.public {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                &function.name,
+                3,
+                &format_ast_function_signature(function),
+            );
+        }
+    }
+    items
+}
+
+fn signature_help_for_document(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
@@ -629,11 +738,28 @@ fn signature_help_for_document(
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
     let (name, active_parameter) = active_call(prefix)?;
-    let program = crate::parser::parse_all(source).ok()?;
-    let function = program
-        .functions
-        .iter()
-        .find(|function| function.name == name)?;
+    let project_analysis = analyzed_project_document(uri, documents);
+    let standalone = project_analysis
+        .is_none()
+        .then(|| crate::parser::parse_all(source).ok())
+        .flatten();
+    let function = project_analysis
+        .as_ref()
+        .and_then(|(database, _)| {
+            database
+                .program()
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+        })
+        .or_else(|| {
+            standalone.as_ref().and_then(|program| {
+                program
+                    .functions
+                    .iter()
+                    .find(|function| function.name == name)
+            })
+        })?;
     let label = format_ast_function_signature(function);
     let parameters = function
         .params
@@ -1191,12 +1317,43 @@ fn analyzed_project_document(
     crate::semantic::SemanticDatabase,
     Vec<crate::project::ProjectSource>,
 )> {
-    let path = file_uri_path(uri)?;
-    if !path.exists() {
-        return None;
-    }
+    let current_path = std::fs::canonicalize(file_uri_path(uri)?).ok()?;
     let overlays = document_overlays(documents);
-    let analysis = crate::project::analyze_with_overlays(&path, &overlays).ok()?;
+    let mut candidates = workspace_project_targets(documents);
+    if !candidates
+        .iter()
+        .any(|candidate| candidate == &current_path)
+    {
+        candidates.push(current_path.clone());
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    let mut best: Option<(usize, bool, crate::project::ProjectAnalysis)> = None;
+    for candidate in candidates {
+        let Ok(analysis) = crate::project::analyze_with_overlays(&candidate, &overlays) else {
+            continue;
+        };
+        if !analysis
+            .sources
+            .iter()
+            .any(|source| source.path == current_path)
+        {
+            continue;
+        }
+        let manifest_backed = candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "flux.toml");
+        let score = (analysis.sources.len(), manifest_backed);
+        if best
+            .as_ref()
+            .is_none_or(|(count, manifest, _)| score > (*count, *manifest))
+        {
+            best = Some((analysis.sources.len(), manifest_backed, analysis));
+        }
+    }
+    let (_, _, analysis) = best?;
     let database =
         crate::semantic::SemanticDatabase::from_analyzed(analysis.program, analysis.signatures);
     Some((database, analysis.sources))
@@ -1205,10 +1362,32 @@ fn analyzed_project_document(
 fn references_for_document(
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
 ) -> Vec<JsonValue> {
+    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+        let Some(symbol) =
+            symbol_for_position(&database, uri, source, line_index, character, encoding)
+        else {
+            return Vec::new();
+        };
+        return sources
+            .iter()
+            .flat_map(|project_source| {
+                identifier_occurrences(&project_source.text, &symbol.name)
+                    .into_iter()
+                    .map(|span| {
+                        object([
+                            ("uri", JsonValue::String(project_source_uri(project_source))),
+                            ("range", lsp_range(span, &project_source.text, encoding)),
+                        ])
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    }
     let Some(database) = analyzed_document(uri, source) else {
         return Vec::new();
     };
@@ -1230,6 +1409,7 @@ fn references_for_document(
 fn rename_for_document(
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     new_name: &str,
@@ -1238,8 +1418,33 @@ fn rename_for_document(
     if !is_valid_identifier(new_name) || is_flux_keyword(new_name) {
         return None;
     }
+    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+        let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+        if database.symbols_named(new_name).next().is_some() {
+            return None;
+        }
+        let mut changes = BTreeMap::new();
+        for project_source in &sources {
+            let edits = identifier_occurrences(&project_source.text, &symbol.name)
+                .into_iter()
+                .map(|span| {
+                    object([
+                        ("range", lsp_range(span, &project_source.text, encoding)),
+                        ("newText", JsonValue::String(new_name.to_string())),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            if !edits.is_empty() {
+                changes.insert(project_source_uri(project_source), JsonValue::Array(edits));
+            }
+        }
+        return Some(object([("changes", JsonValue::Object(changes))]));
+    }
     let database = analyzed_document(uri, source)?;
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+    if database.symbols_named(new_name).next().is_some() {
+        return None;
+    }
     let edits = identifier_occurrences(source, &symbol.name)
         .into_iter()
         .map(|span| {
@@ -1252,6 +1457,10 @@ fn rename_for_document(
     let mut changes = BTreeMap::new();
     changes.insert(uri.to_string(), JsonValue::Array(edits));
     Some(object([("changes", JsonValue::Object(changes))]))
+}
+
+fn project_source_uri(source: &crate::project::ProjectSource) -> String {
+    format!("file://{}", source.path.display())
 }
 
 fn identifier_occurrences(source: &str, name: &str) -> Vec<SourceSpan> {
@@ -1306,13 +1515,26 @@ fn is_valid_identifier(name: &str) -> bool {
 fn hover_for_document(
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
-    let database = analyzed_document(uri, source)?;
-    let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
-    let description = hover_description(symbol, &database);
+    let project_database = analyzed_project_document(uri, documents).map(|(database, _)| database);
+    let standalone_database;
+    let database = if let Some(database) = project_database.as_ref() {
+        database
+    } else {
+        standalone_database = analyzed_document(uri, source)?;
+        &standalone_database
+    };
+    let symbol = symbol_for_position(database, uri, source, line_index, character, encoding)?;
+    let description = hover_description(symbol, database);
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let hovered_name = identifier_at(line, byte).unwrap_or(&symbol.name);
+    let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
+    let hovered_span = SourceSpan::new(line_index + 1, hovered_start + 1, hovered_name.len());
     Some(object([
         (
             "contents",
@@ -1324,7 +1546,7 @@ fn hover_for_document(
                 ),
             ]),
         ),
-        ("range", lsp_range(symbol.span, source, encoding)),
+        ("range", lsp_range(hovered_span, source, encoding)),
     ]))
 }
 
@@ -1395,6 +1617,24 @@ fn format_signature(name: &str, signature: &crate::typecheck::Signature) -> Stri
         ),
     };
     format!("fn {name}({}) -> {returns}", params.join(", "))
+}
+
+fn identifier_start_at(line: &str, byte_offset: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut cursor = byte_offset.min(bytes.len().saturating_sub(1));
+    if !is_identifier_byte(bytes[cursor]) && cursor > 0 && is_identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    if !is_identifier_byte(bytes[cursor]) {
+        return None;
+    }
+    while cursor > 0 && is_identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    Some(cursor)
 }
 
 fn identifier_at(line: &str, byte_offset: usize) -> Option<&str> {
@@ -2216,35 +2456,28 @@ mod tests {
     fn hover_reports_declaration_and_unambiguous_usage_types() {
         let source =
             "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
-        let declaration = hover_for_document(
-            "file:///tmp/hover.flux",
-            source,
-            0,
-            4,
-            PositionEncoding::Utf8,
-        )
-        .expect("function declaration should hover")
-        .to_json();
+        let uri = "file:///tmp/hover.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let declaration = hover_for_document(uri, source, &documents, 0, 4, PositionEncoding::Utf8)
+            .expect("function declaration should hover")
+            .to_json();
         assert!(declaration.contains("fn double(value: i64) -> i64"));
 
-        let usage = hover_for_document(
-            "file:///tmp/hover.flux",
-            source,
-            1,
-            19,
-            PositionEncoding::Utf8,
-        )
-        .expect("unambiguous function usage should hover")
-        .to_json();
+        let usage = hover_for_document(uri, source, &documents, 1, 19, PositionEncoding::Utf8)
+            .expect("unambiguous function usage should hover")
+            .to_json();
         assert!(usage.contains("fn double(value: i64) -> i64"));
     }
 
     #[test]
     fn signature_help_tracks_the_active_argument() {
         let source = "fn add(left: i64, right: i64) -> i64 { left + right }\nfn main() -> i64 { add(1, 2) }\n";
-        let help = signature_help_for_document(source, 1, 25, PositionEncoding::Utf8)
-            .expect("call should have signature help")
-            .to_json();
+        let uri = "file:///tmp/signature.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let help =
+            signature_help_for_document(uri, source, &documents, 1, 25, PositionEncoding::Utf8)
+                .expect("call should have signature help")
+                .to_json();
         assert!(help.contains("fn add(left: i64, right: i64) -> i64"));
         assert!(help.contains("\"activeParameter\":1"));
         assert!(help.contains("\"label\":\"left: i64\""));
@@ -2263,15 +2496,27 @@ mod tests {
         assert!(definition.contains("\"line\":0"));
         assert!(definition.contains("\"character\":3"));
 
-        let references = references_for_document(uri, source, 1, 19, PositionEncoding::Utf8);
+        let references =
+            references_for_document(uri, source, &documents, 1, 19, PositionEncoding::Utf8);
         assert_eq!(references.len(), 2);
 
-        let rename = rename_for_document(uri, source, 1, 19, "twice", PositionEncoding::Utf8)
-            .expect("safe rename should produce edits")
-            .to_json();
+        let rename = rename_for_document(
+            uri,
+            source,
+            &documents,
+            1,
+            19,
+            "twice",
+            PositionEncoding::Utf8,
+        )
+        .expect("safe rename should produce edits")
+        .to_json();
         assert_eq!(rename.matches("newText").count(), 2);
         assert!(rename.contains("twice"));
-        assert!(rename_for_document(uri, source, 1, 19, "fn", PositionEncoding::Utf8).is_none());
+        assert!(
+            rename_for_document(uri, source, &documents, 1, 19, "fn", PositionEncoding::Utf8,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2284,8 +2529,22 @@ mod tests {
             definition_for_document(uri, source, &documents, 0, 31, PositionEncoding::Utf8,)
                 .is_none()
         );
-        assert!(references_for_document(uri, source, 0, 31, PositionEncoding::Utf8).is_empty());
-        assert!(rename_for_document(uri, source, 0, 31, "item", PositionEncoding::Utf8).is_none());
+        assert!(
+            references_for_document(uri, source, &documents, 0, 31, PositionEncoding::Utf8,)
+                .is_empty()
+        );
+        assert!(
+            rename_for_document(
+                uri,
+                source,
+                &documents,
+                0,
+                31,
+                "item",
+                PositionEncoding::Utf8,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2326,6 +2585,54 @@ mod tests {
         assert!(definition.contains("dep.flux"));
         assert!(definition.contains("\"line\":0"));
         assert!(definition.contains("\"character\":7"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imported_references_and_rename_cover_the_loaded_project_graph() {
+        let root =
+            std::env::temp_dir().join(format!("flux-lsp-project-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 42 }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let main_uri = format!("file://{}", main.display());
+        let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+
+        let references = references_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            1,
+            20,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(references.len(), 2);
+        let references_json = JsonValue::Array(references).to_json();
+        assert!(references_json.contains("dep.flux"));
+        assert!(references_json.contains("main.flux"));
+
+        let rename = rename_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            1,
+            20,
+            "answer",
+            PositionEncoding::Utf8,
+        )
+        .expect("imported function should rename within its loaded project graph")
+        .to_json();
+        assert_eq!(rename.matches("newText").count(), 2);
+        assert!(rename.contains("dep.flux"));
+        assert!(rename.contains("main.flux"));
+        assert!(rename.contains("answer"));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2372,6 +2679,68 @@ mod tests {
                 .any(|diagnostic| diagnostic.message.contains("program requires fn main")),
             "imported modules must not be diagnosed as executable entry points"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imported_completion_hover_and_signature_help_use_unsaved_overlays() {
+        let root =
+            std::env::temp_dir().join(format!("flux-lsp-symbol-overlays-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value(input: i64) -> i64 { input }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 { value(1, 2) }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let dependency = std::fs::canonicalize(dependency).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let dependency_uri = format!("file://{}", dependency.display());
+        let main_uri = format!("file://{}", main.display());
+        let dependency_overlay =
+            "pub fn value(amount: i64, scale: i64 = 1) -> i64 { amount * scale }\n";
+        let documents = HashMap::from([
+            (main_uri.clone(), main_source.to_string()),
+            (dependency_uri, dependency_overlay.to_string()),
+        ]);
+
+        let completion = JsonValue::Array(completion_items_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+        ))
+        .to_json();
+        assert!(completion.contains("\"label\":\"value\""));
+        assert!(completion.contains("scale: i64 = …"));
+
+        let call_line = main_source.lines().nth(1).unwrap();
+        let value_character = call_line.find("value").unwrap() + 1;
+        let hover = hover_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            1,
+            value_character,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported function should hover through the overlay project")
+        .to_json();
+        assert!(hover.contains("fn value(amount: i64, scale: i64) -> i64"));
+
+        let signature_character = call_line.find("2)").unwrap() + 1;
+        let signature = signature_help_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            1,
+            signature_character,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported function should provide signature help")
+        .to_json();
+        assert!(signature.contains("fn value(amount: i64, scale: i64 = …) -> i64"));
+        assert!(signature.contains("\"activeParameter\":1"));
         let _ = std::fs::remove_dir_all(root);
     }
 

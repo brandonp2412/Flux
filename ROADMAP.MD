@@ -629,17 +629,17 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
   - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics are republished across open dependent documents after overlay changes and filtered to each document's stable source ID.
 - [ ] Completion.
-  - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, and top-level declarations parsed from the current buffer, including typed signature/detail text. Scope-aware locals and imported/package symbols remain pending with workspace reference indexing.
+  - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, current-module declarations, and public declarations from the current module's forward import graph, including unsaved overlay signatures/details. Scope-aware local bindings and broader workspace/reverse-dependent discovery remain pending with reference indexing.
 - [ ] Signature help.
-  - [x] Bootstrap `textDocument/signatureHelp` identifies the active ordinary function call, reports the canonical typed signature/parameter labels, and tracks the active positional argument across nested calls. Imported/interface/view call signatures remain pending with workspace-aware call resolution.
+  - [x] Bootstrap `textDocument/signatureHelp` identifies the active ordinary function call, reports the canonical typed signature/parameter labels, tracks the active positional argument across nested calls, and resolves public imported ordinary functions through unsaved overlay project analysis. Interface capability/view call signatures remain pending.
 - [ ] Hover/type information.
-  - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves usage-site hover when a symbol name is unambiguous; scope-resolved usage hover across shadowing/imports remains pending with richer reference indexing.
+  - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves unambiguous usage-site hover across the loaded forward import graph, including unsaved overlays. Scope-resolved local shadowing and reverse-workspace discovery remain pending with richer reference indexing.
 - [ ] Go to definition.
   - [x] Bootstrap `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous; when the current file imports modules, typed overlay project analysis resolves public imported declarations to their actual source-file URI/range. Scope-aware shadow resolution and reverse-workspace discovery remain pending.
 - [ ] Find references.
-  - [x] Bootstrap standalone-buffer `textDocument/references` returns identifier occurrences only after the same unambiguous semantic target resolution used by hover/definition; strings/comments are excluded. Scope/import-aware reference indexing remains pending.
+  - [x] Bootstrap `textDocument/references` returns identifier occurrences only after unambiguous semantic target resolution; strings/comments are excluded. From an importing document, references cover the entire typed loaded dependency graph, including imported declarations and unsaved overlays. Reverse dependents outside that graph still require workspace indexing.
 - [ ] Rename.
-  - [x] Bootstrap standalone-buffer `textDocument/rename` emits workspace edits only for an unambiguous semantic target and a valid non-keyword Flux identifier; ambiguous/shadowed names are refused rather than edited unsafely. Scope/import-aware rename remains pending.
+  - [x] Bootstrap `textDocument/rename` emits workspace edits only for an unambiguous semantic target and a valid non-keyword Flux identifier; from an importing document it safely edits every occurrence in the typed loaded dependency graph and rejects collisions with existing semantic symbols. Ambiguous/shadowed names are refused rather than edited unsafely; reverse dependents outside the loaded graph remain pending.
 - [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, comments, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
@@ -647,7 +647,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Incremental workspace analysis. Overlay-aware project analysis now exists, but the bootstrap LSP still rebuilds the affected project analysis rather than caching/reusing typed workspace state between edits.
 - [ ] Package/module awareness.
   - [x] Open-buffer import graphs use the compiler's real module loader and in-memory overlays, preserving module visibility/import semantics across unsaved files.
-  - [ ] Workspace-root/package discovery and shared cached analysis for navigation/completion/refactoring across imported modules. Forward go-to-definition from an importing file already uses typed overlay project analysis; reverse references/rename and imported completion still need workspace indexing.
+  - [x] Bootstrap workspace/package discovery considers canonical open-file targets plus the nearest enclosing `flux.toml`, chooses the broadest valid typed analysis containing the current document, and powers imported completion/hover/signature help, go-to-definition, and dependency-graph references/rename.
+  - [ ] Shared cached workspace analysis and a reverse-dependency/scope index for dependents outside the current loaded graph and shadow-aware local symbol services.
 - [ ] UI syntax awareness.
 - [ ] Hot-reload status integration.
 
