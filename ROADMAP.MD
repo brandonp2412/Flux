@@ -403,6 +403,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, submits the current borrowed entry text synchronously to a named Flux callback, and keeps owned/editable string state sequenced behind the ownership/string model.
+  - [ ] Editable Flux-owned text state, change events, selection/caret APIs, validation, password/multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
   - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `on_select`; sibling radios are grouped natively and `on_select` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
@@ -489,7 +491,6 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 - [ ] Colors.
   - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes. A first-class `Color` value type, themes/tokens, and broader control/background/border colors remain pending.
-  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` values, is statically typed/LSP-visible, and lowers to native Pango foreground attributes on Linux; dynamic/theme colors and broader element styling remain pending.
 - [ ] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
 - [ ] Spacing.

@@ -123,11 +123,11 @@ fn emit_linux_gtk_application(
     for element in &view.elements {
         if !matches!(
             element.kind.as_str(),
-            "Text" | "Button" | "Toggle" | "Radio"
+            "Text" | "Button" | "TextInput" | "Toggle" | "Radio"
         ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Linux app backend currently renders Text, Button, Toggle, and Radio elements",
+                "bootstrap Linux app backend currently renders Text, Button, TextInput, Toggle, and Radio elements",
             ));
         }
     }
@@ -176,6 +176,23 @@ fn emit_linux_gtk_application(
     emit_ui_refresh(out, view, signatures)?;
 
     for element in &view.elements {
+        if element.kind == "TextInput" {
+            let Some(action) = view_property(element, "on_submit") else {
+                continue;
+            };
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap TextInput.on_submit lowering requires a named fn(str) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static void flux__ui_submit_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
+                element.name,
+                function_c_name(function),
+            ));
+            continue;
+        }
         let action_name = match element.kind.as_str() {
             "Button" => "on_press",
             "Toggle" => "on_change",
@@ -327,15 +344,20 @@ fn emit_linux_gtk_application(
                                 "bootstrap Linux Text.color must be a compile-time str value",
                             ));
                         };
-                        let Some((red, green, blue)) = parse_hex_rgb(&value) else {
+                        let Some((red, green, blue, alpha)) = parse_hex_rgba(&value) else {
                             return Err(diag(
                                 property.value.span,
-                                "Text.color must use '#RRGGBB' hexadecimal syntax",
+                                "Text.color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
                             ));
                         };
                         out.push_str(&format!(
                             "    pango_attr_list_insert({attrs}, pango_attr_foreground_new({red}, {green}, {blue}));\n"
                         ));
+                        if let Some(alpha) = alpha {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_foreground_alpha_new({alpha}));\n"
+                            ));
+                        }
                     }
                     out.push_str(&format!(
                         "    gtk_label_set_attributes(GTK_LABEL({variable}), {attrs});\n    pango_attr_list_unref({attrs});\n"
@@ -345,6 +367,34 @@ fn emit_linux_gtk_application(
                     let selectable = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    gtk_label_set_selectable(GTK_LABEL({variable}), {selectable});\n"
+                    ));
+                }
+            }
+            "TextInput" => {
+                let text = match view_property(element, "text") {
+                    None => c_string(""),
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                };
+                out.push_str(&format!("    {variable} = gtk_entry_new();\n"));
+                out.push_str(&format!(
+                    "    gtk_editable_set_text(GTK_EDITABLE({variable}), {text});\n"
+                ));
+                if let Some(property) = view_property(element, "placeholder") {
+                    let placeholder = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_entry_set_placeholder_text(GTK_ENTRY({variable}), {placeholder});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "enabled") {
+                    let enabled = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_widget_set_sensitive({variable}, {enabled});\n"
+                    ));
+                }
+                if view_property(element, "on_submit").is_some() {
+                    out.push_str(&format!(
+                        "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
+                        element.name
                     ));
                 }
             }
@@ -581,18 +631,22 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
     }
 }
 
-fn parse_hex_rgb(value: &str) -> Option<(u16, u16, u16)> {
+fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
     let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
     let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    let alpha = (hex.len() == 8)
+        .then(|| u8::from_str_radix(&hex[6..8], 16).ok())
+        .flatten();
     Some((
         u16::from(red) * 257,
         u16::from(green) * 257,
         u16::from(blue) * 257,
+        alpha.map(|value| u16::from(value) * 257),
     ))
 }
 
@@ -695,6 +749,20 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_label_set_selectable(GTK_LABEL({widget}), {value});\n"
+                    ));
+                }
+            }
+            "TextInput" => {
+                if let Some(property) = view_property(element, "text") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_editable_set_text(GTK_EDITABLE({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "enabled") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
                     ));
                 }
             }

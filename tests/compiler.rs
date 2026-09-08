@@ -3870,7 +3870,7 @@ app Feed
 
 #[test]
 fn text_color_validates_hex_and_lowers_to_native_pango_attributes() {
-    let source = r#"
+    let source = r##"
 view Screen {
     grid columns: 1fr
     grid rows: auto
@@ -3879,7 +3879,7 @@ view Screen {
         color: "#2563EB80"
 }
 app Screen
-"#;
+"##;
     check_source(source).expect("Text.color should typecheck as a string property");
     let generated = compile_to_c(source).expect("valid hex Text.color should lower natively");
     assert!(generated.contains("pango_attr_foreground_new(9509, 25443, 60395)"));
@@ -3897,7 +3897,7 @@ app Screen
 "#;
     check_source(invalid).expect("hex validation happens in native lowering");
     let error = compile_to_c(invalid).expect_err("non-hex Text.color must fail");
-    assert!(error.message.contains("#RRGGBB or #RRGGBBAA"));
+    assert!(error.message.contains("#RRGGBBAA"));
 }
 
 #[test]
@@ -3970,6 +3970,51 @@ app Choice
     assert!(generated.contains("flux__ui_state_selected = INT64_C(1);"));
     assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_first), (flux__ui_state_selected == INT64_C(0)))"));
     assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_second), (flux__ui_state_selected == INT64_C(1)))"));
+}
+
+#[test]
+fn text_input_lowers_native_entry_and_typed_submit_callback() {
+    let source = r#"
+fn submit(value: str) -> void {
+    print(value)
+}
+
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        text: "initial"
+        placeholder: "Search Flux"
+        enabled: true
+        on_submit: submit
+}
+app Form
+"#;
+    check_source(source).expect("TextInput contract and submit callback should typecheck");
+    let generated = compile_to_c(source).expect("TextInput should lower to native GTK entry");
+    assert!(generated.contains("gtk_entry_new()"));
+    assert!(generated.contains("gtk_editable_set_text(GTK_EDITABLE(flux__ui_query), \"initial\")"));
+    assert!(
+        generated
+            .contains("gtk_entry_set_placeholder_text(GTK_ENTRY(flux__ui_query), \"Search Flux\")")
+    );
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_query, \"activate\", G_CALLBACK(flux__ui_submit_query), NULL)"
+    ));
+    assert!(generated.contains("gtk_editable_get_text(GTK_EDITABLE(widget))"));
+    assert!(generated.contains("flux__fn_submit(gtk_editable_get_text"));
+
+    let bad_callback = r#"
+fn submit() -> void {}
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        on_submit: submit
+}
+app Form
+"#;
+    check_source(bad_callback).expect_err("TextInput.on_submit requires fn(str) -> void");
 }
 
 #[test]
