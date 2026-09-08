@@ -2896,6 +2896,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"completionProvider\""));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("\"hoverProvider\":true"));
+    assert!(stdout.contains("\"inlayHintProvider\":true"));
     assert!(stdout.contains("\"definitionProvider\":true"));
     assert!(stdout.contains("\"referencesProvider\":true"));
     assert!(stdout.contains("\"renameProvider\":true"));
@@ -3752,6 +3753,46 @@ view Bad {
             .iter()
             .any(|error| error.message.contains("greater than zero"))
     );
+}
+
+#[test]
+fn public_symbols_require_an_actual_import_path_between_modules() {
+    let root =
+        std::env::temp_dir().join(format!("flux-import-reachability-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary import project should be writable");
+    let b = root.join("b.flux");
+    let a = root.join("a.flux");
+    let main = root.join("main.flux");
+    fs::write(&b, "pub fn from_b() -> i64 { 42 }\n").expect("module b should be writable");
+    fs::write(&a, "pub fn from_a() -> i64 { from_b() }\n").expect("module a should be writable");
+    fs::write(
+        &main,
+        "import \"a.flux\"\nimport \"b.flux\"\nfn main() -> i64 { from_a() }\n",
+    )
+    .expect("entry should be writable");
+
+    let errors = fluxc::project::check(&main)
+        .expect_err("sibling modules must not gain visibility through the entry module");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("function 'from_b' is not imported into this module")
+    }));
+
+    fs::write(
+        &a,
+        "import \"b.flux\"\npub fn from_a() -> i64 { from_b() }\n",
+    )
+    .expect("module a import should be writable");
+    fluxc::project::check(&main)
+        .expect("a direct import should make the public dependency reachable");
+
+    fs::write(&main, "import \"a.flux\"\nfn main() -> i64 { from_b() }\n")
+        .expect("transitive entry should be writable");
+    fluxc::project::check(&main)
+        .expect("public declarations should remain reachable through transitive imports");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

@@ -849,6 +849,7 @@ fn parse_import(line: &Line) -> Result<ImportDef, Diagnostic> {
     Ok(ImportDef {
         path,
         path_span: expression.span,
+        resolved_source_id: None,
         line: line.number,
         span: line.span(),
     })

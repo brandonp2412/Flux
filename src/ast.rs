@@ -150,6 +150,7 @@ pub struct Program {
 pub struct ImportDef {
     pub path: String,
     pub path_span: SourceSpan,
+    pub resolved_source_id: Option<crate::diagnostic::SourceId>,
     pub line: usize,
     pub span: SourceSpan,
 }

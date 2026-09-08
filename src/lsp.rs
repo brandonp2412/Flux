@@ -237,6 +237,39 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("textDocument/inlayHint") => {
+                if let Some(id) = id {
+                    let params = message.get("params");
+                    let uri = params
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let start_line = params
+                        .and_then(|params| params.get("range"))
+                        .and_then(|range| range.get("start"))
+                        .and_then(|start| start.get("line"))
+                        .and_then(JsonValue::as_usize)
+                        .unwrap_or(0);
+                    let end_line = params
+                        .and_then(|params| params.get("range"))
+                        .and_then(|range| range.get("end"))
+                        .and_then(|end| end.get("line"))
+                        .and_then(JsonValue::as_usize)
+                        .unwrap_or(usize::MAX);
+                    let hints = uri
+                        .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
+                        .map(|(uri, source)| {
+                            inlay_hints_for_document(
+                                uri, source, &documents, start_line, end_line, encoding,
+                            )
+                        })
+                        .unwrap_or_default();
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, JsonValue::Array(hints)).to_json(),
+                    )?;
+                }
+            }
             Some("textDocument/semanticTokens/full") => {
                 if let Some(id) = id {
                     let uri = message
@@ -402,6 +435,7 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                     ),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
                     ("hoverProvider", JsonValue::Bool(true)),
+                    ("inlayHintProvider", JsonValue::Bool(true)),
                     ("definitionProvider", JsonValue::Bool(true)),
                     ("referencesProvider", JsonValue::Bool(true)),
                     ("renameProvider", JsonValue::Bool(true)),
@@ -1249,6 +1283,57 @@ struct SemanticToken {
     start: usize,
     length: usize,
     kind: SemanticTokenKind,
+}
+
+fn inlay_hints_for_document(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    start_line: usize,
+    end_line: usize,
+    encoding: PositionEncoding,
+) -> Vec<JsonValue> {
+    let project_database = analyzed_project_document(uri, documents).map(|(database, _)| database);
+    let standalone_database;
+    let database = if let Some(database) = project_database.as_ref() {
+        database
+    } else {
+        let Some(database) = analyzed_document(uri, source) else {
+            return Vec::new();
+        };
+        standalone_database = database;
+        &standalone_database
+    };
+    let source_id = source_id_for_uri(uri);
+    use crate::semantic::SymbolKind;
+    database
+        .symbols()
+        .iter()
+        .filter(|symbol| {
+            symbol.span.source_id == source_id
+                && symbol.span.line.saturating_sub(1) >= start_line
+                && symbol.span.line.saturating_sub(1) <= end_line
+                && matches!(
+                    symbol.kind,
+                    SymbolKind::PatternBinding | SymbolKind::LoopVariable
+                )
+                && symbol.ty.is_some()
+        })
+        .filter_map(|symbol| {
+            let range = lsp_range(symbol.span, source, encoding);
+            let position = range.get("end")?.clone();
+            Some(object([
+                ("position", position),
+                (
+                    "label",
+                    JsonValue::String(format!(": {}", symbol.ty.as_ref()?.name())),
+                ),
+                ("kind", JsonValue::Number(1)),
+                ("paddingLeft", JsonValue::Bool(false)),
+                ("paddingRight", JsonValue::Bool(false)),
+            ]))
+        })
+        .collect()
 }
 
 fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
@@ -3119,6 +3204,26 @@ mod tests {
         assert!(signature.contains("fn value(amount: i64, scale: i64 = …) -> i64"));
         assert!(signature.contains("\"activeParameter\":1"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inlay_hints_show_only_genuinely_inferred_binding_types() {
+        let uri = "file:///tmp/inlay.flux";
+        let source = "struct User {\n    name: str\n}\nfn load() -> User { User { name: \"Flux\" } }\nfn main() -> i64 {\n    let User { name } = load()\n    for i in 0..1:\n        print(name)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let hints = inlay_hints_for_document(
+            uri,
+            source,
+            &documents,
+            0,
+            usize::MAX,
+            PositionEncoding::Utf8,
+        );
+        let json = JsonValue::Array(hints).to_json();
+        assert!(json.contains("\"label\":\": str\""));
+        assert!(json.contains("\"label\":\": i64\""));
+        assert_eq!(json.matches("\"kind\":1").count(), 2);
+        assert!(!json.contains("load: fn"));
     }
 
     #[test]

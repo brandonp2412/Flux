@@ -432,7 +432,7 @@ impl Loader {
             module_name,
             text: source.clone(),
         });
-        let parsed = match parser::parse_all_with_source(&source, source_id) {
+        let mut parsed = match parser::parse_all_with_source(&source, source_id) {
             Ok(program) => program,
             Err(mut diagnostics) => {
                 self.diagnostics.append(&mut diagnostics);
@@ -441,7 +441,7 @@ impl Loader {
         };
 
         self.stack.push(canonical.clone());
-        for import in &parsed.imports {
+        for import in &mut parsed.imports {
             let import_path = Path::new(&import.path);
             if import_path.is_absolute() {
                 self.diagnostics.push(Diagnostic::new(
@@ -474,18 +474,22 @@ impl Loader {
             }
             let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
             let resolved = parent.join(import_path);
-            if self.package_name.is_some() {
-                match fs::canonicalize(&resolved) {
-                    Ok(path) if !path.starts_with(&self.module_root) => {
-                        self.diagnostics.push(Diagnostic::new(
-                            DiagnosticStage::Parse,
-                            import.path_span,
-                            "package imports must remain inside the package root",
-                        ));
-                        continue;
-                    }
-                    _ => {}
-                }
+            let resolved_canonical = fs::canonicalize(&resolved).ok();
+            if self.package_name.is_some()
+                && resolved_canonical
+                    .as_ref()
+                    .is_some_and(|path| !path.starts_with(&self.module_root))
+            {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    import.path_span,
+                    "package imports must remain inside the package root",
+                ));
+                continue;
+            }
+            if let Some(target) = &resolved_canonical {
+                import.resolved_source_id =
+                    Some(SourceId::from_name(target.to_string_lossy().as_ref()));
             }
             self.load_file(&resolved, Some(import.path_span));
         }

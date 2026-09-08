@@ -114,6 +114,7 @@ pub struct Signatures {
     aliases: HashMap<String, Type>,
     alias_visibility: HashMap<String, (SourceSpan, bool)>,
     constants: HashMap<String, ConstantSignature>,
+    module_imports: HashMap<SourceId, HashSet<SourceId>>,
 }
 
 impl Signatures {
@@ -204,7 +205,10 @@ pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
 }
 
 pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
-    let mut signatures = Signatures::default();
+    let mut signatures = Signatures {
+        module_imports: module_import_closure(program),
+        ..Signatures::default()
+    };
     let mut diagnostics = Vec::new();
 
     let mut alias_targets = HashMap::new();
@@ -734,6 +738,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             interface.public,
             "interface",
             &implementation.interface_name,
+            &signatures,
         ) {
             diagnostics.push(diagnostic);
             continue;
@@ -806,6 +811,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 function.public,
                 "function",
                 &mapping.function,
+                &signatures,
             ) {
                 diagnostics.push(diagnostic);
                 continue;
@@ -1086,6 +1092,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     target.public,
                     "view",
                     &target.name,
+                    signatures,
                 )
             {
                 diagnostics.push(diagnostic);
@@ -1867,6 +1874,7 @@ pub fn type_of_expr(
                     constant.public,
                     "constant",
                     name,
+                    signatures,
                 )?;
                 return Ok(constant.ty.clone());
             }
@@ -1877,6 +1885,7 @@ pub fn type_of_expr(
                     signature.public,
                     "function",
                     name,
+                    signatures,
                 )?;
                 return Ok(Type::Function {
                     params: signature.params.clone(),
@@ -1937,6 +1946,7 @@ pub fn type_of_expr(
                 interface.public,
                 "interface",
                 name,
+                signatures,
             )?;
             if !named_args.is_empty() {
                 return Err(diag(
@@ -2024,6 +2034,7 @@ pub fn type_of_expr(
                 definition.public,
                 "struct",
                 name,
+                signatures,
             )?;
             if let Some(base) = base {
                 let base_ty = type_of_expr(base, env, signatures)?;
@@ -2368,6 +2379,7 @@ fn check_qualified_call(
             definition.public,
             "enum",
             namespace,
+            signatures,
         )?;
         if !named_args.is_empty() {
             return Err(diag(
@@ -2425,6 +2437,7 @@ fn check_qualified_call(
         interface.public,
         "interface",
         namespace,
+        signatures,
     )?;
     let Some(member) = interface.functions.get(name) else {
         return Err(diag(
@@ -2528,7 +2541,14 @@ fn check_call(
         }
         return Ok(returns.clone());
     };
-    require_visible_declaration(span, signature.span, signature.public, "function", name)?;
+    require_visible_declaration(
+        span,
+        signature.span,
+        signature.public,
+        "function",
+        name,
+        signatures,
+    )?;
     check_declared_call(span, name, signature, args, named_args, env, signatures)
 }
 
@@ -2699,6 +2719,7 @@ fn evaluate_default_expr(
                 constant.public,
                 "constant",
                 name,
+                signatures,
             )?;
             Ok(constant.value.clone())
         }
@@ -2830,6 +2851,7 @@ fn evaluate_constant_expr(
                 definition.public,
                 "constant",
                 name,
+                signatures,
             )?;
             evaluate_constant(name, definitions, signatures, cache, stack)
                 .map(|constant| constant.value)
@@ -3163,6 +3185,7 @@ fn resolve_interface_composition(
             parent_signature.public,
             "interface",
             &parent.name,
+            signatures,
         )?;
         let inherited =
             resolve_interface_composition(&parent.name, definitions, signatures, cache, visiting)?;
@@ -3203,6 +3226,36 @@ fn same_interface_contract(left: &Signature, right: &Signature) -> bool {
             })
 }
 
+fn module_import_closure(program: &Program) -> HashMap<SourceId, HashSet<SourceId>> {
+    let mut imports = HashMap::<SourceId, HashSet<SourceId>>::new();
+    for import in &program.imports {
+        let importer = import.span.source_id;
+        let Some(target) = import.resolved_source_id else {
+            continue;
+        };
+        if importer == SourceId::UNKNOWN || target == SourceId::UNKNOWN {
+            continue;
+        }
+        imports.entry(importer).or_default().insert(target);
+    }
+    loop {
+        let snapshot = imports.clone();
+        let mut changed = false;
+        for targets in imports.values_mut() {
+            let inherited = targets
+                .iter()
+                .flat_map(|target| snapshot.get(target).into_iter().flatten().copied())
+                .collect::<Vec<_>>();
+            for target in inherited {
+                changed |= targets.insert(target);
+            }
+        }
+        if !changed {
+            return imports;
+        }
+    }
+}
+
 fn same_module(declaration: SourceSpan, usage: SourceSpan) -> bool {
     declaration.source_id == SourceId::UNKNOWN
         || usage.source_id == SourceId::UNKNOWN
@@ -3215,16 +3268,34 @@ fn require_visible_declaration(
     public: bool,
     kind: &str,
     name: &str,
+    signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    if public || same_module(declaration, usage) {
-        Ok(())
-    } else {
-        Err(diag(
+    if same_module(declaration, usage) {
+        return Ok(());
+    }
+    if !public {
+        return Err(diag(
             usage,
             &format!("private {kind} '{name}' is not accessible from this module"),
         )
-        .with_label(declaration, format!("'{name}' is declared private here")))
+        .with_label(declaration, format!("'{name}' is declared private here")));
     }
+    if signatures
+        .module_imports
+        .get(&usage.source_id)
+        .is_some_and(|imports| imports.contains(&declaration.source_id))
+    {
+        return Ok(());
+    }
+    Err(diag(
+        usage,
+        &format!("{kind} '{name}' is not imported into this module"),
+    )
+    .with_label(
+        declaration,
+        format!("'{name}' is declared in another module"),
+    )
+    .with_note("add an explicit import path that reaches the declaring module"))
 }
 
 fn require_visible_named_type(
@@ -3233,7 +3304,14 @@ fn require_visible_named_type(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     if let Some((declaration, public)) = signatures.alias_declaration(name) {
-        return require_visible_declaration(span, declaration, public, "type alias", name);
+        return require_visible_declaration(
+            span,
+            declaration,
+            public,
+            "type alias",
+            name,
+            signatures,
+        );
     }
     if let Some(definition) = signatures.interface(name) {
         return require_visible_declaration(
@@ -3242,6 +3320,7 @@ fn require_visible_named_type(
             definition.public,
             "interface",
             name,
+            signatures,
         );
     }
     if let Some(definition) = signatures.struct_type(name) {
@@ -3251,10 +3330,18 @@ fn require_visible_named_type(
             definition.public,
             "struct",
             name,
+            signatures,
         );
     }
     if let Some(definition) = signatures.enum_type(name) {
-        return require_visible_declaration(span, definition.span, definition.public, "enum", name);
+        return require_visible_declaration(
+            span,
+            definition.span,
+            definition.public,
+            "enum",
+            name,
+            signatures,
+        );
     }
     Ok(())
 }

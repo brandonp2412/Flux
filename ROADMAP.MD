@@ -141,7 +141,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 
 ## Modules/packages
 
-- [x] Modules and imports using explicit relative `.flux` paths, deterministic recursive loading, duplicate suppression, preserved per-file source IDs, transitive merged semantic/type checking, formatter support, and project-aware CLI check/build/emit-C.
+- [x] Modules and imports using explicit relative `.flux` paths, deterministic recursive loading, duplicate suppression, preserved per-file source IDs, transitive merged semantic/type checking, formatter support, and project-aware CLI check/build/emit-C. Public cross-module declarations are reachable only through the importing module's explicit transitive forward import graph; loading two sibling modules into one project no longer leaks their public symbols to each other.
 - [x] Explicit public/private visibility: top-level functions, constants, aliases, structs, enums, and interfaces are module-private by default; `pub` exports cross-file API, public signatures cannot leak private named types, formatter/source spans preserve visibility, and imports/implementation blocks cannot be `pub`.
 - [x] Package manifest (`flux.toml`) with dependency-free `[package]` parsing, required `name`/`entry`, optional `version`, strict schema diagnostics, validated package-root containment, checked-in native example coverage, and project-aware CLI targeting by source file, package directory, or manifest path.
 - [x] Stable module naming rules: imports use normalized relative `.flux` paths without `.`/`..` segments, package imports cannot escape the manifest root, and every loaded source receives a deterministic package-qualified module name derived from `[package].name` plus its root-relative source path (direct source projects use the entry-directory-relative path).
@@ -643,7 +643,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, comments, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
-- [ ] Inlay hints where they add value.
+- [x] Inlay hints where they add value: `textDocument/inlayHint` reports compiler-inferred types for struct/enum pattern bindings and range-loop variables, while deliberately omitting already-explicit `let`/`var`/parameter types.
 - [ ] Incremental workspace analysis. Overlay-aware project analysis now exists, but the bootstrap LSP still rebuilds the affected project analysis rather than caching/reusing typed workspace state between edits.
 - [ ] Package/module awareness.
   - [x] Open-buffer import graphs use the compiler's real module loader and in-memory overlays, preserving module visibility/import semantics across unsaved files.
