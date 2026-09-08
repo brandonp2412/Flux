@@ -672,6 +672,12 @@ fn emit_linux_gtk_application(
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
+        if let Some(property) = view_property(element, "clip") {
+            let clip = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_widget_set_overflow({variable}, ({clip}) ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);\n"
+            ));
+        }
         if view_property(element, "on_hover").is_some()
             || view_property(element, "on_leave").is_some()
         {
@@ -1023,6 +1029,12 @@ fn emit_ui_refresh(
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "clip") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_widget_set_overflow({widget}, ({value}) ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);\n"
             ));
         }
         if let Some(property) = view_property(element, "tooltip") {

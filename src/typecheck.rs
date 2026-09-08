@@ -1093,7 +1093,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
 pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
-            "visible" => return Some(Type::Bool),
+            "visible" | "clip" => return Some(Type::Bool),
             "tooltip" | "accessibility_label" | "accessibility_description" => {
                 return Some(Type::Str);
             }
@@ -1188,6 +1188,7 @@ fn view_element_kind_is_builtin(kind: &str) -> bool {
 
 const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "visible",
+    "clip",
     "tooltip",
     "accessibility_label",
     "accessibility_description",

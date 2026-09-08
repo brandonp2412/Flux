@@ -505,7 +505,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
 - [x] Shadows.
   - [x] Bootstrap common native shadows use compile-time `shadow_color`, `shadow_blur`, `shadow_offset_x`, and `shadow_offset_y` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
-- [ ] Clipping.
+- [x] Clipping.
+  - [x] Bootstrap common `clip: bool` is state-aware and lowers to the native GTK overflow mode on the existing element; changing the driving Flux state refreshes clipping in place without wrapper widgets. Shape/path clipping remains future rendering work.
 - [ ] Transforms.
 - [ ] Light/dark themes.
 - [ ] Design tokens/variables.

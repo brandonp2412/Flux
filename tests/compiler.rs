@@ -4106,6 +4106,26 @@ app Styled
 }
 
 #[test]
+fn native_elements_support_dynamic_clipping() {
+    let source = r#"
+view Clipped {
+    state clipped: bool = true
+    grid columns: 1fr
+    grid rows: auto
+    Image picture at 1,1
+        source: "image.png"
+        clip: clipped
+}
+app Clipped
+"#;
+    check_source(source).expect("clip should typecheck as a common bool property");
+    let generated = compile_to_c(source).expect("clip should lower to native GTK overflow");
+    assert!(generated.contains("GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE"));
+    assert!(generated.contains("gtk_widget_set_overflow(flux__ui_picture"));
+    assert!(generated.contains("if (flux__ui_picture != NULL) gtk_widget_set_overflow"));
+}
+
+#[test]
 fn native_elements_support_native_shadows() {
     let source = r##"
 view Shadowed {
