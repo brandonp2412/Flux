@@ -627,7 +627,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [x] Diagnostics reuse the same structured diagnostic model and source spans as the terminal renderer, including open-buffer project overlays; there is no separate editor-only error model.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
-  - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics published for a document are filtered to that document's stable source ID.
+  - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics are republished across open dependent documents after overlay changes and filtered to each document's stable source ID.
 - [ ] Completion.
   - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, and top-level declarations parsed from the current buffer, including typed signature/detail text. Scope-aware locals and imported/package symbols remain pending with workspace reference indexing.
 - [ ] Signature help.
