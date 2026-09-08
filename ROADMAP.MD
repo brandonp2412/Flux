@@ -24,16 +24,16 @@ Do not let the roadmap become an aspirational document that diverges from the co
 
 The minimum acceptance path is deliberately small: one Linux desktop target first, one native window, the existing flat grid layout, `Text` and `Button`, one click-driven state update/repaint, and the existing save-triggered development loop. This milestone does **not** require completing the full UI toolkit, ownership model, Android target, animation, navigation, package ecosystem, debugger, or profiler before manual dogfooding starts.
 
-- [x] **P0 manual E2E:** the first dogfood path is now assembled and individually validated on development host: open `examples/hello_app.flux` through `tools/flux-nvim`, receive Flux syntax plus attached semantic LSP services, run it via `:FluxRun`/`fluxc run`, get the native GTK4/Wayland window, click the typed state-transition button, and rely on the existing save-triggered controlled-restart loop. The canonical manual sequence and recovery checks live in `docs/manual-e2e.md`; state-preserving in-process Fast Refresh remains explicitly beyond this minimal P0 gate.
+- [x] **P0 manual E2E:** the first dogfood path is now assembled and individually validated on development host: open `examples/hello_app.flux` through `tools/flux-nvim`, receive Flux syntax plus attached semantic LSP services, run it via `:FluxRun`/`flux run`, get the native GTK4/Wayland window, click the typed state-transition button, and rely on the existing save-triggered controlled-restart loop. The canonical manual sequence and recovery checks live in `docs/manual-e2e.md`; state-preserving in-process Fast Refresh remains explicitly beyond this minimal P0 gate.
   - [x] Compiler-backed flat `view`/grid syntax with typed built-in UI properties and composed views.
-  - [x] `fluxc lsp` foundation with diagnostics, semantic highlighting, completion, hover, signature help, navigation/refactoring, formatting, fixes, inlay hints, and UI syntax awareness.
-  - [x] `fluxc run` automatic save detection with rebuild and safe controlled restart on successful recompilation.
+  - [x] `flux lsp` foundation (plus `fluxc` compatibility) with diagnostics, semantic highlighting, completion, hover, signature help, navigation/refactoring, formatting, fixes, inlay hints, and UI syntax awareness.
+  - [x] `flux run` automatic save detection with rebuild and safe controlled restart on successful recompilation.
   - [x] Minimal application entry/runtime that opens a real native Linux window from a Flux program: bootstrap `app ViewName` selects a zero-parameter root view and replaces `fn main`; the Linux bootstrap lowers it to a GTK4 application/window while keeping GTK objects out of Flux source.
   - [x] Bootstrap native lowering/render path for the existing flat grid: explicit rows/columns/spans/gap lower to `GtkGrid`, fixed tracks feed native size requests, and `fr` tracks expand in the corresponding axis. A future lower-level renderer may replace GTK without changing Flux grid source.
   - [x] Render usable `Text` and `Button` primitives with native GTK4 controls, typed literal/constant/state-derived properties, spacing/margins, and a checked-in `examples/hello_app.flux` dogfood app.
   - [x] Pointer/click dispatch from the native Wayland window to a typed Flux `Button.on_press` callback: the development host dogfood launch produced the Flux callback output from real button activations.
   - [x] Minimal functional local UI state and invalidation/repaint: explicit `state clicked: bool = false` belongs to the view instance, `on_press: clicked => !clicked` is a typed state transformation, state-dependent Text/Button properties lower to a native refresh function, and the development host Wayland dogfood test toggled the app render and then restored it pixel-identically on the second activation (apart from unrelated desktop-panel changes).
-  - [x] Editor integration/setup for the first dogfood editor: checked-in dependency-free Neovim runtime detects `.flux`, supplies immediate syntax colouring, launches `fluxc lsp` for semantic highlighting/full editor services, and exposes `:FluxRun`; `tools/flux-nvim` starts this experience without modifying global editor configuration.
+  - [x] Editor integration/setup for the first dogfood editor: checked-in dependency-free Neovim runtime detects `.flux`, supplies immediate syntax colouring, launches `flux lsp` for semantic highlighting/full editor services, and exposes `:FluxRun`; `tools/flux-nvim` starts this experience without modifying global editor configuration.
   - [x] Checked-in `examples/hello_app.flux` manual acceptance app plus `docs/manual-e2e.md` documents the editor → compile/run → native window → click/state update → save-triggered rebuild/restart path, including failure/recovery expectations and non-interactive preflight checks.
 
 When choosing work, pull the smallest prerequisites from later milestones forward as needed to finish this P0 path. Do not expand those prerequisites into their full eventual subsystem before the manual E2E is working.
@@ -381,7 +381,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Flat element declarations.
   - [x] Bootstrap sibling element syntax (`Type name at row,column`) with unique local names and optional property expressions; nested child elements are syntactically rejected.
 - [ ] Grid-first layout.
-  - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
+  - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit padding, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
   - [ ] Statically type/check element properties against built-in or interface-defined element contracts instead of treating property expressions as untyped view metadata.
     - [x] Bootstrap built-in element contracts validate known property names and property expression types, including typed function callbacks, without introducing widget classes; semantic symbols expose the property type for editor tooling.
     - [x] Declared Flux views act as custom element contracts derived directly from their typed parameters/defaults; custom-view property types flow into semantic/editor symbols.
@@ -393,7 +393,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Constraints, min/max sizing, intrinsic sizing.
 - [ ] Responsive breakpoints/container queries.
 - [ ] Text.
-  - [x] Bootstrap Linux GTK4 `Text` lowering for compile-time `text: str` and `selectable: bool`, including grid placement and native wrapping/alignment.
+  - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, and `bold: bool`, including grid placement, native wrapping/alignment, and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.
 - [ ] Images/vector images.
 - [ ] Buttons.
@@ -478,7 +478,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 - [ ] Colors.
 - [ ] Typography.
+  - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
 - [ ] Spacing.
+  - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
 - [ ] Borders/radii.
 - [ ] Shadows.
 - [ ] Clipping.
@@ -720,20 +722,18 @@ Web is a supported target, not the implementation substrate for native apps.
 
 # Milestone 26 — CLI/build/developer workflow
 
-- [ ] `flux new`.
-  - [x] Bootstrap `fluxc new <directory>` scaffolds a minimal manifest-backed native GUI package with the checked-in P0 Text/Button/state pattern, refuses to overwrite non-empty directories, and produces a project that immediately passes `fluxc check`; final `flux` CLI naming/distribution remains pending.
-- [ ] `flux run`.
-  - [x] Bootstrap `fluxc run` provides the automatic development watch/build/restart loop; the final `flux` CLI naming/distribution remains pending.
-- [x] Bootstrap `fluxc build` equivalent exists through Cargo invocation.
-- [ ] `flux build`.
+- [x] `flux new`: the user-facing `flux` binary shares the canonical CLI implementation and scaffolds a minimal manifest-backed native GUI package without overwriting non-empty directories.
+- [x] `flux run`: the user-facing command provides the automatic development watch/build/restart loop and hot-reload status contract.
+- [x] Bootstrap `fluxc build` compatibility entry remains available while the product CLI transitions to `flux`.
+- [x] `flux build`: user-facing native builds support debug/profile/release modes and package/source targets.
 - [ ] `flux test`.
-- [ ] `flux format`.
+- [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [ ] `flux analyze`.
 - [ ] `flux devices`.
 - [ ] `flux doctor`.
 - [ ] `flux clean`.
 - [ ] `flux package`.
-- [x] Debug/profile/release modes through `fluxc build --mode ...` and `fluxc run --mode ...`; builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
+- [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
 - [ ] Cross-compilation configuration.
 - [ ] Build cache.
 - [ ] Reproducible builds.

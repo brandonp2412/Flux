@@ -16,7 +16,7 @@ local function fluxc_path()
     if type(vim.g.fluxc_path) == "string" and vim.g.fluxc_path ~= "" then
         return vim.g.fluxc_path
     end
-    return "fluxc"
+    return "flux"
 end
 
 local function lsp_command()

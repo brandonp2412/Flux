@@ -1007,6 +1007,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     match (kind, property) {
         ("Text", "text") => Some(Type::Str),
         ("Text", "selectable") => Some(Type::Bool),
+        ("Text", "size") => Some(Type::I64),
+        ("Text", "bold") => Some(Type::Bool),
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "on_press") => Some(Type::Function {
@@ -1045,7 +1047,7 @@ fn view_element_kind_is_builtin(kind: &str) -> bool {
 
 pub fn view_property_names(kind: &str) -> &'static [&'static str] {
     match kind {
-        "Text" => &["text", "selectable"],
+        "Text" => &["text", "selectable", "size", "bold"],
         "Button" => &["text", "enabled", "on_press"],
         "Nav" | "Chart" | "Content" => &["label"],
         "Card" => &["title"],

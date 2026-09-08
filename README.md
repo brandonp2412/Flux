@@ -46,11 +46,11 @@ The C backend is a bootstrap implementation, not the final backend architecture.
 Scaffold a minimal native GUI package that is immediately ready for the P0 dogfood loop:
 
 ```sh
-cargo run -- new my-flux-app
+./tools/flux new my-flux-app
 ./tools/flux-nvim my-flux-app/src/main.flux
 ```
 
-Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `fluxc new` refuses to overwrite a non-empty directory.
+Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
 
 ## Example
 
@@ -70,22 +70,22 @@ fn main() -> i64 {
 Build it:
 
 ```sh
-cargo run -- build examples/hello.flux -o hello
+./tools/flux build examples/hello.flux -o hello
 ./hello
 ```
 
-Build modes are explicit and predictable: `fluxc build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `fluxc run` defaults to `debug` for development but accepts the same `--mode` override.
+Build modes are explicit and predictable: `flux build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `flux run` defaults to `debug` for development but accepts the same `--mode` override.
 
 Run in development mode with automatic save detection:
 
 ```sh
-cargo run -- run examples/hello.flux
+./tools/flux run examples/hello.flux
 ```
 
 The first native GUI dogfood example uses `app HelloApp` instead of `fn main` and lowers its existing flat `view` grid to GTK4 native controls on Linux:
 
 ```sh
-cargo run -- build examples/hello_app.flux -o hello-app --mode debug
+./tools/flux build examples/hello_app.flux -o hello-app --mode debug
 ./hello-app
 ```
 
@@ -96,7 +96,7 @@ The bootstrap runner watches imported Flux modules automatically, debounces rapi
 Check without producing a binary:
 
 ```sh
-cargo run -- check examples/hello.flux
+./tools/flux check examples/hello.flux
 ```
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
@@ -104,8 +104,8 @@ Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the
 Format source deterministically, or verify canonical formatting in CI:
 
 ```sh
-cargo run -- format examples/hello.flux
-cargo run -- format examples/hello.flux --check
+./tools/flux format examples/hello.flux
+./tools/flux format examples/hello.flux --check
 ```
 
 For the first zero-install editor dogfood path on Linux, use the checked-in Neovim launcher:
@@ -114,12 +114,12 @@ For the first zero-install editor dogfood path on Linux, use the checked-in Neov
 ./tools/flux-nvim examples/hello_app.flux
 ```
 
-It uses the repository's Neovim runtime, gives `.flux` files immediate syntax colouring, starts the built `fluxc lsp`, and leaves the user's global Neovim configuration untouched. Inside the editor, `:FluxRun` opens a terminal split running the current Flux target with automatic save-triggered rebuild/restart. The complete manual acceptance sequence is documented in `docs/manual-e2e.md`.
+It uses the repository's Neovim runtime, gives `.flux` files immediate syntax colouring, starts the built `flux lsp`, and leaves the user's global Neovim configuration untouched. Inside the editor, `:FluxRun` opens a terminal split running the current Flux target with automatic save-triggered rebuild/restart. The complete manual acceptance sequence is documented in `docs/manual-e2e.md`.
 
 Editors can also launch the bootstrap language server directly over stdio:
 
 ```sh
-cargo run -- lsp
+./tools/flux lsp
 ```
 
 The current LSP slice publishes parse/type diagnostics using the same source spans, labels, and fix metadata as the compiler, including real import-graph type checking with every open unsaved Flux buffer substituted as an in-memory project overlay. It also serves canonical whole-document formatting, machine-applicable quick fixes, safe declaration/unambiguous-symbol hover and go-to-definition, dependency-graph references/rename, typed signature help for every current parenthesized call form (ordinary/imported functions, first-class function values, interface capabilities, enum payload constructors, interface packing, and compiler built-ins), full-document semantic highlighting, focused inferred-type inlay hints, and completion for keywords/builtins/current-module plus public forward-import declarations and lexically visible local bindings. Qualified completion for enum/interface namespaces works during incomplete edits such as `Outcome.` and `Storage.`, including reachable imported declarations. Flat `view` blocks receive contextual completion and hover from the compiler's own UI contracts: grid declarations, built-in element kinds, typed element properties, and composed-view parameters; same-file custom-view property completion keeps earlier contracts available while the currently edited view is malformed, and built-in UI hover remains available during incomplete edits. Inlay hints are intentionally limited to types Flux actually infers, such as pattern and range-loop bindings, rather than repeating explicit annotations. Imported ordinary-function completion, hover, and signature help use unsaved overlays as well. Ambiguous/shadowed navigation and rename are deliberately refused rather than guessed. Shared cached workspace analysis, reverse-dependent discovery, fully resolved shadow-aware usage navigation, value-member completion, and richer UI navigation remain later LSP milestones.
@@ -127,7 +127,7 @@ The current LSP slice publishes parse/type diagnostics using the same source spa
 Tooling/CI can request structured diagnostics without parsing human text:
 
 ```sh
-cargo run -- check examples/hello.flux --json
+./tools/flux check examples/hello.flux --json
 ```
 
 Packages can select their entry source with `flux.toml`:
@@ -142,8 +142,8 @@ entry = "src/main.flux"
 The package directory or manifest can then be passed directly to project-aware commands:
 
 ```sh
-cargo run -- check examples/package
-cargo run -- build examples/package -o package-example
+./tools/flux check examples/package
+./tools/flux build examples/package -o package-example
 ```
 
 ## Multi-value returns

@@ -203,7 +203,10 @@ fn emit_linux_gtk_application(
             "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"
         ));
     }
-    out.push_str("    gtk_widget_set_margin_top(grid, 20);\n    gtk_widget_set_margin_bottom(grid, 20);\n    gtk_widget_set_margin_start(grid, 20);\n    gtk_widget_set_margin_end(grid, 20);\n");
+    let padding = view.grid.padding.unwrap_or(20);
+    out.push_str(&format!(
+        "    gtk_widget_set_margin_top(grid, {padding});\n    gtk_widget_set_margin_bottom(grid, {padding});\n    gtk_widget_set_margin_start(grid, {padding});\n    gtk_widget_set_margin_end(grid, {padding});\n"
+    ));
     out.push_str("    gtk_window_set_child(GTK_WINDOW(window), grid);\n");
 
     for element in &view.elements {
@@ -218,6 +221,47 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    gtk_label_set_wrap(GTK_LABEL({variable}), TRUE);\n    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
                 ));
+                let size = view_property(element, "size");
+                let bold = view_property(element, "bold");
+                if size.is_some() || bold.is_some() {
+                    let attrs = format!("flux__ui_attrs_{}", element.name);
+                    out.push_str(&format!(
+                        "    PangoAttrList *{attrs} = pango_attr_list_new();\n"
+                    ));
+                    if let Some(property) = size {
+                        let Some(value) = static_expr_i64(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.size must be a compile-time i64 value",
+                            ));
+                        };
+                        if value <= 0 {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.size must be greater than zero",
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_size_new({value} * PANGO_SCALE));\n"
+                        ));
+                    }
+                    if let Some(property) = bold {
+                        let Some(value) = static_expr_bool(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.bold must be a compile-time bool value",
+                            ));
+                        };
+                        if value {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_weight_new(PANGO_WEIGHT_BOLD));\n"
+                            ));
+                        }
+                    }
+                    out.push_str(&format!(
+                        "    gtk_label_set_attributes(GTK_LABEL({variable}), {attrs});\n    pango_attr_list_unref({attrs});\n"
+                    ));
+                }
                 if let Some(property) = view_property(element, "selectable") {
                     let selectable = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
@@ -279,6 +323,21 @@ fn ui_state_c_name(name: &str) -> String {
 
 fn ui_widget_c_name(name: &str) -> String {
     format!("flux__ui_{name}")
+}
+
+fn static_expr_i64(expr: &Expr, signatures: &Signatures) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Int(value) => Some(*value),
+        ExprKind::Var(name) => {
+            signatures
+                .constant(name)
+                .and_then(|constant| match constant.value {
+                    ConstantValue::I64(value) => Some(value),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
 }
 
 fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
@@ -398,8 +457,10 @@ fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {
         fixed.max(fallback)
     }
     (
-        tracks_size(&view.grid.columns, 220).saturating_add(40),
-        tracks_size(&view.grid.rows, 90).saturating_add(40),
+        tracks_size(&view.grid.columns, 220)
+            .saturating_add(view.grid.padding.unwrap_or(20).saturating_mul(2)),
+        tracks_size(&view.grid.rows, 90)
+            .saturating_add(view.grid.padding.unwrap_or(20).saturating_mul(2)),
     )
 }
 

@@ -3820,7 +3820,9 @@ mod tests {
         let element = hover_for_document(uri, source, &documents, 3, 5, PositionEncoding::Utf8)
             .expect("built-in element hover should survive incomplete source")
             .to_json();
-        assert!(element.contains("element Text { text: str, selectable: bool }"));
+        assert!(
+            element.contains("element Text { text: str, selectable: bool, size: i64, bold: bool }")
+        );
 
         let property = hover_for_document(uri, source, &documents, 4, 10, PositionEncoding::Utf8)
             .expect("built-in property hover should survive incomplete source")

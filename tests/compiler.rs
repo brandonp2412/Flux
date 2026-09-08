@@ -3140,6 +3140,24 @@ fn check_json_cli_emits_clean_machine_readable_output() {
 }
 
 #[test]
+fn flux_binary_exposes_the_user_facing_cli_name_and_commands() {
+    let checked = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("check")
+        .arg("examples/hello.flux")
+        .output()
+        .expect("flux user-facing binary should run");
+    assert!(checked.status.success());
+
+    let usage = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .output()
+        .expect("flux usage should run");
+    assert!(!usage.status.success());
+    let stderr = String::from_utf8(usage.stderr).expect("flux usage must be UTF-8");
+    assert!(stderr.starts_with("flux: usage: flux new <directory>"));
+    assert!(!stderr.contains("fluxc: usage:"));
+}
+
+#[test]
 fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
     let root = std::env::temp_dir().join(format!("Flux New App {}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -3593,9 +3611,12 @@ fn app_view_state_transitions_lower_to_native_state_and_refresh() {
 view Counter {
     grid columns: 1fr
     grid rows: auto auto
+    grid padding: 24
     state clicked: bool = false
     Text title at 1,1
         text: "Clicked!" if clicked else "Hello"
+        size: 28
+        bold: true
     Button action at 2,1
         text: "Reset" if clicked else "Click me"
         on_press: clicked => !clicked
@@ -3622,6 +3643,7 @@ app Counter
     assert_eq!(action.transition.as_ref().unwrap().state, "clicked");
 
     let formatted = fluxc::formatter::format_source(source).expect("stateful view should format");
+    assert!(formatted.contains("grid padding: 24"));
     assert!(formatted.contains("state clicked: bool = false"));
     assert!(formatted.contains("on_press: clicked => !clicked"));
 
@@ -3631,6 +3653,9 @@ app Counter
     assert!(generated.contains("flux__ui_refresh();"));
     assert!(generated.contains("gtk_label_set_text"));
     assert!(generated.contains("gtk_button_set_label"));
+    assert!(generated.contains("gtk_widget_set_margin_top(grid, 24)"));
+    assert!(generated.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
+    assert!(generated.contains("PANGO_WEIGHT_BOLD"));
     assert!(generated.contains("flux__ui_state_clicked") && generated.contains("Clicked!"));
 }
 

@@ -247,6 +247,9 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
             .unwrap_or(view.line + 3);
         lines.insert(gap_line, format!("    grid gap: {gap}"));
     }
+    if let (Some(padding), Some(line)) = (view.grid.padding, view.grid.padding_line) {
+        lines.insert(line, format!("    grid padding: {padding}"));
+    }
     for state in &view.states {
         lines.insert(
             state.line,

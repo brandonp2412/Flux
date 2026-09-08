@@ -13,18 +13,18 @@ To dogfood the checked-in acceptance app from the repository root:
 To start from your own fresh package instead:
 
 ```sh
-cargo run -- new /tmp/my-flux-app
+./tools/flux new /tmp/my-flux-app
 ./tools/flux-nvim /tmp/my-flux-app/src/main.flux
 ```
 
-The generated package contains the same minimal native Text/Button/state pattern as the acceptance app and passes `fluxc check` immediately. The launcher builds the bootstrap compiler when needed, adds the checked-in Flux Neovim runtime without changing the user's global configuration, recognizes `.flux` files, enables immediate syntax colouring, and starts `fluxc lsp` for the buffer.
+The generated package contains the same minimal native Text/Button/state pattern as the acceptance app and passes `flux check` immediately. The launcher builds the bootstrap compiler when needed, adds the checked-in Flux Neovim runtime without changing the user's global configuration, recognizes `.flux` files, enables immediate syntax colouring, and starts `flux lsp` for the buffer.
 
 Acceptance in the editor:
 
 - the buffer filetype is `flux`;
 - keywords, strings, numbers, types, comments, and operators are coloured immediately;
 - the Flux LSP attaches and supplies semantic highlighting;
-- diagnostics, completion, hover, go-to-definition, references/rename, formatting, code actions, signature help, and inlay hints use `fluxc lsp` rather than a second editor parser.
+- diagnostics, completion, hover, go-to-definition, references/rename, formatting, code actions, signature help, and inlay hints use `flux lsp` rather than a second editor parser.
 
 Use `:LspInfo` or `:checkhealth vim.lsp` when checking the connection manually.
 
@@ -38,12 +38,12 @@ Inside Neovim run:
 
 For a manifest-backed package created outside the repository, pass its directory explicitly, for example `:FluxRun /tmp/my-flux-app`.
 
-`FluxRun` opens a terminal split and executes `fluxc run` for the selected Flux target. The development runner builds a native Linux executable and launches a GTK4 window through the compositor. On a Wayland session GTK uses its native Wayland backend.
+`FluxRun` opens a terminal split and executes `flux run` for the selected Flux target. The development runner builds a native Linux executable and launches a GTK4 window through the compositor. On a Wayland session GTK uses its native Wayland backend.
 
 The same path can be launched directly from a terminal when isolating editor problems:
 
 ```sh
-cargo run -- run examples/hello_app.flux
+./tools/flux run examples/hello_app.flux
 ```
 
 Acceptance in the native window:
@@ -63,7 +63,7 @@ Keep `:FluxRun` running. Edit either state-dependent text literal in `examples/h
 Acceptance for the development loop:
 
 - no reload hotkey is required;
-- `fluxc run` notices the save and reports that it is compiling;
+- `flux run` notices the save and reports that it is compiling;
 - a successful replacement build restarts the app automatically;
 - the edited text appears in the relaunched native window;
 - introducing a compile error leaves the last good app running and reports diagnostics;
@@ -79,8 +79,8 @@ Before a manual run, the compiler/editor pieces can be checked without opening a
 cargo test
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo run -- check examples/hello_app.flux
-cargo run -- build examples/hello_app.flux --mode debug -o /tmp/flux-hello-app
+./tools/flux check examples/hello_app.flux
+./tools/flux build examples/hello_app.flux --mode debug -o /tmp/flux-hello-app
 ```
 
 The checked-in Neovim integration can also be probed headlessly; CI/tests should verify that `.flux` detection starts a `flux` LSP client and that the server advertises semantic tokens and completion.

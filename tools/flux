@@ -8,9 +8,4 @@ if [[ ! -x "$FLUX" ]]; then
   cargo build --quiet --manifest-path "$ROOT/Cargo.toml" --bin flux
 fi
 
-exec nvim --cmd "set runtimepath^=$ROOT/editors/nvim" \
-  --cmd "let g:fluxc_path='$FLUX'" \
-  --cmd "let g:flux_lsp_cmd=['$FLUX','lsp']" \
-  --cmd "filetype plugin on" \
-  --cmd "syntax enable" \
-  "$@"
+exec "$FLUX" "$@"

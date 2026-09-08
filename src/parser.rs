@@ -1453,6 +1453,20 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             continue;
         }
 
+        if let Some(value) = line.text.strip_prefix("grid padding:") {
+            if grid.padding.is_some() {
+                return Err(diag(line.number, "grid padding may only be declared once"));
+            }
+            grid.padding = Some(parse_positive_or_zero_u32(
+                value.trim(),
+                line.number,
+                "grid padding",
+            )?);
+            grid.padding_line = Some(line.number);
+            *index += 1;
+            continue;
+        }
+
         let mut element = parse_view_element(line)?;
         if elements
             .iter()
