@@ -1165,6 +1165,10 @@ fn main() -> i64 {
     print values.length
     print middle.is_empty
     print middle.is_not_empty
+    print values.first
+    print values.last
+    let one: i64[] = values[2:3]
+    print one.single
     print middle[0]
     print values[-1]
     let doubled: i64[] = [value * 2 for value in values if value > 2]
@@ -1183,6 +1187,10 @@ fn main() -> i64 {
     assert!(generated.contains("(flux__local_values).len"));
     assert!(generated.contains("((flux__local_middle).len == 0)"));
     assert!(generated.contains("((flux__local_middle).len != 0)"));
+    assert!(generated.contains("flux_list_at(flux__local_values, INT64_C(0)"));
+    assert!(generated.contains("flux_list_at(flux__local_values, INT64_C(-1)"));
+    assert!(generated.contains("flux_list_single(flux__local_one)"));
+    assert!(generated.contains("Flux runtime error: list.single requires exactly one element"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");

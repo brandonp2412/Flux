@@ -3293,10 +3293,11 @@ pub fn type_of_expr(
             name_span,
         } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
-            if let Type::List(_) = &base_ty {
+            if let Type::List(element) = &base_ty {
                 return match name.as_str() {
                     "length" => Ok(Type::I64),
                     "is_empty" | "is_not_empty" => Ok(Type::Bool),
+                    "first" | "last" | "single" => Ok((**element).clone()),
                     _ => Err(diag(
                         *name_span,
                         &format!("list type '{}' has no property '{name}'", base_ty.name()),

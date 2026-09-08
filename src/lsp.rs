@@ -1170,15 +1170,13 @@ fn list_property_for_position(
     let property = identifier_at(line, byte)?;
     let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
     let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
-    if !matches!(
-        crate::ast::Type::parse(&type_name),
-        Some(crate::ast::Type::List(_))
-    ) {
+    let crate::ast::Type::List(element) = crate::ast::Type::parse(&type_name)? else {
         return None;
-    }
+    };
     let ty = match property {
         "length" => crate::ast::Type::I64,
         "is_empty" | "is_not_empty" => crate::ast::Type::Bool,
+        "first" | "last" | "single" => *element,
         _ => return None,
     };
     Some((property.to_string(), ty))
@@ -1285,10 +1283,19 @@ fn add_list_property_completions(
     seen: &mut HashSet<String>,
     type_name: &str,
 ) {
+    let element_type = crate::ast::Type::parse(type_name)
+        .and_then(|ty| match ty {
+            crate::ast::Type::List(element) => Some(element.name()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "value".to_string());
     for (name, ty) in [
-        ("length", "i64"),
-        ("is_empty", "bool"),
-        ("is_not_empty", "bool"),
+        ("length", "i64".to_string()),
+        ("is_empty", "bool".to_string()),
+        ("is_not_empty", "bool".to_string()),
+        ("first", element_type.clone()),
+        ("last", element_type.clone()),
+        ("single", element_type),
     ] {
         push_completion_item(
             items,
@@ -4455,6 +4462,10 @@ mod tests {
         assert!(items.contains("property i64[].length: i64"));
         assert!(items.contains("\"label\":\"is_empty\""));
         assert!(items.contains("\"label\":\"is_not_empty\""));
+        assert!(items.contains("\"label\":\"first\""));
+        assert!(items.contains("property i64[].first: i64"));
+        assert!(items.contains("\"label\":\"last\""));
+        assert!(items.contains("\"label\":\"single\""));
 
         let hover_uri = "file:///tmp/list-property-hover.flux";
         let hover_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.length)\n    return 0\n}\n";
@@ -4476,6 +4487,26 @@ mod tests {
         .expect("list property should have hover")
         .to_json();
         assert!(hover.contains("property length: i64"));
+
+        let first_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.first)\n    return 0\n}\n";
+        let first_documents = HashMap::from([(hover_uri.to_string(), first_source.to_string())]);
+        let first_line = first_source
+            .lines()
+            .position(|line| line.contains("values.first"))
+            .expect("first hover line should exist");
+        let first_text = first_source.lines().nth(first_line).unwrap();
+        let first_character = first_text.find("first").unwrap() + 2;
+        let first_hover = hover_for_document(
+            hover_uri,
+            first_source,
+            &first_documents,
+            first_line,
+            first_character,
+            PositionEncoding::Utf8,
+        )
+        .expect("list first property should have hover")
+        .to_json();
+        assert!(first_hover.contains("property first: i64"));
     }
 
     #[test]

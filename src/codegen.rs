@@ -40,6 +40,7 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("struct flux__list { void *data; size_t len; };\n");
     out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
     out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { return (void *)((char *)list.data + flux_list_index(list.len, index) * elem_size); }\n");
+    out.push_str("static inline void *flux_list_single(struct flux__list list) { if (list.len != 1) { fputs(\"Flux runtime error: list.single requires exactly one element\\n\", stderr); abort(); } return list.data; }\n");
     out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; }\n");
     out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, size_t elem_size) { int64_t first = flux_slice_bound(list.len, has_start, start, false); int64_t last = flux_slice_bound(list.len, has_end, end, true); if (last < first) last = first; struct flux__list result = { .data = (void *)((char *)list.data + (size_t)first * elem_size), .len = (size_t)(last - first) }; return result; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
@@ -3062,11 +3063,21 @@ fn emit_expr(
         ExprKind::Field { base, name, .. } => {
             let base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let code = if matches!(base.ty, Type::List(_)) {
+            let code = if let Type::List(element) = &base.ty {
+                let element_c = c_type(element, signatures);
                 match name.as_str() {
                     "length" => format!("({}).len", base.code),
                     "is_empty" => format!("(({}).len == 0)", base.code),
                     "is_not_empty" => format!("(({}).len != 0)", base.code),
+                    "first" => format!(
+                        "(*(({element_c} *)flux_list_at({}, INT64_C(0), sizeof({element_c}))))",
+                        base.code
+                    ),
+                    "last" => format!(
+                        "(*(({element_c} *)flux_list_at({}, INT64_C(-1), sizeof({element_c}))))",
+                        base.code
+                    ),
+                    "single" => format!("(*(({element_c} *)flux_list_single({})))", base.code),
                     _ => {
                         return Err(diag(
                             expr.span,
