@@ -4296,6 +4296,8 @@ view HoverCard {
         on_leave: hovered => false
     Button action at 2,1
         text: "Action"
+        on_focus: hovered => true
+        on_blur: leave_notice
         on_leave: leave_notice
 }
 app HoverCard
@@ -4310,6 +4312,9 @@ app HoverCard
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, ((flux__ui_state_hovered) ? (\"Leave\") : (\"Hover me\")))"));
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, ((flux__ui_state_hovered) ? (\"Hovered title\") : (\"Idle title\")), -1"));
     assert!(generated.contains("gtk_event_controller_motion_new()"));
+    assert!(generated.contains("gtk_event_controller_focus_new()"));
+    assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_focus_action)"));
+    assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_blur_action)"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_hover_title)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_leave_title)"));
     assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__motion_title)"));

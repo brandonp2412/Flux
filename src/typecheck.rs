@@ -1098,7 +1098,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 return Some(Type::Str);
             }
             "min_width" | "min_height" => return Some(Type::I64),
-            "on_hover" | "on_leave" => {
+            "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
                     returns: Vec::new(),
@@ -1190,6 +1190,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "accessibility_description",
             "on_hover",
             "on_leave",
+            "on_focus",
+            "on_blur",
             "min_width",
             "min_height",
         ],
@@ -1205,6 +1207,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "accessibility_description",
             "on_hover",
             "on_leave",
+            "on_focus",
+            "on_blur",
             "min_width",
             "min_height",
         ],
@@ -1223,6 +1227,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "accessibility_description",
             "on_hover",
             "on_leave",
+            "on_focus",
+            "on_blur",
             "min_width",
             "min_height",
         ],
@@ -1237,6 +1243,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "accessibility_description",
             "on_hover",
             "on_leave",
+            "on_focus",
+            "on_blur",
             "min_width",
             "min_height",
         ],
@@ -1251,6 +1259,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "accessibility_description",
             "on_hover",
             "on_leave",
+            "on_focus",
+            "on_blur",
             "min_width",
             "min_height",
         ],
@@ -1427,11 +1437,13 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                             | ("Radio", "on_select")
                             | (_, "on_hover")
                             | (_, "on_leave")
+                            | (_, "on_focus")
+                            | (_, "on_blur")
                     );
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.on_press, Toggle.on_change, Radio.on_select, on_hover, or on_leave",
+                            "view state transitions are valid only for event properties such as Button.on_press, Toggle.on_change, Radio.on_select, on_hover/on_leave, or on_focus/on_blur",
                         ));
                         continue;
                     }

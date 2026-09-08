@@ -1598,7 +1598,13 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             }
             let (transition, expression_source, expression_column) = if matches!(
                 property_name,
-                "on_press" | "on_change" | "on_select" | "on_hover" | "on_leave"
+                "on_press"
+                    | "on_change"
+                    | "on_select"
+                    | "on_hover"
+                    | "on_leave"
+                    | "on_focus"
+                    | "on_blur"
             ) {
                 if let Some((raw_state, _)) = value_source.split_once("=>") {
                     let state = raw_state.trim();

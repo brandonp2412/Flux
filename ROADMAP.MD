@@ -465,7 +465,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Keyboard input.
   - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `on_change` receives the current borrowed text and Enter dispatches `on_submit`. Portable key events and explicit keyboard handling remain pending.
 - [ ] Focus model.
-  - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Programmatic focus movement, focus events, scopes, and restoration remain pending.
+  - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Common `on_focus` / `on_blur` events on native controls accept named `fn() -> void` callbacks or typed functional state transitions through native focus controllers. Programmatic focus movement, focus scopes, and restoration remain pending.
 - [x] Hover.
   - [x] Common `on_hover` / `on_leave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.

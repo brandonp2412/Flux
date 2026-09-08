@@ -251,21 +251,7 @@ fn emit_linux_gtk_application(
             let Some(action) = view_property(element, property_name) else {
                 continue;
             };
-            let body = if let Some(transition) = &action.transition {
-                let next = ui_expr_c(&action.value, view, signatures)?;
-                format!(
-                    "{} = {next}; flux__ui_refresh();",
-                    ui_state_c_name(&transition.state)
-                )
-            } else {
-                let ExprKind::Var(function) = &action.value.kind else {
-                    return Err(diag(
-                        action.value.span,
-                        "bootstrap pointer event lowering requires a named fn() -> void callback or state transition",
-                    ));
-                };
-                format!("{}(); flux__ui_refresh();", function_c_name(function))
-            };
+            let body = ui_zero_arg_event_body(action, view, signatures)?;
             if property_name == "on_hover" {
                 out.push_str(&format!(
                     "static void flux__ui_{callback_name}_{}(GtkEventControllerMotion *controller, double x, double y, gpointer data) {{ (void)controller; (void)x; (void)y; (void)data; {body} }}\n",
@@ -277,6 +263,16 @@ fn emit_linux_gtk_application(
                     element.name,
                 ));
             }
+        }
+        for (property_name, callback_name) in [("on_focus", "focus"), ("on_blur", "blur")] {
+            let Some(action) = view_property(element, property_name) else {
+                continue;
+            };
+            let body = ui_zero_arg_event_body(action, view, signatures)?;
+            out.push_str(&format!(
+                "static void flux__ui_{callback_name}_{}(GtkEventControllerFocus *controller, gpointer data) {{ (void)controller; (void)data; {body} }}\n",
+                element.name,
+            ));
         }
     }
     out.push('\n');
@@ -652,6 +648,29 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
+        if view_property(element, "on_focus").is_some()
+            || view_property(element, "on_blur").is_some()
+        {
+            let controller = format!("flux__focus_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = gtk_event_controller_focus_new();\n"
+            ));
+            if view_property(element, "on_focus").is_some() {
+                out.push_str(&format!(
+                    "    g_signal_connect({controller}, \"enter\", G_CALLBACK(flux__ui_focus_{}), NULL);\n",
+                    element.name
+                ));
+            }
+            if view_property(element, "on_blur").is_some() {
+                out.push_str(&format!(
+                    "    g_signal_connect({controller}, \"leave\", G_CALLBACK(flux__ui_blur_{}), NULL);\n",
+                    element.name
+                ));
+            }
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
         emit_grid_sizing(out, view, element, &variable, signatures)?;
         out.push_str(&format!(
             "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",
@@ -745,6 +764,30 @@ fn view_property<'a>(
         .properties
         .iter()
         .find(|property| property.name == name)
+}
+
+fn ui_zero_arg_event_body(
+    action: &crate::ast::ViewProperty,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    if let Some(transition) = &action.transition {
+        let next = ui_expr_c(&action.value, view, signatures)?;
+        return Ok(format!(
+            "{} = {next}; flux__ui_refresh();",
+            ui_state_c_name(&transition.state)
+        ));
+    }
+    let ExprKind::Var(function) = &action.value.kind else {
+        return Err(diag(
+            action.value.span,
+            "bootstrap UI event lowering requires a named fn() -> void callback or state transition",
+        ));
+    };
+    Ok(format!(
+        "{}(); flux__ui_refresh();",
+        function_c_name(function)
+    ))
 }
 
 fn ui_state_c_name(name: &str) -> String {
