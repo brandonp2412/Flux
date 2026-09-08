@@ -221,6 +221,7 @@ fn run() -> Result<(), CliError> {
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let mut generation = 0usize;
+    let mut analysis_cache = fluxc::project::ProjectAnalysisCache::default();
     write_development_status(
         target,
         "starting",
@@ -229,7 +230,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         "building initial process",
     );
     let (mut child, mut binary, mut watch_paths) =
-        match start_development_build(target, generation, mode) {
+        match start_development_build(target, generation, mode, &mut analysis_cache) {
             Ok(started) => started,
             Err(error) => {
                 write_development_status(
@@ -291,24 +292,27 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             "source change detected; recompiling",
         );
         eprintln!("reload: source change detected; recompiling");
-        let (diagnostics, sources) = fluxc::project::check_with_sources(target);
-        if !diagnostics.is_empty() {
-            report_diagnostics(target, &diagnostics, &sources);
-            watch_paths = merge_watch_paths(target, &watch_paths, &sources);
-            fingerprints = watch_fingerprints(&watch_paths);
-            write_development_status(
-                target,
-                "compile_error",
-                generation,
-                mode,
-                "compile failed; keeping the last good process",
-            );
-            status_state = "compile_error";
-            eprintln!("reload: compile failed; keeping the last good process");
-            continue;
-        }
-
-        let generated = match fluxc::project::compile_to_c(target) {
+        let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
+            Ok(analysis) => analysis,
+            Err(diagnostics) => {
+                let (_, sources) = fluxc::project::check_with_sources(target);
+                report_diagnostics(target, &diagnostics, &sources);
+                watch_paths = merge_watch_paths(target, &watch_paths, &sources);
+                fingerprints = watch_fingerprints(&watch_paths);
+                write_development_status(
+                    target,
+                    "compile_error",
+                    generation,
+                    mode,
+                    "compile failed; keeping the last good process",
+                );
+                status_state = "compile_error";
+                eprintln!("reload: compile failed; keeping the last good process");
+                continue;
+            }
+        };
+        let sources = analysis.sources.clone();
+        let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 report_diagnostics(target, &[diagnostic], &sources);
@@ -415,9 +419,18 @@ fn start_development_build(
     target: &Path,
     generation: usize,
     mode: BuildMode,
+    analysis_cache: &mut fluxc::project::ProjectAnalysisCache,
 ) -> Result<(Option<Child>, PathBuf, Vec<PathBuf>), CliError> {
-    let sources = validate_project(target)?;
-    let generated = match fluxc::project::compile_to_c(target) {
+    let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
+        Ok(analysis) => analysis,
+        Err(diagnostics) => {
+            let (_, sources) = fluxc::project::check_with_sources(target);
+            report_diagnostics(target, &diagnostics, &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let sources = analysis.sources.clone();
+    let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
         Ok(generated) => generated,
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);
