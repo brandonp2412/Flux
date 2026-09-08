@@ -403,7 +403,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
-  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `max_length: i64`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and keeps owned/editable string state sequenced behind the ownership/string model.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `max_length: i64`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
   - [ ] Editable Flux-owned text state, selection/caret APIs, richer validation, multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
@@ -624,7 +624,7 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 20 — Accessibility and internationalization
 
 - [ ] Semantic roles.
-- [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibility_label: str` and `accessibility_description: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
+- [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibility_label: str` and `accessibility_description: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, refreshes state-derived accessible text alongside the visible UI, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
 - [ ] Actions.
 - [ ] Focus ordering.
 - [ ] Screen-reader bridges.

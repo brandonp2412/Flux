@@ -1116,6 +1116,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
+        ("Button", "shortcut") => Some(Type::Str),
         ("Button", "on_press") | ("Toggle", "on_change") | ("Radio", "on_select") => {
             Some(Type::Function {
                 params: Vec::new(),
@@ -1196,6 +1197,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "text",
             "enabled",
             "primary",
+            "shortcut",
             "on_press",
             "visible",
             "tooltip",
@@ -1506,6 +1508,22 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     }
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
+            }
+
+            if element.kind == "Button"
+                && element
+                    .properties
+                    .iter()
+                    .any(|property| property.name == "shortcut")
+                && !element
+                    .properties
+                    .iter()
+                    .any(|property| property.name == "on_press")
+            {
+                diagnostics.push(diag(
+                    element.span,
+                    "Button.shortcut requires Button.on_press so the shortcut has a typed Flux action",
+                ));
             }
 
             if let Some(target) = custom_view {

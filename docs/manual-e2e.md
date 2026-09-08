@@ -52,7 +52,8 @@ Acceptance in the native window:
 - the text initially reads `Hello, Flux!`;
 - the button initially reads `Click me`;
 - clicking the button changes the text to `Clicked!` and the button to `Reset`;
-- clicking again restores the original labels.
+- `Ctrl+Enter` dispatches through that same typed `on_press` action without requiring focus on the button;
+- clicking or triggering the shortcut again restores the original labels.
 
 This interaction comes from Flux `state` plus the typed functional transition `on_press: clicked => !clicked`. The Flux source does not construct GTK objects or a widget/controller hierarchy.
 

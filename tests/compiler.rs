@@ -4162,7 +4162,13 @@ app Form
     check_source(source).expect("TextInput contract and submit callback should typecheck");
     let generated = compile_to_c(source).expect("TextInput should lower to native GTK entry");
     assert!(generated.contains("gtk_entry_new()"));
-    assert!(generated.contains("gtk_editable_set_text(GTK_EDITABLE(flux__ui_query), \"initial\")"));
+    assert_eq!(
+        generated
+            .matches("gtk_editable_set_text(GTK_EDITABLE(flux__ui_query), \"initial\")")
+            .count(),
+        1,
+        "TextInput.text is an initial value until Flux owns editable string state; refresh must not clobber native user edits"
+    );
     assert!(
         generated
             .contains("gtk_entry_set_placeholder_text(GTK_ENTRY(flux__ui_query), \"Search Flux\")")
@@ -4217,6 +4223,61 @@ app Form
 }
 
 #[test]
+fn button_shortcuts_validate_and_dispatch_through_existing_press_action() {
+    let source = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 0
+    Button action at 1,1
+        text: "Add"
+        shortcut: "Ctrl+Shift+Enter"
+        on_press: count => count + 1
+}
+app Shortcuts
+"#;
+    check_source(source).expect("button shortcut should typecheck with an on_press action");
+    let generated = compile_to_c(source).expect("button shortcut should lower natively");
+    assert!(generated.contains("GTK_SHORTCUT_SCOPE_GLOBAL"));
+    assert!(generated.contains("gtk_shortcut_trigger_parse_string(\"<Control><Shift>Return\")"));
+    assert!(generated.contains("gtk_callback_action_new(flux__ui_shortcut_action, NULL, NULL)"));
+    assert!(generated.contains("flux__ui_click_action(widget, NULL); return TRUE;"));
+
+    let missing_action = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcut: "Ctrl+K"
+}
+app Shortcuts
+"#;
+    let errors = check_source_all(missing_action).expect_err("shortcut without action must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("Button.shortcut requires Button.on_press")
+    }));
+
+    let invalid = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcut: "Command+K"
+        on_press: action
+}
+fn action() -> void {
+    print("action")
+}
+app Shortcuts
+"#;
+    check_source(invalid).expect("invalid shortcut syntax is a backend portability check");
+    let error = compile_to_c(invalid).expect_err("unsupported shortcut syntax must fail");
+    assert!(error.message.contains("modifiers Ctrl/Shift/Alt"));
+}
+
+#[test]
 fn native_elements_support_hover_leave_callbacks_and_state_transitions() {
     let source = r#"
 fn leave_notice() -> void {
@@ -4229,6 +4290,8 @@ view HoverCard {
     state hovered: bool = false
     Text title at 1,1
         text: "Hovered" if hovered else "Idle"
+        tooltip: "Leave" if hovered else "Hover me"
+        accessibility_label: "Hovered title" if hovered else "Idle title"
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -4244,6 +4307,8 @@ app HoverCard
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, ((flux__ui_state_hovered) ? (\"Leave\") : (\"Hover me\")))"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, ((flux__ui_state_hovered) ? (\"Hovered title\") : (\"Idle title\")), -1"));
     assert!(generated.contains("gtk_event_controller_motion_new()"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_hover_title)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_leave_title)"));

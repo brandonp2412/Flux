@@ -239,6 +239,14 @@ fn emit_linux_gtk_application(
         ));
     }
     for element in &view.elements {
+        if element.kind == "Button" && view_property(element, "shortcut").is_some() {
+            out.push_str(&format!(
+                "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data) {{ (void)args; (void)data; flux__ui_click_{}(widget, NULL); return TRUE; }}\n",
+                element.name, element.name
+            ));
+        }
+    }
+    for element in &view.elements {
         for (property_name, callback_name) in [("on_hover", "hover"), ("on_leave", "leave")] {
             let Some(action) = view_property(element, property_name) else {
                 continue;
@@ -574,6 +582,26 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
+                if let Some(property) = view_property(element, "shortcut") {
+                    let Some(shortcut) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "Button.shortcut must be a compile-time string",
+                        ));
+                    };
+                    let Some(trigger) = gtk_shortcut_trigger(&shortcut) else {
+                        return Err(diag(
+                            property.value.span,
+                            "Button.shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                        ));
+                    };
+                    let controller = format!("flux__shortcut_controller_{}", element.name);
+                    out.push_str(&format!(
+                        "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), GTK_SHORTCUT_SCOPE_GLOBAL);\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
+                        c_string(&trigger),
+                        element.name,
+                    ));
+                }
                 if view_property(element, "on_press").is_some() {
                     out.push_str(&format!(
                         "    g_signal_connect({variable}, \"clicked\", G_CALLBACK(flux__ui_click_{}), NULL);\n",
@@ -761,6 +789,46 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
     }
 }
 
+fn gtk_shortcut_trigger(value: &str) -> Option<String> {
+    let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
+    let (key, modifiers) = parts.split_last()?;
+    if key.is_empty() || modifiers.is_empty() {
+        return None;
+    }
+    let mut control = false;
+    let mut shift = false;
+    let mut alt = false;
+    for modifier in modifiers {
+        match *modifier {
+            "Ctrl" if !control => control = true,
+            "Shift" if !shift => shift = true,
+            "Alt" if !alt => alt = true,
+            _ => return None,
+        }
+    }
+    let key = match *key {
+        "Enter" => "Return".to_string(),
+        "Space" => "space".to_string(),
+        "Tab" | "Escape" | "Delete" | "Up" | "Down" | "Left" | "Right" => key.to_string(),
+        key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+            key.to_ascii_lowercase()
+        }
+        _ => return None,
+    };
+    let mut trigger = String::new();
+    if control {
+        trigger.push_str("<Control>");
+    }
+    if shift {
+        trigger.push_str("<Shift>");
+    }
+    if alt {
+        trigger.push_str("<Alt>");
+    }
+    trigger.push_str(&key);
+    Some(trigger)
+}
+
 fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
     let hex = value.strip_prefix('#')?;
     if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -867,6 +935,24 @@ fn emit_ui_refresh(
                 "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
             ));
         }
+        if let Some(property) = view_property(element, "tooltip") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_widget_set_tooltip_text({widget}, {value});\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_label") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_LABEL, {value}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_description") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
+            ));
+        }
         match element.kind.as_str() {
             "Text" => {
                 if let Some(property) = view_property(element, "text") {
@@ -883,10 +969,10 @@ fn emit_ui_refresh(
                 }
             }
             "TextInput" => {
-                if let Some(property) = view_property(element, "text") {
+                if let Some(property) = view_property(element, "placeholder") {
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
-                        "    if ({widget} != NULL) gtk_editable_set_text(GTK_EDITABLE({widget}), {value});\n"
+                        "    if ({widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), {value});\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "enabled") {

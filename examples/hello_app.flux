@@ -22,6 +22,7 @@ view HelloApp {
     Button action at 2,1
         text: "Reset" if clicked else "Click me"
         primary: true
+        shortcut: "Ctrl+Enter"
         on_press: clicked => !clicked
 }
 
