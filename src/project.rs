@@ -72,12 +72,22 @@ fn load_report_with_overlays(
 }
 
 pub fn analyze(entry: &Path) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
-    let (program, sources) = load(entry)?;
-    let signatures = typecheck::check_all(&program)?;
+    analyze_with_overlays(entry, &HashMap::new())
+}
+
+pub fn analyze_with_overlays(
+    entry: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
+    let report = load_report_with_overlays(entry, overlays)?;
+    if !report.diagnostics.is_empty() {
+        return Err(report.diagnostics);
+    }
+    let signatures = typecheck::check_all(&report.program)?;
     Ok(ProjectAnalysis {
-        program,
+        program: report.program,
         signatures,
-        sources,
+        sources: report.sources,
     })
 }
 

@@ -625,7 +625,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 # Milestone 23 — LSP and editor experience
 
-- [ ] Diagnostics. Reuse the same structured diagnostic model and source spans as the terminal renderer; do not create a separate editor-only error model.
+- [x] Diagnostics reuse the same structured diagnostic model and source spans as the terminal renderer, including open-buffer project overlays; there is no separate editor-only error model.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
   - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics published for a document are filtered to that document's stable source ID.
 - [ ] Completion.
@@ -635,7 +635,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Hover/type information.
   - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves usage-site hover when a symbol name is unambiguous; scope-resolved usage hover across shadowing/imports remains pending with richer reference indexing.
 - [ ] Go to definition.
-  - [x] Bootstrap standalone-buffer `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous. Scope/import-aware resolution remains pending.
+  - [x] Bootstrap `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous; when the current file imports modules, typed overlay project analysis resolves public imported declarations to their actual source-file URI/range. Scope-aware shadow resolution and reverse-workspace discovery remain pending.
 - [ ] Find references.
   - [x] Bootstrap standalone-buffer `textDocument/references` returns identifier occurrences only after the same unambiguous semantic target resolution used by hover/definition; strings/comments are excluded. Scope/import-aware reference indexing remains pending.
 - [ ] Rename.
@@ -647,7 +647,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Incremental workspace analysis. Overlay-aware project analysis now exists, but the bootstrap LSP still rebuilds the affected project analysis rather than caching/reusing typed workspace state between edits.
 - [ ] Package/module awareness.
   - [x] Open-buffer import graphs use the compiler's real module loader and in-memory overlays, preserving module visibility/import semantics across unsaved files.
-  - [ ] Workspace-root/package discovery and shared cached analysis for navigation/completion/refactoring across imported modules.
+  - [ ] Workspace-root/package discovery and shared cached analysis for navigation/completion/refactoring across imported modules. Forward go-to-definition from an importing file already uses typed overlay project analysis; reverse references/rename and imported completion still need workspace indexing.
 - [ ] UI syntax awareness.
 - [ ] Hot-reload status integration.
 

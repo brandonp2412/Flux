@@ -260,7 +260,9 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params")).and_then(
                         |(uri, line, character)| {
                             documents.get(uri).and_then(|source| {
-                                definition_for_document(uri, source, line, character, encoding)
+                                definition_for_document(
+                                    uri, source, &documents, line, character, encoding,
+                                )
                             })
                         },
                     );
@@ -1113,8 +1115,15 @@ fn request_position(params: Option<&JsonValue>) -> Option<(&str, usize, usize)> 
     ))
 }
 
+fn source_id_for_uri(uri: &str) -> SourceId {
+    file_uri_path(uri)
+        .as_deref()
+        .and_then(canonical_source_id)
+        .unwrap_or_else(|| SourceId::from_name(uri))
+}
+
 fn analyzed_document(uri: &str, source: &str) -> Option<crate::semantic::SemanticDatabase> {
-    let source_id = SourceId::from_name(uri);
+    let source_id = source_id_for_uri(uri);
     let program = crate::parser::parse_all_with_source(source, source_id).ok()?;
     if !program.imports.is_empty() {
         return None;
@@ -1133,7 +1142,7 @@ fn symbol_for_position<'a>(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<&'a crate::semantic::SemanticSymbol> {
-    let source_id = SourceId::from_name(uri);
+    let source_id = source_id_for_uri(uri);
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte = byte_offset_for_encoded_column(line, character, encoding);
     database
@@ -1149,16 +1158,48 @@ fn symbol_for_position<'a>(
 fn definition_for_document(
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
+    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+        let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+        let target = sources
+            .iter()
+            .find(|candidate| candidate.source_id == symbol.span.source_id)?;
+        return Some(object([
+            (
+                "uri",
+                JsonValue::String(format!("file://{}", target.path.display())),
+            ),
+            ("range", lsp_range(symbol.span, &target.text, encoding)),
+        ]));
+    }
     let database = analyzed_document(uri, source)?;
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
     Some(object([
         ("uri", JsonValue::String(uri.to_string())),
         ("range", lsp_range(symbol.span, source, encoding)),
     ]))
+}
+
+fn analyzed_project_document(
+    uri: &str,
+    documents: &HashMap<String, String>,
+) -> Option<(
+    crate::semantic::SemanticDatabase,
+    Vec<crate::project::ProjectSource>,
+)> {
+    let path = file_uri_path(uri)?;
+    if !path.exists() {
+        return None;
+    }
+    let overlays = document_overlays(documents);
+    let analysis = crate::project::analyze_with_overlays(&path, &overlays).ok()?;
+    let database =
+        crate::semantic::SemanticDatabase::from_analyzed(analysis.program, analysis.signatures);
+    Some((database, analysis.sources))
 }
 
 fn references_for_document(
@@ -1413,19 +1454,26 @@ fn document_diagnostics_with_overlays(
     documents: &HashMap<String, String>,
 ) -> Vec<Diagnostic> {
     if let Some(path) = file_uri_path(uri)
-        && path.exists()
+        && let Ok(current_path) = std::fs::canonicalize(&path)
     {
         let overlays = document_overlays(documents);
-        let current_id = canonical_source_id(&path).unwrap_or_else(|| SourceId::from_name(uri));
-        let (diagnostics, _) = crate::project::check_with_overlays(&path, &overlays);
-        return diagnostics
-            .into_iter()
-            .filter(|diagnostic| {
-                diagnostic.span.is_none_or(|span| {
-                    span.source_id == current_id || span.source_id == SourceId::UNKNOWN
+        let current_id = SourceId::from_name(current_path.to_string_lossy().as_ref());
+        if let Some((diagnostics, entry_path)) =
+            best_workspace_analysis(&current_path, documents, &overlays)
+        {
+            let is_entry = entry_path
+                .as_ref()
+                .is_some_and(|entry| entry == &current_path);
+            return diagnostics
+                .into_iter()
+                .filter(|diagnostic| match diagnostic.span {
+                    Some(span) => {
+                        span.source_id == current_id || span.source_id == SourceId::UNKNOWN
+                    }
+                    None => is_entry,
                 })
-            })
-            .collect();
+                .collect();
+        }
     }
 
     let source_id = SourceId::from_name(uri);
@@ -1436,6 +1484,71 @@ fn document_diagnostics_with_overlays(
             .unwrap_or_default(),
         Ok(_) => Vec::new(),
     }
+}
+
+fn best_workspace_analysis(
+    current_path: &std::path::Path,
+    documents: &HashMap<String, String>,
+    overlays: &HashMap<PathBuf, String>,
+) -> Option<(Vec<Diagnostic>, Option<PathBuf>)> {
+    let mut candidates = workspace_project_targets(documents);
+    if !candidates.iter().any(|candidate| candidate == current_path) {
+        candidates.push(current_path.to_path_buf());
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    let mut best: Option<(usize, bool, Vec<Diagnostic>, Option<PathBuf>)> = None;
+    for candidate in candidates {
+        let (diagnostics, sources) = crate::project::check_with_overlays(&candidate, overlays);
+        if !sources.iter().any(|source| source.path == current_path) {
+            continue;
+        }
+        let entry_path = crate::project::resolve_entry(&candidate)
+            .ok()
+            .and_then(|entry| std::fs::canonicalize(entry).ok());
+        let manifest_backed = candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "flux.toml");
+        let score = (sources.len(), manifest_backed);
+        if best
+            .as_ref()
+            .is_none_or(|(count, manifest, _, _)| score > (*count, *manifest))
+        {
+            best = Some((sources.len(), manifest_backed, diagnostics, entry_path));
+        }
+    }
+    best.map(|(_, _, diagnostics, entry_path)| (diagnostics, entry_path))
+}
+
+fn workspace_project_targets(documents: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    for uri in documents.keys() {
+        let Some(path) = file_uri_path(uri) else {
+            continue;
+        };
+        let Ok(canonical) = std::fs::canonicalize(path) else {
+            continue;
+        };
+        targets.push(canonical.clone());
+        if let Some(manifest) = nearest_package_manifest(&canonical) {
+            targets.push(manifest);
+        }
+    }
+    targets
+}
+
+fn nearest_package_manifest(path: &std::path::Path) -> Option<PathBuf> {
+    let mut directory = path.parent();
+    while let Some(current) = directory {
+        let manifest = current.join("flux.toml");
+        if manifest.is_file() {
+            return std::fs::canonicalize(manifest).ok();
+        }
+        directory = current.parent();
+    }
+    None
 }
 
 fn document_overlays(documents: &HashMap<String, String>) -> HashMap<PathBuf, String> {
@@ -2142,9 +2255,11 @@ mod tests {
         let uri = "file:///tmp/navigation.flux";
         let source =
             "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
-        let definition = definition_for_document(uri, source, 1, 19, PositionEncoding::Utf8)
-            .expect("function usage should resolve")
-            .to_json();
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let definition =
+            definition_for_document(uri, source, &documents, 1, 19, PositionEncoding::Utf8)
+                .expect("function usage should resolve")
+                .to_json();
         assert!(definition.contains("\"line\":0"));
         assert!(definition.contains("\"character\":3"));
 
@@ -2164,7 +2279,11 @@ mod tests {
         let uri = "file:///tmp/ambiguous.flux";
         let source =
             "fn first(value: i64) -> i64 { value }\nfn second(value: i64) -> i64 { value }\n";
-        assert!(definition_for_document(uri, source, 0, 31, PositionEncoding::Utf8).is_none());
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        assert!(
+            definition_for_document(uri, source, &documents, 0, 31, PositionEncoding::Utf8,)
+                .is_none()
+        );
         assert!(references_for_document(uri, source, 0, 31, PositionEncoding::Utf8).is_empty());
         assert!(rename_for_document(uri, source, 0, 31, "item", PositionEncoding::Utf8).is_none());
     }
@@ -2178,6 +2297,36 @@ mod tests {
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
+    }
+
+    #[test]
+    fn go_to_definition_resolves_imported_public_symbols() {
+        let root = std::env::temp_dir().join(format!("flux-lsp-definition-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 42 }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let main_uri = format!("file://{}", main.display());
+        let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+        let definition = definition_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            1,
+            20,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported public function should resolve")
+        .to_json();
+        assert!(definition.contains("dep.flux"));
+        assert!(definition.contains("\"line\":0"));
+        assert!(definition.contains("\"character\":7"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2207,6 +2356,21 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| { diagnostic.message.contains("expected i64, got str") })
+        );
+        let dependency_uri = documents
+            .keys()
+            .find(|uri| *uri != &main_uri)
+            .expect("dependency URI should remain open");
+        let dependency_diagnostics = document_diagnostics_with_overlays(
+            dependency_uri,
+            "pub fn value() -> str { \"unsaved\" }\n",
+            &documents,
+        );
+        assert!(
+            !dependency_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("program requires fn main")),
+            "imported modules must not be diagnosed as executable entry points"
         );
         let _ = std::fs::remove_dir_all(root);
     }

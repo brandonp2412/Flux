@@ -2994,6 +2994,65 @@ fn lsp_cli_serves_signature_navigation_references_and_safe_rename() {
     assert!(stdout.contains("\"id\":12,\"jsonrpc\":\"2.0\",\"result\":null"));
 }
 
+#[test]
+fn lsp_cli_republishes_dependent_diagnostics_for_unsaved_import_overlays() {
+    let root = std::env::temp_dir().join(format!("flux-lsp-import-overlay-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+    let dependency = fs::canonicalize(dependency).unwrap();
+    let entry = fs::canonicalize(entry).unwrap();
+    let dependency_uri = format!("file://{}", dependency.display());
+    let entry_uri = format!("file://{}", entry.display());
+
+    let initialize =
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    let open_entry = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{entry_uri}","languageId":"flux","version":1,"text":"import \"dep.flux\"\nfn main() -> i64 {{ value() }}\n"}}}}}}"#
+    );
+    let open_dependency = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{dependency_uri}","languageId":"flux","version":1,"text":"pub fn value() -> str {{ \"unsaved\" }}\n"}}}}}}"#
+    );
+    let shutdown = r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+    let input = [initialize, &open_entry, &open_dependency, shutdown, exit]
+        .into_iter()
+        .map(lsp_frame)
+        .collect::<String>();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("fluxc lsp should start");
+    child
+        .stdin
+        .as_mut()
+        .expect("LSP stdin should be piped")
+        .write_all(input.as_bytes())
+        .expect("LSP input should be writable");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("LSP should exit cleanly");
+    let _ = fs::remove_dir_all(root);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
+    assert!(stdout.contains("expected i64, got str"));
+    assert!(stdout.contains(&entry_uri));
+    assert!(stdout.contains(&dependency_uri));
+    assert!(!stdout.contains("program requires fn main"));
+}
+
 fn lsp_frame(payload: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{payload}", payload.len())
 }
