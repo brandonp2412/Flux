@@ -488,6 +488,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 # Milestone 14 — Styling, themes, responsive UI, and animation
 
 - [ ] Colors.
+  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes. A first-class `Color` value type, themes/tokens, and broader control/background/border colors remain pending.
   - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` values, is statically typed/LSP-visible, and lowers to native Pango foreground attributes on Linux; dynamic/theme colors and broader element styling remain pending.
 - [ ] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.

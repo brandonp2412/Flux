@@ -3869,6 +3869,38 @@ app Feed
 }
 
 #[test]
+fn text_color_validates_hex_and_lowers_to_native_pango_attributes() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        color: "#2563EB80"
+}
+app Screen
+"#;
+    check_source(source).expect("Text.color should typecheck as a string property");
+    let generated = compile_to_c(source).expect("valid hex Text.color should lower natively");
+    assert!(generated.contains("pango_attr_foreground_new(9509, 25443, 60395)"));
+    assert!(generated.contains("pango_attr_foreground_alpha_new(32896)"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        color: "blue"
+}
+app Screen
+"#;
+    check_source(invalid).expect("hex validation happens in native lowering");
+    let error = compile_to_c(invalid).expect_err("non-hex Text.color must fail");
+    assert!(error.message.contains("#RRGGBB or #RRGGBBAA"));
+}
+
+#[test]
 fn native_elements_support_state_visibility_and_minimum_size_constraints() {
     let source = r#"
 view Screen {
