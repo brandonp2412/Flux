@@ -1083,6 +1083,14 @@ fn signature_help_for_document(
             active_parameter,
         ));
     }
+    if let Some(ty) = visible_local_callable_type(database, uri, source, line_index + 1, call_name)
+    {
+        return Some(signature_help_for_function_value(
+            call_name,
+            &ty,
+            active_parameter,
+        ));
+    }
     let function = database
         .program()
         .functions
@@ -1113,6 +1121,76 @@ fn signature_help_for_document(
             JsonValue::Number(active_parameter.min(function.params.len().saturating_sub(1)) as i64),
         ),
     ]))
+}
+
+fn visible_local_callable_type(
+    database: &crate::semantic::SemanticDatabase,
+    uri: &str,
+    source: &str,
+    line: usize,
+    name: &str,
+) -> Option<crate::ast::Type> {
+    use crate::semantic::SymbolKind;
+    let source_id = source_id_for_uri(uri);
+    let symbol = database
+        .symbols_named(name)
+        .filter(|symbol| {
+            symbol.span.source_id == source_id
+                && symbol.span.line <= line
+                && matches!(
+                    symbol.kind,
+                    SymbolKind::Parameter | SymbolKind::Binding | SymbolKind::MutableBinding
+                )
+                && local_symbol_visible_at_line(source, symbol, line)
+        })
+        .max_by_key(|symbol| symbol.span.line)?;
+    let ty = database.signatures().canonical_type(symbol.ty.as_ref()?);
+    matches!(ty, crate::ast::Type::Function { .. }).then_some(ty)
+}
+
+fn signature_help_for_function_value(
+    name: &str,
+    ty: &crate::ast::Type,
+    active_parameter: usize,
+) -> JsonValue {
+    let crate::ast::Type::Function { params, returns } = ty else {
+        unreachable!("function-value signature help requires a function type")
+    };
+    let param_labels = params
+        .iter()
+        .map(crate::ast::Type::name)
+        .collect::<Vec<_>>();
+    let returns = match returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => ty.name(),
+        values => format!(
+            "({})",
+            values
+                .iter()
+                .map(crate::ast::Type::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let label = format!("fn {name}({}) -> {returns}", param_labels.join(", "));
+    let parameters = param_labels
+        .into_iter()
+        .map(|label| object([("label", JsonValue::String(label))]))
+        .collect::<Vec<_>>();
+    object([
+        (
+            "signatures",
+            JsonValue::Array(vec![object([
+                ("label", JsonValue::String(label)),
+                ("parameters", JsonValue::Array(parameters)),
+            ])]),
+        ),
+        ("activeSignature", JsonValue::Number(0)),
+        (
+            "activeParameter",
+            JsonValue::Number(active_parameter.min(params.len().saturating_sub(1)) as i64),
+        ),
+    ])
 }
 
 fn signature_help_for_interface_capability(
@@ -1947,6 +2025,9 @@ fn hover_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
+    if let Some(hover) = ui_contract_hover(source, line_index, character, encoding) {
+        return Some(hover);
+    }
     let project_database = analyzed_project_document(uri, documents).map(|(database, _)| database);
     let standalone_database;
     let database = if let Some(database) = project_database.as_ref() {
@@ -1975,6 +2056,84 @@ fn hover_for_document(
         ),
         ("range", lsp_range(hovered_span, source, encoding)),
     ]))
+}
+
+fn ui_contract_hover(
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let line = *lines.get(line_index)?;
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let word = identifier_at(line, byte)?;
+    let start = identifier_start_at(line, byte)?;
+    let indent = leading_spaces(line);
+    let description = if indent == 4 {
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        if tokens.len() < 4 || tokens[2] != "at" || tokens[0] != word {
+            return None;
+        }
+        view_element_hover_description(word, source)?
+    } else if indent >= 8 {
+        let (kind, _) = enclosing_view_element(&lines, line_index)?;
+        let property_name = line.trim().split_once(':')?.0.trim();
+        if property_name != word {
+            return None;
+        }
+        view_property_hover_description(kind, property_name, source)?
+    } else {
+        return None;
+    };
+    let span = SourceSpan::new(line_index + 1, start + 1, word.len());
+    Some(object([
+        (
+            "contents",
+            object([
+                ("kind", JsonValue::String("markdown".to_string())),
+                (
+                    "value",
+                    JsonValue::String(format!("```flux\n{description}\n```")),
+                ),
+            ]),
+        ),
+        ("range", lsp_range(span, source, encoding)),
+    ]))
+}
+
+fn view_element_hover_description(kind: &str, source: &str) -> Option<String> {
+    let properties = crate::typecheck::view_property_names(kind);
+    if !properties.is_empty() {
+        let rendered = properties
+            .iter()
+            .filter_map(|property| {
+                crate::typecheck::view_property_type(kind, property)
+                    .map(|ty| format!("{property}: {}", ty.name()))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!("element {kind} {{ {rendered} }}"));
+    }
+    let program = crate::parser::parse_all(source).ok()?;
+    let view = program.views.iter().find(|view| view.name == kind)?;
+    let params = view
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, param.ty.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("view {}({params})", view.name))
+}
+
+fn view_property_hover_description(kind: &str, property: &str, source: &str) -> Option<String> {
+    if let Some(ty) = crate::typecheck::view_property_type(kind, property) {
+        return Some(format!("property {kind}.{property}: {}", ty.name()));
+    }
+    let program = crate::parser::parse_all(source).ok()?;
+    let view = program.views.iter().find(|view| view.name == kind)?;
+    let param = view.params.iter().find(|param| param.name == property)?;
+    Some(format!("property {kind}.{property}: {}", param.ty.name()))
 }
 
 fn hover_description(
@@ -2912,6 +3071,37 @@ mod tests {
     }
 
     #[test]
+    fn ui_hover_uses_contracts_even_when_builtin_view_source_is_incomplete() {
+        let uri = "file:///tmp/ui-hover.flux";
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        selectable: true\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let element = hover_for_document(uri, source, &documents, 3, 5, PositionEncoding::Utf8)
+            .expect("built-in element hover should survive incomplete source")
+            .to_json();
+        assert!(element.contains("element Text { text: str, selectable: bool }"));
+
+        let property = hover_for_document(uri, source, &documents, 4, 10, PositionEncoding::Utf8)
+            .expect("built-in property hover should survive incomplete source")
+            .to_json();
+        assert!(property.contains("property Text.selectable: bool"));
+    }
+
+    #[test]
+    fn ui_hover_describes_custom_view_parameters_when_source_is_valid() {
+        let uri = "file:///tmp/custom-ui-hover.flux";
+        let source = "view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        label: \"Flux\"\n}\nfn main() -> i64 { 0 }\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let element = hover_for_document(uri, source, &documents, 9, 5, PositionEncoding::Utf8)
+            .expect("custom view kind should hover")
+            .to_json();
+        assert!(element.contains("view Badge(label: str)"));
+        let property = hover_for_document(uri, source, &documents, 10, 10, PositionEncoding::Utf8)
+            .expect("custom view property should hover")
+            .to_json();
+        assert!(property.contains("property Badge.label: str"));
+    }
+
+    #[test]
     fn hover_reports_declaration_and_unambiguous_usage_types() {
         let source =
             "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
@@ -2980,6 +3170,32 @@ mod tests {
         assert!(json.contains("var total: i64"));
         assert!(!json.contains("\"label\":\"hidden\""));
         assert!(!json.contains("\"label\":\"other\""));
+    }
+
+    #[test]
+    fn signature_help_supports_first_class_function_values() {
+        let uri = "file:///tmp/function-value-signature.flux";
+        let source = "type Mapper = fn(i64, str) -> bool\nfn apply(transform: Mapper) -> bool {\n    return transform(42, \"Flux\")\n}\nfn always_true(value: i64, label: str) -> bool { true }\nfn main() -> i64 {\n    let result: bool = apply(always_true)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let call_line_index = source
+            .lines()
+            .position(|line| line.contains("transform(42"))
+            .expect("function-value call line should exist");
+        let call_line = source.lines().nth(call_line_index).unwrap();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            call_line_index,
+            call_line.len().saturating_sub(1),
+            PositionEncoding::Utf8,
+        )
+        .expect("first-class function call should have signature help")
+        .to_json();
+        assert!(help.contains("fn transform(i64, str) -> bool"));
+        assert!(help.contains("\"label\":\"i64\""));
+        assert!(help.contains("\"label\":\"str\""));
+        assert!(help.contains("\"activeParameter\":1"));
     }
 
     #[test]
