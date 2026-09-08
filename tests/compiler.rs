@@ -2756,6 +2756,9 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     )
     .expect("run entry should be writable");
 
+    let status_path =
+        fluxc::project::development_status_path(&entry).expect("run status path should resolve");
+    let _ = fs::remove_file(&status_path);
     let stdout = fs::File::create(&log).expect("run log should be writable");
     let stderr = stdout.try_clone().expect("run log should be cloneable");
     let mut runner = Command::new(env!("CARGO_BIN_EXE_fluxc"))
@@ -2781,6 +2784,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         ],
         Duration::from_secs(5),
     );
+    wait_for_run_status(&status_path, "restarted", 1, Duration::from_secs(5));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -2789,16 +2793,36 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &["expected str, got bool", "reload: compile failed"],
         Duration::from_secs(5),
     );
+    wait_for_run_status(&status_path, "compile_error", 1, Duration::from_secs(5));
     fs::write(
         &dependency,
         "pub fn message() -> str { \"version-three\" }\n",
     )
     .expect("repaired dependency should be writable");
     wait_for_log(&log, &["version-three"], Duration::from_secs(5));
+    wait_for_run_status(&status_path, "restarted", 2, Duration::from_secs(5));
 
     let _ = runner.kill();
     let _ = runner.wait();
+    let _ = fs::remove_file(status_path);
     let _ = fs::remove_dir_all(&root);
+}
+
+fn wait_for_run_status(path: &std::path::Path, state: &str, generation: usize, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if text.contains(&format!("\"state\":\"{state}\""))
+            && text.contains(&format!("\"generation\":{generation}"))
+        {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for run status {state}/{generation}; status was:\n{text}"
+        );
+        thread::sleep(Duration::from_millis(40));
+    }
 }
 
 fn wait_for_log(path: &std::path::Path, needles: &[&str], timeout: Duration) {
@@ -2896,6 +2920,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"completionProvider\""));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("\"hoverProvider\":true"));
+    assert!(stdout.contains("\"fluxHotReloadStatus\":true"));
     assert!(stdout.contains("\"inlayHintProvider\":true"));
     assert!(stdout.contains("\"definitionProvider\":true"));
     assert!(stdout.contains("\"referencesProvider\":true"));

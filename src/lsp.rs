@@ -415,6 +415,19 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("flux/hotReloadStatus") => {
+                if let Some(id) = id {
+                    let uri = message
+                        .get("params")
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let status = uri
+                        .and_then(|uri| hot_reload_status(uri, &documents))
+                        .unwrap_or(JsonValue::Null);
+                    write_message(&mut writer, &jsonrpc_result(id, status).to_json())?;
+                }
+            }
             Some("textDocument/signatureHelp") => {
                 if let Some(id) = id {
                     let result = request_position(message.get("params")).and_then(
@@ -489,6 +502,10 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                     ),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
                     ("hoverProvider", JsonValue::Bool(true)),
+                    (
+                        "experimental",
+                        object([("fluxHotReloadStatus", JsonValue::Bool(true))]),
+                    ),
                     ("inlayHintProvider", JsonValue::Bool(true)),
                     ("definitionProvider", JsonValue::Bool(true)),
                     ("referencesProvider", JsonValue::Bool(true)),
@@ -2218,6 +2235,31 @@ fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<JsonValue> {
         previous_start = token.start;
     }
     data
+}
+
+fn hot_reload_status(uri: &str, documents: &HashMap<String, String>) -> Option<JsonValue> {
+    let current_path = std::fs::canonicalize(file_uri_path(uri)?).ok()?;
+    let mut candidates = workspace_project_targets(documents);
+    if !candidates
+        .iter()
+        .any(|candidate| candidate == &current_path)
+    {
+        candidates.push(current_path);
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let status_path = crate::project::development_status_path(&candidate).ok()?;
+            let text = std::fs::read_to_string(status_path).ok()?;
+            let value = parse_json(&text).ok()?;
+            let updated = value.get("updated_unix_ms")?.as_usize()?;
+            Some((updated, value))
+        })
+        .max_by_key(|(updated, _)| *updated)
+        .map(|(_, value)| value)
 }
 
 fn request_position(params: Option<&JsonValue>) -> Option<(&str, usize, usize)> {
@@ -4547,6 +4589,31 @@ mod tests {
         assert!(json.contains("\"label\":\": i64\""));
         assert_eq!(json.matches("\"kind\":1").count(), 2);
         assert!(!json.contains("load: fn"));
+    }
+
+    #[test]
+    fn hot_reload_status_reads_the_latest_project_runner_state() {
+        let root = std::env::temp_dir().join(format!("flux-lsp-run-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary run-status project should be writable");
+        let main = root.join("main.flux");
+        std::fs::write(&main, "fn main() -> i64 { 0 }\n").expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = file_uri_from_path(&main);
+        let status_path = crate::project::development_status_path(&main).unwrap();
+        std::fs::write(
+            &status_path,
+            "{\"version\":1,\"state\":\"restarted\",\"generation\":3,\"mode\":\"debug\",\"runner_pid\":42,\"updated_unix_ms\":1234,\"message\":\"rebuilt\"}\n",
+        )
+        .expect("status should be writable");
+        let documents = HashMap::from([(uri.clone(), "fn main() -> i64 { 0 }\n".to_string())]);
+        let status = hot_reload_status(&uri, &documents)
+            .expect("LSP should discover the current runner status")
+            .to_json();
+        assert!(status.contains("\"state\":\"restarted\""));
+        assert!(status.contains("\"generation\":3"));
+        let _ = std::fs::remove_file(status_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

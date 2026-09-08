@@ -324,6 +324,12 @@ pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
     resolve_project_target(target).map(|(entry, _, _)| entry)
 }
 
+pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
+    let entry = resolve_entry(target)?;
+    let source_id = SourceId::from_name(entry.to_string_lossy().as_ref());
+    Ok(std::env::temp_dir().join(format!("fluxc-run-status-{}.json", source_id.value())))
+}
+
 fn resolve_project_target(
     target: &Path,
 ) -> Result<(PathBuf, PathBuf, Option<String>), Vec<Diagnostic>> {

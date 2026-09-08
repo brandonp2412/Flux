@@ -5,7 +5,7 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
@@ -221,9 +221,36 @@ fn run() -> Result<(), CliError> {
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let mut generation = 0usize;
+    write_development_status(
+        target,
+        "starting",
+        generation,
+        mode,
+        "building initial process",
+    );
     let (mut child, mut binary, mut watch_paths) =
-        start_development_build(target, generation, mode)?;
+        match start_development_build(target, generation, mode) {
+            Ok(started) => started,
+            Err(error) => {
+                write_development_status(
+                    target,
+                    "compile_error",
+                    generation,
+                    mode,
+                    "initial build failed",
+                );
+                return Err(error);
+            }
+        };
     let mut fingerprints = watch_fingerprints(&watch_paths);
+    write_development_status(
+        target,
+        "running",
+        generation,
+        mode,
+        "development process started",
+    );
+    let mut status_state = "running";
     eprintln!(
         "run: started ({}); watching {} source file{}",
         mode.name(),
@@ -237,6 +264,16 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             .is_some_and(|process| process.try_wait().ok().flatten().is_some())
         {
             child = None;
+            if status_state != "compile_error" {
+                write_development_status(
+                    target,
+                    "exited",
+                    generation,
+                    mode,
+                    "application exited; waiting for source changes",
+                );
+                status_state = "exited";
+            }
             eprintln!("run: app exited; waiting for source changes");
         }
         thread::sleep(Duration::from_millis(75));
@@ -246,12 +283,27 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         }
 
         fingerprints = debounce_changes(&watch_paths, current);
+        write_development_status(
+            target,
+            "compiling",
+            generation + 1,
+            mode,
+            "source change detected; recompiling",
+        );
         eprintln!("reload: source change detected; recompiling");
         let (diagnostics, sources) = fluxc::project::check_with_sources(target);
         if !diagnostics.is_empty() {
             report_diagnostics(target, &diagnostics, &sources);
             watch_paths = merge_watch_paths(target, &watch_paths, &sources);
             fingerprints = watch_fingerprints(&watch_paths);
+            write_development_status(
+                target,
+                "compile_error",
+                generation,
+                mode,
+                "compile failed; keeping the last good process",
+            );
+            status_state = "compile_error";
             eprintln!("reload: compile failed; keeping the last good process");
             continue;
         }
@@ -262,6 +314,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 report_diagnostics(target, &[diagnostic], &sources);
                 watch_paths = merge_watch_paths(target, &watch_paths, &sources);
                 fingerprints = watch_fingerprints(&watch_paths);
+                write_development_status(
+                    target,
+                    "compile_error",
+                    generation,
+                    mode,
+                    "compile failed; keeping the last good process",
+                );
+                status_state = "compile_error";
                 eprintln!("reload: compile failed; keeping the last good process");
                 continue;
             }
@@ -269,6 +329,8 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         generation += 1;
         let next_binary = development_binary_path(generation);
         if let Err(message) = build_native(&generated, &next_binary, mode) {
+            write_development_status(target, "compile_error", generation, mode, &message);
+            status_state = "compile_error";
             eprintln!("reload: {message}");
             let _ = fs::remove_file(&next_binary);
             continue;
@@ -280,8 +342,73 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
+        write_development_status(
+            target,
+            "restarted",
+            generation,
+            mode,
+            "rebuilt and restarted after source change",
+        );
+        status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
     }
+}
+
+fn write_development_status(
+    target: &Path,
+    state: &str,
+    generation: usize,
+    mode: BuildMode,
+    message: &str,
+) {
+    let Ok(path) = fluxc::project::development_status_path(target) else {
+        return;
+    };
+    let updated_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let payload = format!(
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}}}\n",
+        json_string(state),
+        json_string(mode.name()),
+        std::process::id(),
+        json_string(message),
+    );
+    let temp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("fluxc-run-status"),
+        std::process::id()
+    ));
+    if fs::write(&temp, payload).is_err() {
+        let _ = fs::remove_file(&temp);
+        return;
+    }
+    if fs::rename(&temp, &path).is_err() {
+        let _ = fs::remove_file(&path);
+        let _ = fs::rename(&temp, &path);
+    }
+    let _ = fs::remove_file(&temp);
+}
+
+fn json_string(input: &str) -> String {
+    let mut output = String::with_capacity(input.len() + 2);
+    output.push('"');
+    for ch in input.chars() {
+        match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            ch if ch < ' ' => output.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => output.push(ch),
+        }
+    }
+    output.push('"');
+    output
 }
 
 fn start_development_build(

@@ -412,7 +412,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Fast Refresh-style boundary detection: reset only state that is no longer structurally compatible.
 - [ ] Automatically fall back to a controlled restart when a change cannot be safely hot-applied.
   - [x] Bootstrap controlled-restart path builds a replacement binary before stopping the current child; failed recompiles keep the last good process untouched and continue watching for repairs.
-- [x] Surface reload/restart reason in tooling without interrupting normal development: source detection, compile failure, child exit, and successful rebuild/restart are reported concisely.
+- [x] Surface reload/restart reason in tooling without interrupting normal development: source detection, compile failure, child exit, and successful rebuild/restart are reported concisely, and `fluxc run` publishes a stable last-known JSON status keyed by the resolved entry for editor/tooling consumers.
 - [x] Debounce/coalesce rapid editor saves before recompiling.
 - [x] Watch dependency/module changes using the compiler's loaded import graph, refreshing the watch set after successful recompilation and retaining known paths across failed edits.
 - [ ] Stable development ABI/function indirection strategy.
@@ -657,7 +657,7 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] UI contract hover recognizes flat element-kind and property positions: built-in element/property types come directly from compiler contracts and remain available even while the surrounding view is temporarily incomplete; valid composed views show their typed parameter contract.
   - [x] Composed-view property navigation maps a property usage such as `Badge.label:` to the declared `label` parameter on `view Badge(...)`, including public imported views resolved through typed project overlays.
   - [x] Malformed-view contract recovery reuses the real Flux parser on the complete top-level prefix before the currently edited view; for recovered imports it then loads dependencies through the normal project loader with package containment and unsaved overlays. Property completion, hover, and property-definition navigation therefore retain both earlier local and public imported view contracts while the current view is incomplete.
-- [ ] Hot-reload status integration.
+- [x] Hot-reload status integration: `fluxc run` atomically publishes versioned starting/running/compiling/compile-error/restarted/exited status with generation, mode, runner PID, timestamp, and reason; `fluxc lsp` advertises `fluxHotReloadStatus` and serves the newest applicable status through `flux/hotReloadStatus` without coupling the runner and editor into one process.
 
 # Milestone 24 — Debugger
 
