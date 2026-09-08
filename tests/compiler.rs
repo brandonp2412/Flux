@@ -3229,6 +3229,60 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
 }
 
 #[test]
+fn native_build_cache_reuses_identical_codegen_across_output_paths() {
+    let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native cache fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(&source, "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("native cache source should be writable");
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let second = root.join("second");
+
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first cached build should run");
+    assert!(
+        built.status.success(),
+        "first cached build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let artifacts = fs::read_dir(cache.join("native"))
+        .expect("native cache directory should exist")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("native cache should be readable");
+    assert_eq!(artifacts.len(), 1);
+    let cache_artifact = artifacts[0].path();
+    fs::write(&cache_artifact, b"cached-native-artifact")
+        .expect("cache fixture should be replaceable");
+
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("second cached build should run");
+    assert!(
+        rebuilt.status.success(),
+        "second cached build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        fs::read(&second).expect("second build output should be readable"),
+        b"cached-native-artifact"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn flux_package_builds_a_manifest_backed_linux_bundle() {
     let root = std::env::temp_dir().join(format!("flux-package-cli-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

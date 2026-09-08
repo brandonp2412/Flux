@@ -1159,6 +1159,18 @@ fn default_binary_path(source: &Path) -> PathBuf {
 }
 
 fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), String> {
+    let cache = native_build_cache_path(c_source, mode);
+    if cache.is_file() {
+        fs::copy(&cache, output).map_err(|error| {
+            format!(
+                "failed to restore native build cache '{}' to '{}': {error}",
+                cache.display(),
+                output.display()
+            )
+        })?;
+        return Ok(());
+    }
+
     let temp = env::temp_dir().join(format!("fluxc-{}.c", std::process::id()));
     fs::write(&temp, c_source)
         .map_err(|error| format!("failed to write temporary C source: {error}"))?;
@@ -1189,7 +1201,50 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
             String::from_utf8_lossy(&output_result.stderr)
         ));
     }
+    if let Some(parent) = cache.parent()
+        && fs::create_dir_all(parent).is_ok()
+    {
+        let temporary_cache = cache.with_extension(format!("tmp-{}", std::process::id()));
+        if fs::copy(output, &temporary_cache).is_ok()
+            && fs::rename(&temporary_cache, &cache).is_err()
+        {
+            let _ = fs::remove_file(&temporary_cache);
+        }
+    }
     Ok(())
+}
+
+fn native_build_cache_path(c_source: &str, mode: BuildMode) -> PathBuf {
+    let mut hash = 0xcbf29ce484222325u64;
+    for bytes in [
+        b"flux-native-cache-v1".as_slice(),
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        mode.name().as_bytes(),
+        env::consts::OS.as_bytes(),
+        env::consts::ARCH.as_bytes(),
+        c_source.as_bytes(),
+    ] {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    native_build_cache_dir().join(format!("{hash:016x}"))
+}
+
+fn native_build_cache_dir() -> PathBuf {
+    if let Some(path) = env::var_os("FLUX_CACHE_DIR") {
+        return PathBuf::from(path).join("native");
+    }
+    if let Some(path) = env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(path).join("flux/native");
+    }
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home).join(".cache/flux/native");
+    }
+    env::temp_dir().join("flux-cache/native")
 }
 
 fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
