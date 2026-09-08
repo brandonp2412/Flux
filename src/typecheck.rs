@@ -1086,12 +1086,17 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
-        ("Button", "on_press") | ("Toggle", "on_change") => Some(Type::Function {
-            params: Vec::new(),
-            returns: Vec::new(),
-        }),
-        ("Toggle", "label") => Some(Type::Str),
-        ("Toggle", "checked") | ("Toggle", "enabled") => Some(Type::Bool),
+        ("Button", "on_press") | ("Toggle", "on_change") | ("Radio", "on_select") => {
+            Some(Type::Function {
+                params: Vec::new(),
+                returns: Vec::new(),
+            })
+        }
+        ("Toggle", "label") | ("Radio", "label") => Some(Type::Str),
+        ("Toggle", "checked")
+        | ("Toggle", "enabled")
+        | ("Radio", "selected")
+        | ("Radio", "enabled") => Some(Type::Bool),
         ("Nav", "label") | ("Chart", "label") | ("Content", "label") => Some(Type::Str),
         ("Card", "title") | ("Header", "text") => Some(Type::Str),
         _ => None,
@@ -1115,7 +1120,7 @@ pub fn view_element_property_type(
 }
 
 pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
-    "Text", "Button", "Toggle", "Nav", "Chart", "Card", "Header", "Content",
+    "Text", "Button", "Toggle", "Radio", "Nav", "Chart", "Card", "Header", "Content",
 ];
 
 fn view_element_kind_is_builtin(kind: &str) -> bool {
@@ -1148,6 +1153,15 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "checked",
             "enabled",
             "on_change",
+            "visible",
+            "min_width",
+            "min_height",
+        ],
+        "Radio" => &[
+            "label",
+            "selected",
+            "enabled",
+            "on_select",
             "visible",
             "min_width",
             "min_height",
@@ -1283,12 +1297,12 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 if let Some(transition) = &property.transition {
                     let transition_property = matches!(
                         (element.kind.as_str(), property.name.as_str()),
-                        ("Button", "on_press") | ("Toggle", "on_change")
+                        ("Button", "on_press") | ("Toggle", "on_change") | ("Radio", "on_select")
                     );
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.on_press or Toggle.on_change",
+                            "view state transitions are valid only for event properties such as Button.on_press, Toggle.on_change, or Radio.on_select",
                         ));
                         continue;
                     }
