@@ -466,6 +466,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Gestures.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
+  - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `on_press` logic.
+  - [ ] Broader shortcut scopes, non-button actions, conflict diagnostics across composed views/windows, and platform-specific shortcut presentation.
 - [ ] Context menus.
 - [ ] Clipboard.
 - [ ] IME/text-composition support.
