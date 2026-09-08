@@ -233,7 +233,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 
 ## Expression ergonomics
 
-- [ ] String interpolation.
+- [ ] String interpolation. Runtime interpolation is sequenced after owned-string/buffer semantics: the bootstrap `str` currently lowers to borrowed native string pointers, so Flux must not introduce hidden scratch-buffer allocation/lifetime behavior merely for interpolation syntax. Compile-time interpolation may arrive earlier only if it shares the eventual syntax and semantics cleanly.
 - [ ] Multiline strings.
 - [ ] Raw strings.
 - [x] Python-style conditional expression (`a if condition else b`) as the Flux-native value conditional.
