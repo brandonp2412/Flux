@@ -974,6 +974,22 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     }
 }
 
+pub fn view_element_property_type(
+    program: &Program,
+    signatures: &Signatures,
+    kind: &str,
+    property: &str,
+) -> Option<Type> {
+    view_property_type(kind, property).or_else(|| {
+        program
+            .views
+            .iter()
+            .find(|view| view.name == kind)
+            .and_then(|view| view.params.iter().find(|param| param.name == property))
+            .map(|param| signatures.canonical_type(&param.ty))
+    })
+}
+
 fn view_element_kind_is_builtin(kind: &str) -> bool {
     matches!(
         kind,
@@ -993,26 +1009,91 @@ fn view_element_property_names(kind: &str) -> &'static str {
 }
 
 fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+    let mut view_defs = HashMap::new();
+    for view in &program.views {
+        if view_element_kind_is_builtin(&view.name) {
+            diagnostics.push(diag(
+                view.name_span,
+                &format!(
+                    "view '{}' conflicts with a built-in view element type",
+                    view.name
+                ),
+            ));
+        }
+        if view_defs.insert(view.name.as_str(), view).is_some() {
+            diagnostics.push(diag(
+                view.name_span,
+                &format!("duplicate view '{}'", view.name),
+            ));
+        }
+
+        for param in &view.params {
+            if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, signatures) {
+                diagnostics.push(diagnostic);
+            }
+            if view.public
+                && let Err(diagnostic) =
+                    require_publicly_nameable_type(param.type_span, &param.ty, signatures)
+            {
+                diagnostics.push(diagnostic);
+            }
+            if let Some(default) = &param.default {
+                match evaluate_default_expr(default, signatures) {
+                    Ok(value) => {
+                        let expected = signatures.canonical_type(&param.ty);
+                        if let Err(diagnostic) = require_type(
+                            default.span,
+                            &expected,
+                            &value.ty(),
+                            &format!("default for view parameter '{}'", param.name),
+                        ) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+            }
+        }
+    }
+
+    validate_view_composition_cycles(&view_defs, diagnostics);
+
     for view in &program.views {
         let row_count = view.grid.rows.len() as u64;
         let column_count = view.grid.columns.len() as u64;
+        let property_env = view
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+            .collect::<HashMap<_, _>>();
 
         for (index, element) in view.elements.iter().enumerate() {
-            if !view_element_kind_is_builtin(&element.kind) {
+            let custom_view = view_defs.get(element.kind.as_str()).copied();
+            if custom_view.is_none() && !view_element_kind_is_builtin(&element.kind) {
                 diagnostics.push(
                     diag(
                         element.kind_span,
-                        &format!("unknown built-in view element type '{}'", element.kind),
+                        &format!("unknown view element type '{}'", element.kind),
                     )
-                    .with_note(
-                        "custom/interface-defined view element contracts are not implemented yet",
-                    ),
+                    .with_note("element types are built-ins or declared Flux views"),
                 );
             }
+            if let Some(target) = custom_view
+                && let Err(diagnostic) = require_visible_declaration(
+                    element.kind_span,
+                    target.name_span,
+                    target.public,
+                    "view",
+                    &target.name,
+                )
+            {
+                diagnostics.push(diagnostic);
+            }
 
-            let property_env = HashMap::new();
             for property in &element.properties {
-                let Some(expected) = view_property_type(&element.kind, &property.name) else {
+                let Some(expected) =
+                    view_element_property_type(program, signatures, &element.kind, &property.name)
+                else {
                     if view_element_kind_is_builtin(&element.kind) {
                         diagnostics.push(
                             diag(
@@ -1027,6 +1108,17 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                                 element.kind,
                                 view_element_property_names(&element.kind)
                             )),
+                        );
+                    } else if let Some(target) = custom_view {
+                        diagnostics.push(
+                            diag(
+                                property.name_span,
+                                &format!(
+                                    "view '{}' has no parameter '{}'",
+                                    target.name, property.name
+                                ),
+                            )
+                            .with_label(target.name_span, "view is declared here"),
                         );
                     }
                     continue;
@@ -1043,6 +1135,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         }
                     }
                     Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+            }
+
+            if let Some(target) = custom_view {
+                for param in target.params.iter().filter(|param| param.default.is_none()) {
+                    if !element
+                        .properties
+                        .iter()
+                        .any(|property| property.name == param.name)
+                    {
+                        diagnostics.push(
+                            diag(
+                                element.span,
+                                &format!(
+                                    "view element '{}' is missing required parameter '{}' for '{}'",
+                                    element.name, param.name, target.name
+                                ),
+                            )
+                            .with_label(param.name_span, "required view parameter declared here"),
+                        );
+                    }
                 }
             }
 
@@ -1100,6 +1213,50 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             }
         }
     }
+}
+
+fn validate_view_composition_cycles(
+    view_defs: &HashMap<&str, &crate::ast::ViewDef>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut finished = HashSet::new();
+    for name in view_defs.keys().copied() {
+        let mut stack = Vec::new();
+        visit_view_composition(name, view_defs, &mut finished, &mut stack, diagnostics);
+    }
+}
+
+fn visit_view_composition(
+    name: &str,
+    view_defs: &HashMap<&str, &crate::ast::ViewDef>,
+    finished: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if finished.contains(name) {
+        return;
+    }
+    let Some(view) = view_defs.get(name).copied() else {
+        return;
+    };
+    stack.push(name.to_string());
+    for element in &view.elements {
+        if !view_defs.contains_key(element.kind.as_str()) {
+            continue;
+        }
+        if let Some(start) = stack.iter().position(|entry| entry == &element.kind) {
+            let mut cycle = stack[start..].to_vec();
+            cycle.push(element.kind.clone());
+            diagnostics.push(
+                diag(element.kind_span, "cyclic view composition detected")
+                    .with_note(format!("view cycle: {}", cycle.join(" -> "))),
+            );
+            continue;
+        }
+        visit_view_composition(&element.kind, view_defs, finished, stack, diagnostics);
+    }
+    stack.pop();
+    finished.insert(name.to_string());
 }
 
 fn grid_elements_overlap(left: &crate::ast::ViewElement, right: &crate::ast::ViewElement) -> bool {

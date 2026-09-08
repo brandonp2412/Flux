@@ -196,7 +196,30 @@ fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, 
 
 fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
     let visibility = if view.public { "pub " } else { "" };
-    lines.insert(view.line, format!("{visibility}view {} {{", view.name));
+    let mut param_parts = Vec::new();
+    let mut emitted_named_marker = false;
+    for param in &view.params {
+        if param.named_only && !emitted_named_marker {
+            param_parts.push("*".to_string());
+            emitted_named_marker = true;
+        }
+        let default = param
+            .default
+            .as_ref()
+            .map(|value| format!(" = {}", format_expr(value, 0)))
+            .unwrap_or_default();
+        param_parts.push(format!("{}: {}{default}", param.name, param.ty.name()));
+    }
+    let header = if param_parts.is_empty() {
+        format!("{visibility}view {} {{", view.name)
+    } else {
+        format!(
+            "{visibility}view {}({}) {{",
+            view.name,
+            param_parts.join(", ")
+        )
+    };
+    lines.insert(view.line, header);
     lines.insert(
         view.line + 1,
         format!(

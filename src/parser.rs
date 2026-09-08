@@ -390,6 +390,13 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         view.span = view.span.with_source(source_id);
         view.keyword_span = view.keyword_span.with_source(source_id);
         view.name_span = view.name_span.with_source(source_id);
+        for param in &mut view.params {
+            param.name_span = param.name_span.with_source(source_id);
+            param.type_span = param.type_span.with_source(source_id);
+            if let Some(default) = &mut param.default {
+                attach_expr_source(default, source_id);
+            }
+        }
         for element in &mut view.elements {
             element.span = element.span.with_source(source_id);
             element.kind_span = element.kind_span.with_source(source_id);
@@ -1271,16 +1278,31 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
     let Some(rest) = header_text.strip_prefix("view ") else {
         return Err(diag(header.number, "expected view declaration"));
     };
-    let Some(raw_name) = rest.strip_suffix('{') else {
+    let Some(raw_header) = rest.strip_suffix('{') else {
         return Err(diag(
             header.number,
             "view declarations must open their body with '{'",
         ));
     };
-    let name = raw_name.trim();
-    validate_identifier(name, header.number)?;
-    let leading = raw_name.len() - raw_name.trim_start().len();
-    let name_span = SourceSpan::new(header.number, visibility_offset + 6 + leading, name.len());
+    let header_body = raw_header.trim();
+    let (name, name_span, params) = if header_body.contains('(') {
+        let synthetic = format!("fn {header_body} -> void {{");
+        let mut parsed = parse_function_header(&synthetic, header.number)?;
+        shift_function_header(&mut parsed, visibility_offset + 2);
+        (parsed.name, parsed.name_span, parsed.params)
+    } else {
+        validate_identifier(header_body, header.number)?;
+        let leading = raw_header.len() - raw_header.trim_start().len();
+        (
+            header_body.to_string(),
+            SourceSpan::new(
+                header.number,
+                visibility_offset + 6 + leading,
+                header_body.len(),
+            ),
+            Vec::new(),
+        )
+    };
     let definition_span = header.span();
     *index += 1;
 
@@ -1404,9 +1426,10 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
 
     Ok(ViewDef {
         public,
-        name: name.to_string(),
+        name,
         name_span,
         keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 4),
+        params,
         grid,
         elements,
         line: header.number,

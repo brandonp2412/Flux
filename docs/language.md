@@ -76,7 +76,28 @@ Fixed grid tracks use target-independent logical units, `Nfr` tracks divide rema
 
 The extra indentation under an element configures properties on that sibling element; it does not create child UI elements. UI elements themselves remain at the view's single element level, and deeper element nesting is rejected by the parser. This preserves a grid-oriented source structure that can later lower directly into target-native layout primitives rather than recreating Flutter-style widget construction.
 
-Bootstrap built-in elements have concrete property contracts. `Text` supports `text: str` and `selectable: bool`; `Button` supports `text: str`, `enabled: bool`, and `on_press: fn() -> void`; `Nav`, `Chart`, and `Content` expose `label: str`; `Card` exposes `title: str`; and `Header` exposes `text: str`. Supplied property expressions are type-checked through the ordinary Flux expression/type system, so a named function can be passed directly as a callback without a controller object or widget subclass. Unknown built-in element/property names are static errors. Required-property rules and interface-defined/custom element contracts remain future work.
+Bootstrap built-in elements have concrete property contracts. `Text` supports `text: str` and `selectable: bool`; `Button` supports `text: str`, `enabled: bool`, and `on_press: fn() -> void`; `Nav`, `Chart`, and `Content` expose `label: str`; `Card` exposes `title: str`; and `Header` exposes `text: str`. Supplied property expressions are type-checked through the ordinary Flux expression/type system, so a named function can be passed directly as a callback without a controller object or widget subclass. Unknown built-in element/property names are static errors.
+
+Declared Flux views are reusable typed element contracts rather than widget subclasses. A view may declare typed parameters and compile-time defaults, use those parameter values in its own flat element properties, and then appear as a sibling element type inside another view:
+
+```flux
+view Greeting(name: str, *, selectable: bool = false) {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: name
+        selectable: selectable
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Greeting greeting at 1,1
+        name: "Flux"
+}
+```
+
+Composition arguments use the same indented property form and are checked against the target view's parameter types. Parameters without defaults are required; defaulted parameters may be omitted. Public/private module visibility applies to views, and recursive view composition cycles are rejected. Composition remains a flat layout relationship: the parent grid places one sibling region whose implementation is another declared view, without exposing a nested widget ownership tree or class model.
 
 The bootstrap compiler currently parses, formats, merges, type-checks, and indexes this view metadata while the native rendering/runtime backend remains future work. View declarations therefore emit no runtime C yet.
 

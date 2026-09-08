@@ -353,15 +353,18 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 The UI model must avoid Flutter-style deeply nested widget construction and object hierarchies. Sequencing note: the compiler-backed surface syntax is being prototyped early, before rendering backends, because the flat layout grammar is a core language constraint and should not be retrofitted after a widget-tree API takes shape.
 
 - [ ] `view` declarations/functions.
-  - [x] Bootstrap top-level `view Name { ... }` declarations with visibility, source spans, formatter support, project merging, and semantic symbols. Parameterized/data-returning view functions remain later work.
-- [ ] Views compose through functions/data rather than subclassing.
+  - [x] Bootstrap top-level `view Name { ... }` declarations with visibility, source spans, formatter support, project merging, and semantic symbols.
+  - [x] Parameterized `view Name(data: Type, optional: Type = default) { ... }` declarations: parameters are statically typed, defaults use the ordinary constant-default rules, view bodies can reference parameters, and parameter symbols retain editor spans/types.
+  - [ ] View-producing/function composition beyond declarative view parameters only if it adds value without creating a widget-builder API.
+- [x] Views compose through typed data rather than subclassing: a declared Flux view can be used as another view's flat sibling element type, arguments are named properties checked against the target view's parameters/defaults, module visibility is enforced, and recursive composition cycles are rejected.
 - [ ] Flat element declarations.
   - [x] Bootstrap sibling element syntax (`Type name at row,column`) with unique local names and optional property expressions; nested child elements are syntactically rejected.
 - [ ] Grid-first layout.
   - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
   - [ ] Statically type/check element properties against built-in or interface-defined element contracts instead of treating property expressions as untyped view metadata.
     - [x] Bootstrap built-in element contracts validate known property names and property expression types, including typed function callbacks, without introducing widget classes; semantic symbols expose the property type for editor tooling.
-    - [ ] Interface-defined/custom element contracts after view composition and platform capability rules are mature.
+    - [x] Declared Flux views act as custom element contracts derived directly from their typed parameters/defaults; custom-view property types flow into semantic/editor symbols.
+    - [ ] Interface-defined platform/native element contracts after platform capability rules are mature.
   - [x] Validate placement against declared track counts and define overlap policy: row/column spans that escape the declared grid are static errors, and ordinary sibling grid regions may not overlap. Intentional overlap belongs to the separate explicit overlay/absolute-positioning model.
   - [ ] Consider named grid areas only if they materially improve readability without reintroducing hierarchy.
 - [ ] Flex/flow layout where grid is not appropriate.

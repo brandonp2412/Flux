@@ -3185,8 +3185,180 @@ fn main() -> i64 { 0 }
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
-            .contains("unknown built-in view element type 'Fancy'")
+            .contains("unknown view element type 'Fancy'")
     }));
+}
+
+#[test]
+fn composes_parameterized_views_through_typed_data_properties() {
+    let source = r#"
+view Greeting(name: str, *, selectable: bool = false) {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: name
+        selectable: selectable
+}
+
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Greeting greeting at 1,1
+        name: "Flux"
+        selectable: true
+}
+
+fn main() -> i64 { 0 }
+"#;
+    check_source(source).expect("parameterized views should compose through typed properties");
+    let program = fluxc::parser::parse(source).expect("parameterized view syntax should parse");
+    assert_eq!(program.views[0].params.len(), 2);
+    assert_eq!(program.views[0].params[0].name, "name");
+    assert_eq!(program.views[0].params[1].default.as_ref().unwrap().line, 2);
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("parameterized views should format");
+    assert!(formatted.contains("view Greeting(name: str, *, selectable: bool = false) {"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(
+        source,
+        SourceId::from_name("composed-view.flux"),
+    )
+    .expect("composed views should be indexed semantically");
+    assert!(database.symbols().iter().any(|symbol| {
+        symbol.name == "name"
+            && symbol.kind == fluxc::semantic::SymbolKind::ViewProperty
+            && symbol.ty == Some(fluxc::ast::Type::Str)
+    }));
+}
+
+#[test]
+fn rejects_invalid_or_cyclic_parameterized_view_composition() {
+    let invalid = r#"
+view Greeting(name: str, enabled: bool = true) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: name
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: 1fr
+    Greeting missing at 1,1
+        enabled: false
+    Greeting wrong at 1,2
+        name: 42
+        extra: "nope"
+}
+fn main() -> i64 { 0 }
+"#;
+    let diagnostics =
+        check_source_all(invalid).expect_err("invalid custom view properties should fail");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("missing required parameter 'name' for 'Greeting'")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("property 'Greeting.name'")
+            && diagnostic.message.contains("expected str, got i64")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("view 'Greeting' has no parameter 'extra'")
+    }));
+
+    let cycle = r#"
+view A {
+    grid columns: 1fr
+    grid rows: 1fr
+    B b at 1,1
+}
+view B {
+    grid columns: 1fr
+    grid rows: 1fr
+    A a at 1,1
+}
+fn main() -> i64 { 0 }
+"#;
+    let diagnostics = check_source_all(cycle).expect_err("recursive view composition must fail");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("cyclic view composition")
+            && diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("A -> B -> A") || note.contains("B -> A -> B"))
+    }));
+}
+
+#[test]
+fn view_composition_respects_module_visibility() {
+    let root = std::env::temp_dir().join(format!("flux-view-visibility-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary view project should be writable");
+    fs::write(
+        root.join("components.flux"),
+        r#"
+view PrivateGreeting(name: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: name
+}
+
+pub view PublicGreeting(name: str) {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: name
+}
+"#,
+    )
+    .expect("view component module should be writable");
+
+    let good = root.join("good.flux");
+    fs::write(
+        &good,
+        r#"
+import "components.flux"
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    PublicGreeting greeting at 1,1
+        name: "Flux"
+}
+fn main() -> i64 { 0 }
+"#,
+    )
+    .expect("public view entry should be writable");
+    fluxc::project::check(&good).expect("public views should compose across modules");
+
+    let bad = root.join("bad.flux");
+    fs::write(
+        &bad,
+        r#"
+import "components.flux"
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    PrivateGreeting greeting at 1,1
+        name: "Flux"
+}
+fn main() -> i64 { 0 }
+"#,
+    )
+    .expect("private view entry should be writable");
+    let diagnostics =
+        fluxc::project::check(&bad).expect_err("private views must remain module-local");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("private view 'PrivateGreeting' is not accessible from this module")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

@@ -277,6 +277,7 @@ pub struct ViewDef {
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
+    pub params: Vec<Param>,
     pub grid: GridLayout,
     pub elements: Vec<ViewElement>,
     pub line: usize,

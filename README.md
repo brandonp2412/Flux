@@ -36,7 +36,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, and building a native executable, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
-- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, and the first flat-grid UI syntax example.
+- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

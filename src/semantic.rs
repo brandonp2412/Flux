@@ -161,6 +161,14 @@ impl SemanticDatabase {
                 ty: None,
                 span: view.name_span,
             });
+            for param in &view.params {
+                symbols.push(SemanticSymbol {
+                    name: param.name.clone(),
+                    kind: SymbolKind::Parameter,
+                    ty: Some(param.ty.clone()),
+                    span: param.name_span,
+                });
+            }
             for element in &view.elements {
                 symbols.push(SemanticSymbol {
                     name: element.name.clone(),
@@ -172,7 +180,12 @@ impl SemanticDatabase {
                     symbols.push(SemanticSymbol {
                         name: property.name.clone(),
                         kind: SymbolKind::ViewProperty,
-                        ty: typecheck::view_property_type(&element.kind, &property.name),
+                        ty: typecheck::view_element_property_type(
+                            &program,
+                            &signatures,
+                            &element.kind,
+                            &property.name,
+                        ),
                         span: property.name_span,
                     });
                 }
