@@ -627,14 +627,6 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     items
 }
 
-fn completion_items_for_document(
-    uri: &str,
-    source: &str,
-    documents: &HashMap<String, String>,
-) -> Vec<JsonValue> {
-    completion_items_at_position(uri, source, documents, None)
-}
-
 fn completion_items_at_position(
     uri: &str,
     source: &str,
@@ -647,6 +639,19 @@ fn completion_items_at_position(
         .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
         .map(str::to_string)
         .collect::<HashSet<_>>();
+    if let Some(line_index) = line_index
+        && let Some(database) = analyzed_document(uri, source)
+    {
+        add_position_local_completions(
+            &mut items,
+            &mut seen,
+            source,
+            source_id_for_uri(uri),
+            line_index + 1,
+            database.program(),
+            &database,
+        );
+    }
     let Some(path) = file_uri_path(uri).and_then(|path| std::fs::canonicalize(path).ok()) else {
         return items;
     };
@@ -735,7 +740,8 @@ fn completion_items_at_position(
     if let Some(line_index) = line_index
         && let Ok(signatures) = crate::typecheck::check_all(&program)
     {
-        let database = crate::semantic::SemanticDatabase::from_analyzed(program.clone(), signatures);
+        let database =
+            crate::semantic::SemanticDatabase::from_analyzed(program.clone(), signatures);
         add_position_local_completions(
             &mut items,
             &mut seen,
@@ -778,6 +784,7 @@ fn add_position_local_completions(
                     | SymbolKind::PatternBinding
                     | SymbolKind::LoopVariable
             )
+            && local_symbol_visible_at_line(source, symbol, line)
     }) {
         let prefix = match symbol.kind {
             SymbolKind::Parameter => "parameter",
@@ -794,6 +801,62 @@ fn add_position_local_completions(
             .unwrap_or_else(|| format!("{prefix} {}", symbol.name));
         push_completion_item(items, seen, &symbol.name, 6, &detail);
     }
+}
+
+fn local_symbol_visible_at_line(
+    source: &str,
+    symbol: &crate::semantic::SemanticSymbol,
+    cursor_line: usize,
+) -> bool {
+    use crate::semantic::SymbolKind;
+    if symbol.kind == SymbolKind::Parameter {
+        return true;
+    }
+    if symbol.span.line > cursor_line {
+        return false;
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let Some(declaration_line) = lines.get(symbol.span.line.saturating_sub(1)) else {
+        return false;
+    };
+    let Some(cursor_source) = lines.get(cursor_line.saturating_sub(1)) else {
+        return false;
+    };
+    let declaration_indent = leading_spaces(declaration_line);
+    let cursor_indent = leading_spaces(cursor_source);
+    let scoped_header_binding = symbol.kind == SymbolKind::LoopVariable
+        || (symbol.kind == SymbolKind::PatternBinding
+            && declaration_line.trim_end().ends_with(':'));
+    if scoped_header_binding {
+        if cursor_line == symbol.span.line || cursor_indent <= declaration_indent {
+            return false;
+        }
+        let start = symbol.span.line;
+        let end = cursor_line.saturating_sub(1);
+        if start >= end {
+            return true;
+        }
+        return !lines[start..end]
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .any(|line| leading_spaces(line) <= declaration_indent);
+    }
+    if declaration_indent > cursor_indent {
+        return false;
+    }
+    let start = symbol.span.line;
+    let end = cursor_line.saturating_sub(1);
+    if start >= end {
+        return true;
+    }
+    !lines[start..end]
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .any(|line| leading_spaces(line) < declaration_indent)
+}
+
+fn leading_spaces(line: &str) -> usize {
+    line.bytes().take_while(|byte| *byte == b' ').count()
 }
 
 fn function_contains_line(source: &str, start_line: usize, line: usize) -> bool {
@@ -2595,11 +2658,11 @@ mod tests {
     }
 
     #[test]
-    fn completion_adds_current_function_locals_declared_before_the_cursor() {
+    fn completion_adds_only_lexically_visible_current_function_locals() {
         let uri = "file:///tmp/local-completion.flux";
-        let source = "fn first(other: i64) -> i64 { other }\nfn main(input: i64) -> i64 {\n    let count: i64 = input\n    var total: i64 = count\n    return total\n}\n";
+        let source = "fn first(other: i64) -> i64 { other }\nfn compute(input: i64) -> i64 {\n    if input > 0:\n        let hidden: i64 = input\n    let count: i64 = input\n    var total: i64 = count\n    return total\n}\nfn main() -> i64 { compute(1) }\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
-        let items = completion_items_at_position(uri, source, &documents, Some(4));
+        let items = completion_items_at_position(uri, source, &documents, Some(6));
         let json = JsonValue::Array(items).to_json();
         assert!(json.contains("\"label\":\"input\""));
         assert!(json.contains("parameter input: i64"));
@@ -2607,6 +2670,7 @@ mod tests {
         assert!(json.contains("let count: i64"));
         assert!(json.contains("\"label\":\"total\""));
         assert!(json.contains("var total: i64"));
+        assert!(!json.contains("\"label\":\"hidden\""));
         assert!(!json.contains("\"label\":\"other\""));
     }
 
@@ -2846,10 +2910,11 @@ mod tests {
             (dependency_uri, dependency_overlay.to_string()),
         ]);
 
-        let completion = JsonValue::Array(completion_items_for_document(
+        let completion = JsonValue::Array(completion_items_at_position(
             &main_uri,
             main_source,
             &documents,
+            Some(1),
         ))
         .to_json();
         assert!(completion.contains("\"label\":\"value\""));

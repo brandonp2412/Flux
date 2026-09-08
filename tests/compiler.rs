@@ -2884,7 +2884,11 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         .expect("LSP input should be writable");
     drop(child.stdin.take());
     let output = child.wait_with_output().expect("LSP should exit cleanly");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "LSP exited unsuccessfully: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
     assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));

@@ -629,7 +629,7 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
   - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics are republished across open dependent documents after overlay changes and filtered to each document's stable source ID.
 - [ ] Completion.
-  - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, current-module declarations, and public declarations from the current module's forward import graph, including unsaved overlay signatures/details. Scope-aware local bindings and broader workspace/reverse-dependent discovery remain pending with reference indexing.
+  - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, current-module declarations, public declarations from the forward import graph, and position-aware parameters/local bindings declared earlier in the current function, including unsaved overlay signatures/details. Local suggestions are filtered by active indentation scope so completed branches/loops do not leak bindings. Member/property/context-specific completion and reverse-dependent discovery remain pending.
 - [ ] Signature help.
   - [x] Bootstrap `textDocument/signatureHelp` identifies the active ordinary function call, reports the canonical typed signature/parameter labels, tracks the active positional argument across nested calls, and resolves public imported ordinary functions through unsaved overlay project analysis. Interface capability/view call signatures remain pending.
 - [ ] Hover/type information.
@@ -648,7 +648,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Package/module awareness.
   - [x] Open-buffer import graphs use the compiler's real module loader and in-memory overlays, preserving module visibility/import semantics across unsaved files.
   - [x] Bootstrap workspace/package discovery considers canonical open-file targets plus the nearest enclosing `flux.toml`, chooses the broadest valid typed analysis containing the current document, and powers imported completion/hover/signature help, go-to-definition, and dependency-graph references/rename.
-  - [ ] Shared cached workspace analysis and a reverse-dependency/scope index for dependents outside the current loaded graph and shadow-aware local symbol services.
+  - [ ] Shared cached workspace analysis and a reverse-dependency/scope index for dependents outside the current loaded graph and fully resolved usage-site shadowing across editor services.
 - [ ] UI syntax awareness.
 - [ ] Hot-reload status integration.
 
