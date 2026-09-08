@@ -556,6 +556,18 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_set_tooltip_text({variable}, {tooltip});\n"
             ));
         }
+        if let Some(property) = view_property(element, "accessibility_label") {
+            let label = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_LABEL, {label}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_description") {
+            let description = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
+            ));
+        }
         emit_grid_sizing(out, view, element, &variable, signatures)?;
         out.push_str(&format!(
             "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",

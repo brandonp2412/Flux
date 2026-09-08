@@ -624,7 +624,7 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 20 — Accessibility and internationalization
 
 - [ ] Semantic roles.
-- [ ] Accessible labels/descriptions.
+- [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibility_label: str` and `accessibility_description: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
 - [ ] Actions.
 - [ ] Focus ordering.
 - [ ] Screen-reader bridges.

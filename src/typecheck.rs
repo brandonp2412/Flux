@@ -1094,7 +1094,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
             "visible" => return Some(Type::Bool),
-            "tooltip" => return Some(Type::Str),
+            "tooltip" | "accessibility_label" | "accessibility_description" => {
+                return Some(Type::Str);
+            }
             "min_width" | "min_height" => return Some(Type::I64),
             _ => {}
         }
@@ -1177,6 +1179,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "color",
             "visible",
             "tooltip",
+            "accessibility_label",
+            "accessibility_description",
             "min_width",
             "min_height",
         ],
@@ -1187,6 +1191,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "on_press",
             "visible",
             "tooltip",
+            "accessibility_label",
+            "accessibility_description",
             "min_width",
             "min_height",
         ],
@@ -1201,6 +1207,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "on_submit",
             "visible",
             "tooltip",
+            "accessibility_label",
+            "accessibility_description",
             "min_width",
             "min_height",
         ],
@@ -1211,6 +1219,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "on_change",
             "visible",
             "tooltip",
+            "accessibility_label",
+            "accessibility_description",
             "min_width",
             "min_height",
         ],
@@ -1221,12 +1231,38 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "on_select",
             "visible",
             "tooltip",
+            "accessibility_label",
+            "accessibility_description",
             "min_width",
             "min_height",
         ],
-        "Nav" | "Chart" | "Content" => &["label", "visible", "tooltip", "min_width", "min_height"],
-        "Card" => &["title", "visible", "tooltip", "min_width", "min_height"],
-        "Header" => &["text", "visible", "tooltip", "min_width", "min_height"],
+        "Nav" | "Chart" | "Content" => &[
+            "label",
+            "visible",
+            "tooltip",
+            "accessibility_label",
+            "accessibility_description",
+            "min_width",
+            "min_height",
+        ],
+        "Card" => &[
+            "title",
+            "visible",
+            "tooltip",
+            "accessibility_label",
+            "accessibility_description",
+            "min_width",
+            "min_height",
+        ],
+        "Header" => &[
+            "text",
+            "visible",
+            "tooltip",
+            "accessibility_label",
+            "accessibility_description",
+            "min_width",
+            "min_height",
+        ],
         _ => &[],
     }
 }
