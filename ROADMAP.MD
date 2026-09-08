@@ -360,7 +360,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 - [ ] `app` declaration / application entry model.
   - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers to the Linux GUI runtime. Metadata/arguments/multiple windows remain pending.
-- [x] Bootstrap application metadata: `app ViewName(title: ..., width: ..., height: ...)` accepts compile-time typed values/constants, validates positive window dimensions, formats canonically, and lowers title/default size into the native Linux window. Package identity/icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
+- [x] Bootstrap application metadata: `app ViewName(id: ..., title: ..., width: ..., height: ..., resizable: ...)` accepts compile-time typed values/constants, validates positive dimensions and GLib-compatible reverse-DNS-style application IDs, formats canonically, and lowers identity/title/default size/resizability into the native Linux window. Icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
 - [ ] Assets/resources.
 - [ ] Environment/configuration.
 - [ ] Platform permissions.

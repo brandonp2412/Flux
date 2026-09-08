@@ -245,6 +245,12 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "    gtk_window_set_default_size(GTK_WINDOW(window), {window_width}, {window_height});\n"
     ));
+    if let Some(resizable) = application_metadata_bool(application, "resizable", signatures) {
+        out.push_str(&format!(
+            "    gtk_window_set_resizable(GTK_WINDOW(window), {});\n",
+            if resizable { "TRUE" } else { "FALSE" }
+        ));
+    }
     out.push_str("    GtkWidget *grid = gtk_grid_new();\n");
     if let Some(gap) = view.grid.gap {
         out.push_str(&format!(
@@ -453,7 +459,12 @@ fn emit_linux_gtk_application(
     }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
-    out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n");
+    let application_id = application_metadata_string(application, "id", signatures)
+        .unwrap_or_else(|| "app.flux.bootstrap".to_string());
+    out.push_str(&format!(
+        "int main(int argc, char **argv) {{\n    GtkApplication *application = gtk_application_new({}, G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
+        c_string(&application_id)
+    ));
     if application_metadata_function(application, "on_exit").is_some() {
         out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
     }
@@ -496,6 +507,18 @@ fn application_metadata_string(
         }
         _ => None,
     }
+}
+
+fn application_metadata_bool(
+    application: &crate::ast::ApplicationDef,
+    name: &str,
+    signatures: &Signatures,
+) -> Option<bool> {
+    let field = application
+        .metadata
+        .iter()
+        .find(|field| field.name == name)?;
+    static_expr_bool(&field.value, signatures)
 }
 
 fn application_metadata_i64(

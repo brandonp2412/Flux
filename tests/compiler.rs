@@ -4027,6 +4027,52 @@ app Screen(width: 0)
 }
 
 #[test]
+fn application_identity_and_resizable_metadata_validate_and_lower() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(id: "app.example.screen", resizable: false)
+"#;
+    check_source(source).expect("valid application identity metadata should typecheck");
+    let generated = compile_to_c(source).expect("application identity should lower natively");
+    assert!(
+        generated
+            .contains("gtk_application_new(\"app.example.screen\", G_APPLICATION_DEFAULT_FLAGS)")
+    );
+    assert!(generated.contains("gtk_window_set_resizable(GTK_WINDOW(window), FALSE)"));
+
+    let invalid_id = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(id: "bad")
+"#;
+    let errors = check_source_all(invalid_id).expect_err("short non-DNS app id must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("reverse-DNS-style identifier"))
+    );
+
+    let invalid_resizable = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(resizable: 1)
+"#;
+    let errors = check_source_all(invalid_resizable).expect_err("resizable must be bool");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("application resizable must be bool"))
+    );
+}
+
+#[test]
 fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
     let source = r#"
 fn started() -> void {

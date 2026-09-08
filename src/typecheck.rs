@@ -993,9 +993,30 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
             match evaluate_default_expr(&field.value, &signatures) {
                 Ok(value) => match field.name.as_str() {
-                    "title" if value.ty() != Type::Str => diagnostics.push(diag(
+                    "title" | "id" if value.ty() != Type::Str => diagnostics.push(diag(
                         field.value.span,
-                        &format!("application title must be str, got {}", value.ty().name()),
+                        &format!(
+                            "application {} must be str, got {}",
+                            field.name,
+                            value.ty().name()
+                        ),
+                    )),
+                    "id" => {
+                        if let ConstantValue::Str(value) = value
+                            && !valid_application_id(&value)
+                        {
+                            diagnostics.push(diag(
+                                field.value.span,
+                                "application id must be a valid reverse-DNS-style identifier",
+                            ));
+                        }
+                    }
+                    "resizable" if value.ty() != Type::Bool => diagnostics.push(diag(
+                        field.value.span,
+                        &format!(
+                            "application resizable must be bool, got {}",
+                            value.ty().name()
+                        ),
                     )),
                     "width" | "height" if value.ty() != Type::I64 => diagnostics.push(diag(
                         field.value.span,
@@ -1171,6 +1192,19 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
         "Header" => &["text", "visible", "min_width", "min_height"],
         _ => &[],
     }
+}
+
+fn valid_application_id(value: &str) -> bool {
+    if value.len() > 255 || !value.contains('.') || value.starts_with('.') {
+        return false;
+    }
+    value.split('.').all(|segment| {
+        !segment.is_empty()
+            && !segment.as_bytes()[0].is_ascii_digit()
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
 }
 
 fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
