@@ -14,6 +14,48 @@ enum CliError {
     Reported,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildMode {
+    Debug,
+    Profile,
+    Release,
+}
+
+impl BuildMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "debug" => Ok(Self::Debug),
+            "profile" => Ok(Self::Profile),
+            "release" => Ok(Self::Release),
+            _ => Err(format!(
+                "unknown build mode '{value}'; expected debug, profile, or release"
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Profile => "profile",
+            Self::Release => "release",
+        }
+    }
+
+    fn clang_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Debug => &["-O0", "-g3", "-fno-omit-frame-pointer"],
+            Self::Profile => &["-O2", "-g", "-fno-omit-frame-pointer", "-DNDEBUG"],
+            Self::Release => &["-O3", "-flto", "-DNDEBUG"],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuildOptions {
+    output: Option<PathBuf>,
+    mode: BuildMode,
+}
+
 impl From<String> for CliError {
     fn from(message: String) -> Self {
         Self::Message(message)
@@ -130,6 +172,7 @@ fn run() -> Result<(), CliError> {
         }
         "build" => {
             let path = require_target(&args)?;
+            let options = build_options(&args[2..], BuildMode::Release)?;
             let sources = validate_project(path)?;
             let generated = match fluxc::project::compile_to_c(path) {
                 Ok(generated) => generated,
@@ -138,7 +181,7 @@ fn run() -> Result<(), CliError> {
                     return Err(CliError::Reported);
                 }
             };
-            let output = if let Some(output) = output_path(&args[2..])? {
+            let output = if let Some(output) = options.output {
                 output
             } else {
                 let entry = fluxc::project::resolve_entry(path).map_err(|diagnostics| {
@@ -150,18 +193,20 @@ fn run() -> Result<(), CliError> {
                 })?;
                 default_binary_path(&entry)
             };
-            build_native(&generated, &output)?;
-            println!("built: {}", output.display());
+            build_native(&generated, &output, options.mode)?;
+            println!("built ({}): {}", options.mode.name(), output.display());
             Ok(())
         }
         "run" => {
             let path = require_target(&args)?;
-            if args.len() != 2 {
+            let options = build_options(&args[2..], BuildMode::Debug)?;
+            if options.output.is_some() {
                 return Err(CliError::Message(
-                    "run syntax is 'run <file.flux|package-dir|flux.toml>'".to_string(),
+                    "run does not accept '-o'; development binaries are managed automatically"
+                        .to_string(),
                 ));
             }
-            run_development(path)
+            run_development(path, options.mode)
         }
         "lsp" => {
             if args.len() != 1 {
@@ -174,12 +219,14 @@ fn run() -> Result<(), CliError> {
     }
 }
 
-fn run_development(target: &Path) -> Result<(), CliError> {
+fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let mut generation = 0usize;
-    let (mut child, mut binary, mut watch_paths) = start_development_build(target, generation)?;
+    let (mut child, mut binary, mut watch_paths) =
+        start_development_build(target, generation, mode)?;
     let mut fingerprints = watch_fingerprints(&watch_paths);
     eprintln!(
-        "run: started; watching {} source file{}",
+        "run: started ({}); watching {} source file{}",
+        mode.name(),
         watch_paths.len(),
         if watch_paths.len() == 1 { "" } else { "s" }
     );
@@ -221,7 +268,7 @@ fn run_development(target: &Path) -> Result<(), CliError> {
         };
         generation += 1;
         let next_binary = development_binary_path(generation);
-        if let Err(message) = build_native(&generated, &next_binary) {
+        if let Err(message) = build_native(&generated, &next_binary, mode) {
             eprintln!("reload: {message}");
             let _ = fs::remove_file(&next_binary);
             continue;
@@ -240,6 +287,7 @@ fn run_development(target: &Path) -> Result<(), CliError> {
 fn start_development_build(
     target: &Path,
     generation: usize,
+    mode: BuildMode,
 ) -> Result<(Option<Child>, PathBuf, Vec<PathBuf>), CliError> {
     let sources = validate_project(target)?;
     let generated = match fluxc::project::compile_to_c(target) {
@@ -250,7 +298,7 @@ fn start_development_build(
         }
     };
     let binary = development_binary_path(generation);
-    build_native(&generated, &binary)?;
+    build_native(&generated, &binary, mode)?;
     let child = spawn_development_binary(&binary)?;
     let watch_paths = project_watch_paths(target, &sources);
     Ok((Some(child), binary, watch_paths))
@@ -485,6 +533,44 @@ fn output_path(args: &[String]) -> Result<Option<PathBuf>, String> {
     Err("output syntax is '-o <path>'".to_string())
 }
 
+fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
+    let mut output = None;
+    let mut mode = default_mode;
+    let mut mode_seen = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("output path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'-o' requires an output path".to_string());
+                };
+                output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--mode" => {
+                if mode_seen {
+                    return Err("build mode may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--mode' requires debug, profile, or release".to_string());
+                };
+                mode = BuildMode::parse(value)?;
+                mode_seen = true;
+                index += 2;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown build option '{flag}'; expected '-o <path>' or '--mode <debug|profile|release>'"
+                ));
+            }
+        }
+    }
+    Ok(BuildOptions { output, mode })
+}
+
 fn default_binary_path(source: &Path) -> PathBuf {
     let mut path = source.with_extension("");
     if cfg!(windows) {
@@ -493,13 +579,14 @@ fn default_binary_path(source: &Path) -> PathBuf {
     path
 }
 
-fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
+fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), String> {
     let temp = env::temp_dir().join(format!("fluxc-{}.c", std::process::id()));
     fs::write(&temp, c_source)
         .map_err(|error| format!("failed to write temporary C source: {error}"))?;
 
     let result = Command::new("clang")
-        .args(["-std=c17", "-O3", "-flto", "-fwrapv", "-DNDEBUG"])
+        .args(["-std=c17", "-fwrapv"])
+        .args(mode.clang_args())
         .arg(&temp)
         .arg("-o")
         .arg(output)
@@ -518,5 +605,48 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] | fluxc run <file.flux|package-dir|flux.toml> | fluxc lsp".to_string()
+    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | fluxc run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | fluxc lsp".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildMode, build_options};
+
+    #[test]
+    fn build_modes_have_distinct_native_optimization_profiles() {
+        let debug = BuildMode::Debug.clang_args();
+        assert!(debug.contains(&"-O0"));
+        assert!(debug.contains(&"-g3"));
+        assert!(debug.contains(&"-fno-omit-frame-pointer"));
+        assert!(!debug.contains(&"-DNDEBUG"));
+
+        let profile = BuildMode::Profile.clang_args();
+        assert!(profile.contains(&"-O2"));
+        assert!(profile.contains(&"-g"));
+        assert!(profile.contains(&"-fno-omit-frame-pointer"));
+        assert!(profile.contains(&"-DNDEBUG"));
+
+        let release = BuildMode::Release.clang_args();
+        assert!(release.contains(&"-O3"));
+        assert!(release.contains(&"-flto"));
+        assert!(release.contains(&"-DNDEBUG"));
+        assert!(!release.contains(&"-g"));
+    }
+
+    #[test]
+    fn build_options_accept_mode_and_output_in_either_order() {
+        let args = vec![
+            "--mode".to_string(),
+            "profile".to_string(),
+            "-o".to_string(),
+            "app".to_string(),
+        ];
+        let options = build_options(&args, BuildMode::Release).expect("options should parse");
+        assert_eq!(options.mode, BuildMode::Profile);
+        assert_eq!(options.output.as_deref(), Some(std::path::Path::new("app")));
+
+        let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
+        assert_eq!(default.mode, BuildMode::Debug);
+        assert!(default.output.is_none());
+    }
 }

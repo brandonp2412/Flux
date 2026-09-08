@@ -63,6 +63,8 @@ cargo run -- build examples/hello.flux -o hello
 ./hello
 ```
 
+Build modes are explicit and predictable: `fluxc build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `fluxc run` defaults to `debug` for development but accepts the same `--mode` override.
+
 Run in development mode with automatic save detection:
 
 ```sh

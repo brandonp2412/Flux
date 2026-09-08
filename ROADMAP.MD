@@ -664,7 +664,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Async/task debugging.
 - [ ] Ownership-aware value inspection.
 - [ ] Native debug metadata.
-- [ ] Predictable debug/profile/release behavior.
+- [x] Predictable bootstrap debug/profile/release native build behavior: `debug` uses no optimization plus full debug info/frame pointers, `profile` uses optimized code with debug info/frame pointers, and `release` uses aggressive optimization/LTO. Source-level Flux debug-location mapping remains tracked separately under native debug metadata.
 - [ ] Platform debugger integration where useful.
 
 # Milestone 25 — Profiler and devtools
@@ -696,7 +696,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] `flux doctor`.
 - [ ] `flux clean`.
 - [ ] `flux package`.
-- [ ] Debug/profile/release modes.
+- [x] Debug/profile/release modes through `fluxc build --mode ...` and `fluxc run --mode ...`; builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
 - [ ] Cross-compilation configuration.
 - [ ] Build cache.
 - [ ] Reproducible builds.
