@@ -397,7 +397,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.
 - [ ] Responsive breakpoints/container queries.
 - [ ] Text.
-  - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, and `bold: bool`, including grid placement, native wrapping/alignment, and Pango-backed typography without exposing GTK/Pango objects to Flux source.
+  - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, `bold: bool`, font family/slant/decoration, letter spacing, line height, and hexadecimal foreground color, including grid placement and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.
 - [ ] Images/vector images.
   - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `can_shrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scale_down`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
@@ -498,6 +498,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Every built-in native element accepts compile-time `background_color` / `border_color` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
 - [ ] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
+  - [x] Native text family/slant/decoration/spacing controls: compile-time `font_family`, `italic`, `underline`, `strikethrough`, `letter_spacing`, and `line_height_percent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.
+  - [x] Native text layout/overflow controls: `text_align` (`left`/`center`/`right`/`fill`), state-aware `wrap`, compile-time `wrap_mode` (`word`/`char`/`word_char`), `ellipsize` (`none`/`start`/`middle`/`end`), and positive `max_lines` lower directly to `GtkLabel`/Pango layout controls. Variable font axes, richer weight/style enums, and responsive typography remain future typography work.
 - [ ] Spacing.
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
   - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.

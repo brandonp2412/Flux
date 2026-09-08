@@ -353,12 +353,34 @@ fn emit_linux_gtk_application(
                 };
                 out.push_str(&format!("    {variable} = gtk_label_new({text});\n",));
                 out.push_str(&format!(
-                    "    gtk_label_set_wrap(GTK_LABEL({variable}), TRUE);\n    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
+                    "    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
+                ));
+                let wrap = view_property(element, "wrap")
+                    .map(|property| ui_expr_c(&property.value, view, signatures))
+                    .transpose()?
+                    .unwrap_or_else(|| "true".to_string());
+                out.push_str(&format!(
+                    "    gtk_label_set_wrap(GTK_LABEL({variable}), {wrap});\n"
                 ));
                 let size = view_property(element, "size");
                 let bold = view_property(element, "bold");
+                let italic = view_property(element, "italic");
+                let underline = view_property(element, "underline");
+                let strikethrough = view_property(element, "strikethrough");
+                let font_family = view_property(element, "font_family");
+                let letter_spacing = view_property(element, "letter_spacing");
+                let line_height_percent = view_property(element, "line_height_percent");
                 let color = view_property(element, "color");
-                if size.is_some() || bold.is_some() || color.is_some() {
+                if size.is_some()
+                    || bold.is_some()
+                    || italic.is_some()
+                    || underline.is_some()
+                    || strikethrough.is_some()
+                    || font_family.is_some()
+                    || letter_spacing.is_some()
+                    || line_height_percent.is_some()
+                    || color.is_some()
+                {
                     let attrs = format!("flux__ui_attrs_{}", element.name);
                     out.push_str(&format!(
                         "    PangoAttrList *{attrs} = pango_attr_list_new();\n"
@@ -393,6 +415,100 @@ fn emit_linux_gtk_application(
                             ));
                         }
                     }
+                    if let Some(property) = italic {
+                        let Some(value) = static_expr_bool(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.italic must be a compile-time bool value",
+                            ));
+                        };
+                        if value {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_style_new(PANGO_STYLE_ITALIC));\n"
+                            ));
+                        }
+                    }
+                    if let Some(property) = underline {
+                        let Some(value) = static_expr_bool(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.underline must be a compile-time bool value",
+                            ));
+                        };
+                        if value {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));\n"
+                            ));
+                        }
+                    }
+                    if let Some(property) = strikethrough {
+                        let Some(value) = static_expr_bool(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.strikethrough must be a compile-time bool value",
+                            ));
+                        };
+                        if value {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_strikethrough_new(TRUE));\n"
+                            ));
+                        }
+                    }
+                    if let Some(property) = font_family {
+                        let Some(value) = static_expr_str(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.font_family must be a compile-time str value",
+                            ));
+                        };
+                        if value.is_empty() {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.font_family cannot be empty",
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_family_new({}));\n",
+                            c_string(&value)
+                        ));
+                    }
+                    if let Some(property) = letter_spacing {
+                        let Some(value) = static_expr_i64(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.letter_spacing must be a compile-time i64 value",
+                            ));
+                        };
+                        if !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024)
+                            .contains(&value)
+                        {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.letter_spacing is outside the native Pango range",
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_letter_spacing_new({value} * PANGO_SCALE));\n"
+                        ));
+                    }
+                    if let Some(property) = line_height_percent {
+                        let Some(value) = static_expr_i64(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.line_height_percent must be a compile-time i64 value",
+                            ));
+                        };
+                        if value <= 0 {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.line_height_percent must be greater than zero",
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_line_height_new({:.4}));\n",
+                            value as f64 / 100.0
+                        ));
+                    }
                     if let Some(property) = color {
                         let Some(value) = static_expr_str(&property.value, signatures) else {
                             return Err(diag(
@@ -417,6 +533,91 @@ fn emit_linux_gtk_application(
                     }
                     out.push_str(&format!(
                         "    gtk_label_set_attributes(GTK_LABEL({variable}), {attrs});\n    pango_attr_list_unref({attrs});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "text_align") {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Text.text_align must be a compile-time str value",
+                        ));
+                    };
+                    let justify = match value.as_str() {
+                        "left" => "GTK_JUSTIFY_LEFT",
+                        "center" => "GTK_JUSTIFY_CENTER",
+                        "right" => "GTK_JUSTIFY_RIGHT",
+                        "fill" => "GTK_JUSTIFY_FILL",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.text_align must be one of 'left', 'center', 'right', or 'fill'",
+                            ));
+                        }
+                    };
+                    out.push_str(&format!(
+                        "    gtk_label_set_justify(GTK_LABEL({variable}), {justify});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "wrap_mode") {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Text.wrap_mode must be a compile-time str value",
+                        ));
+                    };
+                    let wrap_mode = match value.as_str() {
+                        "word" => "PANGO_WRAP_WORD",
+                        "char" => "PANGO_WRAP_CHAR",
+                        "word_char" => "PANGO_WRAP_WORD_CHAR",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.wrap_mode must be one of 'word', 'char', or 'word_char'",
+                            ));
+                        }
+                    };
+                    out.push_str(&format!(
+                        "    gtk_label_set_wrap_mode(GTK_LABEL({variable}), {wrap_mode});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "ellipsize") {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Text.ellipsize must be a compile-time str value",
+                        ));
+                    };
+                    let ellipsize = match value.as_str() {
+                        "none" => "PANGO_ELLIPSIZE_NONE",
+                        "start" => "PANGO_ELLIPSIZE_START",
+                        "middle" => "PANGO_ELLIPSIZE_MIDDLE",
+                        "end" => "PANGO_ELLIPSIZE_END",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                            ));
+                        }
+                    };
+                    out.push_str(&format!(
+                        "    gtk_label_set_ellipsize(GTK_LABEL({variable}), {ellipsize});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "max_lines") {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Text.max_lines must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(1..=i64::from(i32::MAX)).contains(&value) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.max_lines must be between 1 and 2147483647",
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "    gtk_label_set_lines(GTK_LABEL({variable}), {value});\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "selectable") {
@@ -1083,6 +1284,12 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_label_set_selectable(GTK_LABEL({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "wrap") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_label_set_wrap(GTK_LABEL({widget}), {value});\n"
                     ));
                 }
             }

@@ -4063,6 +4063,102 @@ app Screen
 }
 
 #[test]
+fn text_typography_properties_lower_to_native_pango_attributes() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        font_family: "DejaVu Sans"
+        size: 20
+        bold: true
+        italic: true
+        underline: true
+        strikethrough: true
+        letter_spacing: 2
+        line_height_percent: 140
+        text_align: "center"
+        wrap: false
+        wrap_mode: "word_char"
+        ellipsize: "end"
+        max_lines: 2
+}
+app Screen
+"#;
+    check_source(source).expect("typography properties should have compiler-owned Text contracts");
+    let generated =
+        compile_to_c(source).expect("typography should lower to native Pango attributes");
+    assert!(generated.contains("pango_attr_family_new(\"DejaVu Sans\")"));
+    assert!(generated.contains("pango_attr_size_new(20 * PANGO_SCALE)"));
+    assert!(generated.contains("pango_attr_weight_new(PANGO_WEIGHT_BOLD)"));
+    assert!(generated.contains("pango_attr_style_new(PANGO_STYLE_ITALIC)"));
+    assert!(generated.contains("pango_attr_underline_new(PANGO_UNDERLINE_SINGLE)"));
+    assert!(generated.contains("pango_attr_strikethrough_new(TRUE)"));
+    assert!(generated.contains("pango_attr_letter_spacing_new(2 * PANGO_SCALE)"));
+    assert!(generated.contains("pango_attr_line_height_new(1.4000)"));
+    assert!(
+        generated.contains("gtk_label_set_justify(GTK_LABEL(flux__ui_title), GTK_JUSTIFY_CENTER)")
+    );
+    assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_title), false)"));
+    assert!(
+        generated
+            .contains("gtk_label_set_wrap_mode(GTK_LABEL(flux__ui_title), PANGO_WRAP_WORD_CHAR)")
+    );
+    assert!(
+        generated
+            .contains("gtk_label_set_ellipsize(GTK_LABEL(flux__ui_title), PANGO_ELLIPSIZE_END)")
+    );
+    assert!(generated.contains("gtk_label_set_lines(GTK_LABEL(flux__ui_title), 2)"));
+
+    let empty_family = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        font_family: ""
+}
+app Screen
+"#;
+    check_source(empty_family).expect("font family emptiness is a native typography validation");
+    let error = compile_to_c(empty_family).expect_err("empty font family should fail");
+    assert!(error.message.contains("Text.font_family cannot be empty"));
+
+    let bad_line_height = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        line_height_percent: 0
+}
+app Screen
+"#;
+    check_source(bad_line_height).expect("line height range is validated by native lowering");
+    let error = compile_to_c(bad_line_height).expect_err("zero line height should fail");
+    assert!(
+        error
+            .message
+            .contains("line_height_percent must be greater than zero")
+    );
+
+    let bad_ellipsize = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        ellipsize: "around"
+}
+app Screen
+"#;
+    check_source(bad_ellipsize).expect("ellipsize enum is validated by native lowering");
+    let error = compile_to_c(bad_ellipsize).expect_err("unknown ellipsize mode should fail");
+    assert!(error.message.contains("Text.ellipsize must be one of"));
+}
+
+#[test]
 fn native_elements_support_background_borders_and_radii() {
     let source = r##"
 view Styled {

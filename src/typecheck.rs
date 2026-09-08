@@ -1144,11 +1144,22 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         }
     }
     match (kind, property) {
-        ("Text", "text") => Some(Type::Str),
-        ("Text", "selectable") => Some(Type::Bool),
-        ("Text", "size") => Some(Type::I64),
-        ("Text", "bold") => Some(Type::Bool),
-        ("Text", "color") => Some(Type::Str),
+        ("Text", "text")
+        | ("Text", "color")
+        | ("Text", "font_family")
+        | ("Text", "text_align")
+        | ("Text", "wrap_mode")
+        | ("Text", "ellipsize") => Some(Type::Str),
+        ("Text", "selectable")
+        | ("Text", "bold")
+        | ("Text", "italic")
+        | ("Text", "underline")
+        | ("Text", "strikethrough")
+        | ("Text", "wrap") => Some(Type::Bool),
+        ("Text", "size")
+        | ("Text", "letter_spacing")
+        | ("Text", "line_height_percent")
+        | ("Text", "max_lines") => Some(Type::I64),
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
@@ -1256,7 +1267,24 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
 
 pub fn view_property_names(kind: &str) -> Vec<&'static str> {
     let specific: &[&str] = match kind {
-        "Text" => &["text", "selectable", "size", "bold", "color"],
+        "Text" => &[
+            "text",
+            "selectable",
+            "size",
+            "bold",
+            "italic",
+            "underline",
+            "strikethrough",
+            "font_family",
+            "letter_spacing",
+            "line_height_percent",
+            "text_align",
+            "wrap",
+            "wrap_mode",
+            "ellipsize",
+            "max_lines",
+            "color",
+        ],
         "Button" => &["text", "enabled", "primary", "shortcut", "on_press"],
         "TextInput" => &[
             "text",
