@@ -1113,6 +1113,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 returns: Vec::new(),
             })
         }
+        ("TextInput", "text") | ("TextInput", "placeholder") => Some(Type::Str),
+        ("TextInput", "enabled") => Some(Type::Bool),
+        ("TextInput", "on_submit") => Some(Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        }),
         ("Toggle", "label") | ("Radio", "label") => Some(Type::Str),
         ("Toggle", "checked")
         | ("Toggle", "enabled")
@@ -1141,7 +1147,16 @@ pub fn view_element_property_type(
 }
 
 pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
-    "Text", "Button", "Toggle", "Radio", "Nav", "Chart", "Card", "Header", "Content",
+    "Text",
+    "Button",
+    "TextInput",
+    "Toggle",
+    "Radio",
+    "Nav",
+    "Chart",
+    "Card",
+    "Header",
+    "Content",
 ];
 
 fn view_element_kind_is_builtin(kind: &str) -> bool {
@@ -1165,6 +1180,15 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "enabled",
             "primary",
             "on_press",
+            "visible",
+            "min_width",
+            "min_height",
+        ],
+        "TextInput" => &[
+            "text",
+            "placeholder",
+            "enabled",
+            "on_submit",
             "visible",
             "min_width",
             "min_height",

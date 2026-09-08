@@ -461,7 +461,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Touch input.
 - [ ] Keyboard input.
 - [ ] Focus model.
-- [ ] Hover.
+- [x] Hover.
+  - [x] Common `on_hover` / `on_leave` events on native Text/Button/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
