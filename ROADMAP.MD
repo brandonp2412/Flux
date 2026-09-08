@@ -393,6 +393,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Flex/flow layout where grid is not appropriate.
 - [ ] Absolute/overlay positioning when explicitly requested.
 - [ ] Constraints, min/max sizing, intrinsic sizing.
+  - [x] Bootstrap common `min_width: i64` / `min_height: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
+  - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.
 - [ ] Responsive breakpoints/container queries.
 - [ ] Text.
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, and `bold: bool`, including grid placement, native wrapping/alignment, and Pango-backed typography without exposing GTK/Pango objects to Flux source.
@@ -669,7 +671,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Completion.
   - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, current-module declarations, public declarations from the forward import graph, and position-aware parameters/local bindings declared earlier in the current function, including unsaved overlay signatures/details. Local suggestions are filtered by active indentation scope so completed branches/loops do not leak bindings.
   - [x] Qualified namespace completion for enum variants and interface capabilities works at incomplete member edits such as `Outcome.` / `Storage.`, including explicitly imported declarations. A tolerant probe preserves declarations/imports before the active broken top-level declaration rather than requiring the edit to parse first.
-  - [x] Struct-field completion for explicitly typed visible parameters/`let`/`var` values, including transparent struct aliases, remains available at incomplete `value.` edits and reuses loaded local/imported struct contracts. Richer member completion for arbitrary value-producing expressions remains a later refinement.
+  - [x] Struct-field completion follows explicitly typed visible parameters/`let`/`var` values, transparent struct aliases, nested field paths, and single-return named function-call results while the active `value.` expression is incomplete; contracts come from the same local/imported program model. More complex arbitrary expressions can build on typed expression recovery later without introducing method semantics.
 - [x] Signature help for every current parenthesized Flux call form: ordinary/imported functions, first-class concrete `fn(...) -> ...` values, namespace-qualified interface capabilities with an explicit receiver, enum payload constructors, interface packing, and compiler built-ins (`print`/`error`). Active arguments are tracked across nested calls. Declarative view composition is property-oriented rather than a call surface and remains covered by UI completion/hover.
 - [ ] Hover/type information.
   - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves unambiguous usage-site hover across the loaded forward import graph, including unsaved overlays. Scope-resolved local shadowing and reverse-workspace discovery remain pending with richer reference indexing.

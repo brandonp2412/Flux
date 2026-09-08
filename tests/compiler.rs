@@ -3759,6 +3759,46 @@ app Counter
 }
 
 #[test]
+fn native_elements_support_state_visibility_and_minimum_size_constraints() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    state expanded: bool = false
+    Text title at 1,1
+        text: "Details"
+        visible: expanded
+        min_width: 320
+    Button action at 2,1
+        text: "Toggle"
+        min_height: 48
+        on_press: expanded => !expanded
+}
+app Screen
+"#;
+    check_source(source).expect("common visibility/size properties should typecheck");
+    let generated = compile_to_c(source).expect("common element layout properties should lower");
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_title, 320, -1)"));
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_action, -1, 48)"));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_title, flux__ui_state_expanded)"));
+
+    let bad_size = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+        min_width: 0
+}
+app Screen
+"#;
+    check_source(bad_size)
+        .expect("minimum size typechecking should succeed before backend validation");
+    let error = compile_to_c(bad_size).expect_err("invalid native minimum size must fail");
+    assert!(error.message.contains("min_width must be between 1"));
+}
+
+#[test]
 fn toggle_control_binds_native_checked_state_and_functional_transition() {
     let source = r#"
 view Settings {

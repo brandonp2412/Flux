@@ -766,16 +766,22 @@ fn completion_items_at_cursor_cached(
     let (Some(line_index), Some(character)) = (line_index, character) else {
         return items;
     };
-    let Some(namespace) = qualified_namespace_at_cursor(source, line_index, character, encoding)
-    else {
+    let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
         return items;
     };
     if let Some(program) =
         completion_contract_program_cached(uri, source, documents, line_index, cache)
-        && !add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program)
-        && let Some(type_name) = visible_value_type_name(source, line_index, namespace)
     {
-        add_struct_field_completions(&mut items, &mut seen, &type_name, &program);
+        let namespace = is_valid_identifier(&receiver).then_some(receiver.as_str());
+        let namespace_matched = namespace.is_some_and(|namespace| {
+            add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program)
+        });
+        if !namespace_matched
+            && let Some(type_name) =
+                member_receiver_type_name(source, line_index, &receiver, &program)
+        {
+            add_struct_field_completions(&mut items, &mut seen, &type_name, &program);
+        }
     }
     items
 }
@@ -917,12 +923,12 @@ fn completion_items_at_position(
     items
 }
 
-fn qualified_namespace_at_cursor(
+fn member_receiver_at_cursor(
     source: &str,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
-) -> Option<&str> {
+) -> Option<String> {
     let line = source.lines().nth(line_index)?;
     let cursor = byte_offset_for_encoded_column(line, character, encoding).min(line.len());
     let prefix = line.get(..cursor)?;
@@ -934,14 +940,44 @@ fn qualified_namespace_at_cursor(
     if member_start == 0 || bytes[member_start - 1] != b'.' {
         return None;
     }
-    let namespace_end = member_start - 1;
-    let mut namespace_start = namespace_end;
-    while namespace_start > 0 && is_identifier_byte(bytes[namespace_start - 1]) {
-        namespace_start -= 1;
+    let receiver_end = member_start - 1;
+    let receiver_prefix = prefix[..receiver_end].trim_end();
+    if receiver_prefix.is_empty() {
+        return None;
     }
-    (namespace_start < namespace_end)
-        .then(|| std::str::from_utf8(&bytes[namespace_start..namespace_end]).ok())
-        .flatten()
+    if receiver_prefix.ends_with(')') {
+        let bytes = receiver_prefix.as_bytes();
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..bytes.len()).rev() {
+            match bytes[index] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let open = open?;
+        let mut start = open;
+        while start > 0 && is_identifier_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == open {
+            return None;
+        }
+        return Some(receiver_prefix[start..].to_string());
+    }
+    let bytes = receiver_prefix.as_bytes();
+    let mut start = bytes.len();
+    while start > 0 && (is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'.') {
+        start -= 1;
+    }
+    (start < bytes.len()).then(|| receiver_prefix[start..].to_string())
 }
 
 fn completion_contract_program_cached(
@@ -1097,28 +1133,84 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
     None
 }
 
+fn member_receiver_type_name(
+    source: &str,
+    line_index: usize,
+    receiver: &str,
+    program: &crate::ast::Program,
+) -> Option<String> {
+    if receiver.ends_with(')') {
+        let open = receiver.find('(')?;
+        let function_name = receiver[..open].trim();
+        if !is_valid_identifier(function_name) {
+            return None;
+        }
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == function_name)?;
+        let [return_type] = function.returns.as_slice() else {
+            return None;
+        };
+        return named_type_name(return_type, program);
+    }
+
+    let mut parts = receiver.split('.');
+    let root = parts.next()?;
+    if !is_valid_identifier(root) {
+        return None;
+    }
+    let mut type_name = visible_value_type_name(source, line_index, root)?;
+    for field_name in parts {
+        if !is_valid_identifier(field_name) {
+            return None;
+        }
+        let definition = struct_definition_for_type(&type_name, program)?;
+        let field = definition
+            .fields
+            .iter()
+            .find(|field| field.name == field_name)?;
+        type_name = named_type_name(&field.ty, program)?;
+    }
+    Some(type_name)
+}
+
+fn named_type_name(ty: &crate::ast::Type, program: &crate::ast::Program) -> Option<String> {
+    let crate::ast::Type::Named(name) = ty else {
+        return None;
+    };
+    let mut current = name.as_str();
+    let mut visited = HashSet::new();
+    while visited.insert(current.to_string()) {
+        let Some(alias) = program.aliases.iter().find(|alias| alias.name == current) else {
+            return Some(current.to_string());
+        };
+        let crate::ast::Type::Named(target) = &alias.target else {
+            return None;
+        };
+        current = target;
+    }
+    None
+}
+
+fn struct_definition_for_type<'a>(
+    type_name: &str,
+    program: &'a crate::ast::Program,
+) -> Option<&'a crate::ast::StructDef> {
+    let concrete = named_type_name(&crate::ast::Type::Named(type_name.to_string()), program)?;
+    program
+        .structs
+        .iter()
+        .find(|definition| definition.name == concrete)
+}
+
 fn add_struct_field_completions(
     items: &mut Vec<JsonValue>,
     seen: &mut HashSet<String>,
     type_name: &str,
     program: &crate::ast::Program,
 ) {
-    let mut concrete = type_name;
-    let mut visited = HashSet::new();
-    while visited.insert(concrete.to_string()) {
-        let Some(alias) = program.aliases.iter().find(|alias| alias.name == concrete) else {
-            break;
-        };
-        let crate::ast::Type::Named(target) = &alias.target else {
-            return;
-        };
-        concrete = target;
-    }
-    let Some(definition) = program
-        .structs
-        .iter()
-        .find(|definition| definition.name == concrete)
-    else {
+    let Some(definition) = struct_definition_for_type(type_name, program) else {
         return;
     };
     for field in &definition.fields {
@@ -3911,7 +4003,7 @@ mod tests {
             .expect("built-in element hover should survive incomplete source")
             .to_json();
         assert!(element.contains(
-            "element Text { text: str, selectable: bool, size: i64, bold: bool, color: str }"
+            "element Text { text: str, selectable: bool, size: i64, bold: bool, color: str, visible: bool, min_width: i64, min_height: i64 }"
         ));
 
         let property = hover_for_document(uri, source, &documents, 4, 10, PositionEncoding::Utf8)
@@ -4017,6 +4109,48 @@ mod tests {
             assert!(items.contains("\"label\":\"age\""));
             assert!(items.contains("field User.age: i64"));
         }
+    }
+
+    #[test]
+    fn struct_field_completion_follows_nested_fields_and_function_results() {
+        let uri = "file:///tmp/expression-member-completion.flux";
+        let source = "struct Profile {\n    display_name: str\n    score: i64\n}\nstruct User {\n    profile: Profile\n}\nfn load_user() -> User {\n    return User { profile: Profile { display_name: \"Ada\", score: 42 } }\n}\nfn describe(user: User) -> i64 {\n    user.profile.\n    load_user().\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        let nested_line = source
+            .lines()
+            .position(|line| line.trim() == "user.profile.")
+            .expect("nested member line should exist");
+        let nested_source = source.lines().nth(nested_line).unwrap();
+        let nested = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(nested_line),
+            Some(nested_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(nested.contains("\"label\":\"display_name\""));
+        assert!(nested.contains("field Profile.display_name: str"));
+        assert!(nested.contains("\"label\":\"score\""));
+
+        let call_line = source
+            .lines()
+            .position(|line| line.trim() == "load_user().")
+            .expect("call-result member line should exist");
+        let call_source = source.lines().nth(call_line).unwrap();
+        let call = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(call_line),
+            Some(call_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(call.contains("\"label\":\"profile\""));
+        assert!(call.contains("field User.profile: Profile"));
     }
 
     #[test]

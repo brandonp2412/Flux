@@ -384,7 +384,7 @@ fn emit_linux_gtk_application(
             }
             _ => unreachable!("unsupported app element rejected before lowering"),
         }
-        emit_grid_sizing(out, view, element, &variable);
+        emit_grid_sizing(out, view, element, &variable, signatures)?;
         out.push_str(&format!(
             "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",
             element.column - 1,
@@ -596,6 +596,12 @@ fn emit_ui_refresh(
     out.push_str("static void flux__ui_refresh(void) {\n");
     for element in &view.elements {
         let widget = ui_widget_c_name(&element.name);
+        if let Some(property) = view_property(element, "visible") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
+            ));
+        }
         match element.kind.as_str() {
             "Text" => {
                 if let Some(property) = view_property(element, "text") {
@@ -676,7 +682,8 @@ fn emit_grid_sizing(
     view: &crate::ast::ViewDef,
     element: &crate::ast::ViewElement,
     variable: &str,
-) {
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
     let column_index = element.column.saturating_sub(1) as usize;
     let row_index = element.row.saturating_sub(1) as usize;
     if view
@@ -695,25 +702,59 @@ fn emit_grid_sizing(
     {
         out.push_str(&format!("    gtk_widget_set_vexpand({variable}, TRUE);\n"));
     }
-    let width = view
+    let fixed_width = view
         .grid
         .columns
         .get(column_index)
         .and_then(|track| match track {
-            crate::ast::GridTrack::Units(value) => Some(*value),
+            crate::ast::GridTrack::Units(value) => Some(i64::from(*value)),
             _ => None,
         });
-    let height = view.grid.rows.get(row_index).and_then(|track| match track {
-        crate::ast::GridTrack::Units(value) => Some(*value),
+    let fixed_height = view.grid.rows.get(row_index).and_then(|track| match track {
+        crate::ast::GridTrack::Units(value) => Some(i64::from(*value)),
         _ => None,
     });
+    let min_width = static_minimum_size(element, "min_width", signatures)?;
+    let min_height = static_minimum_size(element, "min_height", signatures)?;
+    let width = match (fixed_width, min_width) {
+        (Some(fixed), Some(minimum)) => Some(fixed.max(minimum)),
+        (fixed, minimum) => fixed.or(minimum),
+    };
+    let height = match (fixed_height, min_height) {
+        (Some(fixed), Some(minimum)) => Some(fixed.max(minimum)),
+        (fixed, minimum) => fixed.or(minimum),
+    };
     if width.is_some() || height.is_some() {
         out.push_str(&format!(
             "    gtk_widget_set_size_request({variable}, {}, {});\n",
-            width.map(|value| value as i32).unwrap_or(-1),
-            height.map(|value| value as i32).unwrap_or(-1),
+            width.unwrap_or(-1),
+            height.unwrap_or(-1),
         ));
     }
+    Ok(())
+}
+
+fn static_minimum_size(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    signatures: &Signatures,
+) -> Result<Option<i64>, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok(None);
+    };
+    let Some(value) = static_expr_i64(&property.value, signatures) else {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must be a compile-time i64 value"),
+        ));
+    };
+    if !(1..=i64::from(i32::MAX)).contains(&value) {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must be between 1 and {}", i32::MAX),
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn function_prototype(function: &Function, signatures: &Signatures) -> String {

@@ -1070,6 +1070,13 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
 }
 
 pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
+    if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
+        match property {
+            "visible" => return Some(Type::Bool),
+            "min_width" | "min_height" => return Some(Type::I64),
+            _ => {}
+        }
+    }
     match (kind, property) {
         ("Text", "text") => Some(Type::Str),
         ("Text", "selectable") => Some(Type::Bool),
@@ -1117,12 +1124,37 @@ fn view_element_kind_is_builtin(kind: &str) -> bool {
 
 pub fn view_property_names(kind: &str) -> &'static [&'static str] {
     match kind {
-        "Text" => &["text", "selectable", "size", "bold", "color"],
-        "Button" => &["text", "enabled", "primary", "on_press"],
-        "Toggle" => &["label", "checked", "enabled", "on_change"],
-        "Nav" | "Chart" | "Content" => &["label"],
-        "Card" => &["title"],
-        "Header" => &["text"],
+        "Text" => &[
+            "text",
+            "selectable",
+            "size",
+            "bold",
+            "color",
+            "visible",
+            "min_width",
+            "min_height",
+        ],
+        "Button" => &[
+            "text",
+            "enabled",
+            "primary",
+            "on_press",
+            "visible",
+            "min_width",
+            "min_height",
+        ],
+        "Toggle" => &[
+            "label",
+            "checked",
+            "enabled",
+            "on_change",
+            "visible",
+            "min_width",
+            "min_height",
+        ],
+        "Nav" | "Chart" | "Content" => &["label", "visible", "min_width", "min_height"],
+        "Card" => &["title", "visible", "min_width", "min_height"],
+        "Header" => &["text", "visible", "min_width", "min_height"],
         _ => &[],
     }
 }
