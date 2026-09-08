@@ -355,10 +355,16 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(|params| params.get("position"))
                         .and_then(|position| position.get("line"))
                         .and_then(JsonValue::as_usize);
+                    let character = params
+                        .and_then(|params| params.get("position"))
+                        .and_then(|position| position.get("character"))
+                        .and_then(JsonValue::as_usize);
                     let items = uri
                         .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
                         .map(|(uri, source)| {
-                            completion_items_at_position(uri, source, &documents, line)
+                            completion_items_at_cursor(
+                                uri, source, &documents, line, character, encoding,
+                            )
                         })
                         .unwrap_or_else(|| completion_items(""));
                     write_message(
@@ -661,6 +667,33 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     items
 }
 
+fn completion_items_at_cursor(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: Option<usize>,
+    character: Option<usize>,
+    encoding: PositionEncoding,
+) -> Vec<JsonValue> {
+    let mut items = completion_items_at_position(uri, source, documents, line_index);
+    let mut seen = items
+        .iter()
+        .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    let (Some(line_index), Some(character)) = (line_index, character) else {
+        return items;
+    };
+    let Some(namespace) = qualified_namespace_at_cursor(source, line_index, character, encoding)
+    else {
+        return items;
+    };
+    if let Some(program) = completion_contract_program(uri, source, documents, line_index) {
+        add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program);
+    }
+    items
+}
+
 fn completion_items_at_position(
     uri: &str,
     source: &str,
@@ -675,11 +708,9 @@ fn completion_items_at_position(
         .collect::<HashSet<_>>();
     if let Some(line_index) = line_index {
         add_builtin_ui_context_completions(&mut items, &mut seen, source, line_index);
-        if let Some(program) = view_contract_program(source, line_index) {
-            add_custom_view_property_completions(
-                &mut items, &mut seen, source, line_index, &program,
-            );
-        }
+        add_recovered_view_property_completions(
+            &mut items, &mut seen, uri, source, documents, line_index,
+        );
     }
     if let Some(line_index) = line_index
         && let Some(database) = analyzed_document(uri, source)
@@ -800,6 +831,152 @@ fn completion_items_at_position(
     items
 }
 
+fn qualified_namespace_at_cursor(
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<&str> {
+    let line = source.lines().nth(line_index)?;
+    let cursor = byte_offset_for_encoded_column(line, character, encoding).min(line.len());
+    let prefix = line.get(..cursor)?;
+    let bytes = prefix.as_bytes();
+    let mut member_start = bytes.len();
+    while member_start > 0 && is_identifier_byte(bytes[member_start - 1]) {
+        member_start -= 1;
+    }
+    if member_start == 0 || bytes[member_start - 1] != b'.' {
+        return None;
+    }
+    let namespace_end = member_start - 1;
+    let mut namespace_start = namespace_end;
+    while namespace_start > 0 && is_identifier_byte(bytes[namespace_start - 1]) {
+        namespace_start -= 1;
+    }
+    (namespace_start < namespace_end)
+        .then(|| std::str::from_utf8(&bytes[namespace_start..namespace_end]).ok())
+        .flatten()
+}
+
+fn completion_contract_program(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+) -> Option<crate::ast::Program> {
+    if let Some((database, _)) = analyzed_project_document(uri, documents) {
+        return Some(database.program().clone());
+    }
+    let prefix = source_before_active_top_level_declaration(source, line_index);
+    let probe = format!("{prefix}fn __flux_lsp_completion_probe() -> i64 {{ 0 }}\n");
+    if let Some(path) = file_uri_path(uri).and_then(|path| std::fs::canonicalize(path).ok()) {
+        let mut overlays = document_overlays(documents);
+        overlays.insert(path.clone(), probe.clone());
+        if let Ok((program, _)) = crate::project::load_with_overlays(&path, &overlays) {
+            return Some(program);
+        }
+    }
+    crate::parser::parse_all(&probe).ok()
+}
+
+fn source_before_active_top_level_declaration(source: &str, line_index: usize) -> &str {
+    let mut byte_offset = 0usize;
+    let mut declaration_start = None;
+    for (index, segment) in source.split_inclusive('\n').enumerate() {
+        if index > line_index {
+            break;
+        }
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        if leading_spaces(line) == 0 {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub fn ")
+                || trimmed.starts_with("view ")
+                || trimmed.starts_with("pub view ")
+            {
+                declaration_start = Some(byte_offset);
+            }
+        }
+        byte_offset += segment.len();
+    }
+    &source[..declaration_start.unwrap_or(byte_offset)]
+}
+
+fn add_qualified_namespace_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    namespace: &str,
+    program: &crate::ast::Program,
+) {
+    if let Some(definition) = program
+        .enums
+        .iter()
+        .find(|definition| definition.name == namespace)
+    {
+        for variant in &definition.variants {
+            let payloads = variant
+                .payloads
+                .iter()
+                .map(|payload| payload.ty.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            push_completion_item(
+                items,
+                seen,
+                &variant.name,
+                20,
+                &format!("{namespace}.{}({payloads}) -> {namespace}", variant.name),
+            );
+        }
+        return;
+    }
+    if let Some(interface) = program
+        .interfaces
+        .iter()
+        .find(|interface| interface.name == namespace)
+    {
+        for function in &interface.functions {
+            let params = function
+                .params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.ty.name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            push_completion_item(
+                items,
+                seen,
+                &function.name,
+                3,
+                &format!(
+                    "fn {namespace}.{}(receiver: {namespace}{}) -> {}",
+                    function.name,
+                    if params.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {params}")
+                    },
+                    format_return_types_for_lsp(&function.returns)
+                ),
+            );
+        }
+    }
+}
+
+fn format_return_types_for_lsp(returns: &[crate::ast::Type]) -> String {
+    match returns {
+        [] => "void".to_string(),
+        [ty] => ty.name(),
+        values => format!(
+            "({})",
+            values
+                .iter()
+                .map(crate::ast::Type::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn add_builtin_ui_context_completions(
     items: &mut Vec<JsonValue>,
     seen: &mut HashSet<String>,
@@ -858,6 +1035,107 @@ fn view_contract_program(source: &str, line_index: usize) -> Option<crate::ast::
     crate::parser::parse_all(source.get(..current_view_start?)?).ok()
 }
 
+fn recovered_view_contract(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    kind: &str,
+) -> Option<(crate::ast::ViewDef, Option<crate::project::ProjectSource>)> {
+    let prefix_program = view_contract_program(source, line_index)?;
+    if let Some(view) = prefix_program.views.iter().find(|view| view.name == kind) {
+        return Some((view.clone(), None));
+    }
+    let current_path = std::fs::canonicalize(file_uri_path(uri)?).ok()?;
+    let parent = current_path.parent()?;
+    let package_root = nearest_package_manifest(&current_path)
+        .and_then(|manifest| manifest.parent().map(std::path::Path::to_path_buf));
+    let overlays = document_overlays(documents);
+    for import in &prefix_program.imports {
+        let import_path = std::path::Path::new(&import.path);
+        if import_path.is_absolute()
+            || import_path.extension().and_then(|value| value.to_str()) != Some("flux")
+            || import_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            continue;
+        }
+        let Ok(resolved) = std::fs::canonicalize(parent.join(import_path)) else {
+            continue;
+        };
+        if package_root
+            .as_ref()
+            .is_some_and(|root| !resolved.starts_with(root))
+        {
+            continue;
+        }
+        let Ok((program, sources)) = crate::project::load_with_overlays(&resolved, &overlays)
+        else {
+            continue;
+        };
+        let Some(view) = program
+            .views
+            .iter()
+            .find(|view| view.name == kind && view.public)
+        else {
+            continue;
+        };
+        let source = sources
+            .iter()
+            .find(|source| source.source_id == view.name_span.source_id)
+            .cloned();
+        return Some((view.clone(), source));
+    }
+    None
+}
+
+fn add_recovered_view_property_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+) {
+    let lines = source.lines().collect::<Vec<_>>();
+    let Some((kind, element_line)) = enclosing_view_element(&lines, line_index) else {
+        return;
+    };
+    if !crate::typecheck::view_property_names(kind).is_empty() {
+        return;
+    }
+    let Some((view, _)) = recovered_view_contract(uri, source, documents, line_index, kind) else {
+        return;
+    };
+    let existing = view_properties_before_cursor(&lines, element_line, line_index);
+    add_view_parameter_completions(items, seen, kind, &view, &existing);
+}
+
+fn add_view_parameter_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    kind: &str,
+    view: &crate::ast::ViewDef,
+    existing: &HashSet<String>,
+) {
+    for param in &view.params {
+        if existing.contains(param.name.as_str()) {
+            continue;
+        }
+        push_completion_item(
+            items,
+            seen,
+            &param.name,
+            10,
+            &format!("{kind}.{}: {}", param.name, param.ty.name()),
+        );
+    }
+}
+
 fn add_custom_view_property_completions(
     items: &mut Vec<JsonValue>,
     seen: &mut HashSet<String>,
@@ -876,18 +1154,7 @@ fn add_custom_view_property_completions(
         return;
     };
     let existing = view_properties_before_cursor(&lines, element_line, line_index);
-    for param in &view.params {
-        if existing.contains(param.name.as_str()) {
-            continue;
-        }
-        push_completion_item(
-            items,
-            seen,
-            &param.name,
-            10,
-            &format!("{kind}.{}: {}", param.name, param.ty.name()),
-        );
-    }
+    add_view_parameter_completions(items, seen, kind, view, &existing);
 }
 
 fn enclosing_view_element<'a>(lines: &'a [&str], line_index: usize) -> Option<(&'a str, usize)> {
@@ -1952,8 +2219,9 @@ fn definition_for_document(
         return Some(definition);
     }
     if database.is_none()
-        && let Some(definition) =
-            recovered_ui_property_definition(uri, source, line_index, character, encoding)
+        && let Some(definition) = recovered_ui_property_definition(
+            uri, source, documents, line_index, character, encoding,
+        )
     {
         return Some(definition);
     }
@@ -1968,6 +2236,7 @@ fn definition_for_document(
 fn recovered_ui_property_definition(
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
@@ -1987,9 +2256,14 @@ fn recovered_ui_property_definition(
     if !crate::typecheck::view_property_names(kind).is_empty() {
         return None;
     }
-    let program = view_contract_program(source, line_index)?;
-    let view = program.views.iter().find(|view| view.name == kind)?;
+    let (view, target_source) = recovered_view_contract(uri, source, documents, line_index, kind)?;
     let param = view.params.iter().find(|param| param.name == property)?;
+    if let Some(target) = target_source {
+        return Some(object([
+            ("uri", JsonValue::String(file_uri_from_path(&target.path))),
+            ("range", lsp_range(param.name_span, &target.text, encoding)),
+        ]));
+    }
     Some(object([
         ("uri", JsonValue::String(uri.to_string())),
         ("range", lsp_range(param.name_span, source, encoding)),
@@ -2256,7 +2530,8 @@ fn hover_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
-    if let Some(hover) = ui_contract_hover(source, line_index, character, encoding) {
+    if let Some(hover) = ui_contract_hover(uri, source, documents, line_index, character, encoding)
+    {
         return Some(hover);
     }
     let project_database = analyzed_project_document(uri, documents).map(|(database, _)| database);
@@ -2290,7 +2565,9 @@ fn hover_for_document(
 }
 
 fn ui_contract_hover(
+    uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
@@ -2306,14 +2583,14 @@ fn ui_contract_hover(
         if tokens.len() < 4 || tokens[2] != "at" || tokens[0] != word {
             return None;
         }
-        view_element_hover_description(word, source, line_index)?
+        view_element_hover_description(word, uri, source, documents, line_index)?
     } else if indent >= 8 {
         let (kind, _) = enclosing_view_element(&lines, line_index)?;
         let property_name = line.trim().split_once(':')?.0.trim();
         if property_name != word {
             return None;
         }
-        view_property_hover_description(kind, property_name, source, line_index)?
+        view_property_hover_description(kind, property_name, uri, source, documents, line_index)?
     } else {
         return None;
     };
@@ -2333,7 +2610,13 @@ fn ui_contract_hover(
     ]))
 }
 
-fn view_element_hover_description(kind: &str, source: &str, line_index: usize) -> Option<String> {
+fn view_element_hover_description(
+    kind: &str,
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+) -> Option<String> {
     let properties = crate::typecheck::view_property_names(kind);
     if !properties.is_empty() {
         let rendered = properties
@@ -2346,8 +2629,7 @@ fn view_element_hover_description(kind: &str, source: &str, line_index: usize) -
             .join(", ");
         return Some(format!("element {kind} {{ {rendered} }}"));
     }
-    let program = view_contract_program(source, line_index)?;
-    let view = program.views.iter().find(|view| view.name == kind)?;
+    let (view, _) = recovered_view_contract(uri, source, documents, line_index, kind)?;
     let params = view
         .params
         .iter()
@@ -2360,14 +2642,15 @@ fn view_element_hover_description(kind: &str, source: &str, line_index: usize) -
 fn view_property_hover_description(
     kind: &str,
     property: &str,
+    uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     line_index: usize,
 ) -> Option<String> {
     if let Some(ty) = crate::typecheck::view_property_type(kind, property) {
         return Some(format!("property {kind}.{property}: {}", ty.name()));
     }
-    let program = view_contract_program(source, line_index)?;
-    let view = program.views.iter().find(|view| view.name == kind)?;
+    let (view, _) = recovered_view_contract(uri, source, documents, line_index, kind)?;
     let param = view.params.iter().find(|param| param.name == property)?;
     Some(format!("property {kind}.{property}: {}", param.ty.name()))
 }
@@ -3355,6 +3638,95 @@ mod tests {
     }
 
     #[test]
+    fn qualified_completion_survives_incomplete_enum_and_interface_members() {
+        let uri = "file:///tmp/qualified-completion.flux";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let enum_line = source
+            .lines()
+            .position(|line| line.contains("Outcome."))
+            .expect("enum completion line should exist");
+        let enum_source = source.lines().nth(enum_line).unwrap();
+        let enum_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(enum_line),
+            Some(enum_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(enum_items.contains("\"label\":\"Ok\""));
+        assert!(enum_items.contains("Outcome.Ok(i64) -> Outcome"));
+        assert!(enum_items.contains("\"label\":\"Failed\""));
+
+        let interface_line = source
+            .lines()
+            .position(|line| line.trim() == "Storage.")
+            .expect("interface completion line should exist");
+        let interface_source = source.lines().nth(interface_line).unwrap();
+        let interface_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(interface_line),
+            Some(interface_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(interface_items.contains("\"label\":\"load\""));
+        assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
+        assert!(interface_items.contains("\"label\":\"save\""));
+    }
+
+    #[test]
+    fn imported_qualified_completion_uses_forward_import_contracts_during_incomplete_edit() {
+        let root =
+            std::env::temp_dir().join(format!("flux-qualified-completion-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary completion project should be writable");
+        let dependency = root.join("api.flux");
+        let main = root.join("main.flux");
+        std::fs::write(
+            &dependency,
+            "pub enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\npub interface Storage {\n    fn load(path: str) -> (str, error)\n}\n",
+        )
+        .expect("completion dependency should be writable");
+        let source = "import \"api.flux\"\nfn main() -> i64 {\n    Outcome.\n    Storage.\n    return 0\n}\n";
+        std::fs::write(&main, source).expect("completion entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = file_uri_from_path(&main);
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+
+        let outcome_line = 2usize;
+        let outcome_source = source.lines().nth(outcome_line).unwrap();
+        let enum_items = JsonValue::Array(completion_items_at_cursor(
+            &uri,
+            source,
+            &documents,
+            Some(outcome_line),
+            Some(outcome_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(enum_items.contains("Outcome.Ok(i64) -> Outcome"));
+
+        let storage_line = 3usize;
+        let storage_source = source.lines().nth(storage_line).unwrap();
+        let interface_items = JsonValue::Array(completion_items_at_cursor(
+            &uri,
+            source,
+            &documents,
+            Some(storage_line),
+            Some(storage_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn custom_view_completion_recovers_contract_before_malformed_current_view() {
         let uri = "file:///tmp/malformed-custom-view.flux";
         let source = "view Badge(label: str, count: i64 = 1) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        lab\n";
@@ -3454,6 +3826,72 @@ mod tests {
         .to_json();
         assert!(definition.contains("\"line\":0"));
         assert!(definition.contains("\"character\":11"));
+    }
+
+    #[test]
+    fn imported_custom_view_contracts_survive_a_malformed_importer_with_overlays() {
+        let root =
+            std::env::temp_dir().join(format!("flux-incomplete-import-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary UI project should be writable");
+        let dependency = root.join("badge.flux");
+        let main = root.join("main.flux");
+        std::fs::write(
+            &dependency,
+            "pub view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\n",
+        )
+        .expect("view dependency should be writable");
+        let source = "import \"badge.flux\"\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        \n        label: true\n";
+        std::fs::write(&main, source).expect("malformed importer should still exist on disk");
+        let dependency = std::fs::canonicalize(dependency).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = file_uri_from_path(&main);
+        let dependency_uri = file_uri_from_path(&dependency);
+        let dependency_overlay = "pub view Badge(label: bool) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: \"overlay\"\n}\n";
+        let documents = HashMap::from([
+            (uri.clone(), source.to_string()),
+            (dependency_uri.clone(), dependency_overlay.to_string()),
+        ]);
+        let property_line = source
+            .lines()
+            .position(|line| line.contains("label: true"))
+            .expect("property line should exist");
+        let blank_line = property_line - 1;
+
+        let completion = JsonValue::Array(completion_items_at_position(
+            &uri,
+            source,
+            &documents,
+            Some(blank_line),
+        ))
+        .to_json();
+        assert!(completion.contains("Badge.label: bool"));
+
+        let hover = hover_for_document(
+            &uri,
+            source,
+            &documents,
+            property_line,
+            10,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported overlay property should hover through malformed importer")
+        .to_json();
+        assert!(hover.contains("property Badge.label: bool"));
+
+        let definition = definition_for_document(
+            &uri,
+            source,
+            &documents,
+            property_line,
+            10,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported overlay property should navigate through malformed importer")
+        .to_json();
+        assert!(definition.contains("badge.flux"));
+        assert!(definition.contains("\"line\":0"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
