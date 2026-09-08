@@ -97,7 +97,15 @@ cargo run -- format examples/hello.flux
 cargo run -- format examples/hello.flux --check
 ```
 
-Editors can launch the bootstrap language server over stdio:
+For the first zero-install editor dogfood path on Linux, use the checked-in Neovim launcher:
+
+```sh
+./tools/flux-nvim examples/hello_app.flux
+```
+
+It uses the repository's Neovim runtime, gives `.flux` files immediate syntax colouring, starts the built `fluxc lsp`, and leaves the user's global Neovim configuration untouched. Inside the editor, `:FluxRun` opens a terminal split running the current Flux target with automatic save-triggered rebuild/restart. The complete manual acceptance sequence is documented in `docs/manual-e2e.md`.
+
+Editors can also launch the bootstrap language server directly over stdio:
 
 ```sh
 cargo run -- lsp

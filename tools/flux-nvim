@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLUXC="$ROOT/target/debug/fluxc"
+
+if [[ ! -x "$FLUXC" ]]; then
+  cargo build --quiet --manifest-path "$ROOT/Cargo.toml"
+fi
+
+exec nvim --cmd "set runtimepath^=$ROOT/editors/nvim" \
+  --cmd "let g:fluxc_path='$FLUXC'" \
+  --cmd "let g:flux_lsp_cmd=['$FLUXC','lsp']" \
+  --cmd "filetype plugin on" \
+  --cmd "syntax enable" \
+  "$@"
