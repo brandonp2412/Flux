@@ -238,7 +238,8 @@ fn emit_linux_gtk_application(
                 ));
                 let size = view_property(element, "size");
                 let bold = view_property(element, "bold");
-                if size.is_some() || bold.is_some() {
+                let color = view_property(element, "color");
+                if size.is_some() || bold.is_some() || color.is_some() {
                     let attrs = format!("flux__ui_attrs_{}", element.name);
                     out.push_str(&format!(
                         "    PangoAttrList *{attrs} = pango_attr_list_new();\n"
@@ -273,6 +274,23 @@ fn emit_linux_gtk_application(
                             ));
                         }
                     }
+                    if let Some(property) = color {
+                        let Some(value) = static_expr_str(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux Text.color must be a compile-time str value",
+                            ));
+                        };
+                        let Some((red, green, blue)) = parse_hex_rgb(&value) else {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.color must use '#RRGGBB' hexadecimal syntax",
+                            ));
+                        };
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_foreground_new({red}, {green}, {blue}));\n"
+                        ));
+                    }
                     out.push_str(&format!(
                         "    gtk_label_set_attributes(GTK_LABEL({variable}), {attrs});\n    pango_attr_list_unref({attrs});\n"
                     ));
@@ -297,6 +315,19 @@ fn emit_linux_gtk_application(
                     out.push_str(&format!(
                         "    gtk_widget_set_sensitive({variable}, {enabled});\n"
                     ));
+                }
+                if let Some(property) = view_property(element, "primary") {
+                    let Some(primary) = static_expr_bool(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Button.primary must be a compile-time bool value",
+                        ));
+                    };
+                    if primary {
+                        out.push_str(&format!(
+                            "    gtk_widget_add_css_class({variable}, \"suggested-action\");\n"
+                        ));
+                    }
                 }
                 if view_property(element, "on_press").is_some() {
                     out.push_str(&format!(
@@ -353,6 +384,36 @@ fn static_expr_i64(expr: &Expr, signatures: &Signatures) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Str(value) => Some(value.clone()),
+        ExprKind::Var(name) => {
+            signatures
+                .constant(name)
+                .and_then(|constant| match &constant.value {
+                    ConstantValue::Str(value) => Some(value.clone()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
+fn parse_hex_rgb(value: &str) -> Option<(u16, u16, u16)> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((
+        u16::from(red) * 257,
+        u16::from(green) * 257,
+        u16::from(blue) * 257,
+    ))
 }
 
 fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {

@@ -478,6 +478,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 # Milestone 14 — Styling, themes, responsive UI, and animation
 
 - [ ] Colors.
+  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` values, is statically typed/LSP-visible, and lowers to native Pango foreground attributes on Linux; dynamic/theme colors and broader element styling remain pending.
 - [ ] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
 - [ ] Spacing.
@@ -491,6 +492,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] System theme integration.
 - [ ] Device/window/orientation queries.
 - [ ] Adaptive components where platform differences are valuable.
+  - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to the native GTK `suggested-action` style class without exposing platform widget APIs in Flux source.
 - [ ] Animation timelines.
 - [ ] Easing/springs.
 - [ ] Property transitions.

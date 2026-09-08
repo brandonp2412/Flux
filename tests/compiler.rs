@@ -3614,7 +3614,7 @@ app HelloApp
 
 #[test]
 fn app_view_state_transitions_lower_to_native_state_and_refresh() {
-    let source = r#"
+    let source = r##"
 view Counter {
     grid columns: 1fr
     grid rows: auto auto
@@ -3624,12 +3624,14 @@ view Counter {
         text: "Clicked!" if clicked else "Hello"
         size: 28
         bold: true
+        color: "#4F46E5"
     Button action at 2,1
         text: "Reset" if clicked else "Click me"
+        primary: true
         on_press: clicked => !clicked
 }
 app Counter
-"#;
+"##;
 
     check_source(source).expect("typed view state transition should typecheck");
     let program = fluxc::parser::parse(source).expect("stateful app should parse");
@@ -3663,7 +3665,25 @@ app Counter
     assert!(generated.contains("gtk_widget_set_margin_top(grid, 24)"));
     assert!(generated.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
     assert!(generated.contains("PANGO_WEIGHT_BOLD"));
+    assert!(generated.contains("pango_attr_foreground_new(20303, 17990, 58853)"));
+    assert!(generated.contains("gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"));
     assert!(generated.contains("flux__ui_state_clicked") && generated.contains("Clicked!"));
+}
+
+#[test]
+fn rejects_invalid_bootstrap_text_color() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        color: "indigo"
+}
+app Screen
+"#;
+    check_source(source).expect("color property should have the expected str type");
+    let error = compile_to_c(source).expect_err("invalid bootstrap color syntax must fail codegen");
+    assert!(error.message.contains("Text.color must use '#RRGGBB'"));
 }
 
 #[test]

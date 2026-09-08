@@ -9,9 +9,11 @@ view HelloApp {
         text: "Clicked!" if clicked else "Hello, Flux!"
         size: 28
         bold: true
+        color: "#4F46E5"
 
     Button action at 2,1
         text: "Reset" if clicked else "Click me"
+        primary: true
         on_press: clicked => !clicked
 }
 
