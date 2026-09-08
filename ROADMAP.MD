@@ -365,6 +365,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Environment/configuration.
 - [ ] Platform permissions.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
+  - [x] Bootstrap `app` metadata accepts named typed `on_start: fn() -> void` and `on_exit: fn() -> void` callbacks; Linux invokes start during native activation and exit through the native application shutdown signal with no application/controller object exposed to Flux source.
+  - [ ] Foreground/background, window lifecycle, suspension/restoration, and capability-rich lifecycle context.
 - [ ] Background/foreground transitions.
 - [ ] Multiple windows where the target supports them.
 - [ ] Platform capability discovery.

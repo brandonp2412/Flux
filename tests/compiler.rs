@@ -3190,6 +3190,10 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
     assert!(source.contains("state clicked: bool = false"));
     assert!(source.contains("on_press: clicked => !clicked"));
     assert!(source.contains("app App"));
+    let smoke = fs::read_to_string(root.join("tests/smoke.flux"))
+        .expect("new project should contain a starter integration test");
+    assert!(smoke.contains("fn main() -> i64"));
+    assert!(smoke.contains("return 0"));
 
     let checked = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("check")
@@ -3201,6 +3205,17 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
         "generated package failed check: {}",
         String::from_utf8_lossy(&checked.stderr)
     );
+    let tested = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&root)
+        .output()
+        .expect("generated package tests should run");
+    assert!(
+        tested.status.success(),
+        "generated package tests failed: {}",
+        String::from_utf8_lossy(&tested.stderr)
+    );
+    assert!(String::from_utf8_lossy(&tested.stdout).contains("1 passed; 0 failed"));
 
     let refused = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("new")
@@ -3211,6 +3226,21 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
     assert!(String::from_utf8_lossy(&refused.stderr).contains("directory is not empty"));
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn flux_test_propagates_native_nonzero_exit_status() {
+    let path = std::env::temp_dir().join(format!("flux-failing-test-{}.flux", std::process::id()));
+    fs::write(&path, "fn main() -> i64 {\n    return 7\n}\n")
+        .expect("failing Flux test should be writable");
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&path)
+        .output()
+        .expect("flux test should run");
+    let _ = fs::remove_file(&path);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exited with 7"));
 }
 
 #[test]
@@ -3879,6 +3909,45 @@ app Screen(width: 0)
         error
             .message
             .contains("application width must be greater than zero")
+    }));
+}
+
+#[test]
+fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
+    let source = r#"
+fn started() -> void {
+    print("started")
+}
+fn exiting() -> void {
+    print("exiting")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(on_start: started, on_exit: exiting)
+"#;
+    check_source(source)
+        .expect("lifecycle callbacks should typecheck as named fn() -> void values");
+    let generated = compile_to_c(source).expect("lifecycle callbacks should lower natively");
+    assert!(generated.contains("flux__fn_started();"));
+    assert!(generated.contains("static void flux__ui_shutdown"));
+    assert!(generated.contains("flux__fn_exiting();"));
+    assert!(generated.contains("\"shutdown\", G_CALLBACK(flux__ui_shutdown)"));
+
+    let wrong = r#"
+fn bad(value: i64) -> void {
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(on_start: bad)
+"#;
+    let errors = check_source_all(wrong).expect_err("wrong lifecycle signature should fail");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("application on_start callback")
+            && error.message.contains("expected fn() -> void")
     }));
 }
 

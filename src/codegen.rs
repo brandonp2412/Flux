@@ -203,8 +203,17 @@ fn emit_linux_gtk_application(
         ));
     }
     out.push('\n');
+    if let Some(function) = application_metadata_function(application, "on_exit") {
+        out.push_str(&format!(
+            "static void flux__ui_shutdown(GtkApplication *application, gpointer data) {{ (void)application; (void)data; {}(); }}\n\n",
+            function_c_name(function),
+        ));
+    }
     out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
     out.push_str("    (void)data;\n");
+    if let Some(function) = application_metadata_function(application, "on_start") {
+        out.push_str(&format!("    {}();\n", function_c_name(function)));
+    }
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
@@ -386,8 +395,26 @@ fn emit_linux_gtk_application(
     }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
-    out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
+    out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n");
+    if application_metadata_function(application, "on_exit").is_some() {
+        out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
+    }
+    out.push_str("    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
     Ok(())
+}
+
+fn application_metadata_function<'a>(
+    application: &'a crate::ast::ApplicationDef,
+    name: &str,
+) -> Option<&'a str> {
+    let field = application
+        .metadata
+        .iter()
+        .find(|field| field.name == name)?;
+    match &field.value.kind {
+        ExprKind::Var(function) => Some(function.as_str()),
+        _ => None,
+    }
 }
 
 fn application_metadata_string(

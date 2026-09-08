@@ -1,3 +1,11 @@
+fn app_started() -> void {
+    print("Flux app started")
+}
+
+fn app_exiting() -> void {
+    print("Flux app exiting")
+}
+
 view HelloApp {
     grid columns: 1fr
     grid rows: auto auto
@@ -17,4 +25,4 @@ view HelloApp {
         on_press: clicked => !clicked
 }
 
-app HelloApp(title: "Flux Hello", width: 420, height: 220)
+app HelloApp(title: "Flux Hello", width: 420, height: 220, on_start: app_started, on_exit: app_exiting)

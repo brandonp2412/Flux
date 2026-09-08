@@ -965,7 +965,10 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 if !matches!(field.value.kind, ExprKind::Var(_)) {
                     diagnostics.push(diag(
                         field.value.span,
-                        &format!("application {} requires a named fn() -> void callback", field.name),
+                        &format!(
+                            "application {} requires a named fn() -> void callback",
+                            field.name
+                        ),
                     ));
                     continue;
                 }
