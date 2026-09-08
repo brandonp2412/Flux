@@ -961,6 +961,33 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
         }
         for field in &application.metadata {
+            if matches!(field.name.as_str(), "on_start" | "on_exit") {
+                if !matches!(field.value.kind, ExprKind::Var(_)) {
+                    diagnostics.push(diag(
+                        field.value.span,
+                        &format!("application {} requires a named fn() -> void callback", field.name),
+                    ));
+                    continue;
+                }
+                let expected = Type::Function {
+                    params: Vec::new(),
+                    returns: Vec::new(),
+                };
+                match type_of_expr(&field.value, &HashMap::new(), &signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) = require_type(
+                            field.value.span,
+                            &expected,
+                            &actual,
+                            &format!("application {} callback", field.name),
+                        ) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                continue;
+            }
             match evaluate_default_expr(&field.value, &signatures) {
                 Ok(value) => match field.name.as_str() {
                     "title" if value.ty() != Type::Str => diagnostics.push(diag(
@@ -1049,10 +1076,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
-        ("Button", "on_press") => Some(Type::Function {
+        ("Button", "on_press") | ("Toggle", "on_change") => Some(Type::Function {
             params: Vec::new(),
             returns: Vec::new(),
         }),
+        ("Toggle", "label") => Some(Type::Str),
+        ("Toggle", "checked") | ("Toggle", "enabled") => Some(Type::Bool),
         ("Nav", "label") | ("Chart", "label") | ("Content", "label") => Some(Type::Str),
         ("Card", "title") | ("Header", "text") => Some(Type::Str),
         _ => None,
@@ -1076,7 +1105,7 @@ pub fn view_element_property_type(
 }
 
 pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
-    "Text", "Button", "Nav", "Chart", "Card", "Header", "Content",
+    "Text", "Button", "Toggle", "Nav", "Chart", "Card", "Header", "Content",
 ];
 
 fn view_element_kind_is_builtin(kind: &str) -> bool {
@@ -1087,6 +1116,7 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
     match kind {
         "Text" => &["text", "selectable", "size", "bold", "color"],
         "Button" => &["text", "enabled", "primary", "on_press"],
+        "Toggle" => &["label", "checked", "enabled", "on_change"],
         "Nav" | "Chart" | "Content" => &["label"],
         "Card" => &["title"],
         "Header" => &["text"],
@@ -1216,10 +1246,14 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
 
             for property in &element.properties {
                 if let Some(transition) = &property.transition {
-                    if element.kind != "Button" || property.name != "on_press" {
+                    let transition_property = matches!(
+                        (element.kind.as_str(), property.name.as_str()),
+                        ("Button", "on_press") | ("Toggle", "on_change")
+                    );
+                    if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are currently valid only for Button.on_press",
+                            "view state transitions are valid only for event properties such as Button.on_press or Toggle.on_change",
                         ));
                         continue;
                     }

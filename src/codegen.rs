@@ -193,7 +193,7 @@ fn emit_linux_gtk_application(
         let ExprKind::Var(function) = &action.value.kind else {
             return Err(diag(
                 action.value.span,
-                "bootstrap Button.on_press lowering requires a named fn() -> void callback or state transition",
+                "bootstrap UI event lowering requires a named fn() -> void callback or state transition",
             ));
         };
         out.push_str(&format!(

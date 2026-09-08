@@ -898,7 +898,10 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
             let (field_name, name_column) =
                 trim_with_column(&raw_field[..colon], metadata_column + offset);
             validate_identifier(field_name, line.number)?;
-            if !matches!(field_name, "title" | "width" | "height") {
+            if !matches!(
+                field_name,
+                "title" | "width" | "height" | "on_start" | "on_exit"
+            ) {
                 return Err(diag(
                     line.number,
                     &format!("unknown application metadata field '{field_name}'"),
@@ -1574,41 +1577,41 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     "view property value cannot be empty",
                 ));
             }
-            let (transition, expression_source, expression_column) = if property_name == "on_press"
-            {
-                if let Some((raw_state, _)) = value_source.split_once("=>") {
-                    let state = raw_state.trim();
-                    validate_identifier(state, property_line.number)?;
-                    let state_offset = value_source.find(state).unwrap_or(0);
-                    let expression_offset = value_source.find("=>").unwrap_or(0) + 2;
-                    let (expression_source, expression_column) = trim_with_column(
-                        &value_source[expression_offset..],
-                        value_column + expression_offset,
-                    );
-                    if expression_source.is_empty() {
-                        return Err(diag(
-                            property_line.number,
-                            "view state transition requires an expression after '=>'",
-                        ));
-                    }
-                    (
-                        Some(ViewStateTransition {
-                            state: state.to_string(),
-                            state_span: SourceSpan::new(
+            let (transition, expression_source, expression_column) =
+                if matches!(property_name, "on_press" | "on_change") {
+                    if let Some((raw_state, _)) = value_source.split_once("=>") {
+                        let state = raw_state.trim();
+                        validate_identifier(state, property_line.number)?;
+                        let state_offset = value_source.find(state).unwrap_or(0);
+                        let expression_offset = value_source.find("=>").unwrap_or(0) + 2;
+                        let (expression_source, expression_column) = trim_with_column(
+                            &value_source[expression_offset..],
+                            value_column + expression_offset,
+                        );
+                        if expression_source.is_empty() {
+                            return Err(diag(
                                 property_line.number,
-                                value_column + state_offset,
-                                state.len(),
-                            ),
-                        }),
-                        expression_source,
-                        expression_column,
-                    )
+                                "view state transition requires an expression after '=>'",
+                            ));
+                        }
+                        (
+                            Some(ViewStateTransition {
+                                state: state.to_string(),
+                                state_span: SourceSpan::new(
+                                    property_line.number,
+                                    value_column + state_offset,
+                                    state.len(),
+                                ),
+                            }),
+                            expression_source,
+                            expression_column,
+                        )
+                    } else {
+                        (None, value_source, value_column)
+                    }
                 } else {
                     (None, value_source, value_column)
-                }
-            } else {
-                (None, value_source, value_column)
-            };
+                };
             let value =
                 parse_expression_at(expression_source, property_line.number, expression_column)?;
             let name_offset = property_line.text.find(property_name).unwrap_or(0);
