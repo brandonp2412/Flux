@@ -3799,6 +3799,38 @@ app Screen
 }
 
 #[test]
+fn radio_controls_group_native_selection_and_update_shared_state_once() {
+    let source = r#"
+view Choice {
+    grid columns: 1fr
+    grid rows: auto auto
+    state selected: i64 = 0
+    Radio first at 1,1
+        label: "First"
+        selected: selected == 0
+        on_select: selected => 0
+    Radio second at 2,1
+        label: "Second"
+        selected: selected == 1
+        on_select: selected => 1
+}
+app Choice
+"#;
+    check_source(source).expect("radio selection should typecheck through shared i64 state");
+    let generated =
+        compile_to_c(source).expect("radio controls should lower to grouped GTK buttons");
+    assert!(generated.contains("gtk_check_button_new_with_label(\"First\")"));
+    assert!(generated.contains("gtk_check_button_new_with_label(\"Second\")"));
+    assert!(generated.contains("gtk_check_button_set_group(GTK_CHECK_BUTTON(flux__ui_second), GTK_CHECK_BUTTON(flux__ui_first))"));
+    assert!(
+        generated.contains("if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))) return;")
+    );
+    assert!(generated.contains("flux__ui_state_selected = INT64_C(1);"));
+    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_first), ((flux__ui_state_selected) == (INT64_C(0))))"));
+    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_second), ((flux__ui_state_selected) == (INT64_C(1))))"));
+}
+
+#[test]
 fn toggle_control_binds_native_checked_state_and_functional_transition() {
     let source = r#"
 view Settings {

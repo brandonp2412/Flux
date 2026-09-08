@@ -121,10 +121,13 @@ fn emit_linux_gtk_application(
         })?;
 
     for element in &view.elements {
-        if !matches!(element.kind.as_str(), "Text" | "Button" | "Toggle") {
+        if !matches!(
+            element.kind.as_str(),
+            "Text" | "Button" | "Toggle" | "Radio"
+        ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Linux app backend currently renders Text, Button, and Toggle elements",
+                "bootstrap Linux app backend currently renders Text, Button, Toggle, and Radio elements",
             ));
         }
     }
@@ -176,6 +179,7 @@ fn emit_linux_gtk_application(
         let action_name = match element.kind.as_str() {
             "Button" => "on_press",
             "Toggle" => "on_change",
+            "Radio" => "on_select",
             _ => continue,
         };
         let Some(action) = view_property(element, action_name) else {
@@ -183,8 +187,13 @@ fn emit_linux_gtk_application(
         };
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
+            let active_guard = if element.kind == "Radio" {
+                " if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))) return;"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{ (void)widget; (void)data; {} = {next}; flux__ui_refresh(); }}\n",
+                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {} = {next}; flux__ui_refresh(); }}\n",
                 element.name,
                 ui_state_c_name(&transition.state),
             ));
@@ -196,8 +205,13 @@ fn emit_linux_gtk_application(
                 "bootstrap UI event lowering requires a named fn() -> void callback or state transition",
             ));
         };
+        let active_guard = if element.kind == "Radio" {
+            " if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))) return;"
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{ (void)widget; (void)data; {}(); flux__ui_refresh(); }}\n",
+            "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {}(); flux__ui_refresh(); }}\n",
             element.name,
             function_c_name(function),
         ));
@@ -318,6 +332,43 @@ fn emit_linux_gtk_application(
                     let selectable = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    gtk_label_set_selectable(GTK_LABEL({variable}), {selectable});\n"
+                    ));
+                }
+            }
+            "Radio" => {
+                let label = match view_property(element, "label") {
+                    None => c_string(&element.name),
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                };
+                out.push_str(&format!(
+                    "    {variable} = gtk_check_button_new_with_label({label});\n",
+                ));
+                if let Some(group) = view
+                    .elements
+                    .iter()
+                    .find(|candidate| candidate.kind == "Radio" && candidate.line < element.line)
+                {
+                    out.push_str(&format!(
+                        "    gtk_check_button_set_group(GTK_CHECK_BUTTON({variable}), GTK_CHECK_BUTTON({}));\n",
+                        ui_widget_c_name(&group.name)
+                    ));
+                }
+                if let Some(property) = view_property(element, "selected") {
+                    let selected = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_check_button_set_active(GTK_CHECK_BUTTON({variable}), {selected});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "enabled") {
+                    let enabled = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_widget_set_sensitive({variable}, {enabled});\n"
+                    ));
+                }
+                if view_property(element, "on_select").is_some() {
+                    out.push_str(&format!(
+                        "    g_signal_connect({variable}, \"toggled\", G_CALLBACK(flux__ui_click_{}), NULL);\n",
+                        element.name
                     ));
                 }
             }
@@ -614,6 +665,26 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_label_set_selectable(GTK_LABEL({widget}), {value});\n"
+                    ));
+                }
+            }
+            "Radio" => {
+                if let Some(property) = view_property(element, "label") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_check_button_set_label(GTK_CHECK_BUTTON({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "selected") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "enabled") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
                     ));
                 }
             }

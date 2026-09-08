@@ -403,8 +403,9 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
-- [ ] Toggles/check/radio controls.
-  - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons. Radio/group semantics remain pending.
+- [x] Toggles/check/radio controls.
+  - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
+  - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `on_select`; sibling radios are grouped natively and `on_select` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
 - [ ] Lists/grids with virtualization.
 - [ ] Scrolling.
 - [ ] Overlays/popovers/tooltips.
