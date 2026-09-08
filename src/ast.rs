@@ -142,6 +142,7 @@ pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
+    pub views: Vec<ViewDef>,
     pub functions: Vec<Function>,
 }
 
@@ -268,6 +269,56 @@ pub struct StructField {
     pub name_span: SourceSpan,
     pub ty: Type,
     pub type_span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewDef {
+    pub public: bool,
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub grid: GridLayout,
+    pub elements: Vec<ViewElement>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GridLayout {
+    pub columns: Vec<GridTrack>,
+    pub rows: Vec<GridTrack>,
+    pub gap: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GridTrack {
+    Units(u32),
+    Fraction(u32),
+    Auto,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewElement {
+    pub kind: String,
+    pub kind_span: SourceSpan,
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub row: u32,
+    pub column: u32,
+    pub row_span: u32,
+    pub column_span: u32,
+    pub properties: Vec<ViewProperty>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewProperty {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub value: Expr,
+    pub line: usize,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]

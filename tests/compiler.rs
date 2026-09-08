@@ -2934,6 +2934,94 @@ fn package_sources_receive_stable_package_qualified_module_names() {
 }
 
 #[test]
+fn accepts_flat_grid_views_without_widget_nesting() {
+    let source = r#"
+view Dashboard {
+    grid columns: 240 1fr 320
+    grid rows: 64 1fr
+    grid gap: 16
+    Text title at 1,2 span columns 2
+        text: "Flux dashboard"
+    Nav sidebar at 1,1 span rows 2
+        label: "Navigation"
+    Chart revenue at 2,2
+        label: "Revenue"
+}
+
+fn main() -> i64 { 42 }
+"#;
+
+    let program = fluxc::parser::parse(source).expect("flat grid view should parse");
+    assert_eq!(program.views.len(), 1);
+    let view = &program.views[0];
+    assert_eq!(view.name, "Dashboard");
+    assert_eq!(view.grid.columns.len(), 3);
+    assert_eq!(view.grid.rows.len(), 2);
+    assert_eq!(view.grid.gap, Some(16));
+    assert_eq!(view.elements.len(), 3);
+    assert_eq!(view.elements[0].name, "title");
+    assert_eq!(view.elements[0].column_span, 2);
+    assert_eq!(view.elements[1].row_span, 2);
+    check_source(source).expect("view declarations must not disturb ordinary type checking");
+    let database =
+        fluxc::semantic::SemanticDatabase::analyze(source, SourceId::from_name("grid.flux"))
+            .expect("view should be available to editor semantics");
+    assert!(
+        database
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name == "Dashboard")
+    );
+    assert!(
+        database
+            .symbols()
+            .iter()
+            .any(|symbol| symbol.name == "revenue")
+    );
+    let generated = compile_to_c(source).expect("views should be zero-runtime metadata for now");
+    assert!(generated.contains("int main(void)"));
+}
+
+#[test]
+fn formatter_preserves_flat_grid_view_structure() {
+    let source = "view Dashboard {\n    grid columns: 240 1fr auto\n    grid rows: 64 1fr\n    grid gap: 16\n    Text title at 1,2 span columns 2\n        text: \"Hello\"\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("view should format");
+    assert_eq!(formatted, source);
+}
+
+#[test]
+fn rejects_nested_or_invalid_flat_grid_view_syntax() {
+    let nested = r#"
+view Bad {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text outer at 1,1
+        text: "ok"
+            Button nested at 1,1
+}
+"#;
+    let errors = fluxc::parser::parse_all(nested).expect_err("nested elements must be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("exactly eight spaces"))
+    );
+
+    let invalid_track = r#"
+view Bad {
+    grid columns: 0fr
+    grid rows: 1fr
+}
+"#;
+    let errors = fluxc::parser::parse_all(invalid_track).expect_err("zero fractions must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("greater than zero"))
+    );
+}
+
+#[test]
 fn project_imports_report_cycles_and_invalid_paths_at_import_sites() {
     let root = std::env::temp_dir().join(format!("flux-project-errors-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

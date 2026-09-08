@@ -458,6 +458,7 @@ impl Loader {
         self.program.structs.append(&mut program.structs);
         self.program.enums.append(&mut program.enums);
         self.program.constants.append(&mut program.constants);
+        self.program.views.append(&mut program.views);
         self.program.functions.append(&mut program.functions);
     }
 }

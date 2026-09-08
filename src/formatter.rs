@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, MatchPattern, Stmt, StmtKind, StructPatternField, Type,
-    UnaryOp,
+    BinOp, Expr, ExprKind, Function, GridTrack, MatchPattern, Stmt, StmtKind, StructPatternField,
+    Type, UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -43,6 +43,9 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     }
     for definition in &program.structs {
         format_struct(definition, &mut formatted);
+    }
+    for view in &program.views {
+        format_view(view, &mut formatted);
     }
     for function in &program.functions {
         format_function(function, &mut formatted);
@@ -189,6 +192,65 @@ fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, 
             format!("    {}: {}", field.name, field.ty.name()),
         );
     }
+}
+
+fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
+    let visibility = if view.public { "pub " } else { "" };
+    lines.insert(view.line, format!("{visibility}view {} {{", view.name));
+    lines.insert(
+        view.line + 1,
+        format!(
+            "    grid columns: {}",
+            format_grid_tracks(&view.grid.columns)
+        ),
+    );
+    lines.insert(
+        view.line + 2,
+        format!("    grid rows: {}", format_grid_tracks(&view.grid.rows)),
+    );
+    if let Some(gap) = view.grid.gap {
+        let gap_line = view
+            .elements
+            .first()
+            .map(|element| element.line.saturating_sub(1))
+            .unwrap_or(view.line + 3);
+        lines.insert(gap_line, format!("    grid gap: {gap}"));
+    }
+    for element in &view.elements {
+        let mut placement = format!(
+            "    {} {} at {},{}",
+            element.kind, element.name, element.row, element.column
+        );
+        if element.row_span != 1 {
+            placement.push_str(&format!(" span rows {}", element.row_span));
+        }
+        if element.column_span != 1 {
+            placement.push_str(&format!(" span columns {}", element.column_span));
+        }
+        lines.insert(element.line, placement);
+        for property in &element.properties {
+            lines.insert(
+                property.line,
+                format!(
+                    "        {}: {}",
+                    property.name,
+                    format_expr(&property.value, 0)
+                ),
+            );
+        }
+    }
+}
+
+fn format_grid_tracks(tracks: &[GridTrack]) -> String {
+    tracks
+        .iter()
+        .map(|track| match track {
+            GridTrack::Units(value) => value.to_string(),
+            GridTrack::Fraction(value) => format!("{value}fr"),
+            GridTrack::Auto => "auto".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {

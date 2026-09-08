@@ -13,7 +13,7 @@ Flux is an experimental compiled language for building native applications and s
 - No exception / try-catch model. Recoverable failures are represented explicitly in return values.
 - Rust-like memory-safety goals: ownership, borrowing, lifetime validation, and no unchecked dangling references in safe Flux.
 - Native ahead-of-time compilation.
-- A flat, HTML-like declarative UI surface with grid-first layout rather than deeply nested widget trees.
+- A flat, HTML-like declarative UI surface with grid-first layout rather than deeply nested widget trees; the bootstrap parser now supports top-level `view` declarations with sibling grid placement syntax.
 - Tooling is part of the language product: LSP, debugger, and profiler are first-class deliverables.
 
 ## Current bootstrap milestone
@@ -35,7 +35,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, and building a native executable, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
-- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, and higher-order functions.
+- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, and the first flat-grid UI syntax example.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 

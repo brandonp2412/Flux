@@ -15,6 +15,9 @@ pub enum SymbolKind {
     EnumVariant,
     Struct,
     StructField,
+    View,
+    ViewElement,
+    ViewProperty,
     Function,
     Parameter,
     Binding,
@@ -149,6 +152,30 @@ impl SemanticDatabase {
                     ty: Some(field.ty.clone()),
                     span: field.name_span,
                 });
+            }
+        }
+        for view in &program.views {
+            symbols.push(SemanticSymbol {
+                name: view.name.clone(),
+                kind: SymbolKind::View,
+                ty: None,
+                span: view.name_span,
+            });
+            for element in &view.elements {
+                symbols.push(SemanticSymbol {
+                    name: element.name.clone(),
+                    kind: SymbolKind::ViewElement,
+                    ty: None,
+                    span: element.name_span,
+                });
+                for property in &element.properties {
+                    symbols.push(SemanticSymbol {
+                        name: property.name.clone(),
+                        kind: SymbolKind::ViewProperty,
+                        ty: None,
+                        span: property.name_span,
+                    });
+                }
             }
         }
         for function in &program.functions {

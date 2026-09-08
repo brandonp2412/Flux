@@ -348,12 +348,17 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 # Milestone 9 — UI language and flat layout
 
-The UI model must avoid Flutter-style deeply nested widget construction and object hierarchies.
+The UI model must avoid Flutter-style deeply nested widget construction and object hierarchies. Sequencing note: the compiler-backed surface syntax is being prototyped early, before rendering backends, because the flat layout grammar is a core language constraint and should not be retrofitted after a widget-tree API takes shape.
 
 - [ ] `view` declarations/functions.
+  - [x] Bootstrap top-level `view Name { ... }` declarations with visibility, source spans, formatter support, project merging, and semantic symbols. Parameterized/data-returning view functions remain later work.
 - [ ] Views compose through functions/data rather than subclassing.
 - [ ] Flat element declarations.
+  - [x] Bootstrap sibling element syntax (`Type name at row,column`) with unique local names and optional property expressions; nested child elements are syntactically rejected.
 - [ ] Grid-first layout.
+  - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
+  - [ ] Statically type/check element properties against built-in or interface-defined element contracts instead of treating property expressions as untyped view metadata.
+  - [ ] Validate placement against declared track counts, define overlap policy, and add named grid areas only if they improve readability without reintroducing hierarchy.
 - [ ] Flex/flow layout where grid is not appropriate.
 - [ ] Absolute/overlay positioning when explicitly requested.
 - [ ] Constraints, min/max sizing, intrinsic sizing.

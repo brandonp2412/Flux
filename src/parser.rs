@@ -1,9 +1,10 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping,
-    InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding,
-    Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
-    StructPatternField, Type, TypeAlias, UnaryOp,
+    GridLayout, GridTrack, ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl,
+    InterfaceImplMapping, InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
+    PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
+    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement,
+    ViewProperty,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -103,6 +104,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let mut structs = Vec::new();
     let mut enums = Vec::new();
     let mut constants = Vec::new();
+    let mut views = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
 
@@ -203,6 +205,17 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
+        if declaration_text.starts_with("view ") {
+            match parse_view_declaration(&lines, &mut index) {
+                Ok(definition) => views.push(definition),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                }
+            }
+            continue;
+        }
+
         match parse_single_expression_function(line) {
             Ok(Some(function)) => {
                 functions.push(function);
@@ -289,6 +302,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             structs,
             enums,
             constants,
+            views,
             functions,
         })
     } else {
@@ -370,6 +384,21 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         for field in &mut definition.fields {
             field.name_span = field.name_span.with_source(source_id);
             field.type_span = field.type_span.with_source(source_id);
+        }
+    }
+    for view in &mut program.views {
+        view.span = view.span.with_source(source_id);
+        view.keyword_span = view.keyword_span.with_source(source_id);
+        view.name_span = view.name_span.with_source(source_id);
+        for element in &mut view.elements {
+            element.span = element.span.with_source(source_id);
+            element.kind_span = element.kind_span.with_source(source_id);
+            element.name_span = element.name_span.with_source(source_id);
+            for property in &mut element.properties {
+                property.span = property.span.with_source(source_id);
+                property.name_span = property.name_span.with_source(source_id);
+                attach_expr_source(&mut property.value, source_id);
+            }
         }
     }
     for function in &mut program.functions {
@@ -768,6 +797,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
                 || text.starts_with("enum ")
                 || text.starts_with("type ")
                 || text.starts_with("const ")
+                || text.starts_with("view ")
             {
                 return index;
             }
@@ -1233,6 +1263,249 @@ fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, 
         line: header.number,
         span: definition_span,
     })
+}
+
+fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, Diagnostic> {
+    let header = &lines[*index];
+    let (header_text, public, visibility_offset) = split_visibility(&header.text);
+    let Some(rest) = header_text.strip_prefix("view ") else {
+        return Err(diag(header.number, "expected view declaration"));
+    };
+    let Some(raw_name) = rest.strip_suffix('{') else {
+        return Err(diag(
+            header.number,
+            "view declarations must open their body with '{'",
+        ));
+    };
+    let name = raw_name.trim();
+    validate_identifier(name, header.number)?;
+    let leading = raw_name.len() - raw_name.trim_start().len();
+    let name_span = SourceSpan::new(header.number, visibility_offset + 6 + leading, name.len());
+    let definition_span = header.span();
+    *index += 1;
+
+    let mut grid = GridLayout::default();
+    let mut elements = Vec::new();
+    while *index < lines.len() && lines[*index].indent > 0 {
+        let line = &lines[*index];
+        if line.indent != 4 {
+            return Err(diag(
+                line.number,
+                "view grid directives and elements use exactly four spaces of indentation",
+            ));
+        }
+
+        if let Some(value) = line.text.strip_prefix("grid columns:") {
+            if !grid.columns.is_empty() {
+                return Err(diag(line.number, "grid columns may only be declared once"));
+            }
+            grid.columns = parse_grid_tracks(value.trim(), line.number)?;
+            *index += 1;
+            continue;
+        }
+        if let Some(value) = line.text.strip_prefix("grid rows:") {
+            if !grid.rows.is_empty() {
+                return Err(diag(line.number, "grid rows may only be declared once"));
+            }
+            grid.rows = parse_grid_tracks(value.trim(), line.number)?;
+            *index += 1;
+            continue;
+        }
+        if let Some(value) = line.text.strip_prefix("grid gap:") {
+            if grid.gap.is_some() {
+                return Err(diag(line.number, "grid gap may only be declared once"));
+            }
+            grid.gap = Some(parse_positive_or_zero_u32(
+                value.trim(),
+                line.number,
+                "grid gap",
+            )?);
+            *index += 1;
+            continue;
+        }
+
+        let mut element = parse_view_element(line)?;
+        if elements
+            .iter()
+            .any(|existing: &ViewElement| existing.name == element.name)
+        {
+            return Err(diag(
+                line.number,
+                &format!("duplicate view element name '{}'", element.name),
+            ));
+        }
+        *index += 1;
+        while *index < lines.len() && lines[*index].indent > 4 {
+            let property_line = &lines[*index];
+            if property_line.indent != 8 {
+                return Err(diag(
+                    property_line.number,
+                    "view element properties use exactly eight spaces of indentation",
+                ));
+            }
+            let Some(colon) = property_line.text.find(':') else {
+                return Err(diag(
+                    property_line.number,
+                    "view element properties use 'name: expression' syntax",
+                ));
+            };
+            let property_name = property_line.text[..colon].trim();
+            validate_identifier(property_name, property_line.number)?;
+            if element
+                .properties
+                .iter()
+                .any(|property| property.name == property_name)
+            {
+                return Err(diag(
+                    property_line.number,
+                    &format!("duplicate view property '{property_name}'"),
+                ));
+            }
+            let raw_value = &property_line.text[colon + 1..];
+            let (value_source, value_column) =
+                trim_with_column(raw_value, property_line.indent + colon + 2);
+            if value_source.is_empty() {
+                return Err(diag(
+                    property_line.number,
+                    "view property value cannot be empty",
+                ));
+            }
+            let value = parse_expression_at(value_source, property_line.number, value_column)?;
+            let name_offset = property_line.text.find(property_name).unwrap_or(0);
+            element.properties.push(ViewProperty {
+                name: property_name.to_string(),
+                name_span: SourceSpan::new(
+                    property_line.number,
+                    property_line.indent + 1 + name_offset,
+                    property_name.len(),
+                ),
+                value,
+                line: property_line.number,
+                span: property_line.span(),
+            });
+            *index += 1;
+        }
+        elements.push(element);
+    }
+
+    if grid.columns.is_empty() || grid.rows.is_empty() {
+        return Err(diag(
+            header.number,
+            "views require both 'grid columns:' and 'grid rows:' declarations",
+        ));
+    }
+    if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
+        return Err(diag(
+            header.number,
+            "view body must end with a top-level '}'",
+        ));
+    }
+    *index += 1;
+
+    Ok(ViewDef {
+        public,
+        name: name.to_string(),
+        name_span,
+        keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 4),
+        grid,
+        elements,
+        line: header.number,
+        span: definition_span,
+    })
+}
+
+fn parse_grid_tracks(input: &str, line: usize) -> Result<Vec<GridTrack>, Diagnostic> {
+    if input.is_empty() {
+        return Err(diag(line, "grid track list cannot be empty"));
+    }
+    input
+        .split_whitespace()
+        .map(|track| {
+            if track == "auto" {
+                return Ok(GridTrack::Auto);
+            }
+            if let Some(value) = track.strip_suffix("fr") {
+                let fraction = parse_positive_u32(value, line, "fractional grid track")?;
+                return Ok(GridTrack::Fraction(fraction));
+            }
+            Ok(GridTrack::Units(parse_positive_u32(
+                track,
+                line,
+                "fixed grid track",
+            )?))
+        })
+        .collect()
+}
+
+fn parse_view_element(line: &Line) -> Result<ViewElement, Diagnostic> {
+    let tokens = line.text.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() < 4 || tokens[2] != "at" {
+        return Err(diag(
+            line.number,
+            "view elements use 'Type name at row,column' with optional 'span rows N'/'span columns N'",
+        ));
+    }
+    let kind = tokens[0];
+    let name = tokens[1];
+    validate_identifier(kind, line.number)?;
+    validate_identifier(name, line.number)?;
+    let Some((row, column)) = tokens[3].split_once(',') else {
+        return Err(diag(
+            line.number,
+            "view element placement uses 'row,column'",
+        ));
+    };
+    let row = parse_positive_u32(row, line.number, "grid row")?;
+    let column = parse_positive_u32(column, line.number, "grid column")?;
+    let mut row_span = 1;
+    let mut column_span = 1;
+    let mut cursor = 4;
+    while cursor < tokens.len() {
+        if cursor + 2 >= tokens.len() || tokens[cursor] != "span" {
+            return Err(diag(line.number, "invalid view element span syntax"));
+        }
+        let amount = parse_positive_u32(tokens[cursor + 2], line.number, "grid span")?;
+        match tokens[cursor + 1] {
+            "rows" if row_span == 1 => row_span = amount,
+            "columns" if column_span == 1 => column_span = amount,
+            "rows" | "columns" => {
+                return Err(diag(line.number, "each span axis may be declared once"));
+            }
+            _ => return Err(diag(line.number, "span axis must be 'rows' or 'columns'")),
+        }
+        cursor += 3;
+    }
+    let kind_offset = line.text.find(kind).unwrap_or(0);
+    let name_offset = line.text.find(name).unwrap_or(kind.len());
+    Ok(ViewElement {
+        kind: kind.to_string(),
+        kind_span: SourceSpan::new(line.number, line.indent + 1 + kind_offset, kind.len()),
+        name: name.to_string(),
+        name_span: SourceSpan::new(line.number, line.indent + 1 + name_offset, name.len()),
+        row,
+        column,
+        row_span,
+        column_span,
+        properties: Vec::new(),
+        line: line.number,
+        span: line.span(),
+    })
+}
+
+fn parse_positive_u32(input: &str, line: usize, label: &str) -> Result<u32, Diagnostic> {
+    let value = input
+        .parse::<u32>()
+        .map_err(|_| diag(line, &format!("{label} must be a positive integer")))?;
+    if value == 0 {
+        return Err(diag(line, &format!("{label} must be greater than zero")));
+    }
+    Ok(value)
+}
+
+fn parse_positive_or_zero_u32(input: &str, line: usize, label: &str) -> Result<u32, Diagnostic> {
+    input
+        .parse::<u32>()
+        .map_err(|_| diag(line, &format!("{label} must be a non-negative integer")))
 }
 
 fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructDef, Diagnostic> {

@@ -54,6 +54,30 @@ let label: str = "Flux"
 
 The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
 
+## Flat grid views
+
+Flux UI syntax is deliberately flat rather than a nested widget tree. A `view` declares one grid and a set of sibling elements placed explicitly into that grid:
+
+```flux
+view Dashboard {
+    grid columns: 240 1fr 320
+    grid rows: 64 1fr
+    grid gap: 16
+    Text title at 1,2 span columns 2
+        text: "Flux dashboard"
+    Nav sidebar at 1,1 span rows 2
+        label: "Navigation"
+    Chart revenue at 2,2
+        label: "Revenue"
+}
+```
+
+Fixed grid tracks use target-independent logical units, `Nfr` tracks divide remaining space proportionally, and `auto` is reserved for intrinsic sizing. Coordinates are one-based `row,column` positions. `span rows N` and `span columns N` extend an element across tracks. Element names must be unique within a view.
+
+The extra indentation under an element configures properties on that sibling element; it does not create child UI elements. UI elements themselves remain at the view's single element level, and deeper element nesting is rejected by the parser. This preserves a grid-oriented source structure that can later lower directly into target-native layout primitives rather than recreating Flutter-style widget construction.
+
+The bootstrap compiler currently parses, formats, merges, and indexes this view metadata while the native rendering/runtime backend remains future work. View declarations therefore emit no runtime C yet.
+
 ## Modules and imports
 
 Each `.flux` source file is a module in the bootstrap project model. A module imports another source file with an explicit relative path:
