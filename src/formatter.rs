@@ -13,6 +13,9 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     for import in &program.imports {
         formatted.insert(import.line, format!("import {:?}", import.path));
     }
+    if let Some(application) = &program.application {
+        formatted.insert(application.line, format!("app {}", application.view_name));
+    }
     for alias in &program.aliases {
         let visibility = if alias.public { "pub " } else { "" };
         formatted.insert(

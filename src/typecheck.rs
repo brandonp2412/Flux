@@ -931,26 +931,65 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
 
     validate_views(program, &signatures, &mut diagnostics);
 
-    match signatures.get("main") {
-        None => diagnostics.push(
-            Diagnostic::global(
+    if let Some(application) = &program.application {
+        match program
+            .views
+            .iter()
+            .find(|view| view.name == application.view_name)
+        {
+            None => diagnostics.push(diag(
+                application.view_span,
+                &format!("unknown app root view '{}'", application.view_name),
+            )),
+            Some(view) => {
+                if let Err(diagnostic) = require_visible_declaration(
+                    application.view_span,
+                    view.name_span,
+                    view.public,
+                    "view",
+                    &view.name,
+                    &signatures,
+                ) {
+                    diagnostics.push(diagnostic);
+                }
+                if !view.params.is_empty() {
+                    diagnostics.push(diag(
+                        application.view_span,
+                        "bootstrap app root view must not declare parameters",
+                    ));
+                }
+            }
+        }
+        if signatures.get("main").is_some() {
+            diagnostics.push(Diagnostic::global(
                 DiagnosticStage::Type,
-                "program requires fn main() -> i64 { ... }",
-            )
-            .with_note("native executables enter Flux through a parameterless main returning i64"),
-        ),
-        Some(main) if !main.params.is_empty() || main.returns != vec![Type::I64] => {
-            diagnostics.push(
+                "an app declaration replaces fn main() -> i64; declare one application entry model",
+            ));
+        }
+    } else {
+        match signatures.get("main") {
+            None => diagnostics.push(
                 Diagnostic::global(
                     DiagnosticStage::Type,
-                    "main must have signature fn main() -> i64",
+                    "program requires fn main() -> i64 { ... } or app ViewName",
                 )
                 .with_note(
-                    "main currently receives no parameters and returns the process exit code",
+                    "native executables enter Flux through a parameterless main or app root view",
                 ),
-            );
+            ),
+            Some(main) if !main.params.is_empty() || main.returns != vec![Type::I64] => {
+                diagnostics.push(
+                    Diagnostic::global(
+                        DiagnosticStage::Type,
+                        "main must have signature fn main() -> i64",
+                    )
+                    .with_note(
+                        "main currently receives no parameters and returns the process exit code",
+                    ),
+                );
+            }
+            Some(_) => {}
         }
-        Some(_) => {}
     }
 
     for function in &program.functions {

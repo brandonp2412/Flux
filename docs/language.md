@@ -550,6 +550,33 @@ Flux source
 
 The typed IR must retain source spans, ownership facts, and debug locations so the same semantic model can support the compiler, LSP, debugger, and profiler.
 
+## Application entry and bootstrap Linux GUI
+
+A GUI executable may select one zero-parameter root view with an application declaration instead of defining `fn main() -> i64`:
+
+```flux
+fn clicked() -> void {
+    print("Clicked from Flux")
+}
+
+view HelloApp {
+    grid columns: 1fr
+    grid rows: auto auto
+    grid gap: 12
+
+    Text title at 1,1
+        text: "Hello, Flux!"
+
+    Button action at 2,1
+        text: "Click me"
+        on_press: clicked
+}
+
+app HelloApp
+```
+
+The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text` and `Button` become native GTK controls and a typed named `fn() -> void` button callback is connected directly to native click dispatch. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. This is a deliberately narrow dogfood backend: root-view parameters, dynamic UI property expressions, local reactive state/repaint, richer controls, and a lower-level long-term Wayland renderer remain later work.
+
 ## UI direction
 
 Flux UI syntax should be declarative and HTML-like, but layout should be flat and grid-first. Deep widget nesting should not be the normal way to express placement.
@@ -569,7 +596,7 @@ view Dashboard {
 
 The layout engine should resolve a flat element set against explicit grid coordinates/areas. Components may still compose reusable content, but composition should not force layout to become a deeply nested ownership tree.
 
-The UI subsystem is intentionally downstream of the core type/ownership/IR work: it should compile to platform-native rendering and input backends rather than define the compiler architecture around one UI toolkit.
+The UI subsystem should compile to platform-native rendering and input backends rather than define the compiler architecture around one UI toolkit. The GTK4 Linux bootstrap is therefore an early end-to-end dogfood lowering for the existing flat UI semantics, not a commitment to GTK as Flux's permanent renderer or an object model visible to application code.
 
 ## Tooling contract
 

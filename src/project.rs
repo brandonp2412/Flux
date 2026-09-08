@@ -737,6 +737,17 @@ impl Loader<'_> {
         self.program.structs.append(&mut program.structs);
         self.program.enums.append(&mut program.enums);
         self.program.constants.append(&mut program.constants);
+        if let Some(application) = program.application.take() {
+            if self.program.application.is_some() {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Type,
+                    application.span,
+                    "project may declare only one app",
+                ));
+            } else {
+                self.program.application = Some(application);
+            }
+        }
         self.program.views.append(&mut program.views);
         self.program.functions.append(&mut program.functions);
     }

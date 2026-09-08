@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    GridLayout, GridTrack, ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl,
+    ApplicationDef, BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind,
+    Function, GridLayout, GridTrack, ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl,
     InterfaceImplMapping, InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
     PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
     StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement,
@@ -104,6 +104,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let mut structs = Vec::new();
     let mut enums = Vec::new();
     let mut constants = Vec::new();
+    let mut application = None;
     let mut views = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
@@ -129,6 +130,21 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             }
             match parse_import(line) {
                 Ok(import) => imports.push(import),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            index += 1;
+            continue;
+        }
+
+        if declaration_text.starts_with("app ") {
+            if public {
+                diagnostics.push(diag(line.number, "application declarations cannot be pub"));
+                index += 1;
+                continue;
+            }
+            match parse_application(line) {
+                Ok(definition) if application.is_none() => application = Some(definition),
+                Ok(_) => diagnostics.push(diag(line.number, "program may declare only one app")),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
             index += 1;
@@ -302,6 +318,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             structs,
             enums,
             constants,
+            application,
             views,
             functions,
         })
@@ -323,6 +340,11 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
     for import in &mut program.imports {
         import.span = import.span.with_source(source_id);
         import.path_span = import.path_span.with_source(source_id);
+    }
+    if let Some(application) = &mut program.application {
+        application.span = application.span.with_source(source_id);
+        application.keyword_span = application.keyword_span.with_source(source_id);
+        application.view_span = application.view_span.with_source(source_id);
     }
     for alias in &mut program.aliases {
         alias.span = alias.span.with_source(source_id);
@@ -818,6 +840,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
                 || text.starts_with("impl ")
                 || text.starts_with("struct ")
                 || text.starts_with("enum ")
+                || text.starts_with("app ")
                 || text.starts_with("type ")
                 || text.starts_with("const ")
                 || text.starts_with("view ")
@@ -828,6 +851,22 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
         index += 1;
     }
     index
+}
+
+fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
+    let Some(raw_name) = line.text.strip_prefix("app ") else {
+        return Err(diag(line.number, "expected application declaration"));
+    };
+    let name = raw_name.trim();
+    validate_identifier(name, line.number)?;
+    let leading = raw_name.len() - raw_name.trim_start().len();
+    Ok(ApplicationDef {
+        view_name: name.to_string(),
+        view_span: SourceSpan::new(line.number, 5 + leading, name.len()),
+        keyword_span: SourceSpan::new(line.number, 1, 3),
+        line: line.number,
+        span: line.span(),
+    })
 }
 
 fn parse_import(line: &Line) -> Result<ImportDef, Diagnostic> {

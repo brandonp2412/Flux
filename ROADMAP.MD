@@ -28,10 +28,10 @@ The minimum acceptance path is deliberately small: one Linux desktop target firs
   - [x] Compiler-backed flat `view`/grid syntax with typed built-in UI properties and composed views.
   - [x] `fluxc lsp` foundation with diagnostics, semantic highlighting, completion, hover, signature help, navigation/refactoring, formatting, fixes, inlay hints, and UI syntax awareness.
   - [x] `fluxc run` automatic save detection with rebuild and safe controlled restart on successful recompilation.
-  - [ ] Minimal application entry/runtime that opens a real native Linux window from a Flux program.
-  - [ ] Native lowering/render path for the existing flat grid into measured window-space rectangles.
-  - [ ] Render usable `Text` and `Button` primitives with enough default styling to visually test an app.
-  - [ ] Pointer/click dispatch from the native window to a typed Flux `Button.on_press` callback.
+  - [x] Minimal application entry/runtime that opens a real native Linux window from a Flux program: bootstrap `app ViewName` selects a zero-parameter root view and replaces `fn main`; the Linux bootstrap lowers it to a GTK4 application/window while keeping GTK objects out of Flux source.
+  - [x] Bootstrap native lowering/render path for the existing flat grid: explicit rows/columns/spans/gap lower to `GtkGrid`, fixed tracks feed native size requests, and `fr` tracks expand in the corresponding axis. A future lower-level renderer may replace GTK without changing Flux grid source.
+  - [x] Render usable `Text` and `Button` primitives with native GTK4 controls, static typed properties, spacing/margins, and a checked-in `examples/hello_app.flux` dogfood app.
+  - [x] Pointer/click dispatch from the native Wayland window to a typed Flux `Button.on_press` callback: the development host dogfood launch produced the Flux callback output from real button activations.
   - [ ] Minimal functional local UI state and invalidation/repaint so a click can visibly update text without controller/widget objects.
   - [ ] Editor integration/setup that makes `.flux` syntax + `fluxc lsp` practical to launch as an actual editing experience rather than requiring raw protocol tooling.
   - [ ] Checked-in `hello_app`-style manual acceptance example and documented command that exercises editor → compile → native window → interaction → save/reload end to end.
@@ -359,6 +359,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 # Milestone 8 — Application model
 
 - [ ] `app` declaration / application entry model.
+  - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers to the Linux GUI runtime. Metadata/arguments/multiple windows remain pending.
 - [ ] Application metadata.
 - [ ] Assets/resources.
 - [ ] Environment/configuration.
@@ -392,9 +393,11 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Constraints, min/max sizing, intrinsic sizing.
 - [ ] Responsive breakpoints/container queries.
 - [ ] Text.
+  - [x] Bootstrap Linux GTK4 `Text` lowering for compile-time `text: str` and `selectable: bool`, including grid placement and native wrapping/alignment.
 - [ ] Rich text.
 - [ ] Images/vector images.
 - [ ] Buttons.
+  - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
 - [ ] Toggles/check/radio controls.
 - [ ] Lists/grids with virtualization.
@@ -528,7 +531,9 @@ Android is the first application-platform target.
 ## Linux
 
 - [ ] Native Linux window/render/input backend.
+  - [x] Bootstrap GTK4 backend opens a real native Linux window, lowers Flux flat grid/Text/Button to native controls, and dispatches native button clicks into Flux callbacks.
 - [ ] Wayland-first support with appropriate fallback where practical.
+  - [x] Bootstrap GUI was built and launched end-to-end on development host against its real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
 - [ ] Menus/tray/clipboard/file dialogs.
 - [ ] Multi-window.
 - [ ] Packaging formats/integration guidance.

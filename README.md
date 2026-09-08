@@ -20,7 +20,7 @@ Flux is an experimental compiled language for building native applications and s
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
-- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive range `for` loops, indentation-based `while` loops, and statically scoped `break` / `continue`;
+- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive range `for` loops, indentation-based `while` loops, statically scoped `break` / `continue`, and bootstrap `app ViewName` GUI entry declarations;
 - immutable `let` bindings by default plus explicit typed local mutation through `var` and statically checked assignment;
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, transparent concrete type aliases, and compile-time constants;
@@ -37,7 +37,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - checked integer division at runtime;
 - CLI commands for checking, deterministic formatting, emitting C, building native executables, automatically running/rebuilding development targets, and serving bootstrap LSP diagnostics over stdio, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
-- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
+- compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, parameterized view composition, and a native GTK4/Wayland `hello_app` with Text/Button callback dispatch.
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 
@@ -70,6 +70,15 @@ Run in development mode with automatic save detection:
 ```sh
 cargo run -- run examples/hello.flux
 ```
+
+The first native GUI dogfood example uses `app HelloApp` instead of `fn main` and lowers its existing flat `view` grid to GTK4 native controls on Linux:
+
+```sh
+cargo run -- build examples/hello_app.flux -o hello-app --mode debug
+./hello-app
+```
+
+`examples/hello_app.flux` opens a real native window containing `Text` and `Button`; clicking the button dispatches directly into its ordinary Flux `fn clicked() -> void`. GTK4 is a bootstrap Linux platform backend, not a source-language widget model: Flux code remains flat/function-first and does not import or construct GTK objects. The backend uses GTK's native Wayland integration when launched on Wayland. Dynamic UI state/repaint is the next dogfood prerequisite.
 
 The bootstrap runner watches imported Flux modules automatically, debounces rapid saves, recompiles on change, and restarts only after a successful replacement build. Compiler errors keep the last good process untouched and the watcher remains active until the next save. State-preserving hot apply is a later development-ABI milestone; the current runner is the controlled-restart foundation for it.
 

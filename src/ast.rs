@@ -142,6 +142,7 @@ pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
+    pub application: Option<ApplicationDef>,
     pub views: Vec<ViewDef>,
     pub functions: Vec<Function>,
 }
@@ -270,6 +271,15 @@ pub struct StructField {
     pub name_span: SourceSpan,
     pub ty: Type,
     pub type_span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplicationDef {
+    pub view_name: String,
+    pub view_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub line: usize,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]

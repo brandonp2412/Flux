@@ -13,7 +13,11 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
-    out.push_str("#include <string.h>\n\n");
+    out.push_str("#include <string.h>\n");
+    if program.application.is_some() {
+        out.push_str("#include <gtk/gtk.h>\n");
+    }
+    out.push('\n');
     out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
     out.push_str(
         "static inline void flux_print_bool(bool value) { puts(value ? \"true\" : \"false\"); }\n",
@@ -89,7 +93,282 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
         out.push('\n');
     }
 
+    if program.application.is_some() {
+        emit_linux_gtk_application(&mut out, program, signatures)?;
+    }
+
     Ok(out)
+}
+
+fn emit_linux_gtk_application(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let application = program
+        .application
+        .as_ref()
+        .expect("application lowering requires app declaration");
+    let view = program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+        .ok_or_else(|| {
+            diag(
+                application.view_span,
+                "app root view was not found during codegen",
+            )
+        })?;
+
+    for element in &view.elements {
+        if !matches!(element.kind.as_str(), "Text" | "Button") {
+            return Err(diag(
+                element.kind_span,
+                "bootstrap Linux app backend currently renders only Text and Button elements",
+            ));
+        }
+    }
+
+    for element in &view.elements {
+        if element.kind != "Button" {
+            continue;
+        }
+        let Some(action) = view_property(element, "on_press") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Button.on_press lowering requires a named fn() -> void callback",
+            ));
+        };
+        out.push_str(&format!(
+            "static void flux__ui_click_{}(GtkButton *button, gpointer data) {{ (void)button; (void)data; {}(); }}\n",
+            element.name,
+            function_c_name(function),
+        ));
+    }
+    out.push('\n');
+    out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
+    out.push_str("    (void)data;\n");
+    out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n");
+    out.push_str(&format!(
+        "    gtk_window_set_title(GTK_WINDOW(window), {});\n",
+        c_string(&view.name)
+    ));
+    let (window_width, window_height) = bootstrap_window_size(view);
+    out.push_str(&format!(
+        "    gtk_window_set_default_size(GTK_WINDOW(window), {window_width}, {window_height});\n"
+    ));
+    out.push_str("    GtkWidget *grid = gtk_grid_new();\n");
+    if let Some(gap) = view.grid.gap {
+        out.push_str(&format!(
+            "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"
+        ));
+    }
+    out.push_str("    gtk_widget_set_margin_top(grid, 20);\n    gtk_widget_set_margin_bottom(grid, 20);\n    gtk_widget_set_margin_start(grid, 20);\n    gtk_widget_set_margin_end(grid, 20);\n");
+    out.push_str("    gtk_window_set_child(GTK_WINDOW(window), grid);\n");
+
+    for element in &view.elements {
+        let variable = format!("flux__ui_{}", element.name);
+        match element.kind.as_str() {
+            "Text" => {
+                let text = match view_property(element, "text") {
+                    None => element.name.clone(),
+                    Some(property) => {
+                        static_view_string(Some(property), signatures).ok_or_else(|| {
+                            diag(
+                                property.value.span,
+                                "bootstrap Linux Text.text must be a compile-time str value",
+                            )
+                        })?
+                    }
+                };
+                out.push_str(&format!(
+                    "    GtkWidget *{variable} = gtk_label_new({});\n",
+                    c_string(&text)
+                ));
+                out.push_str(&format!(
+                    "    gtk_label_set_wrap(GTK_LABEL({variable}), TRUE);\n    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
+                ));
+                let selectable = match view_property(element, "selectable") {
+                    None => false,
+                    Some(property) => {
+                        static_view_bool(Some(property), signatures).ok_or_else(|| {
+                            diag(
+                                property.value.span,
+                                "bootstrap Linux Text.selectable must be a compile-time bool value",
+                            )
+                        })?
+                    }
+                };
+                if selectable {
+                    out.push_str(&format!(
+                        "    gtk_label_set_selectable(GTK_LABEL({variable}), TRUE);\n"
+                    ));
+                }
+            }
+            "Button" => {
+                let text = match view_property(element, "text") {
+                    None => element.name.clone(),
+                    Some(property) => {
+                        static_view_string(Some(property), signatures).ok_or_else(|| {
+                            diag(
+                                property.value.span,
+                                "bootstrap Linux Button.text must be a compile-time str value",
+                            )
+                        })?
+                    }
+                };
+                out.push_str(&format!(
+                    "    GtkWidget *{variable} = gtk_button_new_with_label({});\n",
+                    c_string(&text)
+                ));
+                let enabled = match view_property(element, "enabled") {
+                    None => true,
+                    Some(property) => {
+                        static_view_bool(Some(property), signatures).ok_or_else(|| {
+                            diag(
+                                property.value.span,
+                                "bootstrap Linux Button.enabled must be a compile-time bool value",
+                            )
+                        })?
+                    }
+                };
+                if !enabled {
+                    out.push_str(&format!(
+                        "    gtk_widget_set_sensitive({variable}, FALSE);\n"
+                    ));
+                }
+                if view_property(element, "on_press").is_some() {
+                    out.push_str(&format!(
+                        "    g_signal_connect({variable}, \"clicked\", G_CALLBACK(flux__ui_click_{}), NULL);\n",
+                        element.name
+                    ));
+                }
+            }
+            _ => unreachable!("unsupported app element rejected before lowering"),
+        }
+        emit_grid_sizing(out, view, element, &variable);
+        out.push_str(&format!(
+            "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",
+            element.column - 1,
+            element.row - 1,
+            element.column_span,
+            element.row_span,
+        ));
+    }
+    out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
+    out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
+    Ok(())
+}
+
+fn view_property<'a>(
+    element: &'a crate::ast::ViewElement,
+    name: &str,
+) -> Option<&'a crate::ast::ViewProperty> {
+    element
+        .properties
+        .iter()
+        .find(|property| property.name == name)
+}
+
+fn static_view_string(
+    property: Option<&crate::ast::ViewProperty>,
+    signatures: &Signatures,
+) -> Option<String> {
+    match &property?.value.kind {
+        ExprKind::Str(value) => Some(value.clone()),
+        ExprKind::Var(name) => {
+            signatures
+                .constant(name)
+                .and_then(|constant| match &constant.value {
+                    ConstantValue::Str(value) => Some(value.clone()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
+fn static_view_bool(
+    property: Option<&crate::ast::ViewProperty>,
+    signatures: &Signatures,
+) -> Option<bool> {
+    match &property?.value.kind {
+        ExprKind::Bool(value) => Some(*value),
+        ExprKind::Var(name) => {
+            signatures
+                .constant(name)
+                .and_then(|constant| match constant.value {
+                    ConstantValue::Bool(value) => Some(value),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
+fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {
+    fn tracks_size(tracks: &[crate::ast::GridTrack], fallback: u32) -> u32 {
+        let fixed = tracks
+            .iter()
+            .map(|track| match track {
+                crate::ast::GridTrack::Units(value) => *value,
+                crate::ast::GridTrack::Fraction(_) | crate::ast::GridTrack::Auto => fallback,
+            })
+            .sum::<u32>();
+        fixed.max(fallback)
+    }
+    (
+        tracks_size(&view.grid.columns, 220).saturating_add(40),
+        tracks_size(&view.grid.rows, 90).saturating_add(40),
+    )
+}
+
+fn emit_grid_sizing(
+    out: &mut String,
+    view: &crate::ast::ViewDef,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+) {
+    let column_index = element.column.saturating_sub(1) as usize;
+    let row_index = element.row.saturating_sub(1) as usize;
+    if view
+        .grid
+        .columns
+        .get(column_index)
+        .is_some_and(|track| matches!(track, crate::ast::GridTrack::Fraction(_)))
+    {
+        out.push_str(&format!("    gtk_widget_set_hexpand({variable}, TRUE);\n"));
+    }
+    if view
+        .grid
+        .rows
+        .get(row_index)
+        .is_some_and(|track| matches!(track, crate::ast::GridTrack::Fraction(_)))
+    {
+        out.push_str(&format!("    gtk_widget_set_vexpand({variable}, TRUE);\n"));
+    }
+    let width = view
+        .grid
+        .columns
+        .get(column_index)
+        .and_then(|track| match track {
+            crate::ast::GridTrack::Units(value) => Some(*value),
+            _ => None,
+        });
+    let height = view.grid.rows.get(row_index).and_then(|track| match track {
+        crate::ast::GridTrack::Units(value) => Some(*value),
+        _ => None,
+    });
+    if width.is_some() || height.is_some() {
+        out.push_str(&format!(
+            "    gtk_widget_set_size_request({variable}, {}, {});\n",
+            width.map(|value| value as i32).unwrap_or(-1),
+            height.map(|value| value as i32).unwrap_or(-1),
+        ));
+    }
 }
 
 fn function_prototype(function: &Function, signatures: &Signatures) -> String {

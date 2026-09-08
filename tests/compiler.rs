@@ -3504,6 +3504,91 @@ fn main() -> i64 { 42 }
 }
 
 #[test]
+fn lowers_app_root_view_to_native_gtk_grid_text_button_and_callback() {
+    let source = r#"
+fn clicked() -> void {
+    print("clicked")
+}
+
+view HelloApp {
+    grid columns: 1fr
+    grid rows: auto auto
+    grid gap: 12
+    Text title at 1,1
+        text: "Hello, Flux!"
+    Button action at 2,1
+        text: "Click me"
+        on_press: clicked
+}
+
+app HelloApp
+"#;
+
+    check_source(source).expect("zero-parameter app root should typecheck without fn main");
+    let program = fluxc::parser::parse(source).expect("application declaration should parse");
+    assert_eq!(program.application.as_ref().unwrap().view_name, "HelloApp");
+    let generated = compile_to_c(source).expect("Linux app root should lower to GTK4 C");
+    assert!(generated.contains("#include <gtk/gtk.h>"));
+    assert!(generated.contains("gtk_application_window_new"));
+    assert!(generated.contains("gtk_grid_attach"));
+    assert!(generated.contains("gtk_label_new(\"Hello, Flux!\")"));
+    assert!(generated.contains("gtk_button_new_with_label(\"Click me\")"));
+    assert!(generated.contains("G_CALLBACK(flux__ui_click_action)"));
+    assert!(generated.contains("flux__fn_clicked();"));
+    assert!(generated.contains("int main(int argc, char **argv)"));
+}
+
+#[test]
+fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
+    let unknown = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Missing
+"#;
+    let errors = check_source_all(unknown).expect_err("unknown app root should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unknown app root view 'Missing'"))
+    );
+
+    let parameterized = r#"
+view Screen(title: str) {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: title
+}
+app Screen
+"#;
+    let errors =
+        check_source_all(parameterized).expect_err("bootstrap app root parameters should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("app root view must not declare parameters")
+    }));
+
+    let competing = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+fn main() -> i64 { 0 }
+"#;
+    let errors =
+        check_source_all(competing).expect_err("app and main should not both define process entry");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("app declaration replaces fn main"))
+    );
+}
+
+#[test]
 fn validates_flat_grid_bounds_and_rejects_accidental_overlap() {
     let valid = r#"
 view Dashboard {

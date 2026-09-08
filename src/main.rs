@@ -724,10 +724,19 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
     fs::write(&temp, c_source)
         .map_err(|error| format!("failed to write temporary C source: {error}"))?;
 
-    let result = Command::new("clang")
+    let mut command = Command::new("clang");
+    command
         .args(["-std=c17", "-fwrapv"])
-        .args(mode.clang_args())
-        .arg(&temp)
+        .args(mode.clang_args());
+    let gtk = c_source.contains("#include <gtk/gtk.h>");
+    if gtk {
+        command.args(pkg_config_flags("--cflags", "gtk4")?);
+    }
+    command.arg(&temp);
+    if gtk {
+        command.args(pkg_config_flags("--libs", "gtk4")?);
+    }
+    let result = command
         .arg("-o")
         .arg(output)
         .output()
@@ -742,6 +751,23 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
         ));
     }
     Ok(())
+}
+
+fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("pkg-config")
+        .args([kind, package])
+        .output()
+        .map_err(|error| format!("failed to launch pkg-config for {package}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "native backend requires {package}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect())
 }
 
 fn usage() -> String {

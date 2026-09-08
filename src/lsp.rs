@@ -647,6 +647,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "pub",
     "import",
     "view",
+    "app",
     "true",
     "false",
     "nil",
@@ -2168,6 +2169,7 @@ fn is_flux_keyword(word: &str) -> bool {
             | "pub"
             | "import"
             | "view"
+            | "app"
             | "grid"
             | "at"
             | "span"
