@@ -122,14 +122,14 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 - [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interface_value, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
 - [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
 - [x] Interface composition without class inheritance using `interface Child: ParentA, ParentB { ... }`; compatible capabilities flatten into one contract for implementation/static/dynamic dispatch, while unknown parents, cycles, duplicate parents, and conflicting inherited signatures are rejected.
-- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly.
+- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Blocked on modules/imports plus the first real platform backend; do not invent placeholder platform APIs before those exist.
 
 ## Functions
 
 - [x] Named functions as first-class values: typed function references can be stored, passed, returned, and invoked through native function-pointer lowering.
 - [ ] Closures with safe capture semantics.
 - [ ] Anonymous functions.
-- [ ] Concise single-expression function syntax.
+- [x] Concise single-expression function syntax using `fn name(args) -> type { expression }`, preserving brace-delimited bodies while lowering through the ordinary implicit return/type-check/native ABI path, including exact multi-return call forwarding.
 - [x] Named-only parameters using a `*` delimiter, with statically validated named call arguments and native ABI reordering.
 - [x] Optional positional/named parameters with explicit compile-time primitive defaults, including top-level constant references and call-site default expansion.
 - [x] Required named parameters: named-only parameters without defaults must be supplied explicitly.

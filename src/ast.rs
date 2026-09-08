@@ -266,6 +266,7 @@ pub struct Function {
     pub return_span: SourceSpan,
     pub return_type_spans: Vec<SourceSpan>,
     pub body: Vec<Stmt>,
+    pub expression_body: bool,
     pub line: usize,
     pub span: SourceSpan,
 }

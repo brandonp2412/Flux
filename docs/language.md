@@ -22,6 +22,15 @@ fn add(a: i64, b: i64) -> i64 {
 }
 ```
 
+A function whose entire body is one value-producing expression may use the concise brace form; the expression is an implicit return and uses the same static return checking and native ABI as an explicit `return`:
+
+```flux
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn positive(value: i64) -> bool { value > 0 }
+```
+
+Concise bodies require a non-`void` return type. Multi-value forwarding remains supported when the single expression is a call with the exact declared return shape.
+
 Control flow uses indentation:
 
 ```flux

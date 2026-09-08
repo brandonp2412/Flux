@@ -178,6 +178,20 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
+        match parse_single_expression_function(line) {
+            Ok(Some(function)) => {
+                functions.push(function);
+                index += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                index = recover_after_malformed_declaration(&lines, index + 1);
+                continue;
+            }
+        }
+
         let header = match parse_function_header(&line.text, line.number) {
             Ok(header) => header,
             Err(diagnostic) => {
@@ -231,6 +245,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             return_span,
             return_type_spans,
             body,
+            expression_body: false,
             line: function_line,
             span: function_span,
         });
@@ -1114,6 +1129,55 @@ fn strip_comment(input: &str) -> &str {
         }
     }
     input
+}
+
+fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
+    if !line.text.starts_with("fn ") || !line.text.ends_with('}') {
+        return Ok(None);
+    }
+    let Some(open_offset) = line.text.find('{') else {
+        return Ok(None);
+    };
+    if open_offset + 1 >= line.text.len() {
+        return Ok(None);
+    }
+    let header_source = line.text[..=open_offset].trim_end();
+    let header = parse_function_header(header_source, line.number)?;
+    if header.returns.is_empty() {
+        return Err(diag(
+            line.number,
+            "single-expression functions require a non-void return type",
+        ));
+    }
+    let raw_expression = &line.text[open_offset + 1..line.text.len() - 1];
+    let (expression_source, expression_column) =
+        trim_with_column(raw_expression, line.indent + open_offset + 2);
+    if expression_source.is_empty() {
+        return Err(diag(
+            line.number,
+            "single-expression functions require an expression between '{' and '}'",
+        ));
+    }
+    let expression = parse_expression_at(expression_source, line.number, expression_column)?;
+    let expression_span = expression.span;
+    Ok(Some(Function {
+        name: header.name,
+        name_span: header.name_span,
+        keyword_span: SourceSpan::new(line.number, line.indent + 1, 2),
+        params: header.params,
+        returns: header.returns,
+        return_span: header.return_span,
+        return_type_spans: header.return_type_spans,
+        body: vec![Stmt {
+            line: line.number,
+            span: expression_span,
+            keyword_span: expression_span,
+            kind: StmtKind::Return(vec![expression]),
+        }],
+        expression_body: true,
+        line: line.number,
+        span: line.span(),
+    }))
 }
 
 struct FunctionHeader {

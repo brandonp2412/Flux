@@ -993,6 +993,70 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_concise_single_expression_functions() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+fn square(value: i64) -> i64 { value * value }
+fn choose(flag: bool) -> i64 { 7 if flag else 2 }
+fn point(value: i64) -> Point { Point { x: value } }
+fn pair(value: i64) -> (i64, error) { checked(value) }
+
+fn checked(value: i64) -> (i64, error) {
+    return value, nil
+}
+
+fn main() -> i64 {
+    print(square(6))
+    print(choose(false))
+    let item: Point = point(9)
+    print(item.x)
+    let value: i64, err: error = pair(12)
+    print(value)
+    print(err)
+    return 0
+}
+"#;
+
+    check_source(source).expect("concise functions should typecheck");
+    let generated = compile_to_c(source).expect("concise functions should compile");
+    assert!(generated.contains("flux__fn_square"));
+    assert!(generated.contains("return (flux__local_value * flux__local_value);"));
+    assert!(generated.contains("flux__fn_pair"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("concise functions should format");
+    assert!(formatted.contains("fn square(value: i64) -> i64 { value * value }"));
+    assert!(formatted.contains("fn point(value: i64) -> Point { Point { x: value } }"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted concise functions should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_concise_single_expression_functions() {
+    let void_body = r#"
+fn log(value: str) -> void { print(value) }
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(void_body).expect_err("concise void functions should fail");
+    assert!(error.message.contains("require a non-void return type"));
+
+    let mismatch = r#"
+fn value() -> i64 { "wrong" }
+fn main() -> i64 {
+    return value()
+}
+"#;
+    let error = check_source(mismatch).expect_err("concise return type mismatch should fail");
+    assert!(error.message.contains("expected i64, got str"));
+}
+
+#[test]
 fn accepts_first_class_named_function_values_and_higher_order_calls() {
     let source = r#"
 type Number = i64

@@ -193,6 +193,26 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         param_parts.push(format!("{}: {}{default}", param.name, param.ty.name()));
     }
     let params = param_parts.join(", ");
+    if function.expression_body {
+        let expression = function
+            .body
+            .first()
+            .and_then(|stmt| match &stmt.kind {
+                StmtKind::Return(values) if values.len() == 1 => values.first(),
+                _ => None,
+            })
+            .expect("single-expression functions contain one implicit return expression");
+        lines.insert(
+            function.line,
+            format!(
+                "fn {}({params}) -> {} {{ {} }}",
+                function.name,
+                format_return_types(&function.returns),
+                format_expr(expression, 0)
+            ),
+        );
+        return;
+    }
     lines.insert(
         function.line,
         format!(
