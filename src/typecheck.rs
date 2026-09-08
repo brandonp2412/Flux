@@ -1192,6 +1192,147 @@ pub fn type_of_expr(
             }
             Ok(Type::Named(name.clone()))
         }
+        ExprKind::Match { value, arms } => {
+            let value_ty = type_of_expr(value, env, signatures)?;
+            let Type::Named(enum_name) = value_ty else {
+                return Err(diag(
+                    value.span,
+                    &format!("match requires an enum value, got {}", value_ty.name()),
+                ));
+            };
+            let Some(definition) = signatures.enum_type(&enum_name) else {
+                return Err(diag(
+                    value.span,
+                    &format!("match requires an enum value, got {enum_name}"),
+                ));
+            };
+            let mut seen = HashSet::new();
+            let mut result_ty: Option<Type> = None;
+            for arm in arms {
+                if arm.enum_name != enum_name {
+                    return Err(diag(
+                        arm.enum_span,
+                        &format!(
+                            "match arm uses enum '{}', expected '{enum_name}'",
+                            arm.enum_name
+                        ),
+                    ));
+                }
+                let Some(variant) = definition.variant(&arm.variant) else {
+                    return Err(diag(
+                        arm.variant_span,
+                        &format!("enum '{enum_name}' has no variant '{}'", arm.variant),
+                    ));
+                };
+                if !seen.insert(arm.variant.as_str()) {
+                    return Err(diag(
+                        arm.variant_span,
+                        &format!("duplicate match arm for '{enum_name}.{}'", arm.variant),
+                    ));
+                }
+                if arm.patterns.len() != variant.payloads.len() {
+                    return Err(diag(
+                        arm.span,
+                        &format!(
+                            "match arm '{}.{}' expects {} payload pattern{}, got {}",
+                            enum_name,
+                            arm.variant,
+                            variant.payloads.len(),
+                            if variant.payloads.len() == 1 { "" } else { "s" },
+                            arm.patterns.len()
+                        ),
+                    ));
+                }
+                let mut nested = env.clone();
+                for (pattern, payload_ty) in arm.patterns.iter().zip(&variant.payloads) {
+                    match pattern {
+                        MatchPattern::Binding(binding) => {
+                            if binding.name == "_" {
+                                continue;
+                            }
+                            if nested.contains_key(&binding.name) {
+                                return Err(diag(
+                                    binding.span,
+                                    &format!(
+                                        "match binding '{}' shadows an existing binding",
+                                        binding.name
+                                    ),
+                                ));
+                            }
+                            nested.insert(binding.name.clone(), payload_ty.clone());
+                        }
+                        MatchPattern::Struct(pattern) => {
+                            let expected = signatures
+                                .canonical_type(&Type::Named(pattern.struct_name.clone()));
+                            let actual = signatures.canonical_type(payload_ty);
+                            require_type(
+                                pattern.struct_span,
+                                &expected,
+                                &actual,
+                                "match struct pattern",
+                            )?;
+                            let Type::Named(struct_name) = expected else {
+                                return Err(diag(
+                                    pattern.struct_span,
+                                    &format!(
+                                        "struct pattern '{}' does not name a struct type",
+                                        pattern.struct_name
+                                    ),
+                                ));
+                            };
+                            if signatures.struct_type(&struct_name).is_none() {
+                                return Err(diag(
+                                    pattern.struct_span,
+                                    &format!(
+                                        "struct pattern '{}' does not name a struct type",
+                                        pattern.struct_name
+                                    ),
+                                ));
+                            }
+                            let mut diagnostics = Vec::new();
+                            bind_struct_pattern_fields(
+                                &pattern.fields,
+                                &struct_name,
+                                &mut nested,
+                                signatures,
+                                &mut diagnostics,
+                            );
+                            if let Some(diagnostic) = diagnostics.into_iter().next() {
+                                return Err(diagnostic);
+                            }
+                        }
+                    }
+                }
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                if arm_ty == Type::Void {
+                    return Err(diag(
+                        arm.value.span,
+                        "match expression arms cannot produce void",
+                    ));
+                }
+                if let Some(expected) = &result_ty {
+                    require_type(arm.value.span, expected, &arm_ty, "match expression arm")?;
+                } else {
+                    result_ty = Some(arm_ty);
+                }
+            }
+            let missing = definition
+                .variants
+                .iter()
+                .filter(|variant| !seen.contains(variant.name.as_str()))
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!(
+                        "non-exhaustive match on '{enum_name}'; missing {}",
+                        missing.join(", ")
+                    ),
+                ));
+            }
+            result_ty.ok_or_else(|| diag(expr.span, "match expression requires at least one arm"))
+        }
         ExprKind::Field {
             base,
             name,
@@ -1517,7 +1658,8 @@ fn evaluate_default_expr(
         | ExprKind::Call { .. }
         | ExprKind::EnumVariant { .. }
         | ExprKind::StructLiteral { .. }
-        | ExprKind::Field { .. } => Err(diag(
+        | ExprKind::Field { .. }
+        | ExprKind::Match { .. } => Err(diag(
             expr.span,
             "parameter defaults must be compile-time primitive expressions",
         )),
@@ -1623,7 +1765,8 @@ fn evaluate_constant_expr(
         | ExprKind::Call { .. }
         | ExprKind::EnumVariant { .. }
         | ExprKind::StructLiteral { .. }
-        | ExprKind::Field { .. } => Err(diag(
+        | ExprKind::Field { .. }
+        | ExprKind::Match { .. } => Err(diag(
             expr.span,
             "constant expressions currently support primitive literals, constant references, and primitive operators",
         )),

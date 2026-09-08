@@ -90,9 +90,9 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [x] `struct` value types with named fields, nested acyclic value layout, native C lowering, formatter support, and semantic indexing.
 - [x] Struct literals, field access, and functional update/copy syntax with single evaluation of the base value.
 - [x] Closed enums / tagged unions with typed positional payloads, namespace-qualified constructors, semantic indexing, deterministic native tagged-union lowering, and cross-value-type cycle diagnostics.
-- [ ] Exhaustive `match` expressions and statements.
+- [x] Exhaustive `match` expressions and statements.
   - [x] Exhaustive enum `match` statements with typed payload bindings, duplicate/missing-arm diagnostics, guaranteed-return analysis, formatter/semantic support, single scrutinee evaluation, and native `switch` lowering.
-  - [ ] `match` expressions that produce a value.
+  - [x] Value-producing enum `match` expressions for typed bindings and returns, using indentation-based arms, exhaustive/type-consistent results, pattern bindings/struct patterns, formatter/semantic support, and native `switch` lowering.
 - [ ] Pattern matching over structs, enums, lists, and multi-values.
   - [x] Enum variant payload patterns in `match` statements, including `_` ignored payload positions.
   - [x] Flat struct destructuring patterns with shorthand fields, renaming, ignored bindings, inferred field types, aliases, and single source-expression evaluation.
@@ -109,6 +109,8 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [x] `break` / `continue` in `for` loops with static scope validation through nested `if` / `match` blocks and native lowering.
 - [ ] `while` loops once explicit local mutation/state semantics make them useful rather than ornamental.
 - [ ] Value-producing conditional/match expressions for functional code.
+  - [x] Value-producing `match` expressions.
+  - [ ] Value-producing conditional expressions.
 
 ## Interfaces and capabilities
 
@@ -233,7 +235,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Conditional expression (`condition ? a : b`) or a clearer Flux-native equivalent.
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
 - [ ] Concise range syntax beyond current `start..end` where appropriate.
-- [ ] Switch/match expressions returning values.
+- [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
 - [ ] Assignment expressions only where they remain readable and analyzable.
 - [ ] Strong constant folding for literal/expression-heavy syntax.
 

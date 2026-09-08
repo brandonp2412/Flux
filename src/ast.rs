@@ -300,6 +300,18 @@ pub struct MatchArm {
 }
 
 #[derive(Debug, Clone)]
+pub struct MatchExprArm {
+    pub enum_name: String,
+    pub enum_span: SourceSpan,
+    pub variant: String,
+    pub variant_span: SourceSpan,
+    pub patterns: Vec<MatchPattern>,
+    pub value: Expr,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
 pub enum MatchPattern {
     Binding(PatternBinding),
     Struct(StructPattern),
@@ -362,6 +374,10 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: String,
         name_span: SourceSpan,
+    },
+    Match {
+        value: Box<Expr>,
+        arms: Vec<MatchExprArm>,
     },
     Unary {
         op: UnaryOp,

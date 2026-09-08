@@ -1,4 +1,4 @@
-use crate::ast::{MatchPattern, Program, Stmt, StmtKind, StructPatternField, Type};
+use crate::ast::{Expr, ExprKind, MatchPattern, Program, Stmt, StmtKind, StructPatternField, Type};
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
@@ -183,6 +183,91 @@ fn collect_struct_pattern_symbols(
     }
 }
 
+fn collect_expr_pattern_symbols(
+    expr: &Expr,
+    symbols: &mut Vec<SemanticSymbol>,
+    signatures: &Signatures,
+) {
+    match &expr.kind {
+        ExprKind::Match { value, arms } => {
+            collect_expr_pattern_symbols(value, symbols, signatures);
+            for arm in arms {
+                let payloads = signatures
+                    .enum_type(&arm.enum_name)
+                    .and_then(|definition| definition.variant(&arm.variant))
+                    .map(|variant| variant.payloads.as_slice())
+                    .unwrap_or(&[]);
+                for (index, pattern) in arm.patterns.iter().enumerate() {
+                    match pattern {
+                        MatchPattern::Binding(binding) => {
+                            if binding.name == "_" {
+                                continue;
+                            }
+                            symbols.push(SemanticSymbol {
+                                name: binding.name.clone(),
+                                kind: SymbolKind::PatternBinding,
+                                ty: payloads.get(index).cloned(),
+                                span: binding.span,
+                            });
+                        }
+                        MatchPattern::Struct(pattern) => {
+                            let Some(payload_ty) = payloads.get(index) else {
+                                continue;
+                            };
+                            let Type::Named(struct_name) = signatures.canonical_type(payload_ty)
+                            else {
+                                continue;
+                            };
+                            collect_struct_pattern_symbols(
+                                &pattern.fields,
+                                &struct_name,
+                                symbols,
+                                signatures,
+                            );
+                        }
+                    }
+                }
+                collect_expr_pattern_symbols(&arm.value, symbols, signatures);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_expr_pattern_symbols(base, symbols, signatures);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_pattern_symbols(left, symbols, signatures);
+            collect_expr_pattern_symbols(right, symbols, signatures);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_expr_pattern_symbols(arg, symbols, signatures);
+            }
+            for arg in named_args {
+                collect_expr_pattern_symbols(&arg.value, symbols, signatures);
+            }
+        }
+        ExprKind::EnumVariant { args, .. } => {
+            for arg in args {
+                collect_expr_pattern_symbols(arg, symbols, signatures);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_expr_pattern_symbols(base, symbols, signatures);
+            }
+            for field in fields {
+                collect_expr_pattern_symbols(&field.value, symbols, signatures);
+            }
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
 fn collect_block_symbols(
     body: &[Stmt],
     symbols: &mut Vec<SemanticSymbol>,
@@ -194,13 +279,17 @@ fn collect_block_symbols(
                 name,
                 name_span,
                 ty,
+                expr,
                 ..
-            } => symbols.push(SemanticSymbol {
-                name: name.clone(),
-                kind: SymbolKind::Binding,
-                ty: Some(ty.clone()),
-                span: *name_span,
-            }),
+            } => {
+                symbols.push(SemanticSymbol {
+                    name: name.clone(),
+                    kind: SymbolKind::Binding,
+                    ty: Some(ty.clone()),
+                    span: *name_span,
+                });
+                collect_expr_pattern_symbols(expr, symbols, signatures);
+            }
             StmtKind::LetDestructure { bindings, .. } => {
                 for binding in bindings {
                     symbols.push(SemanticSymbol {
@@ -284,7 +373,13 @@ fn collect_block_symbols(
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }
             }
-            StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Expr(_) => {}
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_expr_pattern_symbols(value, symbols, signatures);
+                }
+            }
+            StmtKind::Expr(expr) => collect_expr_pattern_symbols(expr, symbols, signatures),
+            StmtKind::Break | StmtKind::Continue => {}
         }
     }
 }

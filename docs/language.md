@@ -226,7 +226,30 @@ fn describe(event: Event) -> i64 {
 }
 ```
 
-Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload pattern arity must match the variant declaration. Struct payload patterns are checked against the concrete payload type, bind projected fields with their declared static types, may nest recursively, and lower directly to native field access without constructing intermediary values. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis. Match expressions that themselves yield a value are planned separately.
+Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload pattern arity must match the variant declaration. Struct payload patterns are checked against the concrete payload type, bind projected fields with their declared static types, may nest recursively, and lower directly to native field access without constructing intermediary values. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis.
+
+`match` can also produce a value while keeping Flux's indentation-based control-flow style. The current multiline expression form is supported directly in typed bindings and returns:
+
+```flux
+fn score(outcome: Outcome) -> i64 {
+    return match outcome:
+        Outcome.Ok(value): value
+        Outcome.Error(_): -1
+        Outcome.Pending(): 0
+}
+
+fn main() -> i64 {
+    let outcome: Outcome = Outcome.Ok(42)
+    let score: i64 = match outcome:
+        Outcome.Ok(value): value + 1
+        Outcome.Error(_): -1
+        Outcome.Pending(): 0
+    print(score)
+    return 0
+}
+```
+
+Every expression arm must produce the same non-`void` type and the match must remain exhaustive. Pattern bindings and nested struct payload patterns work exactly as in statement matches. Native lowering evaluates the scrutinee once, switches on the enum tag, projects payload values only in the selected arm, and assigns or returns the selected result without introducing a boxed runtime value.
 
 ## Compile-time constants
 

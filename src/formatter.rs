@@ -143,6 +143,20 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if matches!(expr.kind, ExprKind::Match { .. }) => {
+                let ExprKind::Match { value, arms } = &expr.kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}let {name}: {} = match {}:",
+                        ty.name(),
+                        format_expr(value, 0)
+                    ),
+                );
+                format_match_expr_arms(arms, depth + 1, lines);
+            }
             StmtKind::Let { name, ty, expr, .. } => {
                 lines.insert(
                     stmt.line,
@@ -183,6 +197,18 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                         format_expr(expr, 0)
                     ),
                 );
+            }
+            StmtKind::Return(values)
+                if values.len() == 1 && matches!(values[0].kind, ExprKind::Match { .. }) =>
+            {
+                let ExprKind::Match { value, arms } = &values[0].kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!("{pad}return match {}:", format_expr(value, 0)),
+                );
+                format_match_expr_arms(arms, depth + 1, lines);
             }
             StmtKind::Return(values) => {
                 if values.is_empty() {
@@ -288,6 +314,42 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
     }
 }
 
+fn format_match_expr_arms(
+    arms: &[crate::ast::MatchExprArm],
+    depth: usize,
+    lines: &mut HashMap<usize, String>,
+) {
+    let pad = "    ".repeat(depth);
+    for arm in arms {
+        let patterns = arm
+            .patterns
+            .iter()
+            .map(|pattern| match pattern {
+                crate::ast::MatchPattern::Binding(binding) => binding.name.clone(),
+                crate::ast::MatchPattern::Struct(pattern) => {
+                    let fields = pattern
+                        .fields
+                        .iter()
+                        .map(format_struct_pattern_field)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{} {{ {} }}", pattern.struct_name, fields)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.insert(
+            arm.line,
+            format!(
+                "{pad}{}.{}({patterns}): {}",
+                arm.enum_name,
+                arm.variant,
+                format_expr(&arm.value, 0)
+            ),
+        );
+    }
+}
+
 fn format_return_types(types: &[Type]) -> String {
     match types {
         [] => "void".to_string(),
@@ -365,6 +427,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             );
             format!("{name} {{ {} }}", parts.join(", "))
         }
+        ExprKind::Match { value, .. } => format!("match {}:", format_expr(value, 0)),
         ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 7)),
         ExprKind::Unary { op, expr } => {
             let operator = match op {

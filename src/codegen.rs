@@ -147,6 +147,12 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if matches!(expr.kind, ExprKind::Match { .. }) => {
+                let target = local_c_name(name);
+                out.push_str(&format!("{pad}{} {target};\n", c_type(ty, signatures)));
+                emit_match_expr_into(out, expr, &target, depth, env, signatures, temp_counter)?;
+                env.insert(name.clone(), signatures.canonical_type(ty));
+            }
             StmtKind::Let { name, ty, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!(
@@ -241,6 +247,27 @@ fn emit_block(
                     ));
                 }
                 out.push_str(&format!("{pad}return {return_temp};\n"));
+            }
+            StmtKind::Return(values)
+                if values.len() == 1 && matches!(values[0].kind, ExprKind::Match { .. }) =>
+            {
+                let result_ty = type_of_expr(&values[0], env, signatures)?;
+                let target = format!("flux__match_result_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {target};\n",
+                    c_type(&result_ty, signatures)
+                ));
+                emit_match_expr_into(
+                    out,
+                    &values[0],
+                    &target,
+                    depth,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+                out.push_str(&format!("{pad}return {target};\n"));
             }
             StmtKind::Return(values) if values.len() == 1 => {
                 let value = emit_expr(&values[0], env, signatures)?;
@@ -417,6 +444,98 @@ fn emit_block(
 struct EmittedExpr {
     code: String,
     ty: Type,
+}
+
+fn emit_match_expr_into(
+    out: &mut String,
+    expr: &Expr,
+    target: &str,
+    depth: usize,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let ExprKind::Match { value, arms } = &expr.kind else {
+        return Err(diag(
+            expr.span,
+            "expected match expression during code generation",
+        ));
+    };
+    let emitted_value = emit_expr(value, env, signatures)?;
+    let Type::Named(enum_name) = &emitted_value.ty else {
+        return Err(diag(
+            value.span,
+            "match expression code generation requires an enum value",
+        ));
+    };
+    let definition = signatures.enum_type(enum_name).ok_or_else(|| {
+        diag(
+            value.span,
+            "match expression code generation requires an enum value",
+        )
+    })?;
+    let temp = format!("flux__match_{}", *temp_counter);
+    *temp_counter += 1;
+    let pad = "    ".repeat(depth);
+    out.push_str(&format!(
+        "{pad}struct {} {temp} = {};\n",
+        struct_c_name(enum_name),
+        emitted_value.code
+    ));
+    out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
+    for arm in arms {
+        let variant = definition
+            .variant(&arm.variant)
+            .expect("type checking guarantees match expression variants exist");
+        out.push_str(&format!(
+            "{pad}    case {}: {{\n",
+            enum_tag_value_name(enum_name, &arm.variant)
+        ));
+        let mut nested = env.clone();
+        for (index, (pattern, payload_ty)) in arm.patterns.iter().zip(&variant.payloads).enumerate()
+        {
+            let payload_access = format!(
+                "{temp}.payload.{}.v{index}",
+                enum_payload_member_name(&arm.variant)
+            );
+            match pattern {
+                MatchPattern::Binding(binding) => {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    out.push_str(&format!(
+                        "{pad}        {} {} = {payload_access};\n",
+                        c_type(payload_ty, signatures),
+                        local_c_name(&binding.name),
+                    ));
+                    nested.insert(binding.name.clone(), payload_ty.clone());
+                }
+                MatchPattern::Struct(pattern) => {
+                    let Type::Named(struct_name) = signatures.canonical_type(payload_ty) else {
+                        return Err(diag(
+                            pattern.struct_span,
+                            "match struct pattern code generation requires a struct value",
+                        ));
+                    };
+                    emit_struct_pattern_bindings(
+                        out,
+                        &format!("{pad}        "),
+                        &pattern.fields,
+                        &struct_name,
+                        &payload_access,
+                        &mut nested,
+                        signatures,
+                    )?;
+                }
+            }
+        }
+        let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+        out.push_str(&format!("{pad}        {target} = {};\n", arm_value.code));
+        out.push_str(&format!("{pad}        break;\n"));
+        out.push_str(&format!("{pad}    }}\n"));
+    }
+    out.push_str(&format!("{pad}}}\n"));
+    Ok(())
 }
 
 fn emit_struct_pattern_bindings(
@@ -652,6 +771,12 @@ fn emit_expr(
                     ty: Type::Named(name.clone()),
                 }
             }
+        }
+        ExprKind::Match { .. } => {
+            return Err(diag(
+                expr.span,
+                "multiline match expressions are lowered from binding/return statements",
+            ));
         }
         ExprKind::Field { base, name, .. } => {
             let base = emit_expr(base, env, signatures)?;
@@ -1097,6 +1222,12 @@ fn collect_update_helpers_from_expr(
         }
         ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+            for arm in arms {
+                collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);
+            }
         }
         ExprKind::Binary { left, right, .. } => {
             collect_update_helpers_from_expr(left, signatures, emitted, helpers);

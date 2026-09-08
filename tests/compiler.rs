@@ -815,6 +815,114 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_value_producing_match_expressions_in_bindings_and_returns() {
+    let source = r#"
+enum Outcome {
+    Ok(i64)
+    Error(str)
+    Pending
+}
+
+fn score(outcome: Outcome) -> i64 {
+    return match outcome:
+        Outcome.Ok(value): value
+        Outcome.Error(_): -1
+        Outcome.Pending(): 0
+}
+
+fn main() -> i64 {
+    let outcome: Outcome = Outcome.Ok(42)
+    let value: i64 = match outcome:
+        Outcome.Ok(payload): payload + 1
+        Outcome.Error(_): -1
+        Outcome.Pending(): 0
+    print(value)
+    return score(outcome)
+}
+"#;
+
+    check_source(source).expect("match expressions should typecheck");
+    let generated = compile_to_c(source).expect("match expressions should lower natively");
+    assert!(generated.contains("flux__match_result_"));
+    assert!(generated.contains("switch (flux__match_"));
+    assert!(generated.contains("flux__local_value ="));
+}
+
+#[test]
+fn match_expressions_require_exhaustive_same_typed_non_void_arms() {
+    let non_exhaustive = r#"
+enum Choice {
+    One
+    Two
+}
+fn main() -> i64 {
+    let choice: Choice = Choice.One()
+    let value: i64 = match choice:
+        Choice.One(): 1
+    return value
+}
+"#;
+    let error = check_source(non_exhaustive).expect_err("match expression must be exhaustive");
+    assert!(error.message.contains("non-exhaustive match"));
+
+    let mismatched = r#"
+enum Choice {
+    One
+    Two
+}
+fn main() -> i64 {
+    let choice: Choice = Choice.One()
+    let value: i64 = match choice:
+        Choice.One(): 1
+        Choice.Two(): "two"
+    return value
+}
+"#;
+    let error = check_source(mismatched).expect_err("match expression arms must agree");
+    assert!(
+        error
+            .message
+            .contains("match expression arm: expected i64, got str")
+    );
+
+    let void_arm = r#"
+enum Choice {
+    One
+}
+fn main() -> i64 {
+    let choice: Choice = Choice.One()
+    let value: i64 = match choice:
+        Choice.One(): print("one")
+    return value
+}
+"#;
+    let error = check_source(void_arm).expect_err("match expression cannot produce void");
+    assert!(
+        error
+            .message
+            .contains("match expression arms cannot produce void")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_match_expressions() {
+    let source = "enum Choice {\n One(i64)\n None\n}\nfn main()->i64 {\n let choice:Choice=Choice.One(42)\n let value:i64 = match choice:\n  Choice.One(payload): payload\n  Choice.None(): 0\n return value\n}\n";
+    let expected = "enum Choice {\n    One(i64)\n    None\n}\nfn main() -> i64 {\n    let choice: Choice = Choice.One(42)\n    let value: i64 = match choice:\n        Choice.One(payload): payload\n        Choice.None(): 0\n    return value\n}\n";
+    let formatted =
+        fluxc::formatter::format_source(source).expect("match expression should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(704))
+        .expect("match expression should analyze");
+    let payload = database
+        .symbols_named("payload")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("match expression binding should be indexed");
+    assert_eq!(payload.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, payload.span), "payload");
+}
+
+#[test]
 fn match_scrutinee_is_evaluated_exactly_once() {
     let source = r#"
 enum Outcome {

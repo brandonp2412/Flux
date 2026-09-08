@@ -1,7 +1,8 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    MatchArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef,
-    StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
+    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
+    UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -428,6 +429,28 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
         } => {
             *name_span = name_span.with_source(source_id);
             attach_expr_source(base, source_id);
+        }
+        ExprKind::Match { value, arms } => {
+            attach_expr_source(value, source_id);
+            for arm in arms {
+                arm.span = arm.span.with_source(source_id);
+                arm.enum_span = arm.enum_span.with_source(source_id);
+                arm.variant_span = arm.variant_span.with_source(source_id);
+                for pattern in &mut arm.patterns {
+                    match pattern {
+                        MatchPattern::Binding(binding) => {
+                            binding.span = binding.span.with_source(source_id);
+                        }
+                        MatchPattern::Struct(pattern) => {
+                            pattern.struct_span = pattern.struct_span.with_source(source_id);
+                            for field in &mut pattern.fields {
+                                attach_struct_pattern_field_source(field, source_id);
+                            }
+                        }
+                    }
+                }
+                attach_expr_source(&mut arm.value, source_id);
+            }
         }
         ExprKind::Unary { expr, .. } => attach_expr_source(expr, source_id),
         ExprKind::Binary { left, right, .. } => {
@@ -1014,7 +1037,9 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             break;
         }
 
-        let stmt = if line.text.starts_with("match ") && line.text.ends_with(':') {
+        let stmt = if let Some(stmt) = parse_match_expression_statement(lines, index, indent)? {
+            stmt
+        } else if line.text.starts_with("match ") && line.text.ends_with(':') {
             parse_match_statement(lines, index, indent)?
         } else if line.text.starts_with("if ") && line.text.ends_with(':') {
             parse_if_statement(lines, index, indent)?
@@ -1077,6 +1102,171 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
     }
 
     Ok(body)
+}
+
+fn parse_match_expression_statement(
+    lines: &[Line],
+    index: &mut usize,
+    indent: usize,
+) -> Result<Option<Stmt>, Diagnostic> {
+    let line = &lines[*index];
+    if !line.text.ends_with(':') {
+        return Ok(None);
+    }
+
+    if let Some(rest) = line.text.strip_prefix("let ")
+        && let Some(split) = rest.find(" = match ")
+    {
+        let binding_src = &rest[..split];
+        let binding = parse_binding(binding_src.trim(), line.number, line.indent + 5)?;
+        let raw_value = &rest[split + 9..rest.len() - 1];
+        let value_column = line.indent + 5 + split + 9;
+        let expr = parse_match_expression(lines, index, indent, raw_value, value_column)?;
+        return Ok(Some(Stmt {
+            line: line.number,
+            span: line.span(),
+            keyword_span: SourceSpan::new(line.number, line.indent + 1, 3),
+            kind: StmtKind::Let {
+                name: binding.name,
+                name_span: binding.name_span,
+                ty: binding.ty,
+                type_span: binding.type_span,
+                expr,
+            },
+        }));
+    }
+
+    if let Some(raw_value) = line.text.strip_prefix("return match ") {
+        let raw_value = &raw_value[..raw_value.len() - 1];
+        let expr = parse_match_expression(lines, index, indent, raw_value, line.indent + 14)?;
+        return Ok(Some(Stmt {
+            line: line.number,
+            span: line.span(),
+            keyword_span: SourceSpan::new(line.number, line.indent + 1, 6),
+            kind: StmtKind::Return(vec![expr]),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn parse_match_expression(
+    lines: &[Line],
+    index: &mut usize,
+    indent: usize,
+    raw_value: &str,
+    value_column: usize,
+) -> Result<Expr, Diagnostic> {
+    let header = &lines[*index];
+    let (value_src, value_column) = trim_with_column(raw_value, value_column);
+    if value_src.is_empty() {
+        return Err(diag(header.number, "match expression requires a value"));
+    }
+    let value = parse_expression_at(value_src, header.number, value_column)?;
+    let start_column = value.span.column.saturating_sub(6);
+    *index += 1;
+    if *index >= lines.len() || lines[*index].indent <= indent {
+        return Err(diag(
+            header.number,
+            "match expression requires indented arms",
+        ));
+    }
+    let arm_indent = lines[*index].indent;
+    let mut arms = Vec::new();
+    while *index < lines.len() && lines[*index].indent == arm_indent {
+        arms.push(parse_match_expr_arm(&lines[*index])?);
+        *index += 1;
+    }
+    if arms.is_empty() {
+        return Err(diag(
+            header.number,
+            "match expression requires at least one arm",
+        ));
+    }
+    Ok(Expr {
+        line: header.number,
+        span: SourceSpan::new(
+            header.number,
+            start_column,
+            header
+                .text
+                .len()
+                .saturating_sub(start_column.saturating_sub(header.indent + 1)),
+        ),
+        kind: ExprKind::Match {
+            value: Box::new(value),
+            arms,
+        },
+    })
+}
+
+fn parse_match_expr_arm(line: &Line) -> Result<MatchExprArm, Diagnostic> {
+    let Some(colon) = find_top_level_colon(&line.text) else {
+        return Err(diag(
+            line.number,
+            "match expression arms use 'Enum.Variant(patterns): expression'",
+        ));
+    };
+    let pattern_text = line.text[..colon].trim();
+    let value_text = line.text[colon + 1..].trim();
+    if value_text.is_empty() {
+        return Err(diag(line.number, "match expression arm requires a value"));
+    }
+    let header_line = Line {
+        number: line.number,
+        indent: line.indent,
+        text: format!("{pattern_text}:"),
+    };
+    let arm = parse_match_arm_header(&header_line)?;
+    let value_offset = line.text[colon + 1..].find(value_text).unwrap_or(0);
+    let value = parse_expression_at(
+        value_text,
+        line.number,
+        line.indent + colon + 2 + value_offset,
+    )?;
+    Ok(MatchExprArm {
+        enum_name: arm.enum_name,
+        enum_span: arm.enum_span,
+        variant: arm.variant,
+        variant_span: arm.variant_span,
+        patterns: arm.patterns,
+        value,
+        line: line.number,
+        span: line.span(),
+    })
+}
+
+fn find_top_level_colon(input: &str) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in input.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match byte {
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b':' if paren == 0 && brace == 0 => return Some(index),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_match_statement(
