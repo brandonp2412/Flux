@@ -108,9 +108,9 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 - [x] `break` / `continue` in `for` loops with static scope validation through nested `if` / `match` blocks and native lowering.
 - [ ] `while` loops once explicit local mutation/state semantics make them useful rather than ornamental.
-- [ ] Value-producing conditional/match expressions for functional code.
+- [x] Value-producing conditional/match expressions for functional code.
   - [x] Value-producing `match` expressions.
-  - [ ] Value-producing conditional expressions.
+  - [x] Python-style value-producing conditional expressions (`a if condition else b`) with strict branch typing and native conditional lowering.
 
 ## Interfaces and capabilities
 
@@ -232,7 +232,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] String interpolation.
 - [ ] Multiline strings.
 - [ ] Raw strings.
-- [ ] Conditional expression (`condition ? a : b`) or a clearer Flux-native equivalent.
+- [x] Python-style conditional expression (`a if condition else b`) as the Flux-native value conditional.
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
 - [ ] Concise range syntax beyond current `start..end` where appropriate.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.

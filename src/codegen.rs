@@ -778,6 +778,24 @@ fn emit_expr(
                 "multiline match expressions are lowered from binding/return statements",
             ));
         }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let cond = emit_expr(cond, env, signatures)?;
+            let then_expr = emit_expr(then_expr, env, signatures)?;
+            let else_expr = emit_expr(else_expr, env, signatures)?;
+            EmittedExpr {
+                code: format!(
+                    "({} ? {} : {})",
+                    c_condition(&cond.code),
+                    then_expr.code,
+                    else_expr.code
+                ),
+                ty: then_expr.ty,
+            }
+        }
         ExprKind::Field { base, name, .. } => {
             let base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
@@ -1228,6 +1246,15 @@ fn collect_update_helpers_from_expr(
             for arm in arms {
                 collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);
             }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_update_helpers_from_expr(then_expr, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(cond, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(else_expr, signatures, emitted, helpers);
         }
         ExprKind::Binary { left, right, .. } => {
             collect_update_helpers_from_expr(left, signatures, emitted, helpers);

@@ -1192,6 +1192,34 @@ pub fn type_of_expr(
             }
             Ok(Type::Named(name.clone()))
         }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let cond_ty = type_of_expr(cond, env, signatures)?;
+            require_type(
+                cond.span,
+                &Type::Bool,
+                &cond_ty,
+                "conditional expression condition",
+            )?;
+            let then_ty = type_of_expr(then_expr, env, signatures)?;
+            let else_ty = type_of_expr(else_expr, env, signatures)?;
+            if then_ty == Type::Void || else_ty == Type::Void {
+                return Err(diag(
+                    expr.span,
+                    "conditional expression branches cannot produce void",
+                ));
+            }
+            require_type(
+                else_expr.span,
+                &then_ty,
+                &else_ty,
+                "conditional expression branch",
+            )?;
+            Ok(then_ty)
+        }
         ExprKind::Match { value, arms } => {
             let value_ty = type_of_expr(value, env, signatures)?;
             let Type::Named(enum_name) = value_ty else {
@@ -1622,6 +1650,23 @@ fn evaluate_default_expr(
                     ),
                 )
             }),
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let condition = evaluate_default_expr(cond, signatures)?;
+            match condition {
+                ConstantValue::Bool(true) => evaluate_default_expr(then_expr, signatures),
+                ConstantValue::Bool(false) => evaluate_default_expr(else_expr, signatures),
+                actual => Err(constant_type_error(
+                    cond.span,
+                    "conditional expression condition",
+                    &Type::Bool,
+                    &actual.ty(),
+                )),
+            }
+        }
         ExprKind::Unary { op, expr: inner } => {
             let value = evaluate_default_expr(inner, signatures)?;
             match (op, value) {
@@ -1728,6 +1773,27 @@ fn evaluate_constant_expr(
             }
             evaluate_constant(name, definitions, signatures, cache, stack)
                 .map(|constant| constant.value)
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let condition = evaluate_constant_expr(cond, definitions, signatures, cache, stack)?;
+            match condition {
+                ConstantValue::Bool(true) => {
+                    evaluate_constant_expr(then_expr, definitions, signatures, cache, stack)
+                }
+                ConstantValue::Bool(false) => {
+                    evaluate_constant_expr(else_expr, definitions, signatures, cache, stack)
+                }
+                actual => Err(constant_type_error(
+                    cond.span,
+                    "conditional expression condition",
+                    &Type::Bool,
+                    &actual.ty(),
+                )),
+            }
         }
         ExprKind::Unary { op, expr: inner } => {
             let value = evaluate_constant_expr(inner, definitions, signatures, cache, stack)?;

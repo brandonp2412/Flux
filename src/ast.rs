@@ -379,6 +379,11 @@ pub enum ExprKind {
         value: Box<Expr>,
         arms: Vec<MatchExprArm>,
     },
+    Conditional {
+        then_expr: Box<Expr>,
+        cond: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,

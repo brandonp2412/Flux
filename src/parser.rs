@@ -452,6 +452,15 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(&mut arm.value, source_id);
             }
         }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            attach_expr_source(then_expr, source_id);
+            attach_expr_source(cond, source_id);
+            attach_expr_source(else_expr, source_id);
+        }
         ExprKind::Unary { expr, .. } => attach_expr_source(expr, source_id),
         ExprKind::Binary { left, right, .. } => {
             attach_expr_source(left, source_id);
@@ -1945,6 +1954,8 @@ enum TokenKind {
     True,
     False,
     Nil,
+    If,
+    Else,
     Plus,
     Minus,
     Star,
@@ -1987,7 +1998,7 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
         index: 0,
         line,
     };
-    let expr = parser.parse_binary(1)?;
+    let expr = parser.parse_conditional()?;
     if parser.index != tokens.len() {
         let span = tokens[parser.index].span;
         return Err(Diagnostic::new(
@@ -2088,6 +2099,8 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "true" => TokenKind::True,
                 "false" => TokenKind::False,
                 "nil" => TokenKind::Nil,
+                "if" => TokenKind::If,
+                "else" => TokenKind::Else,
                 ident => TokenKind::Ident(ident.to_string()),
             }
         } else {
@@ -2147,6 +2160,44 @@ struct ExprParser<'a> {
 }
 
 impl ExprParser<'_> {
+    fn parse_conditional(&mut self) -> Result<Expr, Diagnostic> {
+        let then_expr = self.parse_binary(1)?;
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::If)
+        ) {
+            return Ok(then_expr);
+        }
+        self.index += 1;
+        let cond = self.parse_binary(1)?;
+        let Some(else_token) = self.tokens.get(self.index) else {
+            return Err(diag(self.line, "conditional expression requires 'else'"));
+        };
+        if !matches!(else_token.kind, TokenKind::Else) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                else_token.span,
+                "conditional expression requires 'else'",
+            ));
+        }
+        self.index += 1;
+        let else_expr = self.parse_conditional()?;
+        let span = SourceSpan::new(
+            self.line,
+            then_expr.span.column,
+            else_expr.span.column + else_expr.span.length - then_expr.span.column,
+        );
+        Ok(Expr {
+            line: self.line,
+            span,
+            kind: ExprKind::Conditional {
+                then_expr: Box::new(then_expr),
+                cond: Box::new(cond),
+                else_expr: Box::new(else_expr),
+            },
+        })
+    }
+
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, Diagnostic> {
         let mut left = self.parse_unary()?;
         while let Some((op, precedence)) = self.peek_binary() {
@@ -2257,7 +2308,7 @@ impl ExprParser<'_> {
                     Some(TokenKind::RParen)
                 ) {
                     loop {
-                        args.push(self.parse_binary(1)?);
+                        args.push(self.parse_conditional()?);
                         match self.tokens.get(self.index).map(|token| &token.kind) {
                             Some(TokenKind::Comma) => self.index += 1,
                             Some(TokenKind::RParen) => break,
@@ -2399,7 +2450,7 @@ impl ExprParser<'_> {
                                     format!("duplicate named argument '{arg_name}'"),
                                 ));
                             }
-                            let value = self.parse_binary(1)?;
+                            let value = self.parse_conditional()?;
                             named_args.push(NamedArg {
                                 name: arg_name,
                                 name_span,
@@ -2418,7 +2469,7 @@ impl ExprParser<'_> {
                                     "positional arguments cannot follow named arguments",
                                 ));
                             }
-                            args.push(self.parse_binary(1)?);
+                            args.push(self.parse_conditional()?);
                         }
                         match self.tokens.get(self.index).map(|token| &token.kind) {
                             Some(TokenKind::Comma) => self.index += 1,
@@ -2459,7 +2510,7 @@ impl ExprParser<'_> {
                 })
             }
             TokenKind::LParen => {
-                let mut expr = self.parse_binary(1)?;
+                let mut expr = self.parse_conditional()?;
                 let Some(close) = self.tokens.get(self.index) else {
                     return Err(diag(self.line, "expected ')'"));
                 };
@@ -2503,7 +2554,7 @@ impl ExprParser<'_> {
             (Some(TokenKind::Dot), Some(TokenKind::Dot))
         ) {
             self.index += 2;
-            base = Some(Box::new(self.parse_binary(1)?));
+            base = Some(Box::new(self.parse_conditional()?));
             match self.tokens.get(self.index).map(|token| &token.kind) {
                 Some(TokenKind::Comma) => self.index += 1,
                 Some(TokenKind::RBrace) => {}
@@ -2542,7 +2593,7 @@ impl ExprParser<'_> {
                     ));
                 }
                 self.index += 1;
-                let value = self.parse_binary(1)?;
+                let value = self.parse_conditional()?;
                 fields.push(StructLiteralField {
                     name: field_name,
                     name_span: field_token.span,

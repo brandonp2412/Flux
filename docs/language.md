@@ -336,14 +336,23 @@ Currently implemented:
 - `for name in start..end:` with an exclusive integer range;
 - `break` and `continue` inside loops, including through nested `if` / `match` blocks;
 - exhaustive enum `match` statements with typed positional payload bindings;
+- value-producing enum `match` expressions in bindings and returns;
+- Python-style conditional expressions, `a if condition else b`;
 - `return`;
 - expression statements.
+
+Conditional expressions require a `bool` condition and both branches must produce the same non-`void` type. They are right-associative, so `a if first else b if second else c` works naturally. The native backend lowers them to target-native conditional control flow, preserving lazy evaluation of the unselected branch.
+
+```flux
+fn label(enabled: bool) -> str {
+    return "enabled" if enabled else "disabled"
+}
+```
 
 Planned:
 
 - `while` once explicit local mutation/state semantics make it useful;
-- `match` expressions that produce values;
-- broader struct/list/record patterns as those value types mature.
+- broader list/record patterns as those value types mature.
 
 ## Native compilation architecture
 

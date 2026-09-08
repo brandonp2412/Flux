@@ -815,6 +815,83 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_python_style_conditional_expressions() {
+    let source = r#"
+const FALLBACK: i64 = 7 if true else 9
+
+fn choose(flag: bool, value: i64 = 5 if true else 6) -> i64 {
+    return value if flag else FALLBACK
+}
+
+fn main() -> i64 {
+    let enabled: bool = false
+    let value: i64 = choose(enabled)
+    let nested: i64 = 1 if enabled else 2 if value == 7 else 3
+    print(value)
+    print(nested)
+    return value
+}
+"#;
+
+    check_source(source).expect("conditional expressions should typecheck");
+    let generated = compile_to_c(source).expect("conditional expressions should lower natively");
+    assert!(generated.contains(" ? "));
+    assert!(generated.contains("INT64_C(7)"));
+}
+
+#[test]
+fn rejects_invalid_conditional_expression_types() {
+    let bad_condition = r#"
+fn main() -> i64 {
+    let value: i64 = 1 if 42 else 2
+    return value
+}
+"#;
+    let error = check_source(bad_condition).expect_err("conditional condition must be bool");
+    assert!(
+        error
+            .message
+            .contains("conditional expression condition: expected bool, got i64")
+    );
+
+    let mismatched = r#"
+fn main() -> i64 {
+    let value: i64 = 1 if true else "two"
+    return value
+}
+"#;
+    let error = check_source(mismatched).expect_err("conditional branches must agree");
+    assert!(
+        error
+            .message
+            .contains("conditional expression branch: expected i64, got str")
+    );
+
+    let void_branch = r#"
+fn main() -> i64 {
+    let value: i64 = print("one") if true else 2
+    return value
+}
+"#;
+    let error = check_source(void_branch).expect_err("conditional branches cannot be void");
+    assert!(
+        error
+            .message
+            .contains("conditional expression branches cannot produce void")
+    );
+}
+
+#[test]
+fn formatter_preserves_conditional_expression_precedence() {
+    let source = "fn main()->i64 {\n let enabled:bool=true\n let value:i64=1+2 if enabled else 3+4\n let nested:i64=1 if enabled else 2 if false else 3\n return value+nested\n}\n";
+    let expected = "fn main() -> i64 {\n    let enabled: bool = true\n    let value: i64 = 1 + 2 if enabled else 3 + 4\n    let nested: i64 = 1 if enabled else 2 if false else 3\n    return value + nested\n}\n";
+    let formatted =
+        fluxc::formatter::format_source(source).expect("conditional source should format");
+    assert_eq!(formatted, expected);
+    check_source(&formatted).expect("formatted conditional source should still typecheck");
+}
+
+#[test]
 fn accepts_value_producing_match_expressions_in_bindings_and_returns() {
     let source = r#"
 enum Outcome {

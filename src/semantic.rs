@@ -230,6 +230,15 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&arm.value, symbols, signatures);
             }
         }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_expr_pattern_symbols(then_expr, symbols, signatures);
+            collect_expr_pattern_symbols(cond, symbols, signatures);
+            collect_expr_pattern_symbols(else_expr, symbols, signatures);
+        }
         ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
         }

@@ -428,6 +428,23 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             format!("{name} {{ {} }}", parts.join(", "))
         }
         ExprKind::Match { value, .. } => format!("match {}:", format_expr(value, 0)),
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let text = format!(
+                "{} if {} else {}",
+                format_expr(then_expr, 0),
+                format_expr(cond, 0),
+                format_expr(else_expr, 0)
+            );
+            if parent_precedence > 0 {
+                format!("({text})")
+            } else {
+                text
+            }
+        }
         ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 7)),
         ExprKind::Unary { op, expr } => {
             let operator = match op {
