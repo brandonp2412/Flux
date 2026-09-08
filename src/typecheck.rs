@@ -1865,6 +1865,20 @@ fn collect_binding_declarations(
                 declarations.push((name.clone(), *name_span, "loop variable"));
                 collect_binding_declarations(body, declarations);
             }
+            StmtKind::ForEach {
+                index_name,
+                index_span,
+                name,
+                name_span,
+                body,
+                ..
+            } => {
+                if let (Some(index_name), Some(index_span)) = (index_name, index_span) {
+                    declarations.push((index_name.clone(), *index_span, "loop index"));
+                }
+                declarations.push((name.clone(), *name_span, "loop variable"));
+                collect_binding_declarations(body, declarations);
+            }
             StmtKind::If {
                 body, else_body, ..
             } => {
@@ -1959,6 +1973,10 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
             } => {
                 collect_expr_reads(start, reads);
                 collect_expr_reads(end, reads);
+                collect_block_reads(body, reads);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_expr_reads(iterable, reads);
                 collect_block_reads(body, reads);
             }
             StmtKind::While { cond, body } => {
@@ -2468,6 +2486,59 @@ fn check_block_all(
                 let mut nested_mutable = mutable.clone();
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
+                }
+                check_block_all(
+                    body,
+                    &mut nested,
+                    &mut nested_mutable,
+                    return_types,
+                    signatures,
+                    diagnostics,
+                    loop_depth + 1,
+                );
+            }
+            StmtKind::ForEach {
+                index_name,
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                let element_type = match type_of_expr(iterable, env, signatures) {
+                    Ok(iterable_type) => match signatures.canonical_type(&iterable_type) {
+                        Type::List(element) => Some(*element),
+                        actual => {
+                            diagnostics.push(diag(
+                                iterable.span,
+                                &format!("for-loop source must be a list, got {}", actual.name()),
+                            ));
+                            None
+                        }
+                    },
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
+                if let Some(index_name) = index_name {
+                    if env.contains_key(index_name) {
+                        diagnostics.push(diag(
+                            stmt.span,
+                            &format!("loop index '{index_name}' shadows an existing binding"),
+                        ));
+                    } else {
+                        nested.insert(index_name.clone(), Type::I64);
+                    }
+                }
+                if env.contains_key(name) {
+                    diagnostics.push(diag(
+                        stmt.span,
+                        &format!("loop variable '{name}' shadows an existing binding"),
+                    ));
+                } else if let Some(element_type) = element_type {
+                    nested.insert(name.clone(), element_type);
                 }
                 check_block_all(
                     body,
@@ -3670,6 +3741,7 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             }
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
+            | StmtKind::ForEach { .. }
             | StmtKind::While { .. }
             | StmtKind::Match { .. }
             | StmtKind::Let { .. }

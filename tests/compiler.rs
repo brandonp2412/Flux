@@ -1195,6 +1195,76 @@ fn main() -> i64 {
 }
 
 #[test]
+fn list_iteration_and_indexed_iteration_are_typed_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [2, 4, 6]
+    for value in values:
+        print value
+    for index, value in values:
+        print(index + value)
+    return 0
+}
+"#;
+
+    check_source(source).expect("list iteration should typecheck");
+    let generated = compile_to_c(source).expect("list iteration should lower natively");
+    assert!(generated.contains("struct flux__list flux__iter_source_"));
+    assert!(generated.contains("flux_list_at(flux__iter_source_"));
+    assert!(generated.contains("int64_t flux__local_index = 0"));
+    assert!(generated.contains("int64_t flux__local_value = *((int64_t *)flux_list_at"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("list iteration should format");
+    assert!(formatted.contains("for value in values:"));
+    assert!(formatted.contains("for index, value in values:"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted list iteration should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_list_iteration_forms() {
+    let non_list = r#"
+fn main() -> i64 {
+    for value in 7:
+        print value
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("foreach source must be a list");
+    assert!(
+        error
+            .message
+            .contains("for-loop source must be a list, got i64")
+    );
+
+    let indexed_range = r#"
+fn main() -> i64 {
+    for index, value in 0..3:
+        print(index + value)
+    return 0
+}
+"#;
+    let error = check_source(indexed_range).expect_err("ranges bind one variable");
+    assert!(
+        error
+            .message
+            .contains("range loops bind exactly one loop variable")
+    );
+
+    let duplicate = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    for value, value in values:
+        print value
+    return 0
+}
+"#;
+    let error = check_source(duplicate).expect_err("foreach bindings must be unique");
+    assert!(error.message.contains("duplicate for-loop binding 'value'"));
+}
+
+#[test]
 fn rejects_unsafe_or_invalid_bootstrap_list_forms() {
     let mixed = r#"
 fn main() -> i64 {

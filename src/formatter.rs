@@ -541,6 +541,23 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 );
                 format_block(body, depth + 1, lines);
             }
+            StmtKind::ForEach {
+                index_name,
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                let bindings = index_name
+                    .as_ref()
+                    .map(|index| format!("{index}, {name}"))
+                    .unwrap_or_else(|| name.clone());
+                lines.insert(
+                    stmt.line,
+                    format!("{pad}for {bindings} in {}:", format_expr(iterable, 0)),
+                );
+                format_block(body, depth + 1, lines);
+            }
             StmtKind::Match { value, arms } => {
                 lines.insert(stmt.line, format!("{pad}match {}:", format_expr(value, 0)));
                 let arm_pad = "    ".repeat(depth + 1);

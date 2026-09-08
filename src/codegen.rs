@@ -2327,6 +2327,58 @@ fn emit_block(
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
+            StmtKind::ForEach {
+                index_name,
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                let source = emit_expr(iterable, env, signatures)?;
+                let Type::List(element) = signatures.canonical_type(&source.ty) else {
+                    return Err(diag(
+                        stmt.span,
+                        "for-loop code generation requires a list source",
+                    ));
+                };
+                let source_name = format!("flux__iter_source_{}", *temp_counter);
+                *temp_counter += 1;
+                let index_c = index_name
+                    .as_ref()
+                    .map(|index| local_c_name(index))
+                    .unwrap_or_else(|| {
+                        let generated = format!("flux__iter_index_{}", *temp_counter);
+                        *temp_counter += 1;
+                        generated
+                    });
+                let item_c = local_c_name(name);
+                let element_c = c_type(&element, signatures);
+                out.push_str(&format!(
+                    "{pad}struct flux__list {source_name} = {};\n",
+                    source.code
+                ));
+                out.push_str(&format!(
+                    "{pad}for (int64_t {index_c} = 0; {index_c} < (int64_t){source_name}.len; ++{index_c}) {{\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at({source_name}, {index_c}, sizeof({element_c})));\n"
+                ));
+                let mut nested = env.clone();
+                if let Some(index_name) = index_name {
+                    nested.insert(index_name.clone(), Type::I64);
+                }
+                nested.insert(name.clone(), *element);
+                emit_block(
+                    out,
+                    body,
+                    depth + 1,
+                    &mut nested,
+                    signatures,
+                    temp_counter,
+                    current_function,
+                )?;
+                out.push_str(&format!("{pad}}}\n"));
+            }
             StmtKind::Match { value, arms } => {
                 let value = emit_expr(value, env, signatures)?;
                 let Type::Named(enum_name) = &value.ty else {
@@ -3664,9 +3716,9 @@ fn block_uses_background(body: &[Stmt]) -> bool {
         StmtKind::If {
             body, else_body, ..
         } => block_uses_background(body) || block_uses_background(else_body),
-        StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } => {
-            block_uses_background(body)
-        }
+        StmtKind::ForRange { body, .. }
+        | StmtKind::ForEach { body, .. }
+        | StmtKind::While { body, .. } => block_uses_background(body),
         StmtKind::Match { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
         _ => false,
     })
@@ -3700,7 +3752,9 @@ fn collect_function_types_from_block(
                 collect_function_types_from_block(body, signatures, types);
                 collect_function_types_from_block(else_body, signatures, types);
             }
-            StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } => {
+            StmtKind::ForRange { body, .. }
+            | StmtKind::ForEach { body, .. }
+            | StmtKind::While { body, .. } => {
                 collect_function_types_from_block(body, signatures, types);
             }
             StmtKind::Match { arms, .. } => {
@@ -3807,6 +3861,10 @@ fn collect_update_helpers_from_block(
             } => {
                 collect_update_helpers_from_expr(start, signatures, emitted, helpers);
                 collect_update_helpers_from_expr(end, signatures, emitted, helpers);
+                collect_update_helpers_from_block(body, signatures, emitted, helpers);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_update_helpers_from_expr(iterable, signatures, emitted, helpers);
                 collect_update_helpers_from_block(body, signatures, emitted, helpers);
             }
             StmtKind::Match { value, arms } => {

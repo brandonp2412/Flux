@@ -473,11 +473,15 @@ let empty: bool = values.is_empty
 let present: bool = values.is_not_empty
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
+for value in values:
+    print value
+for index, value in values:
+    print(index + value)
 ```
 
 Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices use an exclusive end, accept omitted or negative bounds, and clip bounds to the valid list extent in the same style as Python. Slices are zero-copy views over the source list storage. Compiler-known list values also expose `length: i64`, `is_empty: bool`, and `is_not_empty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members.
 
-Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections.
+Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

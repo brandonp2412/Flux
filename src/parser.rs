@@ -547,6 +547,20 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 attach_expr_source(end, source_id);
                 attach_block_source(body, source_id);
             }
+            StmtKind::ForEach {
+                index_span,
+                name_span,
+                iterable,
+                body,
+                ..
+            } => {
+                if let Some(span) = index_span {
+                    *span = span.with_source(source_id);
+                }
+                *name_span = name_span.with_source(source_id);
+                attach_expr_source(iterable, source_id);
+                attach_block_source(body, source_id);
+            }
             StmtKind::While { cond, body } => {
                 attach_expr_source(cond, source_id);
                 attach_block_source(body, source_id);
@@ -2356,37 +2370,93 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             let inner = raw_inner.trim();
             let inner_column = line.indent + 1 + 4 + inner_leading;
             let Some(in_offset) = inner.find(" in ") else {
-                return Err(diag(stmt_line, "for loops use 'for name in start..end:'"));
-            };
-            let raw_name = &inner[..in_offset];
-            let raw_range = &inner[in_offset + 4..];
-            let (name, name_column) = trim_with_column(raw_name, inner_column);
-            validate_identifier(name, stmt_line)?;
-            let (range_src, range_column) =
-                trim_with_column(raw_range, inner_column + in_offset + 4);
-            let Some((start_raw, end_raw, range_split)) = split_range_with_offset(range_src) else {
                 return Err(diag(
                     stmt_line,
-                    "for loops currently require an exclusive range 'start..end'",
+                    "for loops use 'for name in source:' or 'for index, name in source:'",
                 ));
             };
-            let (start_src, start_column) = trim_with_column(start_raw, range_column);
-            let (end_src, end_column) = trim_with_column(end_raw, range_column + range_split + 2);
-            let start = parse_expression_at(start_src, stmt_line, start_column)?;
-            let end = parse_expression_at(end_src, stmt_line, end_column)?;
-            *index += 1;
-            let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
-            Stmt {
-                line: stmt_line,
-                span: line.span(),
-                keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 3),
-                kind: StmtKind::ForRange {
-                    name: name.to_string(),
-                    name_span: SourceSpan::new(stmt_line, name_column, name.len()),
-                    start,
-                    end,
-                    body: nested,
-                },
+            let raw_bindings = &inner[..in_offset];
+            let raw_source = &inner[in_offset + 4..];
+            let mut bindings = Vec::new();
+            for (raw_binding, offset) in split_top_level_commas_with_offsets(raw_bindings) {
+                let (name, column) = trim_with_column(raw_binding, inner_column + offset);
+                validate_identifier(name, stmt_line)?;
+                bindings.push((
+                    name.to_string(),
+                    SourceSpan::new(stmt_line, column, name.len()),
+                ));
+            }
+            if bindings.is_empty() || bindings.len() > 2 {
+                return Err(diag(
+                    stmt_line,
+                    "for loops bind one value or an index and value",
+                ));
+            }
+            if bindings.len() == 2 && bindings[0].0 == bindings[1].0 {
+                return Err(diag(
+                    stmt_line,
+                    &format!("duplicate for-loop binding '{}'", bindings[0].0),
+                ));
+            }
+            let (source_src, source_column) =
+                trim_with_column(raw_source, inner_column + in_offset + 4);
+            if source_src.is_empty() {
+                return Err(diag(stmt_line, "for loop requires a source expression"));
+            }
+            if let Some((start_raw, end_raw, range_split)) = split_range_with_offset(source_src) {
+                if bindings.len() != 1 {
+                    return Err(diag(
+                        stmt_line,
+                        "range loops bind exactly one loop variable",
+                    ));
+                }
+                let (start_src, start_column) = trim_with_column(start_raw, source_column);
+                let (end_src, end_column) =
+                    trim_with_column(end_raw, source_column + range_split + 2);
+                let start = parse_expression_at(start_src, stmt_line, start_column)?;
+                let end = parse_expression_at(end_src, stmt_line, end_column)?;
+                *index += 1;
+                let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
+                let (name, name_span) = bindings.remove(0);
+                Stmt {
+                    line: stmt_line,
+                    span: line.span(),
+                    keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 3),
+                    kind: StmtKind::ForRange {
+                        name,
+                        name_span,
+                        start,
+                        end,
+                        body: nested,
+                    },
+                }
+            } else {
+                let iterable = parse_expression_at(source_src, stmt_line, source_column)?;
+                *index += 1;
+                let nested = parse_nested_block(lines, index, indent, stmt_line, "for")?;
+                let (index_name, index_span, name, name_span) = match bindings.as_slice() {
+                    [(name, name_span)] => (None, None, name.clone(), *name_span),
+                    [(index_name, index_span), (name, name_span)] => (
+                        Some(index_name.clone()),
+                        Some(*index_span),
+                        name.clone(),
+                        *name_span,
+                    ),
+                    _ => unreachable!(),
+                };
+                Stmt {
+                    line: stmt_line,
+                    span: line.span(),
+                    keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 3),
+                    kind: StmtKind::ForEach {
+                        index_name,
+                        index_span,
+                        name,
+                        name_span,
+                        iterable,
+                        body: nested,
+                    },
+                }
             }
         } else {
             let stmt = parse_simple_statement(&line.text, line.span())?;

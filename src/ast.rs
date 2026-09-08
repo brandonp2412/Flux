@@ -465,6 +465,14 @@ pub enum StmtKind {
         end: Expr,
         body: Vec<Stmt>,
     },
+    ForEach {
+        index_name: Option<String>,
+        index_span: Option<SourceSpan>,
+        name: String,
+        name_span: SourceSpan,
+        iterable: Expr,
+        body: Vec<Stmt>,
+    },
     While {
         cond: Expr,
         body: Vec<Stmt>,

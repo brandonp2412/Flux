@@ -515,6 +515,30 @@ fn collect_block_symbols(
                 });
                 collect_block_symbols(body, symbols, signatures);
             }
+            StmtKind::ForEach {
+                index_name,
+                index_span,
+                name,
+                name_span,
+                body,
+                ..
+            } => {
+                if let (Some(index_name), Some(index_span)) = (index_name, index_span) {
+                    symbols.push(SemanticSymbol {
+                        name: index_name.clone(),
+                        kind: SymbolKind::LoopVariable,
+                        ty: Some(Type::I64),
+                        span: *index_span,
+                    });
+                }
+                symbols.push(SemanticSymbol {
+                    name: name.clone(),
+                    kind: SymbolKind::LoopVariable,
+                    ty: None,
+                    span: *name_span,
+                });
+                collect_block_symbols(body, symbols, signatures);
+            }
             StmtKind::Match { arms, .. } => {
                 for arm in arms {
                     let payloads = signatures
