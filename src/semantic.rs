@@ -16,6 +16,7 @@ pub enum SymbolKind {
     Struct,
     StructField,
     View,
+    ViewState,
     ViewElement,
     ViewProperty,
     Function,
@@ -168,6 +169,14 @@ impl SemanticDatabase {
                     kind: SymbolKind::Parameter,
                     ty: Some(param.ty.clone()),
                     span: param.name_span,
+                });
+            }
+            for state in &view.states {
+                symbols.push(SemanticSymbol {
+                    name: state.name.clone(),
+                    kind: SymbolKind::ViewState,
+                    ty: Some(state.ty.clone()),
+                    span: state.name_span,
                 });
             }
             for element in &view.elements {

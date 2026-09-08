@@ -129,6 +129,34 @@ fn emit_linux_gtk_application(
         }
     }
 
+    for state in &view.states {
+        if signatures.canonical_type(&state.ty) != Type::Bool {
+            return Err(diag(
+                state.type_span,
+                "bootstrap Linux view state currently supports bool; broader native state storage remains pending",
+            ));
+        }
+        let Some(initial) = static_expr_bool(&state.initial, signatures) else {
+            return Err(diag(
+                state.initial.span,
+                "bootstrap Linux bool state requires a compile-time bool initial value",
+            ));
+        };
+        out.push_str(&format!(
+            "static bool {} = {};\n",
+            ui_state_c_name(&state.name),
+            if initial { "true" } else { "false" }
+        ));
+    }
+    for element in &view.elements {
+        out.push_str(&format!(
+            "static GtkWidget *{} = NULL;\n",
+            ui_widget_c_name(&element.name)
+        ));
+    }
+    out.push('\n');
+    emit_ui_refresh(out, view, signatures)?;
+
     for element in &view.elements {
         if element.kind != "Button" {
             continue;
@@ -136,14 +164,23 @@ fn emit_linux_gtk_application(
         let Some(action) = view_property(element, "on_press") else {
             continue;
         };
+        if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            out.push_str(&format!(
+                "static void flux__ui_click_{}(GtkButton *button, gpointer data) {{ (void)button; (void)data; {} = {next}; flux__ui_refresh(); }}\n",
+                element.name,
+                ui_state_c_name(&transition.state),
+            ));
+            continue;
+        }
         let ExprKind::Var(function) = &action.value.kind else {
             return Err(diag(
                 action.value.span,
-                "bootstrap Button.on_press lowering requires a named fn() -> void callback",
+                "bootstrap Button.on_press lowering requires a named fn() -> void callback or state transition",
             ));
         };
         out.push_str(&format!(
-            "static void flux__ui_click_{}(GtkButton *button, gpointer data) {{ (void)button; (void)data; {}(); }}\n",
+            "static void flux__ui_click_{}(GtkButton *button, gpointer data) {{ (void)button; (void)data; {}(); flux__ui_refresh(); }}\n",
             element.name,
             function_c_name(function),
         ));
@@ -170,74 +207,36 @@ fn emit_linux_gtk_application(
     out.push_str("    gtk_window_set_child(GTK_WINDOW(window), grid);\n");
 
     for element in &view.elements {
-        let variable = format!("flux__ui_{}", element.name);
+        let variable = ui_widget_c_name(&element.name);
         match element.kind.as_str() {
             "Text" => {
                 let text = match view_property(element, "text") {
-                    None => element.name.clone(),
-                    Some(property) => {
-                        static_view_string(Some(property), signatures).ok_or_else(|| {
-                            diag(
-                                property.value.span,
-                                "bootstrap Linux Text.text must be a compile-time str value",
-                            )
-                        })?
-                    }
+                    None => c_string(&element.name),
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
                 };
-                out.push_str(&format!(
-                    "    GtkWidget *{variable} = gtk_label_new({});\n",
-                    c_string(&text)
-                ));
+                out.push_str(&format!("    {variable} = gtk_label_new({text});\n",));
                 out.push_str(&format!(
                     "    gtk_label_set_wrap(GTK_LABEL({variable}), TRUE);\n    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
                 ));
-                let selectable = match view_property(element, "selectable") {
-                    None => false,
-                    Some(property) => {
-                        static_view_bool(Some(property), signatures).ok_or_else(|| {
-                            diag(
-                                property.value.span,
-                                "bootstrap Linux Text.selectable must be a compile-time bool value",
-                            )
-                        })?
-                    }
-                };
-                if selectable {
+                if let Some(property) = view_property(element, "selectable") {
+                    let selectable = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
-                        "    gtk_label_set_selectable(GTK_LABEL({variable}), TRUE);\n"
+                        "    gtk_label_set_selectable(GTK_LABEL({variable}), {selectable});\n"
                     ));
                 }
             }
             "Button" => {
                 let text = match view_property(element, "text") {
-                    None => element.name.clone(),
-                    Some(property) => {
-                        static_view_string(Some(property), signatures).ok_or_else(|| {
-                            diag(
-                                property.value.span,
-                                "bootstrap Linux Button.text must be a compile-time str value",
-                            )
-                        })?
-                    }
+                    None => c_string(&element.name),
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
                 };
                 out.push_str(&format!(
-                    "    GtkWidget *{variable} = gtk_button_new_with_label({});\n",
-                    c_string(&text)
+                    "    {variable} = gtk_button_new_with_label({text});\n",
                 ));
-                let enabled = match view_property(element, "enabled") {
-                    None => true,
-                    Some(property) => {
-                        static_view_bool(Some(property), signatures).ok_or_else(|| {
-                            diag(
-                                property.value.span,
-                                "bootstrap Linux Button.enabled must be a compile-time bool value",
-                            )
-                        })?
-                    }
-                };
-                if !enabled {
+                if let Some(property) = view_property(element, "enabled") {
+                    let enabled = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
-                        "    gtk_widget_set_sensitive({variable}, FALSE);\n"
+                        "    gtk_widget_set_sensitive({variable}, {enabled});\n"
                     ));
                 }
                 if view_property(element, "on_press").is_some() {
@@ -258,6 +257,7 @@ fn emit_linux_gtk_application(
             element.row_span,
         ));
     }
+    out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
     out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
     Ok(())
@@ -273,29 +273,16 @@ fn view_property<'a>(
         .find(|property| property.name == name)
 }
 
-fn static_view_string(
-    property: Option<&crate::ast::ViewProperty>,
-    signatures: &Signatures,
-) -> Option<String> {
-    match &property?.value.kind {
-        ExprKind::Str(value) => Some(value.clone()),
-        ExprKind::Var(name) => {
-            signatures
-                .constant(name)
-                .and_then(|constant| match &constant.value {
-                    ConstantValue::Str(value) => Some(value.clone()),
-                    _ => None,
-                })
-        }
-        _ => None,
-    }
+fn ui_state_c_name(name: &str) -> String {
+    format!("flux__ui_state_{name}")
 }
 
-fn static_view_bool(
-    property: Option<&crate::ast::ViewProperty>,
-    signatures: &Signatures,
-) -> Option<bool> {
-    match &property?.value.kind {
+fn ui_widget_c_name(name: &str) -> String {
+    format!("flux__ui_{name}")
+}
+
+fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
+    match &expr.kind {
         ExprKind::Bool(value) => Some(*value),
         ExprKind::Var(name) => {
             signatures
@@ -307,6 +294,96 @@ fn static_view_bool(
         }
         _ => None,
     }
+}
+
+fn ui_expr_c(
+    expr: &Expr,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    match &expr.kind {
+        ExprKind::Bool(value) => Ok(if *value { "true" } else { "false" }.to_string()),
+        ExprKind::Int(value) => Ok(format!("INT64_C({value})")),
+        ExprKind::Str(value) => Ok(c_string(value)),
+        ExprKind::Var(name) => {
+            if view.states.iter().any(|state| state.name == *name) {
+                return Ok(ui_state_c_name(name));
+            }
+            let Some(constant) = signatures.constant(name) else {
+                return Err(diag(
+                    expr.span,
+                    "bootstrap Linux dynamic UI expression may reference only view state or compile-time constants",
+                ));
+            };
+            match &constant.value {
+                ConstantValue::Bool(value) => Ok(if *value { "true" } else { "false" }.to_string()),
+                ConstantValue::I64(value) => Ok(format!("INT64_C({value})")),
+                ConstantValue::Str(value) => Ok(c_string(value)),
+            }
+        }
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: inner,
+        } => Ok(format!("(!({}))", ui_expr_c(inner, view, signatures)?)),
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => Ok(format!(
+            "(({}) ? ({}) : ({}))",
+            ui_expr_c(cond, view, signatures)?,
+            ui_expr_c(then_expr, view, signatures)?,
+            ui_expr_c(else_expr, view, signatures)?,
+        )),
+        _ => Err(diag(
+            expr.span,
+            "bootstrap Linux dynamic UI expression currently supports literals, state/constants, 'not', and conditional expressions",
+        )),
+    }
+}
+
+fn emit_ui_refresh(
+    out: &mut String,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    out.push_str("static void flux__ui_refresh(void) {\n");
+    for element in &view.elements {
+        let widget = ui_widget_c_name(&element.name);
+        match element.kind.as_str() {
+            "Text" => {
+                if let Some(property) = view_property(element, "text") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "selectable") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_label_set_selectable(GTK_LABEL({widget}), {value});\n"
+                    ));
+                }
+            }
+            "Button" => {
+                if let Some(property) = view_property(element, "text") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_button_set_label(GTK_BUTTON({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "enabled") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    out.push_str("}\n\n");
+    Ok(())
 }
 
 fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {

@@ -555,27 +555,24 @@ The typed IR must retain source spans, ownership facts, and debug locations so t
 A GUI executable may select one zero-parameter root view with an application declaration instead of defining `fn main() -> i64`:
 
 ```flux
-fn clicked() -> void {
-    print("Clicked from Flux")
-}
-
 view HelloApp {
     grid columns: 1fr
     grid rows: auto auto
     grid gap: 12
+    state clicked: bool = false
 
     Text title at 1,1
-        text: "Hello, Flux!"
+        text: "Clicked!" if clicked else "Hello, Flux!"
 
     Button action at 2,1
-        text: "Click me"
-        on_press: clicked
+        text: "Reset" if clicked else "Click me"
+        on_press: clicked => !clicked
 }
 
 app HelloApp
 ```
 
-The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text` and `Button` become native GTK controls and a typed named `fn() -> void` button callback is connected directly to native click dispatch. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. This is a deliberately narrow dogfood backend: root-view parameters, dynamic UI property expressions, local reactive state/repaint, richer controls, and a lower-level long-term Wayland renderer remain later work.
+The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text` and `Button` become native GTK controls. View-local state is explicit data, initialized from a compile-time value, and a button may apply a typed functional transition with `on_press: state => next_expression`. State-dependent properties use ordinary Flux expressions (for example a conditional string) and lower to a small native refresh function that updates the existing control rather than reconstructing the window/grid. Named `fn() -> void` callbacks remain supported as a separate event form. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. The current native state backend stores bool state; broader state storage, root-view parameters, richer controls, and a lower-level long-term Wayland renderer remain later work.
 
 ## UI direction
 

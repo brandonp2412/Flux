@@ -236,11 +236,27 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
     );
     if let Some(gap) = view.grid.gap {
         let gap_line = view
-            .elements
+            .states
             .first()
-            .map(|element| element.line.saturating_sub(1))
+            .map(|state| state.line.saturating_sub(1))
+            .or_else(|| {
+                view.elements
+                    .first()
+                    .map(|element| element.line.saturating_sub(1))
+            })
             .unwrap_or(view.line + 3);
         lines.insert(gap_line, format!("    grid gap: {gap}"));
+    }
+    for state in &view.states {
+        lines.insert(
+            state.line,
+            format!(
+                "    state {}: {} = {}",
+                state.name,
+                state.ty.name(),
+                format_expr(&state.initial, 0)
+            ),
+        );
     }
     for element in &view.elements {
         let mut placement = format!(
@@ -255,14 +271,15 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
         }
         lines.insert(element.line, placement);
         for property in &element.properties {
-            lines.insert(
-                property.line,
-                format!(
-                    "        {}: {}",
-                    property.name,
+            let value = match &property.transition {
+                Some(transition) => format!(
+                    "{} => {}",
+                    transition.state,
                     format_expr(&property.value, 0)
                 ),
-            );
+                None => format_expr(&property.value, 0),
+            };
+            lines.insert(property.line, format!("        {}: {value}", property.name));
         }
     }
 }

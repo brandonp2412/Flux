@@ -4,7 +4,7 @@ use crate::ast::{
     InterfaceImplMapping, InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
     PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
     StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement,
-    ViewProperty,
+    ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -419,6 +419,12 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
                 attach_expr_source(default, source_id);
             }
         }
+        for state in &mut view.states {
+            state.span = state.span.with_source(source_id);
+            state.name_span = state.name_span.with_source(source_id);
+            state.type_span = state.type_span.with_source(source_id);
+            attach_expr_source(&mut state.initial, source_id);
+        }
         for element in &mut view.elements {
             element.span = element.span.with_source(source_id);
             element.kind_span = element.kind_span.with_source(source_id);
@@ -426,6 +432,9 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
             for property in &mut element.properties {
                 property.span = property.span.with_source(source_id);
                 property.name_span = property.name_span.with_source(source_id);
+                if let Some(transition) = &mut property.transition {
+                    transition.state_span = transition.state_span.with_source(source_id);
+                }
                 attach_expr_source(&mut property.value, source_id);
             }
         }
@@ -1362,6 +1371,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
     let definition_span = header.span();
     *index += 1;
 
+    let mut states = Vec::new();
     let mut grid = GridLayout::default();
     let mut elements = Vec::new();
     while *index < lines.len() && lines[*index].indent > 0 {
@@ -1371,6 +1381,47 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 line.number,
                 "view grid directives and elements use exactly four spaces of indentation",
             ));
+        }
+
+        if let Some(raw_state) = line.text.strip_prefix("state ") {
+            let Some(eq_offset) = raw_state.find('=') else {
+                return Err(diag(
+                    line.number,
+                    "view state uses 'state name: type = expression' syntax",
+                ));
+            };
+            let binding_source = raw_state[..eq_offset].trim();
+            let binding = parse_binding(binding_source, line.number, line.indent + 7)?;
+            if states
+                .iter()
+                .any(|state: &ViewState| state.name == binding.name)
+                || params.iter().any(|param| param.name == binding.name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate view state or parameter '{}'", binding.name),
+                ));
+            }
+            let raw_value = &raw_state[eq_offset + 1..];
+            let value_column = line.indent + 7 + eq_offset + 1;
+            let (value_source, value_column) = trim_with_column(raw_value, value_column);
+            if value_source.is_empty() {
+                return Err(diag(
+                    line.number,
+                    "view state initial value cannot be empty",
+                ));
+            }
+            states.push(ViewState {
+                name: binding.name,
+                name_span: binding.name_span,
+                ty: binding.ty,
+                type_span: binding.type_span,
+                initial: parse_expression_at(value_source, line.number, value_column)?,
+                line: line.number,
+                span: line.span(),
+            });
+            *index += 1;
+            continue;
         }
 
         if let Some(value) = line.text.strip_prefix("grid columns:") {
@@ -1448,7 +1499,43 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     "view property value cannot be empty",
                 ));
             }
-            let value = parse_expression_at(value_source, property_line.number, value_column)?;
+            let (transition, expression_source, expression_column) = if property_name == "on_press"
+            {
+                if let Some((raw_state, _)) = value_source.split_once("=>") {
+                    let state = raw_state.trim();
+                    validate_identifier(state, property_line.number)?;
+                    let state_offset = value_source.find(state).unwrap_or(0);
+                    let expression_offset = value_source.find("=>").unwrap_or(0) + 2;
+                    let (expression_source, expression_column) = trim_with_column(
+                        &value_source[expression_offset..],
+                        value_column + expression_offset,
+                    );
+                    if expression_source.is_empty() {
+                        return Err(diag(
+                            property_line.number,
+                            "view state transition requires an expression after '=>'",
+                        ));
+                    }
+                    (
+                        Some(ViewStateTransition {
+                            state: state.to_string(),
+                            state_span: SourceSpan::new(
+                                property_line.number,
+                                value_column + state_offset,
+                                state.len(),
+                            ),
+                        }),
+                        expression_source,
+                        expression_column,
+                    )
+                } else {
+                    (None, value_source, value_column)
+                }
+            } else {
+                (None, value_source, value_column)
+            };
+            let value =
+                parse_expression_at(expression_source, property_line.number, expression_column)?;
             let name_offset = property_line.text.find(property_name).unwrap_or(0);
             element.properties.push(ViewProperty {
                 name: property_name.to_string(),
@@ -1458,6 +1545,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     property_name.len(),
                 ),
                 value,
+                transition,
                 line: property_line.number,
                 span: property_line.span(),
             });
@@ -1486,6 +1574,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
         name_span,
         keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 4),
         params,
+        states,
         grid,
         elements,
         line: header.number,

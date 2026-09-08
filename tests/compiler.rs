@@ -3539,6 +3539,108 @@ app HelloApp
 }
 
 #[test]
+fn app_view_state_transitions_lower_to_native_state_and_refresh() {
+    let source = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto auto
+    state clicked: bool = false
+    Text title at 1,1
+        text: "Clicked!" if clicked else "Hello"
+    Button action at 2,1
+        text: "Reset" if clicked else "Click me"
+        on_press: clicked => !clicked
+}
+app Counter
+"#;
+
+    check_source(source).expect("typed view state transition should typecheck");
+    let program = fluxc::parser::parse(source).expect("stateful app should parse");
+    let view = &program.views[0];
+    assert_eq!(view.states.len(), 1);
+    assert_eq!(view.states[0].name, "clicked");
+    let action = view
+        .elements
+        .iter()
+        .find(|element| element.name == "action")
+        .and_then(|element| {
+            element
+                .properties
+                .iter()
+                .find(|property| property.name == "on_press")
+        })
+        .expect("button transition should be retained");
+    assert_eq!(action.transition.as_ref().unwrap().state, "clicked");
+
+    let formatted = fluxc::formatter::format_source(source).expect("stateful view should format");
+    assert!(formatted.contains("state clicked: bool = false"));
+    assert!(formatted.contains("on_press: clicked => !clicked"));
+
+    let generated = compile_to_c(source).expect("stateful Linux app should lower");
+    assert!(generated.contains("static bool flux__ui_state_clicked = false;"));
+    assert!(generated.contains("flux__ui_state_clicked = (!(flux__ui_state_clicked));"));
+    assert!(generated.contains("flux__ui_refresh();"));
+    assert!(generated.contains("gtk_label_set_text"));
+    assert!(generated.contains("gtk_button_set_label"));
+    assert!(generated.contains("flux__ui_state_clicked") && generated.contains("Clicked!"));
+}
+
+#[test]
+fn rejects_invalid_view_state_transitions() {
+    let unknown = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        on_press: missing => true
+}
+app Screen
+"#;
+    let errors = check_source_all(unknown).expect_err("unknown state transition must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unknown view state 'missing'"))
+    );
+
+    let wrong_type = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state clicked: bool = false
+    Button action at 1,1
+        on_press: clicked => 42
+}
+app Screen
+"#;
+    let errors = check_source_all(wrong_type).expect_err("wrong next-state type must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("next value for view state 'clicked'")
+            && error.message.contains("expected bool, got i64")
+    }));
+
+    let wrong_property = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state clicked: bool = false
+    Text title at 1,1
+        text: clicked => !clicked
+}
+app Screen
+"#;
+    let errors =
+        check_source_all(wrong_property).expect_err("transition syntax outside on_press must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unexpected character '='"))
+    );
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {

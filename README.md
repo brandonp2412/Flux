@@ -78,7 +78,7 @@ cargo run -- build examples/hello_app.flux -o hello-app --mode debug
 ./hello-app
 ```
 
-`examples/hello_app.flux` opens a real native window containing `Text` and `Button`; clicking the button dispatches directly into its ordinary Flux `fn clicked() -> void`. GTK4 is a bootstrap Linux platform backend, not a source-language widget model: Flux code remains flat/function-first and does not import or construct GTK objects. The backend uses GTK's native Wayland integration when launched on Wayland. Dynamic UI state/repaint is the next dogfood prerequisite.
+`examples/hello_app.flux` opens a real native window containing `Text` and `Button` plus explicit view-local state. Its button uses the functional transition `on_press: clicked => !clicked`; the compiler type-checks that next-state expression and the Linux runtime refreshes the state-derived native label/button properties without rebuilding the window/grid. GTK4 is a bootstrap Linux platform backend, not a source-language widget model: Flux code remains flat/function-first and does not import or construct GTK objects. The backend uses GTK's native Wayland integration when launched on Wayland.
 
 The bootstrap runner watches imported Flux modules automatically, debounces rapid saves, recompiles on change, and restarts only after a successful replacement build. Compiler errors keep the last good process untouched and the watcher remains active until the next save. State-preserving hot apply is a later development-ABI milestone; the current runner is the controlled-restart foundation for it.
 

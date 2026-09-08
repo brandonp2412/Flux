@@ -1100,6 +1100,40 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 }
             }
         }
+
+        for state in &view.states {
+            if let Err(diagnostic) = require_known_type(state.type_span, &state.ty, signatures) {
+                diagnostics.push(diagnostic);
+                continue;
+            }
+            let expected = signatures.canonical_type(&state.ty);
+            if expected == Type::Void || matches!(expected, Type::Function { .. }) {
+                diagnostics.push(diag(
+                    state.type_span,
+                    "view state requires a concrete non-void value type",
+                ));
+                continue;
+            }
+            match evaluate_default_expr(&state.initial, signatures) {
+                Ok(value) => {
+                    if let Err(diagnostic) = require_type(
+                        state.initial.span,
+                        &expected,
+                        &value.ty(),
+                        &format!("initial value for view state '{}'", state.name),
+                    ) {
+                        diagnostics.push(diagnostic);
+                    }
+                }
+                Err(mut diagnostic) => {
+                    diagnostic.message = format!(
+                        "view state '{}' initial value must be compile-time: {}",
+                        state.name, diagnostic.message
+                    );
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
     }
 
     validate_view_composition_cycles(&view_defs, diagnostics);
@@ -1107,11 +1141,14 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
     for view in &program.views {
         let row_count = view.grid.rows.len() as u64;
         let column_count = view.grid.columns.len() as u64;
-        let property_env = view
+        let mut property_env = view
             .params
             .iter()
             .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
             .collect::<HashMap<_, _>>();
+        for state in &view.states {
+            property_env.insert(state.name.clone(), signatures.canonical_type(&state.ty));
+        }
 
         for (index, element) in view.elements.iter().enumerate() {
             let custom_view = view_defs.get(element.kind.as_str()).copied();
@@ -1138,6 +1175,42 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             }
 
             for property in &element.properties {
+                if let Some(transition) = &property.transition {
+                    if element.kind != "Button" || property.name != "on_press" {
+                        diagnostics.push(diag(
+                            property.span,
+                            "view state transitions are currently valid only for Button.on_press",
+                        ));
+                        continue;
+                    }
+                    let Some(state) = view
+                        .states
+                        .iter()
+                        .find(|state| state.name == transition.state)
+                    else {
+                        diagnostics.push(diag(
+                            transition.state_span,
+                            &format!("unknown view state '{}'", transition.state),
+                        ));
+                        continue;
+                    };
+                    match type_of_expr(&property.value, &property_env, signatures) {
+                        Ok(actual) => {
+                            let expected = signatures.canonical_type(&state.ty);
+                            if let Err(diagnostic) = require_type(
+                                property.value.span,
+                                &expected,
+                                &actual,
+                                &format!("next value for view state '{}'", state.name),
+                            ) {
+                                diagnostics.push(diagnostic);
+                            }
+                        }
+                        Err(diagnostic) => diagnostics.push(diagnostic),
+                    }
+                    continue;
+                }
+
                 let Some(expected) =
                     view_element_property_type(program, signatures, &element.kind, &property.name)
                 else {

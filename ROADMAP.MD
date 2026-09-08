@@ -30,9 +30,9 @@ The minimum acceptance path is deliberately small: one Linux desktop target firs
   - [x] `fluxc run` automatic save detection with rebuild and safe controlled restart on successful recompilation.
   - [x] Minimal application entry/runtime that opens a real native Linux window from a Flux program: bootstrap `app ViewName` selects a zero-parameter root view and replaces `fn main`; the Linux bootstrap lowers it to a GTK4 application/window while keeping GTK objects out of Flux source.
   - [x] Bootstrap native lowering/render path for the existing flat grid: explicit rows/columns/spans/gap lower to `GtkGrid`, fixed tracks feed native size requests, and `fr` tracks expand in the corresponding axis. A future lower-level renderer may replace GTK without changing Flux grid source.
-  - [x] Render usable `Text` and `Button` primitives with native GTK4 controls, static typed properties, spacing/margins, and a checked-in `examples/hello_app.flux` dogfood app.
+  - [x] Render usable `Text` and `Button` primitives with native GTK4 controls, typed literal/constant/state-derived properties, spacing/margins, and a checked-in `examples/hello_app.flux` dogfood app.
   - [x] Pointer/click dispatch from the native Wayland window to a typed Flux `Button.on_press` callback: the development host dogfood launch produced the Flux callback output from real button activations.
-  - [ ] Minimal functional local UI state and invalidation/repaint so a click can visibly update text without controller/widget objects.
+  - [x] Minimal functional local UI state and invalidation/repaint: explicit `state clicked: bool = false` belongs to the view instance, `on_press: clicked => !clicked` is a typed state transformation, state-dependent Text/Button properties lower to a native refresh function, and the development host Wayland dogfood test toggled the app render and then restored it pixel-identically on the second activation (apart from unrelated desktop-panel changes).
   - [ ] Editor integration/setup that makes `.flux` syntax + `fluxc lsp` practical to launch as an actual editing experience rather than requiring raw protocol tooling.
   - [ ] Checked-in `hello_app`-style manual acceptance example and documented command that exercises editor → compile → native window → interaction → save/reload end to end.
 
@@ -410,13 +410,16 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 # Milestone 10 — Functional UI state and rendering
 
 - [ ] Local view state without `StatefulWidget`-style objects.
+  - [x] Bootstrap explicit primitive view state (`state name: type = compile_time_value`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores bool state per app instance without source-level state objects/controllers.
 - [ ] Immutable state updates by default.
+  - [x] Bootstrap UI events use a functional transition form (`on_press: state => next_expression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh.
 - [ ] Derived/computed state.
 - [ ] Explicit effects.
 - [ ] Shared state/store primitives only where necessary.
 - [ ] State ownership/lifetime rules integrated with the compiler.
 - [ ] Fine-grained dependency tracking or equivalent efficient invalidation.
 - [ ] Minimal re-render/re-layout work after state changes.
+  - [x] Bootstrap GTK4 root-view refresh updates only state-dependent native Text/Button properties and does not reconstruct the window/grid; the dogfood toggle produced a localized render delta and the second toggle restored the app region to its original pixels.
 - [ ] Stable element identity rules.
 - [ ] No mandatory controller classes.
 - [ ] No build-context object threaded through user code.

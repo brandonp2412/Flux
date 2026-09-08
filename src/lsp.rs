@@ -648,6 +648,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "import",
     "view",
     "app",
+    "state",
     "true",
     "false",
     "nil",
@@ -2135,6 +2136,7 @@ fn semantic_symbol_kind(kind: crate::semantic::SymbolKind) -> SemanticTokenKind 
         | SymbolKind::MutableBinding
         | SymbolKind::PatternBinding
         | SymbolKind::LoopVariable
+        | SymbolKind::ViewState
         | SymbolKind::ViewElement => SemanticTokenKind::Variable,
         SymbolKind::Enum => SemanticTokenKind::Enum,
         SymbolKind::EnumVariant => SemanticTokenKind::EnumMember,
@@ -2170,6 +2172,7 @@ fn is_flux_keyword(word: &str) -> bool {
             | "import"
             | "view"
             | "app"
+            | "state"
             | "grid"
             | "at"
             | "span"
@@ -2886,6 +2889,7 @@ fn hover_description(
         SymbolKind::LoopVariable => typed_symbol("loop", symbol),
         SymbolKind::StructField => typed_symbol("field", symbol),
         SymbolKind::ViewProperty => typed_symbol("property", symbol),
+        SymbolKind::ViewState => typed_symbol("state", symbol),
         SymbolKind::InterfaceFunction | SymbolKind::InterfaceImplementationMapping => {
             typed_symbol("fn", symbol)
         }

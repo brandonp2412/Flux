@@ -289,8 +289,20 @@ pub struct ViewDef {
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
     pub params: Vec<Param>,
+    pub states: Vec<ViewState>,
     pub grid: GridLayout,
     pub elements: Vec<ViewElement>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewState {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub ty: Type,
+    pub type_span: SourceSpan,
+    pub initial: Expr,
     pub line: usize,
     pub span: SourceSpan,
 }
@@ -329,8 +341,15 @@ pub struct ViewProperty {
     pub name: String,
     pub name_span: SourceSpan,
     pub value: Expr,
+    pub transition: Option<ViewStateTransition>,
     pub line: usize,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewStateTransition {
+    pub state: String,
+    pub state_span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
