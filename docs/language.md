@@ -85,7 +85,30 @@ interface Storage {
 
 An interface declaration requires at least one function signature. Member parameter and return types are checked statically using the same concrete type system as ordinary functions; named-only parameters are preserved as part of the contract. Interface members do not have bodies or parameter defaults. Duplicate members and collisions between interface names and other type namespaces are compile-time errors.
 
-At this stage, declarations are intentionally zero-runtime metadata: the bootstrap native backend emits no function, object, vtable, allocation, or reflection data merely because an interface is declared. Explicit implementation, static dispatch, runtime interface values, and dynamic dispatch are separate roadmap stages so those semantics can be designed without smuggling a class model into Flux.
+Declaring an interface is zero-runtime metadata: the bootstrap native backend emits no function, object, vtable, allocation, or reflection data merely because an interface exists.
+
+Concrete data types implement capabilities by explicitly mapping each interface member to an ordinary free function:
+
+```flux
+struct FileStorage {
+    root: str
+}
+
+fn file_load(storage: FileStorage, path: str) -> (str, error) {
+    return path, nil
+}
+
+fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
+    return nil
+}
+
+impl Storage for FileStorage {
+    load: file_load
+    save: file_save
+}
+```
+
+The mapped free function receives the concrete implementing value as its first positional parameter. Every remaining parameter must match the capability signature's types and named-only shape, named parameters keep their contract names, and the return shape must match exactly. Every interface capability must be mapped exactly once. This gives Flux explicit conformance without methods, hidden receivers, classes, inheritance, or vtables. Implementation declarations themselves add no runtime object; they record compile-time dispatch facts for the static/dynamic dispatch stages that follow.
 
 ## Function parameters
 

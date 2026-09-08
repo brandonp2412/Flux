@@ -8,6 +8,8 @@ pub enum SymbolKind {
     TypeAlias,
     Interface,
     InterfaceFunction,
+    InterfaceImplementation,
+    InterfaceImplementationMapping,
     Constant,
     Enum,
     EnumVariant,
@@ -81,6 +83,32 @@ impl SemanticDatabase {
                         span: param.name_span,
                     });
                 }
+            }
+        }
+        for implementation in &program.implementations {
+            symbols.push(SemanticSymbol {
+                name: format!(
+                    "{} for {}",
+                    implementation.interface_name, implementation.target_name
+                ),
+                kind: SymbolKind::InterfaceImplementation,
+                ty: None,
+                span: implementation.span,
+            });
+            let interface = signatures.interface(&implementation.interface_name);
+            for mapping in &implementation.mappings {
+                let ty = interface
+                    .and_then(|interface| interface.functions.get(&mapping.member))
+                    .map(|signature| Type::Function {
+                        params: signature.params.clone(),
+                        returns: signature.returns.clone(),
+                    });
+                symbols.push(SemanticSymbol {
+                    name: mapping.member.clone(),
+                    kind: SymbolKind::InterfaceImplementationMapping,
+                    ty,
+                    span: mapping.member_span,
+                });
             }
         }
         for constant in &program.constants {

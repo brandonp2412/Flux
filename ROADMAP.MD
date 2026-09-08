@@ -117,7 +117,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 The interface track is now the active Milestone 2 subsystem. Declarations come first so type checking, semantic tooling, and later implementation/dispatch rules share one contract model; declaring an interface must not create an object hierarchy or runtime allocation by itself.
 
 - [x] `interface` declarations consisting of statically validated function signatures/capabilities, with named-only parameter metadata, formatter/semantic support, namespace diagnostics, and zero-runtime lowering until implementation/dispatch semantics are introduced.
-- [ ] Explicit implementation of interfaces by concrete data types/modules without inheritance.
+- [x] Explicit implementation of interfaces by concrete data types without inheritance, using exhaustive capability-to-free-function mappings with concrete first-parameter receiver validation, exact named-parameter/return contracts, formatter/semantic support, and zero-runtime conformance metadata. Module implementations remain naturally downstream of modules/packages.
 - [ ] Static dispatch where the concrete type is known.
 - [ ] Efficient interface/dynamic dispatch where runtime polymorphism is required.
 - [ ] Interface values usable as function arguments and return values.

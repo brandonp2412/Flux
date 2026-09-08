@@ -336,6 +336,183 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_explicit_function_mapped_interface_implementations() {
+    let source = r#"
+interface Storage {
+    fn load(path: str) -> (str, error)
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+
+struct FileStorage {
+    root: str
+}
+
+impl Storage for FileStorage {
+    load: file_load
+    save: file_save
+}
+
+fn file_load(storage: FileStorage, path: str) -> (str, error) {
+    return path, nil
+}
+
+fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
+    print(storage.root)
+    print(path)
+    print(data)
+    print(durable)
+    return nil
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    check_source(source).expect("interface implementation should typecheck");
+    let generated = compile_to_c(source).expect("interface implementation should compile");
+    assert!(generated.contains("flux__fn_file_load"));
+    assert!(generated.contains("flux__fn_file_save"));
+    assert!(!generated.contains("vtable"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("implementation should format");
+    assert!(formatted.contains("impl Storage for FileStorage {"));
+    assert!(formatted.contains("    load: file_load"));
+    assert!(formatted.contains("    save: file_save"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(706))
+        .expect("implementation should analyze");
+    let mapping = database
+        .symbols_named("load")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::InterfaceImplementationMapping)
+        .expect("implementation mapping should be indexed");
+    assert_eq!(span_text(&formatted, mapping.span), "load");
+    let implementation = database
+        .signatures()
+        .implementation("Storage", "FileStorage")
+        .expect("implementation should be queryable");
+    assert_eq!(implementation.functions["load"], "file_load");
+    assert_eq!(implementation.functions["save"], "file_save");
+}
+
+#[test]
+fn rejects_invalid_interface_implementations() {
+    let missing_mapping = r#"
+interface Storage {
+    fn load(path: str) -> str
+    fn save(path: str) -> error
+}
+struct FileStorage {
+    root: str
+}
+impl Storage for FileStorage {
+    load: file_load
+}
+fn file_load(storage: FileStorage, path: str) -> str {
+    return path
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(missing_mapping).expect_err("missing capability mapping should fail");
+    assert!(error.message.contains("missing capability mapping"));
+    assert!(error.message.contains("save"));
+
+    let wrong_receiver = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct FileStorage {
+    root: str
+}
+fn file_load(path: str) -> str {
+    return path
+}
+impl Storage for FileStorage {
+    load: file_load
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(wrong_receiver).expect_err("receiver mismatch should fail");
+    assert!(
+        error
+            .message
+            .contains("must accept the concrete 'FileStorage' receiver")
+    );
+
+    let wrong_signature = r#"
+interface Storage {
+    fn save(path: str, *, durable: bool) -> error
+}
+struct FileStorage {
+    root: str
+}
+fn file_save(storage: FileStorage, path: str, *, flush: bool) -> error {
+    return nil
+}
+impl Storage for FileStorage {
+    save: file_save
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(wrong_signature).expect_err("named contract mismatch should fail");
+    assert!(
+        error
+            .message
+            .contains("must keep capability name 'durable'")
+    );
+
+    let wrong_return = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct FileStorage {
+    root: str
+}
+fn file_load(storage: FileStorage, path: str) -> i64 {
+    return 1
+}
+impl Storage for FileStorage {
+    load: file_load
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(wrong_return).expect_err("return mismatch should fail");
+    assert!(
+        error
+            .message
+            .contains("capability 'Storage.load' requires str")
+    );
+
+    let unknown_member = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct FileStorage {
+    root: str
+}
+fn file_load(storage: FileStorage, path: str) -> str {
+    return path
+}
+impl Storage for FileStorage {
+    missing: file_load
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unknown_member).expect_err("unknown capability should fail");
+    assert!(error.message.contains("has no capability 'missing'"));
+}
+
+#[test]
 fn rejects_invalid_interface_declarations() {
     let unknown_type = r#"
 interface Storage {

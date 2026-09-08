@@ -55,6 +55,14 @@ pub struct InterfaceSignature {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone)]
+pub struct InterfaceImplementationSignature {
+    pub interface_name: String,
+    pub target_name: String,
+    pub functions: HashMap<String, String>,
+    pub span: SourceSpan,
+}
+
 impl EnumSignature {
     pub fn variant(&self, name: &str) -> Option<&EnumVariantSignature> {
         self.variants.iter().find(|variant| variant.name == name)
@@ -95,6 +103,7 @@ impl StructSignature {
 pub struct Signatures {
     functions: HashMap<String, Signature>,
     interfaces: HashMap<String, InterfaceSignature>,
+    implementations: HashMap<(String, String), InterfaceImplementationSignature>,
     structs: HashMap<String, StructSignature>,
     enums: HashMap<String, EnumSignature>,
     aliases: HashMap<String, Type>,
@@ -112,6 +121,19 @@ impl Signatures {
 
     pub fn interfaces(&self) -> &HashMap<String, InterfaceSignature> {
         &self.interfaces
+    }
+
+    pub fn implementation(
+        &self,
+        interface_name: &str,
+        target_name: &str,
+    ) -> Option<&InterfaceImplementationSignature> {
+        self.implementations
+            .get(&(interface_name.to_string(), target_name.to_string()))
+    }
+
+    pub fn implementations(&self) -> &HashMap<(String, String), InterfaceImplementationSignature> {
+        &self.implementations
     }
 
     pub fn struct_type(&self, name: &str) -> Option<&StructSignature> {
@@ -598,6 +620,184 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                     .map(|ty| signatures.canonical_type(ty))
                     .collect(),
                 span: function.name_span,
+            },
+        );
+    }
+
+    for implementation in &program.implementations {
+        let Some(interface) = signatures
+            .interface(&implementation.interface_name)
+            .cloned()
+        else {
+            diagnostics.push(diag(
+                implementation.interface_span,
+                &format!("unknown interface '{}'", implementation.interface_name),
+            ));
+            continue;
+        };
+        let target_ty = signatures.canonical_type(&Type::Named(implementation.target_name.clone()));
+        let Type::Named(target_name) = &target_ty else {
+            diagnostics.push(diag(
+                implementation.target_span,
+                &format!(
+                    "interface implementation target '{}' is not a concrete data type",
+                    implementation.target_name
+                ),
+            ));
+            continue;
+        };
+        if signatures.struct_type(target_name).is_none()
+            && signatures.enum_type(target_name).is_none()
+        {
+            diagnostics.push(diag(
+                implementation.target_span,
+                &format!(
+                    "interface implementation target '{}' is not a concrete struct or enum",
+                    implementation.target_name
+                ),
+            ));
+            continue;
+        }
+        let key = (implementation.interface_name.clone(), target_name.clone());
+        if signatures.implementations.contains_key(&key) {
+            diagnostics.push(diag(
+                implementation.span,
+                &format!(
+                    "duplicate implementation of '{}' for '{}'",
+                    implementation.interface_name, implementation.target_name
+                ),
+            ));
+            continue;
+        }
+
+        let mut mapped = HashMap::new();
+        for mapping in &implementation.mappings {
+            let Some(member) = interface.functions.get(&mapping.member) else {
+                diagnostics.push(diag(
+                    mapping.member_span,
+                    &format!(
+                        "interface '{}' has no capability '{}'",
+                        implementation.interface_name, mapping.member
+                    ),
+                ));
+                continue;
+            };
+            let Some(function) = signatures.get(&mapping.function) else {
+                diagnostics.push(diag(
+                    mapping.function_span,
+                    &format!("unknown implementation function '{}'", mapping.function),
+                ));
+                continue;
+            };
+            if function.params.len() != member.params.len() + 1 {
+                diagnostics.push(diag(
+                    mapping.function_span,
+                    &format!(
+                        "implementation function '{}' for '{}.{}' must accept the concrete '{}' receiver plus {} capability argument{}, got {} parameters",
+                        mapping.function,
+                        implementation.interface_name,
+                        mapping.member,
+                        target_name,
+                        member.params.len(),
+                        if member.params.len() == 1 { "" } else { "s" },
+                        function.params.len()
+                    ),
+                ));
+                continue;
+            }
+            let receiver = &function.param_details[0];
+            if receiver.named_only || receiver.ty != target_ty {
+                diagnostics.push(diag(
+                    receiver.span,
+                    &format!(
+                        "implementation function '{}' must take '{}' as its first positional parameter",
+                        mapping.function, target_name
+                    ),
+                ));
+                continue;
+            }
+            let mut compatible = true;
+            for (index, (actual, expected)) in function
+                .param_details
+                .iter()
+                .skip(1)
+                .zip(&member.param_details)
+                .enumerate()
+            {
+                if actual.ty != expected.ty || actual.named_only != expected.named_only {
+                    diagnostics.push(diag(
+                        actual.span,
+                        &format!(
+                            "implementation parameter {} of '{}' does not match capability '{}.{}'",
+                            index + 1,
+                            mapping.function,
+                            implementation.interface_name,
+                            mapping.member
+                        ),
+                    ));
+                    compatible = false;
+                    break;
+                }
+                if expected.named_only && actual.name != expected.name {
+                    diagnostics.push(diag(
+                        actual.span,
+                        &format!(
+                            "named implementation parameter '{}' must keep capability name '{}'",
+                            actual.name, expected.name
+                        ),
+                    ));
+                    compatible = false;
+                    break;
+                }
+            }
+            if !compatible {
+                continue;
+            }
+            if function.returns != member.returns {
+                diagnostics.push(diag(
+                    mapping.function_span,
+                    &format!(
+                        "implementation function '{}' returns {}, capability '{}.{}' requires {}",
+                        mapping.function,
+                        return_types_name(&function.returns),
+                        implementation.interface_name,
+                        mapping.member,
+                        return_types_name(&member.returns)
+                    ),
+                ));
+                continue;
+            }
+            mapped.insert(mapping.member.clone(), mapping.function.clone());
+        }
+        let missing = interface
+            .functions
+            .keys()
+            .filter(|member| !mapped.contains_key(*member))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            diagnostics.push(diag(
+                implementation.span,
+                &format!(
+                    "implementation of '{}' for '{}' is missing capability mapping{} {}",
+                    implementation.interface_name,
+                    implementation.target_name,
+                    if missing.len() == 1 { "" } else { "s" },
+                    missing.join(", ")
+                ),
+            ));
+            continue;
+        }
+        if mapped.len() != interface.functions.len() {
+            continue;
+        }
+        signatures.implementations.insert(
+            key,
+            InterfaceImplementationSignature {
+                interface_name: implementation.interface_name.clone(),
+                target_name: target_name.clone(),
+                functions: mapped,
+                span: implementation.span,
             },
         );
     }

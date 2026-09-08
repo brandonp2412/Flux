@@ -19,6 +19,9 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     for definition in &program.interfaces {
         format_interface(definition, &mut formatted);
     }
+    for implementation in &program.implementations {
+        format_interface_implementation(implementation, &mut formatted);
+    }
     for constant in &program.constants {
         formatted.insert(
             constant.line,
@@ -107,6 +110,25 @@ fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<u
                 param_parts.join(", "),
                 format_return_types(&function.returns)
             ),
+        );
+    }
+}
+
+fn format_interface_implementation(
+    implementation: &crate::ast::InterfaceImpl,
+    lines: &mut HashMap<usize, String>,
+) {
+    lines.insert(
+        implementation.line,
+        format!(
+            "impl {} for {} {{",
+            implementation.interface_name, implementation.target_name
+        ),
+    );
+    for mapping in &implementation.mappings {
+        lines.insert(
+            mapping.member_span.line,
+            format!("    {}: {}", mapping.member, mapping.function),
         );
     }
 }

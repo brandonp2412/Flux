@@ -1,8 +1,8 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    InterfaceDef, InterfaceFunction, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
-    PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
-    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
+    InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, MatchArm, MatchExprArm,
+    MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
+    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -97,6 +97,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
     let mut aliases = Vec::new();
     let mut interfaces = Vec::new();
+    let mut implementations = Vec::new();
     let mut structs = Vec::new();
     let mut enums = Vec::new();
     let mut constants = Vec::new();
@@ -135,6 +136,17 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         if line.text.starts_with("interface ") {
             match parse_interface_declaration(&lines, &mut index) {
                 Ok(definition) => interfaces.push(definition),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                }
+            }
+            continue;
+        }
+
+        if line.text.starts_with("impl ") {
+            match parse_interface_implementation(&lines, &mut index) {
+                Ok(implementation) => implementations.push(implementation),
                 Err(diagnostic) => {
                     diagnostics.push(diagnostic);
                     index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
@@ -234,6 +246,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         Ok(Program {
             aliases,
             interfaces,
+            implementations,
             structs,
             enums,
             constants,
@@ -275,6 +288,16 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
                 param.name_span = param.name_span.with_source(source_id);
                 param.type_span = param.type_span.with_source(source_id);
             }
+        }
+    }
+    for implementation in &mut program.implementations {
+        implementation.span = implementation.span.with_source(source_id);
+        implementation.keyword_span = implementation.keyword_span.with_source(source_id);
+        implementation.interface_span = implementation.interface_span.with_source(source_id);
+        implementation.target_span = implementation.target_span.with_source(source_id);
+        for mapping in &mut implementation.mappings {
+            mapping.member_span = mapping.member_span.with_source(source_id);
+            mapping.function_span = mapping.function_span.with_source(source_id);
         }
     }
     for definition in &mut program.enums {
@@ -543,6 +566,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
             }
             if line.text.starts_with("fn ")
                 || line.text.starts_with("interface ")
+                || line.text.starts_with("impl ")
                 || line.text.starts_with("struct ")
                 || line.text.starts_with("enum ")
                 || line.text.starts_with("type ")
@@ -666,6 +690,109 @@ fn parse_interface_declaration(
         name_span,
         keyword_span: SourceSpan::new(header.number, 1, 9),
         functions,
+        line: header.number,
+        span: definition_span,
+    })
+}
+
+fn parse_interface_implementation(
+    lines: &[Line],
+    index: &mut usize,
+) -> Result<InterfaceImpl, Diagnostic> {
+    let header = &lines[*index];
+    let Some(rest) = header.text.strip_prefix("impl ") else {
+        return Err(diag(header.number, "expected interface implementation"));
+    };
+    let Some(raw_header) = rest.strip_suffix('{') else {
+        return Err(diag(
+            header.number,
+            "interface implementations use 'impl Interface for Type {'",
+        ));
+    };
+    let raw_header = raw_header.trim_end();
+    let Some(for_offset) = raw_header.find(" for ") else {
+        return Err(diag(
+            header.number,
+            "interface implementations use 'impl Interface for Type {'",
+        ));
+    };
+    let interface_name = raw_header[..for_offset].trim();
+    let target_name = raw_header[for_offset + 5..].trim();
+    validate_identifier(interface_name, header.number)?;
+    validate_identifier(target_name, header.number)?;
+    let interface_offset = rest.find(interface_name).unwrap_or(0);
+    let target_offset = rest.find(target_name).unwrap_or(for_offset + 5);
+    let definition_span = header.span();
+    *index += 1;
+
+    let mut mappings = Vec::new();
+    if *index < lines.len() && lines[*index].indent > 0 {
+        let mapping_indent = lines[*index].indent;
+        while *index < lines.len() {
+            let line = &lines[*index];
+            if line.indent < mapping_indent {
+                break;
+            }
+            if line.indent > mapping_indent {
+                return Err(diag(
+                    line.number,
+                    "unexpected indentation in interface implementation",
+                ));
+            }
+            let Some(colon_offset) = line.text.find(':') else {
+                return Err(diag(
+                    line.number,
+                    "interface implementation mappings use 'member: function'",
+                ));
+            };
+            let (member, member_column) =
+                trim_with_column(&line.text[..colon_offset], line.indent + 1);
+            let (function, function_column) = trim_with_column(
+                &line.text[colon_offset + 1..],
+                line.indent + 1 + colon_offset + 1,
+            );
+            validate_identifier(member, line.number)?;
+            validate_identifier(function, line.number)?;
+            if mappings
+                .iter()
+                .any(|mapping: &InterfaceImplMapping| mapping.member == member)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate interface implementation mapping '{member}'"),
+                ));
+            }
+            mappings.push(InterfaceImplMapping {
+                member: member.to_string(),
+                member_span: SourceSpan::new(line.number, member_column, member.len()),
+                function: function.to_string(),
+                function_span: SourceSpan::new(line.number, function_column, function.len()),
+            });
+            *index += 1;
+        }
+    }
+
+    if mappings.is_empty() {
+        return Err(diag(
+            header.number,
+            "interface implementations require at least one function mapping",
+        ));
+    }
+    if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
+        return Err(diag(
+            header.number,
+            "interface implementation body must end with a top-level '}'",
+        ));
+    }
+    *index += 1;
+
+    Ok(InterfaceImpl {
+        interface_name: interface_name.to_string(),
+        interface_span: SourceSpan::new(header.number, 6 + interface_offset, interface_name.len()),
+        target_name: target_name.to_string(),
+        target_span: SourceSpan::new(header.number, 6 + target_offset, target_name.len()),
+        keyword_span: SourceSpan::new(header.number, 1, 4),
+        mappings,
         line: header.number,
         span: definition_span,
     })
