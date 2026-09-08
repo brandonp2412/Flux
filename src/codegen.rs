@@ -966,8 +966,7 @@ fn emit_qualified_call(
                 rendered.join(", ")
             ),
             member.returns.clone(),
-            (member.returns.len() > 1)
-                .then(|| interface_multi_return_struct_name(namespace, name)),
+            (member.returns.len() > 1).then(|| interface_multi_return_struct_name(namespace, name)),
         ));
     }
     let implementation = signatures
@@ -1094,7 +1093,11 @@ fn emit_multi_expr(
     }
 }
 
-fn interface_targets(program: &Program, interface_name: &str, signatures: &Signatures) -> Vec<String> {
+fn interface_targets(
+    program: &Program,
+    interface_name: &str,
+    signatures: &Signatures,
+) -> Vec<String> {
     let mut targets = Vec::new();
     for implementation in &program.implementations {
         if implementation.interface_name != interface_name {
@@ -1126,7 +1129,10 @@ fn emit_interface_value_definitions(out: &mut String, program: &Program, signatu
             }
             out.push_str("};\n");
         }
-        out.push_str(&format!("struct {} {{\n", interface_c_name(&definition.name)));
+        out.push_str(&format!(
+            "struct {} {{\n",
+            interface_c_name(&definition.name)
+        ));
         out.push_str("    int32_t tag;\n");
         if !targets.is_empty() {
             out.push_str("    union {\n");
@@ -1184,17 +1190,17 @@ fn emit_interface_multi_return_structs(
         let Some(interface) = signatures.interface(&definition.name) else {
             continue;
         };
-        for member in &definition.functions {
-            let Some(signature) = interface.functions.get(&member.name) else {
-                continue;
-            };
+        let mut member_names = interface.functions.keys().collect::<Vec<_>>();
+        member_names.sort();
+        for member_name in member_names {
+            let signature = &interface.functions[member_name];
             if signature.returns.len() < 2 {
                 continue;
             }
             emitted = true;
             out.push_str(&format!(
                 "struct {} {{\n",
-                interface_multi_return_struct_name(&definition.name, &member.name)
+                interface_multi_return_struct_name(&definition.name, member_name)
             ));
             for (index, ty) in signature.returns.iter().enumerate() {
                 out.push_str(&format!("    {} v{index};\n", c_type(ty, signatures)));
@@ -1218,23 +1224,22 @@ fn emit_interface_dispatch_helpers(
             continue;
         };
         let targets = interface_targets(program, &definition.name, signatures);
-        for member_ast in &definition.functions {
-            let member = interface
-                .functions
-                .get(&member_ast.name)
-                .expect("type checking records every interface capability");
+        let mut member_names = interface.functions.keys().collect::<Vec<_>>();
+        member_names.sort();
+        for member_name in member_names {
+            let member = &interface.functions[member_name];
             emitted = true;
             let return_type = match member.returns.as_slice() {
                 [] => "void".to_string(),
                 [ty] => c_type(ty, signatures),
                 _ => format!(
                     "struct {}",
-                    interface_multi_return_struct_name(&definition.name, &member_ast.name)
+                    interface_multi_return_struct_name(&definition.name, member_name)
                 ),
             };
             out.push_str(&format!(
                 "static inline {return_type} {}(struct {} receiver",
-                interface_dispatch_helper_name(&definition.name, &member_ast.name),
+                interface_dispatch_helper_name(&definition.name, member_name),
                 interface_c_name(&definition.name)
             ));
             for (index, param) in member.param_details.iter().enumerate() {
@@ -1247,7 +1252,7 @@ fn emit_interface_dispatch_helpers(
                     .expect("type checking records each interface implementation");
                 let mapped = implementation
                     .functions
-                    .get(&member_ast.name)
+                    .get(member_name)
                     .expect("type checking requires exhaustive capability mappings");
                 let mut args = vec![format!(
                     "receiver.value.{}",
@@ -1273,12 +1278,10 @@ fn emit_interface_dispatch_helpers(
                         ));
                         out.push_str(&format!(
                             "            struct {} result;\n",
-                            interface_multi_return_struct_name(&definition.name, &member_ast.name)
+                            interface_multi_return_struct_name(&definition.name, member_name)
                         ));
                         for index in 0..returns.len() {
-                            out.push_str(&format!(
-                                "            result.v{index} = raw.v{index};\n"
-                            ));
+                            out.push_str(&format!("            result.v{index} = raw.v{index};\n"));
                         }
                         out.push_str("            return result;\n");
                     }

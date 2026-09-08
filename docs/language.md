@@ -133,6 +133,24 @@ let data: str, err: error = Storage.load(storage, "settings.flux")
 
 Bootstrap interface values are closed-world tagged values containing the concrete implementing data by value. Dynamic capability dispatch lowers to a native tag switch that calls the corresponding mapped free function. This adds no heap allocation, vtable, reflection, hidden object identity, or source-language object model. Interface values may be passed to and returned from functions, selected by conditional expressions, and used with named capability arguments and multi-value returns. Embedding interface values inside structs/enums is intentionally deferred until ownership and stable layout/ABI rules are defined.
 
+Interfaces compose contracts explicitly without class inheritance:
+
+```flux
+interface Readable {
+    fn load(path: str) -> (str, error)
+}
+
+interface Writable {
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+
+interface Storage: Readable, Writable {
+    fn label() -> str
+}
+```
+
+Composition flattens compatible parent capabilities into the composed contract. An `impl Storage for Concrete` therefore maps `load`, `save`, and `label` explicitly to free functions. Composition cycles, unknown parents, and inherited capabilities with incompatible signatures are compile-time errors. Identical capabilities contributed by multiple parents are merged rather than duplicated. This is contract aggregation only; it introduces no subclassing, inherited state, method lookup hierarchy, or object identity.
+
 ## Function parameters
 
 Flux keeps ordinary positional parameters simple while supporting explicit named-only APIs. A `*` in the parameter list marks every following parameter as named-only:

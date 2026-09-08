@@ -91,7 +91,23 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
 }
 
 fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<usize, String>) {
-    lines.insert(definition.line, format!("interface {} {{", definition.name));
+    let parents = if definition.parents.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ": {}",
+            definition
+                .parents
+                .iter()
+                .map(|parent| parent.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    lines.insert(
+        definition.line,
+        format!("interface {}{parents} {{", definition.name),
+    );
     for function in &definition.functions {
         let mut param_parts = Vec::new();
         let mut emitted_named_marker = false;

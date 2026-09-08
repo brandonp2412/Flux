@@ -1,8 +1,9 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, MatchArm, MatchExprArm,
-    MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
-    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
+    InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
+    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
+    UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -276,6 +277,9 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         definition.span = definition.span.with_source(source_id);
         definition.keyword_span = definition.keyword_span.with_source(source_id);
         definition.name_span = definition.name_span.with_source(source_id);
+        for parent in &mut definition.parents {
+            parent.span = parent.span.with_source(source_id);
+        }
         for function in &mut definition.functions {
             function.span = function.span.with_source(source_id);
             function.keyword_span = function.keyword_span.with_source(source_id);
@@ -599,10 +603,49 @@ fn parse_interface_declaration(
             "interface declarations must open their body with '{'",
         ));
     };
-    let name = raw_name.trim();
+    let header_body = raw_name.trim();
+    let (name, parents_source) = if let Some(colon_offset) = header_body.find(':') {
+        (
+            header_body[..colon_offset].trim(),
+            Some(header_body[colon_offset + 1..].trim()),
+        )
+    } else {
+        (header_body, None)
+    };
     validate_identifier(name, header.number)?;
     let leading = raw_name.len() - raw_name.trim_start().len();
     let name_span = SourceSpan::new(header.number, 11 + leading, name.len());
+    let mut parents = Vec::new();
+    if let Some(parents_source) = parents_source {
+        if parents_source.is_empty() {
+            return Err(diag(
+                header.number,
+                "interface composition requires at least one parent after ':'",
+            ));
+        }
+        let parents_column = header
+            .text
+            .find(':')
+            .expect("interface composition colon was parsed")
+            + 2;
+        for (raw_parent, offset) in split_top_level_commas_with_offsets(parents_source) {
+            let (parent, parent_column) = trim_with_column(raw_parent, parents_column + offset);
+            validate_identifier(parent, header.number)?;
+            if parents
+                .iter()
+                .any(|existing: &InterfaceParent| existing.name == parent)
+            {
+                return Err(diag(
+                    header.number,
+                    &format!("duplicate composed interface '{parent}'"),
+                ));
+            }
+            parents.push(InterfaceParent {
+                name: parent.to_string(),
+                span: SourceSpan::new(header.number, parent_column, parent.len()),
+            });
+        }
+    }
     let definition_span = header.span();
     *index += 1;
 
@@ -676,10 +719,10 @@ fn parse_interface_declaration(
         }
     }
 
-    if functions.is_empty() {
+    if functions.is_empty() && parents.is_empty() {
         return Err(diag(
             header.number,
-            "interface declarations require at least one function signature",
+            "interface declarations require at least one function signature or composed interface",
         ));
     }
     if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
@@ -694,6 +737,7 @@ fn parse_interface_declaration(
         name: name.to_string(),
         name_span,
         keyword_span: SourceSpan::new(header.number, 1, 9),
+        parents,
         functions,
         line: header.number,
         span: definition_span,

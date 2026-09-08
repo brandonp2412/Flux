@@ -336,6 +336,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn composes_interfaces_without_inheritance() {
+    let source = r#"
+interface Readable {
+    fn load(path: str) -> (str, error)
+}
+
+interface Writable {
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+
+interface Storage: Readable, Writable {
+    fn label() -> str
+}
+
+struct MemoryStorage {
+    label: str
+}
+
+fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
+    print(storage.label)
+    return path, nil
+}
+
+fn memory_save(storage: MemoryStorage, path: str, data: str, *, durable: bool) -> error {
+    print(path)
+    print(data)
+    print(durable)
+    return nil
+}
+
+fn memory_label(storage: MemoryStorage) -> str {
+    return storage.label
+}
+
+impl Storage for MemoryStorage {
+    load: memory_load
+    save: memory_save
+    label: memory_label
+}
+
+fn main() -> i64 {
+    let concrete: MemoryStorage = MemoryStorage { label: "memory" }
+    let storage: Storage = Storage(concrete)
+    let data: str, err: error = Storage.load(storage, "settings.flux")
+    print(data)
+    print(err)
+    print(Storage.label(storage))
+    return 0
+}
+"#;
+
+    check_source(source).expect("composed interface should typecheck");
+    let generated = compile_to_c(source).expect("composed interface should compile");
+    assert!(generated.contains("switch (receiver.tag)"));
+    assert!(generated.contains("flux__fn_memory_load"));
+    assert!(generated.contains("flux__fn_memory_save"));
+    assert!(generated.contains("flux__fn_memory_label"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("composition should format");
+    assert!(formatted.contains("interface Storage: Readable, Writable {"));
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(708))
+        .expect("composition should analyze");
+    let storage = database
+        .signatures()
+        .interface("Storage")
+        .expect("composed interface should be queryable");
+    assert_eq!(storage.functions.len(), 3);
+    assert!(storage.functions.contains_key("load"));
+    assert!(storage.functions.contains_key("save"));
+    assert!(storage.functions.contains_key("label"));
+}
+
+#[test]
+fn rejects_invalid_interface_composition() {
+    let unknown = r#"
+interface Storage: Missing {
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unknown).expect_err("unknown parent should fail");
+    assert!(
+        error
+            .message
+            .contains("unknown composed interface 'Missing'")
+    );
+
+    let cycle = r#"
+interface A: B {
+}
+interface B: A {
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(cycle).expect_err("composition cycle should fail");
+    assert!(error.message.contains("composition cycle"));
+
+    let conflict = r#"
+interface Numeric {
+    fn value() -> i64
+}
+interface Textual {
+    fn value() -> str
+}
+interface Both: Numeric, Textual {
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(conflict).expect_err("conflicting contracts should fail");
+    assert!(error.message.contains("conflicting capability 'value'"));
+}
+
+#[test]
 fn accepts_explicit_function_mapped_interface_implementations() {
     let source = r#"
 interface Storage {
@@ -548,7 +666,11 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(missing_impl).expect_err("packing requires implementation");
-    assert!(error.message.contains("does not implement interface 'Storage'"));
+    assert!(
+        error
+            .message
+            .contains("does not implement interface 'Storage'")
+    );
 
     let wrong_arity = r#"
 interface Storage {
@@ -583,7 +705,11 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(embedded).expect_err("interface values are not layout fields yet");
-    assert!(error.message.contains("not inside struct/enum by-value layouts"));
+    assert!(
+        error
+            .message
+            .contains("not inside struct/enum by-value layouts")
+    );
 }
 
 #[test]

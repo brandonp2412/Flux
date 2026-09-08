@@ -149,8 +149,15 @@ pub struct InterfaceDef {
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
+    pub parents: Vec<InterfaceParent>,
     pub functions: Vec<InterfaceFunction>,
     pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceParent {
+    pub name: String,
     pub span: SourceSpan,
 }
 

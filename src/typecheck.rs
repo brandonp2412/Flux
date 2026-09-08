@@ -458,6 +458,33 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    let interface_defs = program
+        .interfaces
+        .iter()
+        .map(|definition| (definition.name.as_str(), definition))
+        .collect::<HashMap<_, _>>();
+    let mut composed_cache = HashMap::new();
+    for definition in &program.interfaces {
+        if !signatures.interfaces.contains_key(&definition.name) {
+            continue;
+        }
+        let mut visiting = Vec::new();
+        match resolve_interface_composition(
+            &definition.name,
+            &interface_defs,
+            &signatures,
+            &mut composed_cache,
+            &mut visiting,
+        ) {
+            Ok(functions) => {
+                if let Some(interface) = signatures.interfaces.get_mut(&definition.name) {
+                    interface.functions = functions;
+                }
+            }
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+
     let mut constant_defs = HashMap::new();
     for constant in &program.constants {
         if signatures.aliases.contains_key(&constant.name)
@@ -1411,13 +1438,17 @@ pub fn type_of_expr(
             if !named_args.is_empty() {
                 return Err(diag(
                     expr.span,
-                    &format!("interface value conversion '{name}(...)' does not accept named arguments"),
+                    &format!(
+                        "interface value conversion '{name}(...)' does not accept named arguments"
+                    ),
                 ));
             }
             if args.len() != 1 {
                 return Err(diag(
                     expr.span,
-                    &format!("interface value conversion '{name}(...)' expects exactly one concrete value"),
+                    &format!(
+                        "interface value conversion '{name}(...)' expects exactly one concrete value"
+                    ),
                 ));
             }
             let concrete = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
@@ -2529,6 +2560,80 @@ fn require_storable_value_type(
         ));
     }
     Ok(())
+}
+
+fn resolve_interface_composition(
+    name: &str,
+    definitions: &HashMap<&str, &crate::ast::InterfaceDef>,
+    signatures: &Signatures,
+    cache: &mut HashMap<String, HashMap<String, Signature>>,
+    visiting: &mut Vec<String>,
+) -> Result<HashMap<String, Signature>, Diagnostic> {
+    if let Some(cached) = cache.get(name) {
+        return Ok(cached.clone());
+    }
+    let definition = definitions.get(name).copied().ok_or_else(|| {
+        Diagnostic::global(DiagnosticStage::Type, format!("unknown interface '{name}'"))
+    })?;
+    if let Some(index) = visiting.iter().position(|entry| entry == name) {
+        let mut cycle = visiting[index..].to_vec();
+        cycle.push(name.to_string());
+        return Err(diag(
+            definition.name_span,
+            &format!("interface '{}' has a composition cycle", definition.name),
+        )
+        .with_note(format!("interface cycle: {}", cycle.join(" -> "))));
+    }
+    visiting.push(name.to_string());
+    let mut functions = signatures
+        .interface(name)
+        .map(|interface| interface.functions.clone())
+        .unwrap_or_default();
+    for parent in &definition.parents {
+        if !definitions.contains_key(parent.name.as_str()) {
+            visiting.pop();
+            return Err(diag(
+                parent.span,
+                &format!("unknown composed interface '{}'", parent.name),
+            ));
+        }
+        let inherited =
+            resolve_interface_composition(&parent.name, definitions, signatures, cache, visiting)?;
+        for (member_name, inherited_signature) in inherited {
+            if let Some(existing) = functions.get(&member_name) {
+                if !same_interface_contract(existing, &inherited_signature) {
+                    visiting.pop();
+                    return Err(diag(
+                        parent.span,
+                        &format!(
+                            "interface '{}' composes conflicting capability '{}'",
+                            definition.name, member_name
+                        ),
+                    )
+                    .with_label(existing.span, "conflicting capability is declared here"));
+                }
+            } else {
+                functions.insert(member_name, inherited_signature);
+            }
+        }
+    }
+    visiting.pop();
+    cache.insert(name.to_string(), functions.clone());
+    Ok(functions)
+}
+
+fn same_interface_contract(left: &Signature, right: &Signature) -> bool {
+    left.returns == right.returns
+        && left.param_details.len() == right.param_details.len()
+        && left
+            .param_details
+            .iter()
+            .zip(&right.param_details)
+            .all(|(left, right)| {
+                left.name == right.name
+                    && left.ty == right.ty
+                    && left.named_only == right.named_only
+            })
 }
 
 fn require_known_type(
