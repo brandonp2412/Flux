@@ -229,6 +229,16 @@ fn run() -> Result<(), CliError> {
             }
             run_development(path, options.mode)
         }
+        "test" => {
+            let path = require_target(&args)?;
+            let options = build_options(&args[2..], BuildMode::Debug)?;
+            if options.output.is_some() {
+                return Err(CliError::Message(
+                    "test does not accept '-o'; test binaries are temporary".to_string(),
+                ));
+            }
+            run_tests(path, options.mode)
+        }
         "doctor" => {
             if args.len() != 1 {
                 return Err(CliError::Message("doctor syntax is 'doctor'".to_string()));
@@ -265,8 +275,11 @@ fn create_project(target: &Path) -> Result<(), CliError> {
     }
 
     let src = target.join("src");
+    let tests = target.join("tests");
     fs::create_dir_all(&src)
         .map_err(|error| format!("failed to create '{}': {error}", src.display()))?;
+    fs::create_dir_all(&tests)
+        .map_err(|error| format!("failed to create '{}': {error}", tests.display()))?;
     let package_name = project_name_from_path(target);
     let manifest = format!(
         "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n"
@@ -276,6 +289,11 @@ fn create_project(target: &Path) -> Result<(), CliError> {
         .map_err(|error| format!("failed to write project manifest: {error}"))?;
     fs::write(src.join("main.flux"), main)
         .map_err(|error| format!("failed to write project entry source: {error}"))?;
+    fs::write(
+        tests.join("smoke.flux"),
+        "fn main() -> i64 {\n    return 0\n}\n",
+    )
+    .map_err(|error| format!("failed to write starter integration test: {error}"))?;
     Ok(())
 }
 
@@ -311,6 +329,112 @@ fn project_name_from_path(target: &Path) -> String {
     } else {
         out
     }
+}
+
+fn run_tests(target: &Path, mode: BuildMode) -> Result<(), CliError> {
+    let tests = discover_test_targets(target)?;
+    let mut passed = 0usize;
+    for (index, test) in tests.iter().enumerate() {
+        let analysis = match fluxc::project::analyze(test) {
+            Ok(analysis) => analysis,
+            Err(diagnostics) => {
+                let (_, sources) = fluxc::project::check_with_sources(test);
+                eprintln!("test {} ... FAILED", test.display());
+                report_diagnostics(test, &diagnostics, &sources);
+                return Err(CliError::Reported);
+            }
+        };
+        if analysis.program.application.is_some() {
+            return Err(CliError::Message(format!(
+                "test '{}' declares an app; bootstrap flux test runs headless fn main() integration programs",
+                test.display()
+            )));
+        }
+        let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
+            Ok(generated) => generated,
+            Err(diagnostic) => {
+                eprintln!("test {} ... FAILED", test.display());
+                report_diagnostics(test, &[diagnostic], &analysis.sources);
+                return Err(CliError::Reported);
+            }
+        };
+        let binary = test_binary_path(index);
+        build_native(&generated, &binary, mode)?;
+        let status = Command::new(&binary).status().map_err(|error| {
+            format!(
+                "failed to launch test binary '{}': {error}",
+                binary.display()
+            )
+        })?;
+        let _ = fs::remove_file(&binary);
+        if !status.success() {
+            eprintln!("test {} ... FAILED", test.display());
+            return Err(CliError::Message(format!(
+                "test '{}' exited with {}",
+                test.display(),
+                status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "a signal".to_string())
+            )));
+        }
+        println!("test {} ... ok", test.display());
+        passed += 1;
+    }
+    println!(
+        "test result: ok. {passed} passed; 0 failed; mode {}",
+        mode.name()
+    );
+    Ok(())
+}
+
+fn discover_test_targets(target: &Path) -> Result<Vec<PathBuf>, CliError> {
+    if target.extension().and_then(|value| value.to_str()) == Some("flux") && target.is_file() {
+        return Ok(vec![fs::canonicalize(target).map_err(|error| {
+            format!("failed to resolve test '{}': {error}", target.display())
+        })?]);
+    }
+    let root = if target.is_dir() {
+        fs::canonicalize(target)
+            .map_err(|error| format!("failed to resolve package '{}': {error}", target.display()))?
+    } else if target.file_name().and_then(|value| value.to_str()) == Some("flux.toml") {
+        fs::canonicalize(target)
+            .map_err(|error| format!("failed to resolve manifest '{}': {error}", target.display()))?
+            .parent()
+            .expect("canonical manifest has a parent")
+            .to_path_buf()
+    } else {
+        return Err(CliError::Message(
+            "test target must be a .flux file, package directory, or flux.toml".to_string(),
+        ));
+    };
+    let tests_dir = root.join("tests");
+    let entries = fs::read_dir(&tests_dir).map_err(|error| {
+        format!(
+            "failed to discover Flux tests in '{}': {error}",
+            tests_dir.display()
+        )
+    })?;
+    let mut tests = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("flux")
+        })
+        .collect::<Vec<_>>();
+    tests.sort();
+    if tests.is_empty() {
+        return Err(CliError::Message(format!(
+            "no .flux integration tests found in '{}'",
+            tests_dir.display()
+        )));
+    }
+    Ok(tests)
+}
+
+fn test_binary_path(index: usize) -> PathBuf {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    env::temp_dir().join(format!("flux-test-{}-{index}{suffix}", std::process::id()))
 }
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
@@ -940,7 +1064,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} doctor | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} doctor | {command} lsp"
     )
 }
 
