@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    MatchArm, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
-    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
+    MatchArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef,
+    StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -362,8 +362,18 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                     arm.span = arm.span.with_source(source_id);
                     arm.enum_span = arm.enum_span.with_source(source_id);
                     arm.variant_span = arm.variant_span.with_source(source_id);
-                    for binding in &mut arm.bindings {
-                        binding.span = binding.span.with_source(source_id);
+                    for pattern in &mut arm.patterns {
+                        match pattern {
+                            MatchPattern::Binding(binding) => {
+                                binding.span = binding.span.with_source(source_id);
+                            }
+                            MatchPattern::Struct(pattern) => {
+                                pattern.struct_span = pattern.struct_span.with_source(source_id);
+                                for field in &mut pattern.fields {
+                                    attach_struct_pattern_field_source(field, source_id);
+                                }
+                            }
+                        }
                     }
                     attach_block_source(&mut arm.body, source_id);
                 }
@@ -1139,25 +1149,35 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
     let variant_column =
         line.indent + 1 + dot_offset + 1 + variant_source[..open_offset].find(variant).unwrap_or(0);
     let binding_base_column = line.indent + 1 + dot_offset + 1 + open_offset + 1;
-    let mut bindings = Vec::new();
+    let mut patterns = Vec::new();
     if !bindings_source.trim().is_empty() {
-        for (raw_binding, offset) in split_top_level_commas_with_offsets(bindings_source) {
-            let (binding, column) = trim_with_column(raw_binding, binding_base_column + offset);
-            validate_identifier(binding, line.number)?;
-            if binding != "_"
-                && bindings
-                    .iter()
-                    .any(|existing: &PatternBinding| existing.name == binding)
+        for (raw_pattern, offset) in split_top_level_commas_with_offsets(bindings_source) {
+            let (pattern, column) = trim_with_column(raw_pattern, binding_base_column + offset);
+            if let Some((struct_name, struct_span, fields)) =
+                parse_struct_destructure_pattern(pattern, line.number, column)?
+            {
+                patterns.push(MatchPattern::Struct(StructPattern {
+                    struct_name,
+                    struct_span,
+                    fields,
+                }));
+                continue;
+            }
+            validate_identifier(pattern, line.number)?;
+            if pattern != "_"
+                && patterns.iter().any(|existing| {
+                    matches!(existing, MatchPattern::Binding(binding) if binding.name == pattern)
+                })
             {
                 return Err(diag(
                     line.number,
-                    &format!("duplicate match binding '{binding}'"),
+                    &format!("duplicate match binding '{pattern}'"),
                 ));
             }
-            bindings.push(PatternBinding {
-                name: binding.to_string(),
-                span: SourceSpan::new(line.number, column, binding.len()),
-            });
+            patterns.push(MatchPattern::Binding(PatternBinding {
+                name: pattern.to_string(),
+                span: SourceSpan::new(line.number, column, pattern.len()),
+            }));
         }
     }
 
@@ -1166,7 +1186,7 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
         enum_span: SourceSpan::new(line.number, enum_column, enum_name.len()),
         variant: variant.to_string(),
         variant_span: SourceSpan::new(line.number, variant_column, variant.len()),
-        bindings,
+        patterns,
         body: Vec::new(),
         line: line.number,
         span: line.span(),

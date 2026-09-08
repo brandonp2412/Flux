@@ -293,10 +293,16 @@ pub struct MatchArm {
     pub enum_span: SourceSpan,
     pub variant: String,
     pub variant_span: SourceSpan,
-    pub bindings: Vec<PatternBinding>,
+    pub patterns: Vec<MatchPattern>,
     pub body: Vec<Stmt>,
     pub line: usize,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    Binding(PatternBinding),
+    Struct(StructPattern),
 }
 
 #[derive(Debug, Clone)]

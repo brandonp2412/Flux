@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, ConstantDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind,
+    BinOp, ConstantDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, Stmt, StmtKind,
     StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
@@ -896,35 +896,80 @@ fn check_block_all(
                         ));
                         continue;
                     }
-                    if arm.bindings.len() != variant.payloads.len() {
+                    if arm.patterns.len() != variant.payloads.len() {
                         diagnostics.push(diag(
                             arm.span,
                             &format!(
-                                "match arm '{}.{}' expects {} payload binding{}, got {}",
+                                "match arm '{}.{}' expects {} payload pattern{}, got {}",
                                 enum_name,
                                 arm.variant,
                                 variant.payloads.len(),
                                 if variant.payloads.len() == 1 { "" } else { "s" },
-                                arm.bindings.len()
+                                arm.patterns.len()
                             ),
                         ));
                         continue;
                     }
                     let mut nested = env.clone();
-                    for (binding, payload_ty) in arm.bindings.iter().zip(&variant.payloads) {
-                        if binding.name == "_" {
-                            continue;
-                        }
-                        if nested.contains_key(&binding.name) {
-                            diagnostics.push(diag(
-                                binding.span,
-                                &format!(
-                                    "match binding '{}' shadows an existing binding",
-                                    binding.name
-                                ),
-                            ));
-                        } else {
-                            nested.insert(binding.name.clone(), payload_ty.clone());
+                    for (pattern, payload_ty) in arm.patterns.iter().zip(&variant.payloads) {
+                        match pattern {
+                            MatchPattern::Binding(binding) => {
+                                if binding.name == "_" {
+                                    continue;
+                                }
+                                if nested.contains_key(&binding.name) {
+                                    diagnostics.push(diag(
+                                        binding.span,
+                                        &format!(
+                                            "match binding '{}' shadows an existing binding",
+                                            binding.name
+                                        ),
+                                    ));
+                                } else {
+                                    nested.insert(binding.name.clone(), payload_ty.clone());
+                                }
+                            }
+                            MatchPattern::Struct(pattern) => {
+                                let expected = signatures
+                                    .canonical_type(&Type::Named(pattern.struct_name.clone()));
+                                let actual = signatures.canonical_type(payload_ty);
+                                if let Err(diagnostic) = require_type(
+                                    pattern.struct_span,
+                                    &expected,
+                                    &actual,
+                                    "match struct pattern",
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                    continue;
+                                }
+                                let Type::Named(struct_name) = expected else {
+                                    diagnostics.push(diag(
+                                        pattern.struct_span,
+                                        &format!(
+                                            "struct pattern '{}' does not name a struct type",
+                                            pattern.struct_name
+                                        ),
+                                    ));
+                                    continue;
+                                };
+                                if signatures.struct_type(&struct_name).is_none() {
+                                    diagnostics.push(diag(
+                                        pattern.struct_span,
+                                        &format!(
+                                            "struct pattern '{}' does not name a struct type",
+                                            pattern.struct_name
+                                        ),
+                                    ));
+                                    continue;
+                                }
+                                bind_struct_pattern_fields(
+                                    &pattern.fields,
+                                    &struct_name,
+                                    &mut nested,
+                                    signatures,
+                                    diagnostics,
+                                );
+                            }
                         }
                     }
                     check_block_all(

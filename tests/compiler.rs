@@ -731,6 +731,90 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_struct_patterns_inside_enum_match_arms() {
+    let source = r#"
+struct Profile {
+    name: str
+    age: i64
+}
+
+struct User {
+    profile: Profile
+}
+
+enum Event {
+    Loaded(User)
+    Empty
+}
+
+fn describe(event: Event) -> i64 {
+    match event:
+        Event.Loaded(User { profile: Profile { name, age: years } }):
+            print(name)
+            return years
+        Event.Empty():
+            return 0
+}
+
+fn main() -> i64 {
+    let profile: Profile = Profile { name: "Ada", age: 42 }
+    let user: User = User { profile: profile }
+    print(describe(Event.Loaded(user)))
+    return 0
+}
+"#;
+
+    check_source(source).expect("struct match pattern should typecheck");
+    let generated = compile_to_c(source).expect("struct match pattern should lower natively");
+    assert!(
+        generated.contains("payload.flux__payload_Loaded.v0.flux__field_profile.flux__field_name")
+    );
+    assert!(
+        generated.contains("payload.flux__payload_Loaded.v0.flux__field_profile.flux__field_age")
+    );
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("struct match pattern should format");
+    assert!(formatted.contains("Event.Loaded(User { profile: Profile { name, age: years } }):"));
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(703))
+        .expect("struct match pattern should analyze");
+    let years = database
+        .symbols_named("years")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("nested struct match binding should be indexed");
+    assert_eq!(years.ty, Some(fluxc::ast::Type::I64));
+    assert_eq!(span_text(&formatted, years.span), "years");
+}
+
+#[test]
+fn rejects_struct_match_pattern_with_wrong_payload_type() {
+    let source = r#"
+struct User {
+    name: str
+}
+
+enum Event {
+    Count(i64)
+}
+
+fn main() -> i64 {
+    let event: Event = Event.Count(42)
+    match event:
+        Event.Count(User { name }):
+            print(name)
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("wrong struct payload pattern should fail");
+    assert!(
+        error
+            .message
+            .contains("match struct pattern: expected User, got i64")
+    );
+}
+
+#[test]
 fn match_scrutinee_is_evaluated_exactly_once() {
     let source = r#"
 enum Outcome {
@@ -813,7 +897,7 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(arity).expect_err("wrong match payload arity should fail");
-    assert!(error.message.contains("expects 1 payload binding, got 0"));
+    assert!(error.message.contains("expects 1 payload pattern, got 0"));
 
     let non_enum = r#"
 fn main() -> i64 {

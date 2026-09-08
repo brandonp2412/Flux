@@ -97,7 +97,7 @@ Flux should be capable of modelling substantial programs without object-oriented
   - [x] Enum variant payload patterns in `match` statements, including `_` ignored payload positions.
   - [x] Flat struct destructuring patterns with shorthand fields, renaming, ignored bindings, inferred field types, aliases, and single source-expression evaluation.
   - [x] Nested struct destructuring patterns with recursive type validation, formatter/semantic support, and single root-expression evaluation.
-  - [ ] Struct patterns inside `match` arms.
+  - [x] Struct patterns inside enum `match` arms, including nested struct patterns, static payload-type validation, formatter/semantic support, and direct native field projection.
   - [ ] List/map/record patterns after those value types exist.
   - [ ] Multi-value patterns outside call destructuring.
 - [x] Destructuring bindings beyond multi-return calls: struct value destructuring is supported; broader nested/list/record patterns remain tracked above.
@@ -218,7 +218,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Record destructuring patterns.
 - [ ] List patterns.
 - [ ] Map patterns.
-- [ ] Struct patterns.
+- [x] Struct patterns for bindings and enum match payloads; list/map/record pattern forms remain pending with their value types.
 - [ ] Enum/tagged-union patterns.
 - [ ] Relational/logical patterns where readable.
 - [ ] Pattern guards.

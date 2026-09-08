@@ -191,7 +191,7 @@ Construction is always namespace-qualified as `Enum.Variant(...)`; payloadless v
 
 The bootstrap backend lowers each enum to a native tag plus a union containing only the payload storage required by payload-bearing variants. Typed inline constructors build the tagged value; there is no object hierarchy, reflection, heap allocation, or hidden dynamic dispatch.
 
-Enum values are consumed with exhaustive `match` statements. Payloads are bound positionally and statically typed; `_` ignores an unused payload position:
+Enum values are consumed with exhaustive `match` statements. Payloads are matched positionally and statically typed; `_` ignores an unused payload position. A payload that is a struct may be destructured directly in the arm pattern, including nested struct patterns:
 
 ```flux
 fn score(outcome: Outcome) -> i64 {
@@ -205,7 +205,28 @@ fn score(outcome: Outcome) -> i64 {
 }
 ```
 
-Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload binding arity must match the variant declaration. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis. Match expressions that themselves yield a value are planned separately.
+```flux
+struct User {
+    name: str
+    age: i64
+}
+
+enum Event {
+    Loaded(User)
+    Empty
+}
+
+fn describe(event: Event) -> i64 {
+    match event:
+        Event.Loaded(User { name, age: years }):
+            print(name)
+            return years
+        Event.Empty():
+            return 0
+}
+```
+
+Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload pattern arity must match the variant declaration. Struct payload patterns are checked against the concrete payload type, bind projected fields with their declared static types, may nest recursively, and lower directly to native field access without constructing intermediary values. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis. Match expressions that themselves yield a value are planned separately.
 
 ## Compile-time constants
 

@@ -1,4 +1,4 @@
-use crate::ast::{Program, Stmt, StmtKind, StructPatternField, Type};
+use crate::ast::{MatchPattern, Program, Stmt, StmtKind, StructPatternField, Type};
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
@@ -250,16 +250,36 @@ fn collect_block_symbols(
                         .and_then(|definition| definition.variant(&arm.variant))
                         .map(|variant| variant.payloads.as_slice())
                         .unwrap_or(&[]);
-                    for (index, binding) in arm.bindings.iter().enumerate() {
-                        if binding.name == "_" {
-                            continue;
+                    for (index, pattern) in arm.patterns.iter().enumerate() {
+                        match pattern {
+                            MatchPattern::Binding(binding) => {
+                                if binding.name == "_" {
+                                    continue;
+                                }
+                                symbols.push(SemanticSymbol {
+                                    name: binding.name.clone(),
+                                    kind: SymbolKind::PatternBinding,
+                                    ty: payloads.get(index).cloned(),
+                                    span: binding.span,
+                                });
+                            }
+                            MatchPattern::Struct(pattern) => {
+                                let Some(payload_ty) = payloads.get(index) else {
+                                    continue;
+                                };
+                                let Type::Named(struct_name) =
+                                    signatures.canonical_type(payload_ty)
+                                else {
+                                    continue;
+                                };
+                                collect_struct_pattern_symbols(
+                                    &pattern.fields,
+                                    &struct_name,
+                                    symbols,
+                                    signatures,
+                                );
+                            }
                         }
-                        symbols.push(SemanticSymbol {
-                            name: binding.name.clone(),
-                            kind: SymbolKind::PatternBinding,
-                            ty: payloads.get(index).cloned(),
-                            span: binding.span,
-                        });
                     }
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }

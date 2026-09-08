@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+    BinOp, Expr, ExprKind, Function, MatchPattern, Stmt, StmtKind, StructPatternField, Type,
+    UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -259,15 +260,26 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 lines.insert(stmt.line, format!("{pad}match {}:", format_expr(value, 0)));
                 let arm_pad = "    ".repeat(depth + 1);
                 for arm in arms {
-                    let bindings = arm
-                        .bindings
+                    let patterns = arm
+                        .patterns
                         .iter()
-                        .map(|binding| binding.name.as_str())
+                        .map(|pattern| match pattern {
+                            MatchPattern::Binding(binding) => binding.name.clone(),
+                            MatchPattern::Struct(pattern) => {
+                                let fields = pattern
+                                    .fields
+                                    .iter()
+                                    .map(format_struct_pattern_field)
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                format!("{} {{ {} }}", pattern.struct_name, fields)
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     lines.insert(
                         arm.line,
-                        format!("{arm_pad}{}.{}({bindings}):", arm.enum_name, arm.variant),
+                        format!("{arm_pad}{}.{}({patterns}):", arm.enum_name, arm.variant),
                     );
                     format_block(&arm.body, depth + 2, lines);
                 }

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, StructDef,
-    StructPatternField, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, Stmt, StmtKind,
+    StructDef, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
@@ -355,19 +355,45 @@ fn emit_block(
                         enum_tag_value_name(enum_name, &arm.variant)
                     ));
                     let mut nested = env.clone();
-                    for (index, (binding, payload_ty)) in
-                        arm.bindings.iter().zip(&variant.payloads).enumerate()
+                    for (index, (pattern, payload_ty)) in
+                        arm.patterns.iter().zip(&variant.payloads).enumerate()
                     {
-                        if binding.name == "_" {
-                            continue;
-                        }
-                        out.push_str(&format!(
-                            "{pad}        {} {} = {temp}.payload.{}.v{index};\n",
-                            c_type(payload_ty, signatures),
-                            local_c_name(&binding.name),
+                        let payload_access = format!(
+                            "{temp}.payload.{}.v{index}",
                             enum_payload_member_name(&arm.variant)
-                        ));
-                        nested.insert(binding.name.clone(), payload_ty.clone());
+                        );
+                        match pattern {
+                            MatchPattern::Binding(binding) => {
+                                if binding.name == "_" {
+                                    continue;
+                                }
+                                out.push_str(&format!(
+                                    "{pad}        {} {} = {payload_access};\n",
+                                    c_type(payload_ty, signatures),
+                                    local_c_name(&binding.name),
+                                ));
+                                nested.insert(binding.name.clone(), payload_ty.clone());
+                            }
+                            MatchPattern::Struct(pattern) => {
+                                let Type::Named(struct_name) =
+                                    signatures.canonical_type(payload_ty)
+                                else {
+                                    return Err(diag(
+                                        pattern.struct_span,
+                                        "match struct pattern code generation requires a struct value",
+                                    ));
+                                };
+                                emit_struct_pattern_bindings(
+                                    out,
+                                    &format!("{pad}        "),
+                                    &pattern.fields,
+                                    &struct_name,
+                                    &payload_access,
+                                    &mut nested,
+                                    signatures,
+                                )?;
+                            }
+                        }
                     }
                     emit_block(
                         out,
