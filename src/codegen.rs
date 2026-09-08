@@ -3010,8 +3010,23 @@ fn emit_expr(
         ExprKind::Field { base, name, .. } => {
             let base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
+            let code = if matches!(base.ty, Type::List(_)) {
+                match name.as_str() {
+                    "length" => format!("({}).len", base.code),
+                    "is_empty" => format!("(({}).len == 0)", base.code),
+                    "is_not_empty" => format!("(({}).len != 0)", base.code),
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            "unknown list property reached code generation",
+                        ));
+                    }
+                }
+            } else {
+                format!("({}).{}", base.code, field_c_name(name))
+            };
             EmittedExpr {
-                code: format!("({}).{}", base.code, field_c_name(name)),
+                code,
                 ty: result_ty,
             }
         }

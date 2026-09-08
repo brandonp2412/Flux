@@ -3221,12 +3221,22 @@ pub fn type_of_expr(
             name,
             name_span,
         } => {
-            let base_ty = type_of_expr(base, env, signatures)?;
+            let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+            if let Type::List(_) = &base_ty {
+                return match name.as_str() {
+                    "length" => Ok(Type::I64),
+                    "is_empty" | "is_not_empty" => Ok(Type::Bool),
+                    _ => Err(diag(
+                        *name_span,
+                        &format!("list type '{}' has no property '{name}'", base_ty.name()),
+                    )),
+                };
+            }
             let Type::Named(struct_name) = base_ty else {
                 return Err(diag(
                     *name_span,
                     &format!(
-                        "field access requires a struct value, got {}",
+                        "field access requires a struct or list value, got {}",
                         base_ty.name()
                     ),
                 ));

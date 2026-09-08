@@ -1162,6 +1162,9 @@ fn list_literals_indexing_slicing_and_comprehensions_are_typed_and_native() {
 fn main() -> i64 {
     let values: i64[] = [1, 2, 3, 4, 5]
     let middle: i64[] = values[1:4]
+    print values.length
+    print middle.is_empty
+    print middle.is_not_empty
     print middle[0]
     print values[-1]
     let doubled: i64[] = [value * 2 for value in values if value > 2]
@@ -1177,6 +1180,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_at"));
     assert!(generated.contains("flux_list_slice"));
     assert!(generated.contains("flux__list_buffer_"));
+    assert!(generated.contains("(flux__local_values).len"));
+    assert!(generated.contains("((flux__local_middle).len == 0)"));
+    assert!(generated.contains("((flux__local_middle).len != 0)"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");
@@ -1202,6 +1208,20 @@ fn main() -> i64 {
         error
             .message
             .contains("list element: expected i64, got str")
+    );
+
+    let bad_property = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    print values.capacity
+    return 0
+}
+"#;
+    let error = check_source(bad_property).expect_err("unknown list properties should fail");
+    assert!(
+        error
+            .message
+            .contains("list type 'i64[]' has no property 'capacity'")
     );
 
     let bad_index = r#"

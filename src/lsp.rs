@@ -780,7 +780,14 @@ fn completion_items_at_cursor_cached(
             && let Some(type_name) =
                 member_receiver_type_name(source, line_index, &receiver, &program)
         {
-            add_struct_field_completions(&mut items, &mut seen, &type_name, &program);
+            if matches!(
+                crate::ast::Type::parse(&type_name),
+                Some(crate::ast::Type::List(_))
+            ) {
+                add_list_property_completions(&mut items, &mut seen, &type_name);
+            } else {
+                add_struct_field_completions(&mut items, &mut seen, &type_name, &program);
+            }
         }
     }
     items
@@ -1108,7 +1115,7 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
                 .split(['=', ','])
                 .next()
                 .map(str::trim)
-                .filter(|name| is_valid_identifier(name))?;
+                .filter(|name| crate::ast::Type::parse(name).is_some())?;
             return Some(type_name.to_string());
         }
         if indent == 0 && (trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ")) {
@@ -1123,7 +1130,7 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
                         .split('=')
                         .next()
                         .map(str::trim)
-                        .filter(|name| is_valid_identifier(name))?;
+                        .filter(|name| crate::ast::Type::parse(name).is_some())?;
                     return Some(type_name.to_string());
                 }
             }
@@ -1149,6 +1156,32 @@ fn struct_field_for_position<'a>(
         .fields
         .iter()
         .find(|field| field.name == field_name)
+}
+
+fn list_property_for_position(
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    program: &crate::ast::Program,
+) -> Option<(String, crate::ast::Type)> {
+    let line = source.lines().nth(line_index)?;
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let property = identifier_at(line, byte)?;
+    let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
+    let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
+    if !matches!(
+        crate::ast::Type::parse(&type_name),
+        Some(crate::ast::Type::List(_))
+    ) {
+        return None;
+    }
+    let ty = match property {
+        "length" => crate::ast::Type::I64,
+        "is_empty" | "is_not_empty" => crate::ast::Type::Bool,
+        _ => return None,
+    };
+    Some((property.to_string(), ty))
 }
 
 fn member_receiver_type_name(
@@ -1178,7 +1211,8 @@ fn member_receiver_type_name(
     if !is_valid_identifier(root) {
         return None;
     }
-    let mut type_name = visible_value_type_name(source, line_index, root)?;
+    let source_type = crate::ast::Type::parse(&visible_value_type_name(source, line_index, root)?)?;
+    let mut type_name = named_type_name(&source_type, program)?;
     for field_name in parts {
         if !is_valid_identifier(field_name) {
             return None;
@@ -1194,21 +1228,20 @@ fn member_receiver_type_name(
 }
 
 fn named_type_name(ty: &crate::ast::Type, program: &crate::ast::Program) -> Option<String> {
-    let crate::ast::Type::Named(name) = ty else {
-        return None;
-    };
-    let mut current = name.as_str();
+    let mut current = ty.clone();
     let mut visited = HashSet::new();
-    while visited.insert(current.to_string()) {
-        let Some(alias) = program.aliases.iter().find(|alias| alias.name == current) else {
-            return Some(current.to_string());
+    loop {
+        let crate::ast::Type::Named(name) = current else {
+            return Some(current.name());
         };
-        let crate::ast::Type::Named(target) = &alias.target else {
+        if !visited.insert(name.clone()) {
             return None;
+        }
+        let Some(alias) = program.aliases.iter().find(|alias| alias.name == name) else {
+            return Some(name);
         };
-        current = target;
+        current = alias.target.clone();
     }
-    None
 }
 
 fn struct_definition_for_type<'a>(
@@ -1243,6 +1276,26 @@ fn add_struct_field_completions(
                 field.name,
                 field.ty.name()
             ),
+        );
+    }
+}
+
+fn add_list_property_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    type_name: &str,
+) {
+    for (name, ty) in [
+        ("length", "i64"),
+        ("is_empty", "bool"),
+        ("is_not_empty", "bool"),
+    ] {
+        push_completion_item(
+            items,
+            seen,
+            name,
+            10,
+            &format!("property {type_name}.{name}: {ty}"),
         );
     }
 }
@@ -3117,6 +3170,29 @@ fn hover_for_document_cached(
     };
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte = byte_offset_for_encoded_column(line, character, encoding);
+    if let Some((property, ty)) =
+        list_property_for_position(source, line_index, character, encoding, database.program())
+    {
+        let hovered_name = identifier_at(line, byte).unwrap_or(&property);
+        let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
+        let hovered_span = SourceSpan::new(line_index + 1, hovered_start + 1, hovered_name.len());
+        return Some(object([
+            (
+                "contents",
+                object([
+                    ("kind", JsonValue::String("markdown".to_string())),
+                    (
+                        "value",
+                        JsonValue::String(format!(
+                            "```flux\nproperty {property}: {}\n```",
+                            ty.name()
+                        )),
+                    ),
+                ]),
+            ),
+            ("range", lsp_range(hovered_span, source, encoding)),
+        ]));
+    }
     if let Some(field) =
         struct_field_for_position(source, line_index, character, encoding, database.program())
     {
@@ -4353,6 +4429,53 @@ mod tests {
         .to_json();
         assert!(call.contains("\"label\":\"profile\""));
         assert!(call.contains("field User.profile: Profile"));
+    }
+
+    #[test]
+    fn list_property_completion_and_hover_use_compiler_known_contracts() {
+        let completion_uri = "file:///tmp/list-property-completion.flux";
+        let completion_source = "type Numbers = i64[]\nfn main() -> i64 {\n    let values: Numbers = [1, 2, 3]\n    values.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(completion_uri.to_string(), completion_source.to_string())]);
+        let line_index = completion_source
+            .lines()
+            .position(|line| line.trim() == "values.")
+            .expect("list completion line should exist");
+        let line = completion_source.lines().nth(line_index).unwrap();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            completion_uri,
+            completion_source,
+            &completion_documents,
+            Some(line_index),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains("\"label\":\"length\""));
+        assert!(items.contains("property i64[].length: i64"));
+        assert!(items.contains("\"label\":\"is_empty\""));
+        assert!(items.contains("\"label\":\"is_not_empty\""));
+
+        let hover_uri = "file:///tmp/list-property-hover.flux";
+        let hover_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.length)\n    return 0\n}\n";
+        let hover_documents = HashMap::from([(hover_uri.to_string(), hover_source.to_string())]);
+        let hover_line = hover_source
+            .lines()
+            .position(|line| line.contains("values.length"))
+            .expect("list hover line should exist");
+        let hover_text = hover_source.lines().nth(hover_line).unwrap();
+        let character = hover_text.find("length").unwrap() + 2;
+        let hover = hover_for_document(
+            hover_uri,
+            hover_source,
+            &hover_documents,
+            hover_line,
+            character,
+            PositionEncoding::Utf8,
+        )
+        .expect("list property should have hover")
+        .to_json();
+        assert!(hover.contains("property length: i64"));
     }
 
     #[test]
