@@ -17,6 +17,11 @@ fn main() -> i64 {
     print window.length
     print window.first
     print window.last
+    let empty: i64[] = values[:0]
+    let safe_first: i64 = empty | first_or 99
+    let safe_last: i64 = empty | last_or 88
+    print safe_first
+    print safe_last
     for value in middle:
         print value
     for index, value in middle:

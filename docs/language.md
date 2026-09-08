@@ -475,6 +475,8 @@ let first: i64 = values.first
 let last: i64 = values.last
 let one: i64 = values[2:3].single
 let window: i64[] = values | skip 1 | take 3
+let safe_first: i64 = values[:0] | first_or 99
+let safe_last: i64 = values[:0] | last_or 88
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -488,6 +490,8 @@ Index expressions must be `i64`. Negative indices count from the end and an inde
 Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
 
 `take(list, count)` and `skip(list, count)` are compiler-known typed sequence functions. They preserve the concrete list element type, require an `i64` count, clamp oversized counts to the available length, and reject negative counts with an explicit Flux runtime error. Both lower to zero-copy list views, so pipelines such as `values | skip 1 | take 3` do not allocate or copy list elements.
+
+`first_or(list, fallback)` and `last_or(list, fallback)` are non-throwing accessors for possibly empty lists. The fallback must have exactly the list element type. On an empty list the fallback is returned; otherwise the corresponding edge element is returned. They compose with the same typed pipeline syntax, for example `values[:0] | first_or 99`.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

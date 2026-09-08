@@ -602,7 +602,10 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     signatures.constants = constant_cache;
 
     for function in &program.functions {
-        if matches!(function.name.as_str(), "print" | "error" | "take" | "skip") {
+        if matches!(
+            function.name.as_str(),
+            "print" | "error" | "take" | "skip" | "first_or" | "last_or"
+        ) {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("'{}' is a built-in function name", function.name),
@@ -2933,6 +2936,39 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "first_or" || name == "last_or" => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} does not accept named arguments"),
+                ));
+            }
+            if args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} expects exactly two arguments: a list and a fallback value"),
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(element) = list_ty else {
+                return Err(diag(
+                    args[0].span,
+                    &format!("{name} expects a list as its first argument"),
+                ));
+            };
+            let fallback_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            require_type(
+                args[1].span,
+                &element,
+                &fallback_ty,
+                &format!("{name} fallback"),
+            )?;
+            Ok(*element)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "take" || name == "skip" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3449,7 +3485,8 @@ fn value_types_of_expr(
             value_types_of_expr(&call, env, signatures)
         }
         ExprKind::Call { name, .. }
-            if signatures.interface(name).is_some() || matches!(name.as_str(), "take" | "skip") =>
+            if signatures.interface(name).is_some()
+                || matches!(name.as_str(), "take" | "skip" | "first_or" | "last_or") =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])
         }

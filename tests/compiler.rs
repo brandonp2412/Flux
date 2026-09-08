@@ -1178,6 +1178,11 @@ fn main() -> i64 {
     print window.length
     print window.first
     print window.last
+    let empty: i64[] = values[:0]
+    let safe_first: i64 = empty | first_or 99
+    let safe_last: i64 = empty | last_or 88
+    print safe_first
+    print safe_last
     return 0
 }
 "#;
@@ -1198,6 +1203,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_skip("));
     assert!(generated.contains("flux_list_take("));
     assert!(generated.contains("Flux runtime error: list count must be non-negative"));
+    assert!(generated.contains("len == 0 ?"));
+    assert!(generated.contains("INT64_C(99)"));
+    assert!(generated.contains("INT64_C(88)"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");
@@ -1205,6 +1213,8 @@ fn main() -> i64 {
     assert!(formatted.contains("let middle: i64[] = values[1:4]"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
+    assert!(formatted.contains("let safe_first: i64 = empty | first_or 99"));
+    assert!(formatted.contains("let safe_last: i64 = empty | last_or 88"));
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
     assert_eq!(formatted_again, formatted);
@@ -1236,6 +1246,38 @@ fn main() -> i64 {
 "#;
     let error = check_source(bad_count).expect_err("skip count should be i64");
     assert!(error.message.contains("skip count: expected i64, got bool"));
+}
+
+#[test]
+fn rejects_invalid_safe_list_access_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let value: i64 = first_or(7, 1)
+    print value
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("first_or should require a list");
+    assert!(
+        error
+            .message
+            .contains("first_or expects a list as its first argument")
+    );
+
+    let bad_fallback = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let value: i64 = last_or(values, false)
+    print value
+    return 0
+}
+"#;
+    let error = check_source(bad_fallback).expect_err("fallback should match element type");
+    assert!(
+        error
+            .message
+            .contains("last_or fallback: expected i64, got bool")
+    );
 }
 
 #[test]
