@@ -1098,10 +1098,11 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 return Some(Type::Str);
             }
             "min_width" | "min_height" | "margin" | "margin_top" | "margin_bottom"
-            | "margin_start" | "margin_end" | "border_width" | "radius" => {
+            | "margin_start" | "margin_end" | "border_width" | "radius" | "shadow_blur"
+            | "shadow_offset_x" | "shadow_offset_y" => {
                 return Some(Type::I64);
             }
-            "align_x" | "align_y" | "background_color" | "border_color" => {
+            "align_x" | "align_y" | "background_color" | "border_color" | "shadow_color" => {
                 return Some(Type::Str);
             }
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
@@ -1205,6 +1206,10 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "border_color",
     "border_width",
     "radius",
+    "shadow_color",
+    "shadow_blur",
+    "shadow_offset_x",
+    "shadow_offset_y",
     "min_width",
     "min_height",
 ];

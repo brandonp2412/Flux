@@ -4106,6 +4106,53 @@ app Styled
 }
 
 #[test]
+fn native_elements_support_native_shadows() {
+    let source = r##"
+view Shadowed {
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Shadow"
+        shadow_color: "#11223380"
+        shadow_blur: 18
+        shadow_offset_x: 3
+        shadow_offset_y: 6
+}
+app Shadowed
+"##;
+    check_source(source).expect("shadow properties should typecheck");
+    let generated = compile_to_c(source).expect("shadow properties should lower to GTK CSS");
+    assert!(generated.contains("box-shadow: 3px 6px 18px #11223380;"));
+
+    let defaults = r#"
+view Shadowed {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Shadow"
+        shadow_blur: 8
+}
+app Shadowed
+"#;
+    let generated = compile_to_c(defaults).expect("shadow color should have a safe default");
+    assert!(generated.contains("box-shadow: 0px 0px 8px #00000080;"));
+
+    let invalid = r#"
+view Shadowed {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Bad"
+        shadow_blur: -1
+}
+app Shadowed
+"#;
+    check_source(invalid).expect("shadow dimensions typecheck before native validation");
+    let error = compile_to_c(invalid).expect_err("negative shadow blur must fail");
+    assert!(error.message.contains("shadow_blur must be non-negative"));
+}
+
+#[test]
 fn native_elements_support_common_alignment_and_margins() {
     let source = r#"
 view Layout {

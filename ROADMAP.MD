@@ -503,7 +503,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
 - [ ] Borders/radii.
   - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
-- [ ] Shadows.
+- [x] Shadows.
+  - [x] Bootstrap common native shadows use compile-time `shadow_color`, `shadow_blur`, `shadow_offset_x`, and `shadow_offset_y` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
 - [ ] Clipping.
 - [ ] Transforms.
 - [ ] Light/dark themes.

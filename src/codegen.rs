@@ -1259,6 +1259,39 @@ fn emit_element_style(
             declarations.push("border-style: solid;".to_string());
         }
     }
+    let shadow_color = view_property(element, "shadow_color")
+        .map(|property| {
+            let Some(value) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "shadow_color must be a compile-time string",
+                ));
+            };
+            if parse_hex_rgba(&value).is_none() {
+                return Err(diag(
+                    property.value.span,
+                    "shadow_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
+                ));
+            }
+            Ok(value)
+        })
+        .transpose()?;
+    let shadow_blur = static_style_i64(element, "shadow_blur", signatures)?.unwrap_or(0);
+    let shadow_offset_x = static_style_i64(element, "shadow_offset_x", signatures)?.unwrap_or(0);
+    let shadow_offset_y = static_style_i64(element, "shadow_offset_y", signatures)?.unwrap_or(0);
+    if shadow_blur < 0 {
+        let span = view_property(element, "shadow_blur")
+            .expect("shadow blur exists when negative")
+            .value
+            .span;
+        return Err(diag(span, "shadow_blur must be non-negative"));
+    }
+    if shadow_color.is_some() || shadow_blur != 0 || shadow_offset_x != 0 || shadow_offset_y != 0 {
+        declarations.push(format!(
+            "box-shadow: {shadow_offset_x}px {shadow_offset_y}px {shadow_blur}px {};",
+            shadow_color.unwrap_or_else(|| "#00000080".to_string())
+        ));
+    }
     if declarations.is_empty() {
         return Ok(());
     }
@@ -1271,6 +1304,29 @@ fn emit_element_style(
         c_string(&css),
     ));
     Ok(())
+}
+
+fn static_style_i64(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    signatures: &Signatures,
+) -> Result<Option<i64>, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok(None);
+    };
+    let Some(value) = static_expr_i64(&property.value, signatures) else {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must be a compile-time i64 value"),
+        ));
+    };
+    if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value) {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must fit within a 32-bit signed integer"),
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn emit_element_margins(
