@@ -635,7 +635,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Go to definition.
 - [ ] Find references.
 - [ ] Rename.
-- [ ] Semantic highlighting.
+- [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, comments, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
 - [ ] Inlay hints where they add value.

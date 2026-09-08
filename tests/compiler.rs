@@ -2830,6 +2830,9 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     let hover = format!(
         r#"{{"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":7}}}}}}"#
     );
+    let semantic_tokens = format!(
+        r#"{{"jsonrpc":"2.0","id":6,"method":"textDocument/semanticTokens/full","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
+    );
     let formatting = format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#
     );
@@ -2850,6 +2853,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         &open,
         &change,
         &hover,
+        &semantic_tokens,
         &formatting,
         &broken_change,
         &code_action,
@@ -2883,12 +2887,16 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"codeActionProvider\":true"));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("\"hoverProvider\":true"));
+    assert!(stdout.contains("\"semanticTokensProvider\""));
+    assert!(stdout.contains("\"tokenTypes\":[\"keyword\",\"string\",\"number\""));
     assert!(stdout.contains("textDocument/publishDiagnostics"));
     assert!(stdout.contains("binding: expected i64, got bool"));
     assert!(stdout.contains("\"severity\":1"));
     assert!(stdout.matches("\"diagnostics\":[]").count() >= 2);
     assert!(stdout.contains("\"id\":5"));
     assert!(stdout.contains("let count: i64"));
+    assert!(stdout.contains("\"id\":6,\"jsonrpc\":\"2.0\",\"result\":{\"data\":["));
+    assert!(!stdout.contains("\"id\":6,\"jsonrpc\":\"2.0\",\"result\":{\"data\":[]}"));
     assert!(stdout.contains("\"id\":3"));
     assert!(stdout.contains("fn main() -> i64"));
     assert!(stdout.contains("\\n    let count: i64 = 1\\n"));

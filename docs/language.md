@@ -573,6 +573,8 @@ The UI subsystem is intentionally downstream of the core type/ownership/IR work:
 
 ## Tooling contract
 
+The bootstrap LSP now provides push diagnostics, canonical document formatting, compiler-backed quick fixes, safe hover information, and full-document semantic tokens. Highlighting uses standard LSP token categories for Flux keywords, literals, comments, operators, builtin types/functions, and semantically resolved symbols; ambiguous usage names fall back conservatively rather than being assigned a potentially wrong semantic role.
+
 LSP, debugger, and profiler support are mandatory product features. Development hot reload is also a first-class requirement: `flux run` should watch source files automatically and apply compatible changes on file save, preserving compatible state and falling back to a controlled restart only when necessary. The normal workflow must not require a manual hot-reload key.
 
 The bootstrap CLI now provides `fluxc run <target>` as the first development-runner slice. It builds and launches the native program, watches the compiler's actual import graph (and `flux.toml` for packages), debounces rapid saves, and recompiles automatically. Until the stable development ABI and compatible state model exist, a successful change is applied by building a replacement binary first and then performing a controlled restart. A failed edit leaves the last good child untouched, prints the ordinary rich compiler diagnostics, and keeps watching so saving a repair retries automatically. This is deliberately not described as state-preserving hot apply yet: compatible function/view replacement, Fast Refresh-style boundaries, and incremental compiler caching remain later milestones.

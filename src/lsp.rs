@@ -233,6 +233,26 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("textDocument/semanticTokens/full") => {
+                if let Some(id) = id {
+                    let uri = message
+                        .get("params")
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let data = uri
+                        .and_then(|uri| {
+                            documents
+                                .get(uri)
+                                .map(|source| semantic_tokens(uri, source, encoding))
+                        })
+                        .unwrap_or_default();
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, object([("data", JsonValue::Array(data))])).to_json(),
+                    )?;
+                }
+            }
             Some(_) if id.is_some() => {
                 write_message(
                     &mut writer,
@@ -271,6 +291,29 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                     ("codeActionProvider", JsonValue::Bool(true)),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
                     ("hoverProvider", JsonValue::Bool(true)),
+                    (
+                        "semanticTokensProvider",
+                        object([
+                            (
+                                "legend",
+                                object([
+                                    (
+                                        "tokenTypes",
+                                        JsonValue::Array(
+                                            SEMANTIC_TOKEN_TYPES
+                                                .iter()
+                                                .map(|token| {
+                                                    JsonValue::String((*token).to_string())
+                                                })
+                                                .collect(),
+                                        ),
+                                    ),
+                                    ("tokenModifiers", JsonValue::Array(Vec::new())),
+                                ]),
+                            ),
+                            ("full", JsonValue::Bool(true)),
+                        ]),
+                    ),
                     (
                         "textDocumentSync",
                         object([
@@ -350,6 +393,323 @@ fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
             ]),
         ),
     ])
+}
+
+const SEMANTIC_TOKEN_TYPES: &[&str] = &[
+    "keyword",
+    "string",
+    "number",
+    "type",
+    "enum",
+    "interface",
+    "struct",
+    "function",
+    "parameter",
+    "variable",
+    "property",
+    "enumMember",
+    "comment",
+    "operator",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SemanticTokenKind {
+    Keyword = 0,
+    String = 1,
+    Number = 2,
+    Type = 3,
+    Enum = 4,
+    Interface = 5,
+    Struct = 6,
+    Function = 7,
+    Parameter = 8,
+    Variable = 9,
+    Property = 10,
+    EnumMember = 11,
+    Comment = 12,
+    Operator = 13,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SemanticToken {
+    line: usize,
+    start: usize,
+    length: usize,
+    kind: SemanticTokenKind,
+}
+
+fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
+    let source_id = SourceId::from_name(uri);
+    let database = crate::parser::parse_all_with_source(source, source_id)
+        .ok()
+        .filter(|program| program.imports.is_empty())
+        .and_then(|program| {
+            crate::typecheck::check_all(&program)
+                .ok()
+                .map(|signatures| {
+                    crate::semantic::SemanticDatabase::from_analyzed(program, signatures)
+                })
+        });
+    let mut tokens = Vec::new();
+    for (line_index, line) in source.lines().enumerate() {
+        tokenize_semantic_line(
+            &mut tokens,
+            line,
+            line_index,
+            source_id,
+            database.as_ref(),
+            encoding,
+        );
+    }
+    encode_semantic_tokens(&tokens)
+}
+
+fn tokenize_semantic_line(
+    tokens: &mut Vec<SemanticToken>,
+    line: &str,
+    line_index: usize,
+    source_id: SourceId,
+    database: Option<&crate::semantic::SemanticDatabase>,
+    encoding: PositionEncoding,
+) {
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if byte == b'#' {
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                index,
+                bytes.len(),
+                SemanticTokenKind::Comment,
+                encoding,
+            );
+            break;
+        }
+        if byte == b'"' {
+            let start = index;
+            index += 1;
+            let mut escaped = false;
+            while index < bytes.len() {
+                let current = bytes[index];
+                index += 1;
+                if escaped {
+                    escaped = false;
+                } else if current == b'\\' {
+                    escaped = true;
+                } else if current == b'"' {
+                    break;
+                }
+            }
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                start,
+                index,
+                SemanticTokenKind::String,
+                encoding,
+            );
+            continue;
+        }
+        if byte.is_ascii_digit() {
+            let start = index;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                start,
+                index,
+                SemanticTokenKind::Number,
+                encoding,
+            );
+            continue;
+        }
+        if byte == b'_' || byte.is_ascii_alphabetic() {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_identifier_byte(bytes[index]) {
+                index += 1;
+            }
+            let word = &line[start..index];
+            let kind =
+                semantic_identifier_kind(word, source_id, line_index + 1, start + 1, database);
+            push_semantic_token(tokens, line, line_index, start, index, kind, encoding);
+            continue;
+        }
+        if is_operator_byte(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_operator_byte(bytes[index]) {
+                index += 1;
+            }
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                start,
+                index,
+                SemanticTokenKind::Operator,
+                encoding,
+            );
+            continue;
+        }
+        index += 1;
+    }
+}
+
+fn semantic_identifier_kind(
+    word: &str,
+    source_id: SourceId,
+    line: usize,
+    column: usize,
+    database: Option<&crate::semantic::SemanticDatabase>,
+) -> SemanticTokenKind {
+    if is_flux_keyword(word) {
+        return SemanticTokenKind::Keyword;
+    }
+    if matches!(word, "i64" | "bool" | "str" | "error" | "void") {
+        return SemanticTokenKind::Type;
+    }
+    if word == "print" {
+        return SemanticTokenKind::Function;
+    }
+    let Some(database) = database else {
+        return SemanticTokenKind::Variable;
+    };
+    let symbol = database.symbol_at(source_id, line, column).or_else(|| {
+        let mut matches = database.symbols_named(word);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    });
+    symbol
+        .map(|symbol| semantic_symbol_kind(symbol.kind))
+        .unwrap_or(SemanticTokenKind::Variable)
+}
+
+fn semantic_symbol_kind(kind: crate::semantic::SymbolKind) -> SemanticTokenKind {
+    use crate::semantic::SymbolKind;
+    match kind {
+        SymbolKind::TypeAlias | SymbolKind::View => SemanticTokenKind::Type,
+        SymbolKind::Interface | SymbolKind::InterfaceImplementation => SemanticTokenKind::Interface,
+        SymbolKind::InterfaceFunction | SymbolKind::InterfaceImplementationMapping => {
+            SemanticTokenKind::Function
+        }
+        SymbolKind::Constant
+        | SymbolKind::Binding
+        | SymbolKind::MutableBinding
+        | SymbolKind::PatternBinding
+        | SymbolKind::LoopVariable
+        | SymbolKind::ViewElement => SemanticTokenKind::Variable,
+        SymbolKind::Enum => SemanticTokenKind::Enum,
+        SymbolKind::EnumVariant => SemanticTokenKind::EnumMember,
+        SymbolKind::Struct => SemanticTokenKind::Struct,
+        SymbolKind::StructField | SymbolKind::ViewProperty => SemanticTokenKind::Property,
+        SymbolKind::Function => SemanticTokenKind::Function,
+        SymbolKind::Parameter => SemanticTokenKind::Parameter,
+    }
+}
+
+fn is_flux_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "fn" | "let"
+            | "var"
+            | "return"
+            | "if"
+            | "elif"
+            | "else"
+            | "for"
+            | "while"
+            | "in"
+            | "break"
+            | "continue"
+            | "match"
+            | "struct"
+            | "enum"
+            | "interface"
+            | "impl"
+            | "type"
+            | "const"
+            | "pub"
+            | "import"
+            | "view"
+            | "grid"
+            | "at"
+            | "span"
+            | "rows"
+            | "columns"
+            | "true"
+            | "false"
+            | "nil"
+            | "auto"
+    )
+}
+
+fn is_operator_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'.'
+    )
+}
+
+fn push_semantic_token(
+    tokens: &mut Vec<SemanticToken>,
+    line: &str,
+    line_index: usize,
+    start_byte: usize,
+    end_byte: usize,
+    kind: SemanticTokenKind,
+    encoding: PositionEncoding,
+) {
+    let start = encoded_column(line, start_byte, encoding);
+    let end = encoded_column(line, end_byte, encoding);
+    if end <= start {
+        return;
+    }
+    tokens.push(SemanticToken {
+        line: line_index,
+        start,
+        length: end - start,
+        kind,
+    });
+}
+
+fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<JsonValue> {
+    let mut data = Vec::with_capacity(tokens.len() * 5);
+    let mut previous_line = 0usize;
+    let mut previous_start = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        let delta_line = if index == 0 {
+            token.line
+        } else {
+            token.line - previous_line
+        };
+        let delta_start = if index == 0 || delta_line > 0 {
+            token.start
+        } else {
+            token.start - previous_start
+        };
+        data.extend([
+            JsonValue::Number(delta_line as i64),
+            JsonValue::Number(delta_start as i64),
+            JsonValue::Number(token.length as i64),
+            JsonValue::Number(token.kind as i64),
+            JsonValue::Number(0),
+        ]);
+        previous_line = token.line;
+        previous_start = token.start;
+    }
+    data
 }
 
 fn hover_for_document(
@@ -1144,5 +1504,35 @@ mod tests {
         .expect("unambiguous function usage should hover")
         .to_json();
         assert!(usage.contains("fn double(value: i64) -> i64"));
+    }
+
+    #[test]
+    fn semantic_tokens_mix_lexical_and_typed_categories() {
+        let source =
+            "fn double(value: i64) -> i64 { value * 2 } # scale\nfn main() -> i64 { double(21) }\n";
+        crate::semantic::SemanticDatabase::analyze(source, SourceId::new(1))
+            .expect("semantic-token fixture should analyze");
+        let data = semantic_tokens("file:///tmp/tokens.flux", source, PositionEncoding::Utf8);
+        assert!(!data.is_empty());
+        let numbers = data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (chunks, remainder) = numbers.as_chunks::<5>();
+        assert!(remainder.is_empty());
+        let kinds = chunks.iter().map(|token| token[3]).collect::<Vec<_>>();
+        assert!(kinds.contains(&(SemanticTokenKind::Keyword as i64)));
+        assert!(
+            kinds.contains(&(SemanticTokenKind::Function as i64)),
+            "semantic token kinds were {kinds:?}"
+        );
+        assert!(kinds.contains(&(SemanticTokenKind::Parameter as i64)));
+        assert!(kinds.contains(&(SemanticTokenKind::Type as i64)));
+        assert!(kinds.contains(&(SemanticTokenKind::Number as i64)));
+        assert!(kinds.contains(&(SemanticTokenKind::Operator as i64)));
+        assert!(kinds.contains(&(SemanticTokenKind::Comment as i64)));
     }
 }
