@@ -42,6 +42,13 @@ impl JsonValue {
         Some(values)
     }
 
+    fn as_usize(&self) -> Option<usize> {
+        let Self::Number(value) = self else {
+            return None;
+        };
+        usize::try_from(*value).ok()
+    }
+
     fn to_json(&self) -> String {
         match self {
             Self::Null => "null".to_string(),
@@ -197,6 +204,35 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("textDocument/hover") => {
+                if let Some(id) = id {
+                    let params = message.get("params");
+                    let uri = params
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let line = params
+                        .and_then(|params| params.get("position"))
+                        .and_then(|position| position.get("line"))
+                        .and_then(JsonValue::as_usize);
+                    let character = params
+                        .and_then(|params| params.get("position"))
+                        .and_then(|position| position.get("character"))
+                        .and_then(JsonValue::as_usize);
+                    let hover = match (uri, line, character) {
+                        (Some(uri), Some(line), Some(character)) => {
+                            documents.get(uri).and_then(|source| {
+                                hover_for_document(uri, source, line, character, encoding)
+                            })
+                        }
+                        _ => None,
+                    };
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, hover.unwrap_or(JsonValue::Null)).to_json(),
+                    )?;
+                }
+            }
             Some(_) if id.is_some() => {
                 write_message(
                     &mut writer,
@@ -234,6 +270,7 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                     ),
                     ("codeActionProvider", JsonValue::Bool(true)),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
+                    ("hoverProvider", JsonValue::Bool(true)),
                     (
                         "textDocumentSync",
                         object([
@@ -313,6 +350,167 @@ fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
             ]),
         ),
     ])
+}
+
+fn hover_for_document(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    let source_id = SourceId::from_name(uri);
+    let program = crate::parser::parse_all_with_source(source, source_id).ok()?;
+    if !program.imports.is_empty() {
+        return None;
+    }
+    let signatures = crate::typecheck::check_all(&program).ok()?;
+    let database = crate::semantic::SemanticDatabase::from_analyzed(program, signatures);
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let source_column = byte + 1;
+    let symbol = database
+        .symbol_at(source_id, line_index + 1, source_column)
+        .or_else(|| {
+            let name = identifier_at(line, byte)?;
+            let mut matches = database.symbols_named(name);
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        })?;
+    let description = hover_description(symbol, &database);
+    Some(object([
+        (
+            "contents",
+            object([
+                ("kind", JsonValue::String("markdown".to_string())),
+                (
+                    "value",
+                    JsonValue::String(format!("```flux\n{description}\n```")),
+                ),
+            ]),
+        ),
+        ("range", lsp_range(symbol.span, source, encoding)),
+    ]))
+}
+
+fn hover_description(
+    symbol: &crate::semantic::SemanticSymbol,
+    database: &crate::semantic::SemanticDatabase,
+) -> String {
+    use crate::semantic::SymbolKind;
+    match symbol.kind {
+        SymbolKind::Function => database
+            .signature(&symbol.name)
+            .map(|signature| format_signature(&symbol.name, signature))
+            .unwrap_or_else(|| format!("fn {}", symbol.name)),
+        SymbolKind::MutableBinding => typed_symbol("var", symbol),
+        SymbolKind::Binding => typed_symbol("let", symbol),
+        SymbolKind::Constant => typed_symbol("const", symbol),
+        SymbolKind::Parameter => typed_symbol("parameter", symbol),
+        SymbolKind::PatternBinding => typed_symbol("pattern", symbol),
+        SymbolKind::LoopVariable => typed_symbol("loop", symbol),
+        SymbolKind::StructField => typed_symbol("field", symbol),
+        SymbolKind::ViewProperty => typed_symbol("property", symbol),
+        SymbolKind::InterfaceFunction | SymbolKind::InterfaceImplementationMapping => {
+            typed_symbol("fn", symbol)
+        }
+        SymbolKind::TypeAlias => symbol
+            .ty
+            .as_ref()
+            .map(|ty| format!("type {} = {}", symbol.name, ty.name()))
+            .unwrap_or_else(|| format!("type {}", symbol.name)),
+        SymbolKind::Interface => format!("interface {}", symbol.name),
+        SymbolKind::InterfaceImplementation => format!("impl {}", symbol.name),
+        SymbolKind::Enum => format!("enum {}", symbol.name),
+        SymbolKind::EnumVariant => typed_symbol("variant", symbol),
+        SymbolKind::Struct => format!("struct {}", symbol.name),
+        SymbolKind::View => format!("view {}", symbol.name),
+        SymbolKind::ViewElement => format!("element {}", symbol.name),
+    }
+}
+
+fn typed_symbol(prefix: &str, symbol: &crate::semantic::SemanticSymbol) -> String {
+    symbol
+        .ty
+        .as_ref()
+        .map(|ty| format!("{prefix} {}: {}", symbol.name, ty.name()))
+        .unwrap_or_else(|| format!("{prefix} {}", symbol.name))
+}
+
+fn format_signature(name: &str, signature: &crate::typecheck::Signature) -> String {
+    let mut params = Vec::new();
+    let mut emitted_named_marker = false;
+    for param in &signature.param_details {
+        if param.named_only && !emitted_named_marker {
+            params.push("*".to_string());
+            emitted_named_marker = true;
+        }
+        params.push(format!("{}: {}", param.name, param.ty.name()));
+    }
+    let returns = match signature.returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => ty.name(),
+        values => format!(
+            "({})",
+            values
+                .iter()
+                .map(|ty| ty.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!("fn {name}({}) -> {returns}", params.join(", "))
+}
+
+fn identifier_at(line: &str, byte_offset: usize) -> Option<&str> {
+    let bytes = line.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut cursor = byte_offset.min(bytes.len().saturating_sub(1));
+    if !is_identifier_byte(bytes[cursor]) && cursor > 0 && is_identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    if !is_identifier_byte(bytes[cursor]) {
+        return None;
+    }
+    let mut start = cursor;
+    while start > 0 && is_identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = cursor + 1;
+    while end < bytes.len() && is_identifier_byte(bytes[end]) {
+        end += 1;
+    }
+    std::str::from_utf8(&bytes[start..end]).ok()
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn byte_offset_for_encoded_column(
+    line: &str,
+    character: usize,
+    encoding: PositionEncoding,
+) -> usize {
+    match encoding {
+        PositionEncoding::Utf8 => character.min(line.len()),
+        PositionEncoding::Utf16 => {
+            let mut units = 0usize;
+            for (byte, ch) in line.char_indices() {
+                if units >= character {
+                    return byte;
+                }
+                let next = units + ch.len_utf16();
+                if next > character {
+                    return byte;
+                }
+                units = next;
+            }
+            line.len()
+        }
+    }
 }
 
 fn document_diagnostics(uri: &str, source: &str) -> Vec<Diagnostic> {
@@ -919,5 +1117,32 @@ mod tests {
         assert!(json.contains("insert the function body opener"));
         assert!(json.contains("quickfix"));
         assert!(json.contains("newText"));
+    }
+
+    #[test]
+    fn hover_reports_declaration_and_unambiguous_usage_types() {
+        let source =
+            "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
+        let declaration = hover_for_document(
+            "file:///tmp/hover.flux",
+            source,
+            0,
+            4,
+            PositionEncoding::Utf8,
+        )
+        .expect("function declaration should hover")
+        .to_json();
+        assert!(declaration.contains("fn double(value: i64) -> i64"));
+
+        let usage = hover_for_document(
+            "file:///tmp/hover.flux",
+            source,
+            1,
+            19,
+            PositionEncoding::Utf8,
+        )
+        .expect("unambiguous function usage should hover")
+        .to_json();
+        assert!(usage.contains("fn double(value: i64) -> i64"));
     }
 }

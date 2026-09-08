@@ -2827,6 +2827,9 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     let change = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":"fn main()->i64 {{\n  let count:i64=1\n  return count\n}}\n"}}]}}}}"#
     );
+    let hover = format!(
+        r#"{{"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":7}}}}}}"#
+    );
     let formatting = format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#
     );
@@ -2846,6 +2849,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         initialized,
         &open,
         &change,
+        &hover,
         &formatting,
         &broken_change,
         &code_action,
@@ -2878,10 +2882,13 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));
     assert!(stdout.contains("\"codeActionProvider\":true"));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
+    assert!(stdout.contains("\"hoverProvider\":true"));
     assert!(stdout.contains("textDocument/publishDiagnostics"));
     assert!(stdout.contains("binding: expected i64, got bool"));
     assert!(stdout.contains("\"severity\":1"));
     assert!(stdout.matches("\"diagnostics\":[]").count() >= 2);
+    assert!(stdout.contains("\"id\":5"));
+    assert!(stdout.contains("let count: i64"));
     assert!(stdout.contains("\"id\":3"));
     assert!(stdout.contains("fn main() -> i64"));
     assert!(stdout.contains("\\n    let count: i64 = 1\\n"));

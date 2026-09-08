@@ -631,6 +631,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Completion.
 - [ ] Signature help.
 - [ ] Hover/type information.
+  - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves usage-site hover when a symbol name is unambiguous; scope-resolved usage hover across shadowing/imports remains pending with richer reference indexing.
 - [ ] Go to definition.
 - [ ] Find references.
 - [ ] Rename.
