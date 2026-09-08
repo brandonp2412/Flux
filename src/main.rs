@@ -80,6 +80,17 @@ fn run() -> Result<(), CliError> {
     }
 
     match args[0].as_str() {
+        "new" => {
+            let path = require_target(&args)?;
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "new syntax is 'new <directory>'".to_string(),
+                ));
+            }
+            create_project(path)?;
+            println!("created: {}", path.display());
+            Ok(())
+        }
         "check" => {
             let path = require_target(&args)?;
             let json = check_json_mode(&args[2..])?;
@@ -216,6 +227,73 @@ fn run() -> Result<(), CliError> {
                 .map_err(|error| CliError::Message(format!("language server failed: {error}")))
         }
         _ => Err(CliError::Message(usage())),
+    }
+}
+
+fn create_project(target: &Path) -> Result<(), CliError> {
+    if target.exists() {
+        if !target.is_dir() {
+            return Err(CliError::Message(format!(
+                "cannot create project '{}': path is not a directory",
+                target.display()
+            )));
+        }
+        let mut entries = fs::read_dir(target)
+            .map_err(|error| format!("failed to inspect '{}': {error}", target.display()))?;
+        if entries.next().is_some() {
+            return Err(CliError::Message(format!(
+                "cannot create project '{}': directory is not empty",
+                target.display()
+            )));
+        }
+    }
+
+    let src = target.join("src");
+    fs::create_dir_all(&src)
+        .map_err(|error| format!("failed to create '{}': {error}", src.display()))?;
+    let package_name = project_name_from_path(target);
+    let manifest = format!(
+        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n"
+    );
+    let main = "view App {\n    grid columns: 1fr\n    grid rows: auto auto\n    grid gap: 12\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Clicked!\" if clicked else \"Hello, Flux!\"\n\n    Button action at 2,1\n        text: \"Reset\" if clicked else \"Click me\"\n        on_press: clicked => !clicked\n}\n\napp App\n";
+    fs::write(target.join("flux.toml"), manifest)
+        .map_err(|error| format!("failed to write project manifest: {error}"))?;
+    fs::write(src.join("main.flux"), main)
+        .map_err(|error| format!("failed to write project entry source: {error}"))?;
+    Ok(())
+}
+
+fn project_name_from_path(target: &Path) -> String {
+    let raw = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("flux-app");
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let ch = if ch.is_ascii_alphanumeric() || ch == '_' {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if ch == '-' {
+            if out.is_empty() || last_dash {
+                continue;
+            }
+            last_dash = true;
+        } else {
+            last_dash = false;
+        }
+        out.push(ch);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "flux-app".to_string()
+    } else {
+        out
     }
 }
 
@@ -771,7 +849,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | fluxc run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | fluxc lsp".to_string()
+    "usage: fluxc new <directory> | fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | fluxc run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | fluxc lsp".to_string()
 }
 
 #[cfg(test)]

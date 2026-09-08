@@ -2,15 +2,22 @@
 
 This is the canonical Priority-0 acceptance path for the first manually usable Flux application workflow on Linux.
 
-## 1. Open the app in a real editor
+## 1. Create or open an app in a real editor
 
-From the repository root on Linux:
+To dogfood the checked-in acceptance app from the repository root:
 
 ```sh
 ./tools/flux-nvim examples/hello_app.flux
 ```
 
-The launcher builds the bootstrap compiler when needed, adds the checked-in Flux Neovim runtime without changing the user's global configuration, recognizes `.flux` files, enables immediate syntax colouring, and starts `fluxc lsp` for the buffer.
+To start from your own fresh package instead:
+
+```sh
+cargo run -- new /tmp/my-flux-app
+./tools/flux-nvim /tmp/my-flux-app/src/main.flux
+```
+
+The generated package contains the same minimal native Text/Button/state pattern as the acceptance app and passes `fluxc check` immediately. The launcher builds the bootstrap compiler when needed, adds the checked-in Flux Neovim runtime without changing the user's global configuration, recognizes `.flux` files, enables immediate syntax colouring, and starts `fluxc lsp` for the buffer.
 
 Acceptance in the editor:
 
@@ -29,7 +36,9 @@ Inside Neovim run:
 :FluxRun
 ```
 
-`FluxRun` opens a terminal split and executes `fluxc run` for the current saved Flux source. The development runner builds a native Linux executable and launches a GTK4 window through the compositor. On a Wayland session GTK uses its native Wayland backend.
+For a manifest-backed package created outside the repository, pass its directory explicitly, for example `:FluxRun /tmp/my-flux-app`.
+
+`FluxRun` opens a terminal split and executes `fluxc run` for the selected Flux target. The development runner builds a native Linux executable and launches a GTK4 window through the compositor. On a Wayland session GTK uses its native Wayland backend.
 
 The same path can be launched directly from a terminal when isolating editor problems:
 

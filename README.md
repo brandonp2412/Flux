@@ -41,6 +41,17 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
 
+## Create a project
+
+Scaffold a minimal native GUI package that is immediately ready for the P0 dogfood loop:
+
+```sh
+cargo run -- new my-flux-app
+./tools/flux-nvim my-flux-app/src/main.flux
+```
+
+Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `fluxc new` refuses to overwrite a non-empty directory.
+
 ## Example
 
 ```flux

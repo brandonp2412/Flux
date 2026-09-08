@@ -721,6 +721,7 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 26 — CLI/build/developer workflow
 
 - [ ] `flux new`.
+  - [x] Bootstrap `fluxc new <directory>` scaffolds a minimal manifest-backed native GUI package with the checked-in P0 Text/Button/state pattern, refuses to overwrite non-empty directories, and produces a project that immediately passes `fluxc check`; final `flux` CLI naming/distribution remains pending.
 - [ ] `flux run`.
   - [x] Bootstrap `fluxc run` provides the automatic development watch/build/restart loop; the final `flux` CLI naming/distribution remains pending.
 - [x] Bootstrap `fluxc build` equivalent exists through Cargo invocation.

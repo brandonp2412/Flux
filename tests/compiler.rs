@@ -3140,6 +3140,55 @@ fn check_json_cli_emits_clean_machine_readable_output() {
 }
 
 #[test]
+fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
+    let root = std::env::temp_dir().join(format!("Flux New App {}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+
+    let created = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("new")
+        .arg(&root)
+        .output()
+        .expect("fluxc new should run");
+    assert!(
+        created.status.success(),
+        "fluxc new failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+
+    let manifest =
+        fs::read_to_string(root.join("flux.toml")).expect("new project should contain a manifest");
+    assert!(manifest.contains("name = \"flux-new-app-"));
+    assert!(manifest.contains("entry = \"src/main.flux\""));
+    let source = fs::read_to_string(root.join("src/main.flux"))
+        .expect("new project should contain an entry source");
+    assert!(source.contains("view App {"));
+    assert!(source.contains("state clicked: bool = false"));
+    assert!(source.contains("on_press: clicked => !clicked"));
+    assert!(source.contains("app App"));
+
+    let checked = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&root)
+        .output()
+        .expect("generated package should be checkable");
+    assert!(
+        checked.status.success(),
+        "generated package failed check: {}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("new")
+        .arg(&root)
+        .output()
+        .expect("second fluxc new should run");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("directory is not empty"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     let root = std::env::temp_dir().join(format!("flux-package-manifest-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
