@@ -33,9 +33,62 @@ struct CachedProjectAnalysis {
     manifest_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModuleParseCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CachedModuleParse {
+    text: String,
+    program: Program,
+}
+
+#[derive(Debug, Default)]
+struct ModuleParseCache {
+    entries: HashMap<PathBuf, CachedModuleParse>,
+    hits: usize,
+    misses: usize,
+}
+
+impl ModuleParseCache {
+    fn parse(
+        &mut self,
+        path: &Path,
+        source: &str,
+        source_id: SourceId,
+    ) -> Result<Program, Vec<Diagnostic>> {
+        if let Some(entry) = self.entries.get(path)
+            && entry.text == source
+        {
+            self.hits += 1;
+            return Ok(entry.program.clone());
+        }
+        self.misses += 1;
+        let program = parser::parse_all_with_source(source, source_id)?;
+        self.entries.insert(
+            path.to_path_buf(),
+            CachedModuleParse {
+                text: source.to_string(),
+                program: program.clone(),
+            },
+        );
+        Ok(program)
+    }
+
+    const fn stats(&self) -> ModuleParseCacheStats {
+        ModuleParseCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ProjectAnalysisCache {
     entries: HashMap<PathBuf, CachedProjectAnalysis>,
+    module_parses: ModuleParseCache,
     hits: usize,
     misses: usize,
 }
@@ -55,7 +108,8 @@ impl ProjectAnalysisCache {
         }
 
         self.misses += 1;
-        let analysis = analyze_with_overlays(target, overlays)?;
+        let analysis =
+            analyze_with_overlays_and_parse_cache(target, overlays, &mut self.module_parses)?;
         self.entries.insert(
             key.clone(),
             CachedProjectAnalysis {
@@ -89,6 +143,10 @@ impl ProjectAnalysisCache {
             hits: self.hits,
             misses: self.misses,
         }
+    }
+
+    pub const fn module_parse_stats(&self) -> ModuleParseCacheStats {
+        self.module_parses.stats()
     }
 }
 
@@ -165,6 +223,14 @@ fn load_report_with_overlays(
     target: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
+    load_report_with_overlays_and_parse_cache(target, overlays, None)
+}
+
+fn load_report_with_overlays_and_parse_cache(
+    target: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    parse_cache: Option<&mut ModuleParseCache>,
+) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
     let (entry, module_root, package_name) = resolve_project_target(target)?;
     let mut loader = Loader {
         loaded: HashSet::new(),
@@ -175,6 +241,7 @@ fn load_report_with_overlays(
         module_root,
         package_name,
         overlays: overlays.clone(),
+        parse_cache,
     };
     loader.load_file(&entry, None);
     Ok(ProjectLoadReport {
@@ -192,7 +259,24 @@ pub fn analyze_with_overlays(
     entry: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
-    let report = load_report_with_overlays(entry, overlays)?;
+    analyze_with_overlays_report(load_report_with_overlays(entry, overlays)?)
+}
+
+fn analyze_with_overlays_and_parse_cache(
+    entry: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    parse_cache: &mut ModuleParseCache,
+) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
+    analyze_with_overlays_report(load_report_with_overlays_and_parse_cache(
+        entry,
+        overlays,
+        Some(parse_cache),
+    )?)
+}
+
+fn analyze_with_overlays_report(
+    report: ProjectLoadReport,
+) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
     if !report.diagnostics.is_empty() {
         return Err(report.diagnostics);
     }
@@ -472,7 +556,7 @@ fn manifest_diagnostic(source_id: SourceId, line: usize, message: impl Into<Stri
     )
 }
 
-struct Loader {
+struct Loader<'a> {
     loaded: HashSet<PathBuf>,
     stack: Vec<PathBuf>,
     program: Program,
@@ -481,9 +565,10 @@ struct Loader {
     module_root: PathBuf,
     package_name: Option<String>,
     overlays: HashMap<PathBuf, String>,
+    parse_cache: Option<&'a mut ModuleParseCache>,
 }
 
-impl Loader {
+impl Loader<'_> {
     fn load_file(&mut self, path: &Path, via: Option<SourceSpan>) {
         let canonical = match fs::canonicalize(path) {
             Ok(path) => path,
@@ -542,7 +627,12 @@ impl Loader {
             module_name,
             text: source.clone(),
         });
-        let mut parsed = match parser::parse_all_with_source(&source, source_id) {
+        let parsed = if let Some(cache) = self.parse_cache.as_deref_mut() {
+            cache.parse(&canonical, &source, source_id)
+        } else {
+            parser::parse_all_with_source(&source, source_id)
+        };
+        let mut parsed = match parsed {
             Ok(program) => program,
             Err(mut diagnostics) => {
                 self.diagnostics.append(&mut diagnostics);

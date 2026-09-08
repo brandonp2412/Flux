@@ -3347,8 +3347,21 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
         cache.stats(),
         fluxc::project::ProjectAnalysisCacheStats { hits: 1, misses: 1 }
     );
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 0, misses: 2 }
+    );
 
     let dependency = fs::canonicalize(dependency).unwrap();
+    cache.invalidate_path(&dependency);
+    cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("unchanged modules should be reused after graph invalidation");
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 2, misses: 2 }
+    );
+
     let overlays = std::collections::HashMap::from([(
         dependency.clone(),
         "pub fn value() -> str { \"overlay\" }\n".to_string(),
@@ -3361,7 +3374,11 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
             .iter()
             .any(|error| error.message.contains("expected i64, got str"))
     );
-    assert_eq!(cache.stats().misses, 2);
+    assert_eq!(cache.stats().misses, 3);
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 3, misses: 3 }
+    );
 
     cache.invalidate_path(&dependency);
     fs::write(&dependency, "pub fn value() -> i64 { 2 }\n")
@@ -3369,7 +3386,11 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
     cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("invalidated dependency should be reanalyzed");
-    assert_eq!(cache.stats().misses, 3);
+    assert_eq!(cache.stats().misses, 4);
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 4, misses: 4 }
+    );
     let _ = fs::remove_dir_all(root);
 }
 
