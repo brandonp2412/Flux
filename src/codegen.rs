@@ -671,6 +671,7 @@ fn emit_linux_gtk_application(
         }
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
+        emit_element_style(out, element, &variable, signatures)?;
         if view_property(element, "on_hover").is_some()
             || view_property(element, "on_leave").is_some()
         {
@@ -1203,6 +1204,72 @@ fn emit_element_alignment(
             "    gtk_widget_set_{setter}({variable}, {alignment});\n"
         ));
     }
+    Ok(())
+}
+
+fn emit_element_style(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let mut declarations = Vec::new();
+    for (property_name, css_name) in [
+        ("background_color", "background-color"),
+        ("border_color", "border-color"),
+    ] {
+        let Some(property) = view_property(element, property_name) else {
+            continue;
+        };
+        let Some(value) = static_expr_str(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must be a compile-time string"),
+            ));
+        };
+        if parse_hex_rgba(&value).is_none() {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax"),
+            ));
+        }
+        declarations.push(format!("{css_name}: {value};"));
+    }
+    for (property_name, css_name) in [
+        ("border_width", "border-width"),
+        ("radius", "border-radius"),
+    ] {
+        let Some(property) = view_property(element, property_name) else {
+            continue;
+        };
+        let Some(value) = static_expr_i64(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must be a compile-time i64 value"),
+            ));
+        };
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must be between 0 and 2147483647"),
+            ));
+        }
+        declarations.push(format!("{css_name}: {value}px;"));
+        if property_name == "border_width" && value > 0 {
+            declarations.push("border-style: solid;".to_string());
+        }
+    }
+    if declarations.is_empty() {
+        return Ok(());
+    }
+    let widget_name = format!("flux-ui-{}", element.name);
+    let provider = format!("flux__style_{}", element.name);
+    let css = format!("#{widget_name} {{ {} }}", declarations.join(" "));
+    out.push_str(&format!(
+        "    gtk_widget_set_name({variable}, {});\n    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n    g_object_unref({provider});\n",
+        c_string(&widget_name),
+        c_string(&css),
+    ));
     Ok(())
 }
 

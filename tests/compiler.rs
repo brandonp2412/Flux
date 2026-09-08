@@ -4063,6 +4063,49 @@ app Screen
 }
 
 #[test]
+fn native_elements_support_background_borders_and_radii() {
+    let source = r##"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Styled"
+        background_color: "#2563EB"
+        border_color: "#1E3A8AFF"
+        border_width: 2
+        radius: 12
+}
+app Styled
+"##;
+    check_source(source).expect("common style properties should typecheck");
+    let generated = compile_to_c(source).expect("common styles should lower to native GTK CSS");
+    assert!(generated.contains("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")"));
+    assert!(generated.contains("background-color: #2563EB;"));
+    assert!(generated.contains("border-color: #1E3A8AFF;"));
+    assert!(generated.contains("border-width: 2px;"));
+    assert!(generated.contains("border-radius: 12px;"));
+    assert!(generated.contains("border-style: solid;"));
+    assert!(generated.contains("GTK_STYLE_PROVIDER_PRIORITY_APPLICATION"));
+
+    let invalid = r#"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        background_color: "blue"
+}
+app Styled
+"#;
+    check_source(invalid).expect("style colors typecheck before native syntax validation");
+    let error = compile_to_c(invalid).expect_err("non-hex background color must fail");
+    assert!(
+        error
+            .message
+            .contains("background_color must use '#RRGGBB'")
+    );
+}
+
+#[test]
 fn native_elements_support_common_alignment_and_margins() {
     let source = r#"
 view Layout {

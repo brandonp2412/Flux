@@ -494,13 +494,15 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 # Milestone 14 — Styling, themes, responsive UI, and animation
 
 - [ ] Colors.
-  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes. A first-class `Color` value type, themes/tokens, and broader control/background/border colors remain pending.
+  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes.
+  - [x] Every built-in native element accepts compile-time `background_color` / `border_color` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
 - [ ] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
 - [ ] Spacing.
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
   - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
 - [ ] Borders/radii.
+  - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
 - [ ] Shadows.
 - [ ] Clipping.
 - [ ] Transforms.

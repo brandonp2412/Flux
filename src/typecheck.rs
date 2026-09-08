@@ -1098,8 +1098,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 return Some(Type::Str);
             }
             "min_width" | "min_height" | "margin" | "margin_top" | "margin_bottom"
-            | "margin_start" | "margin_end" => return Some(Type::I64),
-            "align_x" | "align_y" => return Some(Type::Str),
+            | "margin_start" | "margin_end" | "border_width" | "radius" => {
+                return Some(Type::I64);
+            }
+            "align_x" | "align_y" | "background_color" | "border_color" => {
+                return Some(Type::Str);
+            }
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
@@ -1197,6 +1201,10 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "margin_bottom",
     "margin_start",
     "margin_end",
+    "background_color",
+    "border_color",
+    "border_width",
+    "radius",
     "min_width",
     "min_height",
 ];
