@@ -1120,7 +1120,15 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "padding_start"
             | "padding_end"
             | "border_width"
+            | "border_top_width"
+            | "border_bottom_width"
+            | "border_start_width"
+            | "border_end_width"
             | "radius"
+            | "radius_top_left"
+            | "radius_top_right"
+            | "radius_bottom_left"
+            | "radius_bottom_right"
             | "shadow_blur"
             | "shadow_offset_x"
             | "shadow_offset_y"
@@ -1136,7 +1144,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transform_origin_y_percent" => {
                 return Some(Type::I64);
             }
-            "align_x" | "align_y" | "background_color" | "border_color" | "shadow_color" => {
+            "align_x" | "align_y" | "background_color" | "border_color" | "border_style"
+            | "shadow_color" => {
                 return Some(Type::Str);
             }
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
@@ -1256,7 +1265,16 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "background_color",
     "border_color",
     "border_width",
+    "border_top_width",
+    "border_bottom_width",
+    "border_start_width",
+    "border_end_width",
+    "border_style",
     "radius",
+    "radius_top_left",
+    "radius_top_right",
+    "radius_bottom_left",
+    "radius_bottom_right",
     "shadow_color",
     "shadow_blur",
     "shadow_offset_x",

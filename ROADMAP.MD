@@ -504,8 +504,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
   - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
   - [x] Every built-in element also has compile-time non-negative inner `padding` with `padding_top`/`padding_bottom`/`padding_start`/`padding_end` overrides, lowered into the existing native element stylesheet without introducing wrapper controls.
-- [ ] Borders/radii.
+- [x] Borders/radii.
   - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
+  - [x] Per-edge border widths (`border_top_width` / `border_bottom_width` / `border_start_width` / `border_end_width`), per-corner radii, and explicit `border_style` (`none`/`solid`/`dashed`/`dotted`/`double`) lower through GTK's standard CSS border surface. A positive width still defaults to `solid` when no style is supplied.
 - [x] Shadows.
   - [x] Bootstrap common native shadows use compile-time `shadow_color`, `shadow_blur`, `shadow_offset_x`, and `shadow_offset_y` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
 - [x] Clipping.

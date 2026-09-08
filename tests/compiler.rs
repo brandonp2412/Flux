@@ -4169,7 +4169,11 @@ view Styled {
         background_color: "#2563EB"
         border_color: "#1E3A8AFF"
         border_width: 2
+        border_bottom_width: 5
+        border_style: "dashed"
         radius: 12
+        radius_top_left: 24
+        radius_bottom_right: 4
         padding: 8
         padding_start: 20
 }
@@ -4181,8 +4185,11 @@ app Styled
     assert!(generated.contains("background-color: #2563EB;"));
     assert!(generated.contains("border-color: #1E3A8AFF;"));
     assert!(generated.contains("border-width: 2px;"));
+    assert!(generated.contains("border-bottom-width: 5px;"));
+    assert!(generated.contains("border-style: dashed;"));
     assert!(generated.contains("border-radius: 12px;"));
-    assert!(generated.contains("border-style: solid;"));
+    assert!(generated.contains("border-top-left-radius: 24px;"));
+    assert!(generated.contains("border-bottom-right-radius: 4px;"));
     assert!(generated.contains("padding-top: 8px;"));
     assert!(generated.contains("padding-bottom: 8px;"));
     assert!(generated.contains("padding-left: 20px;"));
@@ -4219,6 +4226,21 @@ app Styled
     check_source(bad_padding).expect("padding typechecks before native range validation");
     let error = compile_to_c(bad_padding).expect_err("negative padding must fail");
     assert!(error.message.contains("padding must be non-negative"));
+
+    let bad_border_style = r#"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Bad"
+        border_width: 1
+        border_style: "wavy"
+}
+app Styled
+"#;
+    check_source(bad_border_style).expect("border style enum validates during native lowering");
+    let error = compile_to_c(bad_border_style).expect_err("unsupported border style must fail");
+    assert!(error.message.contains("border_style must be one of"));
 }
 
 #[test]

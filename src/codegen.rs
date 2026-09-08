@@ -1486,28 +1486,55 @@ fn emit_element_style(
             declarations.push(format!("{css_name}: {value}px;"));
         }
     }
+    let border_width = static_non_negative_style_i64(element, "border_width", signatures)?;
+    let mut has_visible_border_width = border_width.is_some_and(|value| value > 0);
+    if let Some(value) = border_width {
+        declarations.push(format!("border-width: {value}px;"));
+    }
     for (property_name, css_name) in [
-        ("border_width", "border-width"),
-        ("radius", "border-radius"),
+        ("border_top_width", "border-top-width"),
+        ("border_bottom_width", "border-bottom-width"),
+        ("border_start_width", "border-left-width"),
+        ("border_end_width", "border-right-width"),
     ] {
-        let Some(property) = view_property(element, property_name) else {
-            continue;
-        };
-        let Some(value) = static_expr_i64(&property.value, signatures) else {
+        if let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? {
+            has_visible_border_width |= value > 0;
+            declarations.push(format!("{css_name}: {value}px;"));
+        }
+    }
+    if let Some(property) = view_property(element, "border_style") {
+        let Some(value) = static_expr_str(&property.value, signatures) else {
             return Err(diag(
                 property.value.span,
-                &format!("{property_name} must be a compile-time i64 value"),
+                "border_style must be a compile-time string",
             ));
         };
-        if !(0..=i64::from(i32::MAX)).contains(&value) {
+        if !matches!(
+            value.as_str(),
+            "none" | "solid" | "dashed" | "dotted" | "double"
+        ) {
             return Err(diag(
                 property.value.span,
-                &format!("{property_name} must be between 0 and 2147483647"),
+                "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
             ));
         }
-        declarations.push(format!("{css_name}: {value}px;"));
-        if property_name == "border_width" && value > 0 {
-            declarations.push("border-style: solid;".to_string());
+        declarations.push(format!("border-style: {value};"));
+    } else if has_visible_border_width {
+        declarations.push("border-style: solid;".to_string());
+    }
+
+    let radius = static_non_negative_style_i64(element, "radius", signatures)?;
+    if let Some(value) = radius {
+        declarations.push(format!("border-radius: {value}px;"));
+    }
+    for (property_name, css_name) in [
+        ("radius_top_left", "border-top-left-radius"),
+        ("radius_top_right", "border-top-right-radius"),
+        ("radius_bottom_left", "border-bottom-left-radius"),
+        ("radius_bottom_right", "border-bottom-right-radius"),
+    ] {
+        if let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? {
+            declarations.push(format!("{css_name}: {value}px;"));
         }
     }
     let shadow_color = view_property(element, "shadow_color")
