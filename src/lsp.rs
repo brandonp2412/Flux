@@ -1073,13 +1073,45 @@ fn signature_help_for_document(
         standalone_database = analyzed_document(uri, source)?;
         &standalone_database
     };
+    if call_name == "print" {
+        return Some(signature_help_for_builtin(
+            "print",
+            &["value: i64 | bool | str | error"],
+            "void",
+            active_parameter,
+        ));
+    }
+    if call_name == "error" {
+        return Some(signature_help_for_builtin(
+            "error",
+            &["message: str"],
+            "error",
+            active_parameter,
+        ));
+    }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        if let Some(definition) = database.signatures().enum_type(namespace)
+            && let Some(variant) = definition.variant(member)
+        {
+            return Some(signature_help_for_enum_variant(
+                namespace,
+                member,
+                &variant.payloads,
+                active_parameter,
+            ));
+        }
         let interface = database.signatures().interface(namespace)?;
         let signature = interface.functions.get(member)?;
         return Some(signature_help_for_interface_capability(
             namespace,
             member,
             signature,
+            active_parameter,
+        ));
+    }
+    if database.signatures().interface(call_name).is_some() {
+        return Some(signature_help_for_interface_pack(
+            call_name,
             active_parameter,
         ));
     }
@@ -1121,6 +1153,84 @@ fn signature_help_for_document(
             JsonValue::Number(active_parameter.min(function.params.len().saturating_sub(1)) as i64),
         ),
     ]))
+}
+
+fn signature_help_for_builtin(
+    name: &str,
+    labels: &[&str],
+    returns: &str,
+    active_parameter: usize,
+) -> JsonValue {
+    signature_help_from_labels(name, labels, returns, active_parameter)
+}
+
+fn signature_help_for_enum_variant(
+    enum_name: &str,
+    variant_name: &str,
+    payloads: &[crate::ast::Type],
+    active_parameter: usize,
+) -> JsonValue {
+    let labels = payloads
+        .iter()
+        .map(crate::ast::Type::name)
+        .collect::<Vec<_>>();
+    signature_help_from_owned_labels(
+        &format!("{enum_name}.{variant_name}"),
+        labels,
+        enum_name,
+        active_parameter,
+    )
+}
+
+fn signature_help_for_interface_pack(interface_name: &str, active_parameter: usize) -> JsonValue {
+    signature_help_from_labels(
+        interface_name,
+        &["value: implementing concrete value"],
+        interface_name,
+        active_parameter,
+    )
+}
+
+fn signature_help_from_labels(
+    name: &str,
+    labels: &[&str],
+    returns: &str,
+    active_parameter: usize,
+) -> JsonValue {
+    signature_help_from_owned_labels(
+        name,
+        labels.iter().map(|label| (*label).to_string()).collect(),
+        returns,
+        active_parameter,
+    )
+}
+
+fn signature_help_from_owned_labels(
+    name: &str,
+    labels: Vec<String>,
+    returns: &str,
+    active_parameter: usize,
+) -> JsonValue {
+    let label = format!("fn {name}({}) -> {returns}", labels.join(", "));
+    let parameter_count = labels.len();
+    let parameters = labels
+        .into_iter()
+        .map(|label| object([("label", JsonValue::String(label))]))
+        .collect::<Vec<_>>();
+    object([
+        (
+            "signatures",
+            JsonValue::Array(vec![object([
+                ("label", JsonValue::String(label)),
+                ("parameters", JsonValue::Array(parameters)),
+            ])]),
+        ),
+        ("activeSignature", JsonValue::Number(0)),
+        (
+            "activeParameter",
+            JsonValue::Number(active_parameter.min(parameter_count.saturating_sub(1)) as i64),
+        ),
+    ])
 }
 
 fn visible_local_callable_type(
@@ -1798,6 +1908,11 @@ fn definition_for_document(
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
     if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+        if let Some(definition) = ui_property_definition(
+            uri, source, line_index, character, encoding, &database, &sources,
+        ) {
+            return Some(definition);
+        }
         let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
         let target = sources
             .iter()
@@ -1808,11 +1923,66 @@ fn definition_for_document(
         ]));
     }
     let database = analyzed_document(uri, source)?;
+    if let Some(definition) =
+        ui_property_definition(uri, source, line_index, character, encoding, &database, &[])
+    {
+        return Some(definition);
+    }
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
     Some(object([
         ("uri", JsonValue::String(uri.to_string())),
         ("range", lsp_range(symbol.span, source, encoding)),
     ]))
+}
+
+fn ui_property_definition(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    database: &crate::semantic::SemanticDatabase,
+    sources: &[crate::project::ProjectSource],
+) -> Option<JsonValue> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let line = *lines.get(line_index)?;
+    if leading_spaces(line) < 8 {
+        return None;
+    }
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let word = identifier_at(line, byte)?;
+    let property = line.trim().split_once(':')?.0.trim();
+    if property != word {
+        return None;
+    }
+    let (kind, _) = enclosing_view_element(&lines, line_index)?;
+    if !crate::typecheck::view_property_names(kind).is_empty() {
+        return None;
+    }
+    let view = database
+        .program()
+        .views
+        .iter()
+        .find(|view| view.name == kind)?;
+    let param = view.params.iter().find(|param| param.name == property)?;
+    if let Some(target) = sources
+        .iter()
+        .find(|source| source.source_id == param.name_span.source_id)
+    {
+        return Some(object([
+            ("uri", JsonValue::String(file_uri_from_path(&target.path))),
+            ("range", lsp_range(param.name_span, &target.text, encoding)),
+        ]));
+    }
+    if param.name_span.source_id == source_id_for_uri(uri)
+        || param.name_span.source_id == SourceId::UNKNOWN
+    {
+        return Some(object([
+            ("uri", JsonValue::String(uri.to_string())),
+            ("range", lsp_range(param.name_span, source, encoding)),
+        ]));
+    }
+    None
 }
 
 fn analyzed_project_document(
@@ -3173,6 +3343,44 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
+        let uri = "file:///tmp/call-shapes.flux";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let readable: Readable = Readable(memory)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let help_for = |needle: &str| {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = if needle == "error(" {
+                line.find("error(").unwrap() + "error(\"boom\"".len()
+            } else {
+                line.len().saturating_sub(1)
+            };
+            signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("call should have signature help")
+            .to_json()
+        };
+
+        let enum_help = help_for("Outcome.Ok");
+        assert!(enum_help.contains("fn Outcome.Ok(i64, str) -> Outcome"));
+        let pack_help = help_for("Readable(memory");
+        assert!(pack_help.contains("fn Readable(value: implementing concrete value) -> Readable"));
+        let print_help = help_for("print(");
+        assert!(print_help.contains("fn print(value: i64 | bool | str | error) -> void"));
+        let error_help = help_for("error(");
+        assert!(error_help.contains("fn error(message: str) -> error"));
+    }
+
+    #[test]
     fn signature_help_supports_first_class_function_values() {
         let uri = "file:///tmp/function-value-signature.flux";
         let source = "type Mapper = fn(i64, str) -> bool\nfn apply(transform: Mapper) -> bool {\n    return transform(42, \"Flux\")\n}\nfn always_true(value: i64, label: str) -> bool { true }\nfn main() -> i64 {\n    let result: bool = apply(always_true)\n    return 0\n}\n";
@@ -3239,6 +3447,55 @@ mod tests {
         assert!(help.contains("fn add(left: i64, right: i64) -> i64"));
         assert!(help.contains("\"activeParameter\":1"));
         assert!(help.contains("\"label\":\"left: i64\""));
+    }
+
+    #[test]
+    fn custom_view_property_definition_targets_the_declared_parameter() {
+        let uri = "file:///tmp/ui-definition.flux";
+        let source = "view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        label: \"Flux\"\n}\nfn main() -> i64 { 0 }\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let definition =
+            definition_for_document(uri, source, &documents, 10, 10, PositionEncoding::Utf8)
+                .expect("composed view property should resolve to its parameter")
+                .to_json();
+        assert!(definition.contains("\"line\":0"));
+        assert!(definition.contains("\"character\":11"));
+    }
+
+    #[test]
+    fn imported_custom_view_property_definition_targets_dependency_parameter() {
+        let root = std::env::temp_dir().join(format!("flux-ui-definition-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary UI project should be writable");
+        let dependency = root.join("badge.flux");
+        let main = root.join("main.flux");
+        std::fs::write(
+            &dependency,
+            "pub view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\n",
+        )
+        .expect("view dependency should be writable");
+        let source = "import \"badge.flux\"\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        label: \"Flux\"\n}\nfn main() -> i64 { 0 }\n";
+        std::fs::write(&main, source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = format!("file://{}", main.display());
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+        let property_line = source
+            .lines()
+            .position(|line| line.contains("label: \"Flux\""))
+            .expect("property line should exist");
+        let definition = definition_for_document(
+            &uri,
+            source,
+            &documents,
+            property_line,
+            10,
+            PositionEncoding::Utf8,
+        )
+        .expect("imported composed-view property should resolve")
+        .to_json();
+        assert!(definition.contains("badge.flux"));
+        assert!(definition.contains("\"line\":0"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
