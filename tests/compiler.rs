@@ -3729,6 +3729,32 @@ app Counter
 }
 
 #[test]
+fn i64_view_state_supports_arithmetic_transitions_and_derived_properties() {
+    let source = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto auto
+    state count: i64 = 0
+    Text title at 1,1
+        text: "Many" if count >= 2 else "Few"
+    Button action at 2,1
+        text: "Add"
+        enabled: count < 3
+        on_press: count => count + 1
+}
+app Counter
+"#;
+    check_source(source).expect("i64 state and primitive derived expressions should typecheck");
+    let generated = compile_to_c(source).expect("i64 state should lower natively");
+    assert!(generated.contains("static int64_t flux__ui_state_count = INT64_C(0);"));
+    assert!(generated.contains("flux__ui_state_count = (flux__ui_state_count + INT64_C(1));"));
+    assert!(generated.contains("flux__ui_state_count >= INT64_C(2)"));
+    assert!(generated.contains("flux__ui_state_count < INT64_C(3)"));
+    assert!(generated.contains("gtk_label_set_text"));
+    assert!(generated.contains("gtk_widget_set_sensitive"));
+}
+
+#[test]
 fn rejects_invalid_view_state_transitions() {
     let unknown = r#"
 view Screen {
