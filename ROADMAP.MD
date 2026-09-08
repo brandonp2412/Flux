@@ -467,7 +467,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Focus model.
   - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Programmatic focus movement, focus events, scopes, and restoration remain pending.
 - [x] Hover.
-  - [x] Common `on_hover` / `on_leave` events on native Text/Button/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
+  - [x] Common `on_hover` / `on_leave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.

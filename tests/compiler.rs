@@ -4217,6 +4217,40 @@ app Form
 }
 
 #[test]
+fn native_elements_support_hover_leave_callbacks_and_state_transitions() {
+    let source = r#"
+fn leave_notice() -> void {
+    print("left")
+}
+
+view HoverCard {
+    grid columns: 1fr
+    grid rows: auto auto
+    state hovered: bool = false
+    Text title at 1,1
+        text: "Hovered" if hovered else "Idle"
+        on_hover: hovered => true
+        on_leave: hovered => false
+    Button action at 2,1
+        text: "Action"
+        on_leave: leave_notice
+}
+app HoverCard
+"#;
+
+    check_source(source).expect("hover/leave callbacks and transitions should typecheck");
+    let generated = compile_to_c(source).expect("hover/leave events should lower natively");
+    assert!(generated.contains("GtkEventControllerMotion *controller"));
+    assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
+    assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
+    assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
+    assert!(generated.contains("gtk_event_controller_motion_new()"));
+    assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_hover_title)"));
+    assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_leave_title)"));
+    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__motion_title)"));
+}
+
+#[test]
 fn toggle_control_binds_native_checked_state_and_functional_transition() {
     let source = r#"
 view Settings {

@@ -238,6 +238,39 @@ fn emit_linux_gtk_application(
             function_c_name(function),
         ));
     }
+    for element in &view.elements {
+        for (property_name, callback_name) in [("on_hover", "hover"), ("on_leave", "leave")] {
+            let Some(action) = view_property(element, property_name) else {
+                continue;
+            };
+            let body = if let Some(transition) = &action.transition {
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                format!(
+                    "{} = {next}; flux__ui_refresh();",
+                    ui_state_c_name(&transition.state)
+                )
+            } else {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap pointer event lowering requires a named fn() -> void callback or state transition",
+                    ));
+                };
+                format!("{}(); flux__ui_refresh();", function_c_name(function))
+            };
+            if property_name == "on_hover" {
+                out.push_str(&format!(
+                    "static void flux__ui_{callback_name}_{}(GtkEventControllerMotion *controller, double x, double y, gpointer data) {{ (void)controller; (void)x; (void)y; (void)data; {body} }}\n",
+                    element.name,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "static void flux__ui_{callback_name}_{}(GtkEventControllerMotion *controller, gpointer data) {{ (void)controller; (void)data; {body} }}\n",
+                    element.name,
+                ));
+            }
+        }
+    }
     out.push('\n');
     if let Some(function) = application_metadata_function(application, "on_exit") {
         out.push_str(&format!(
@@ -566,6 +599,29 @@ fn emit_linux_gtk_application(
             let description = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
+            ));
+        }
+        if view_property(element, "on_hover").is_some()
+            || view_property(element, "on_leave").is_some()
+        {
+            let controller = format!("flux__motion_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = gtk_event_controller_motion_new();\n"
+            ));
+            if view_property(element, "on_hover").is_some() {
+                out.push_str(&format!(
+                    "    g_signal_connect({controller}, \"enter\", G_CALLBACK(flux__ui_hover_{}), NULL);\n",
+                    element.name
+                ));
+            }
+            if view_property(element, "on_leave").is_some() {
+                out.push_str(&format!(
+                    "    g_signal_connect({controller}, \"leave\", G_CALLBACK(flux__ui_leave_{}), NULL);\n",
+                    element.name
+                ));
+            }
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
         emit_grid_sizing(out, view, element, &variable, signatures)?;
