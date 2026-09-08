@@ -403,15 +403,18 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 Flux hot reload should feel closer to React development than Flutter's manual reload workflow.
 
 - [ ] `flux run` watches the project automatically in development mode.
+  - [x] Bootstrap `fluxc run` builds and launches a native development binary, then continuously watches the real project/import graph plus `flux.toml` where applicable.
 - [ ] Saving a source file automatically triggers incremental recompilation.
-- [ ] No hot-reload hotkey is required for the normal workflow.
+  - [x] Bootstrap runner automatically triggers a full project recompile on save; incremental compiler reuse remains pending rather than being implied by the watcher.
+- [x] No hot-reload hotkey is required for the normal workflow: the bootstrap runner reacts to saves automatically.
 - [ ] Apply compatible function/view changes to the running process automatically.
 - [ ] Preserve compatible application/UI state across reloads.
 - [ ] Fast Refresh-style boundary detection: reset only state that is no longer structurally compatible.
 - [ ] Automatically fall back to a controlled restart when a change cannot be safely hot-applied.
-- [ ] Surface reload/restart reason in tooling without interrupting normal development.
-- [ ] Debounce/coalesce rapid editor saves.
-- [ ] Watch dependency/module changes.
+  - [x] Bootstrap controlled-restart path builds a replacement binary before stopping the current child; failed recompiles keep the last good process untouched and continue watching for repairs.
+- [x] Surface reload/restart reason in tooling without interrupting normal development: source detection, compile failure, child exit, and successful rebuild/restart are reported concisely.
+- [x] Debounce/coalesce rapid editor saves before recompiling.
+- [x] Watch dependency/module changes using the compiler's loaded import graph, refreshing the watch set after successful recompilation and retaining known paths across failed edits.
 - [ ] Stable development ABI/function indirection strategy.
 - [ ] Incremental compiler cache.
 - [ ] Target: save-to-visible-update latency competitive with modern React Fast Refresh for ordinary UI edits.
@@ -671,6 +674,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [ ] `flux new`.
 - [ ] `flux run`.
+  - [x] Bootstrap `fluxc run` provides the automatic development watch/build/restart loop; the final `flux` CLI naming/distribution remains pending.
 - [x] Bootstrap `fluxc build` equivalent exists through Cargo invocation.
 - [ ] `flux build`.
 - [ ] `flux test`.

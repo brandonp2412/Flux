@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
@@ -151,8 +154,199 @@ fn run() -> Result<(), CliError> {
             println!("built: {}", output.display());
             Ok(())
         }
+        "run" => {
+            let path = require_target(&args)?;
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "run syntax is 'run <file.flux|package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            run_development(path)
+        }
         _ => Err(CliError::Message(usage())),
     }
+}
+
+fn run_development(target: &Path) -> Result<(), CliError> {
+    let mut generation = 0usize;
+    let (mut child, mut binary, mut watch_paths) = start_development_build(target, generation)?;
+    let mut fingerprints = watch_fingerprints(&watch_paths);
+    eprintln!(
+        "run: started; watching {} source file{}",
+        watch_paths.len(),
+        if watch_paths.len() == 1 { "" } else { "s" }
+    );
+
+    loop {
+        if child
+            .as_mut()
+            .is_some_and(|process| process.try_wait().ok().flatten().is_some())
+        {
+            child = None;
+            eprintln!("run: app exited; waiting for source changes");
+        }
+        thread::sleep(Duration::from_millis(75));
+        let current = watch_fingerprints(&watch_paths);
+        if current == fingerprints {
+            continue;
+        }
+
+        fingerprints = debounce_changes(&watch_paths, current);
+        eprintln!("reload: source change detected; recompiling");
+        let (diagnostics, sources) = fluxc::project::check_with_sources(target);
+        if !diagnostics.is_empty() {
+            report_diagnostics(target, &diagnostics, &sources);
+            watch_paths = merge_watch_paths(target, &watch_paths, &sources);
+            fingerprints = watch_fingerprints(&watch_paths);
+            eprintln!("reload: compile failed; keeping the last good process");
+            continue;
+        }
+
+        let generated = match fluxc::project::compile_to_c(target) {
+            Ok(generated) => generated,
+            Err(diagnostic) => {
+                report_diagnostics(target, &[diagnostic], &sources);
+                watch_paths = merge_watch_paths(target, &watch_paths, &sources);
+                fingerprints = watch_fingerprints(&watch_paths);
+                eprintln!("reload: compile failed; keeping the last good process");
+                continue;
+            }
+        };
+        generation += 1;
+        let next_binary = development_binary_path(generation);
+        if let Err(message) = build_native(&generated, &next_binary) {
+            eprintln!("reload: {message}");
+            let _ = fs::remove_file(&next_binary);
+            continue;
+        }
+
+        stop_child(&mut child);
+        let previous_binary = std::mem::replace(&mut binary, next_binary);
+        child = Some(spawn_development_binary(&binary)?);
+        let _ = fs::remove_file(previous_binary);
+        watch_paths = project_watch_paths(target, &sources);
+        fingerprints = watch_fingerprints(&watch_paths);
+        eprintln!("reload: rebuilt and restarted after source change");
+    }
+}
+
+fn start_development_build(
+    target: &Path,
+    generation: usize,
+) -> Result<(Option<Child>, PathBuf, Vec<PathBuf>), CliError> {
+    let sources = validate_project(target)?;
+    let generated = match fluxc::project::compile_to_c(target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = development_binary_path(generation);
+    build_native(&generated, &binary)?;
+    let child = spawn_development_binary(&binary)?;
+    let watch_paths = project_watch_paths(target, &sources);
+    Ok((Some(child), binary, watch_paths))
+}
+
+fn spawn_development_binary(path: &Path) -> Result<Child, CliError> {
+    Command::new(path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| {
+            CliError::Message(format!(
+                "failed to launch development binary '{}': {error}",
+                path.display()
+            ))
+        })
+}
+
+fn stop_child(child: &mut Option<Child>) {
+    let Some(mut process) = child.take() else {
+        return;
+    };
+    if process.try_wait().ok().flatten().is_none() {
+        let _ = process.kill();
+    }
+    let _ = process.wait();
+}
+
+fn development_binary_path(generation: usize) -> PathBuf {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    env::temp_dir().join(format!(
+        "fluxc-run-{}-{generation}{suffix}",
+        std::process::id()
+    ))
+}
+
+fn project_watch_paths(target: &Path, sources: &[fluxc::project::ProjectSource]) -> Vec<PathBuf> {
+    let mut paths = sources
+        .iter()
+        .map(|source| source.path.clone())
+        .collect::<HashSet<_>>();
+    let manifest = if target.is_dir() {
+        Some(target.join("flux.toml"))
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        Some(target.to_path_buf())
+    } else {
+        None
+    };
+    if let Some(manifest) = manifest {
+        paths.insert(fs::canonicalize(&manifest).unwrap_or(manifest));
+    }
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn merge_watch_paths(
+    target: &Path,
+    previous: &[PathBuf],
+    sources: &[fluxc::project::ProjectSource],
+) -> Vec<PathBuf> {
+    let mut paths = previous.iter().cloned().collect::<HashSet<_>>();
+    paths.extend(project_watch_paths(target, sources));
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn watch_fingerprints(paths: &[PathBuf]) -> HashMap<PathBuf, Option<u64>> {
+    paths
+        .iter()
+        .map(|path| (path.clone(), file_fingerprint(path)))
+        .collect()
+}
+
+fn debounce_changes(
+    paths: &[PathBuf],
+    mut latest: HashMap<PathBuf, Option<u64>>,
+) -> HashMap<PathBuf, Option<u64>> {
+    let mut stable_since = Instant::now();
+    loop {
+        thread::sleep(Duration::from_millis(40));
+        let current = watch_fingerprints(paths);
+        if current != latest {
+            latest = current;
+            stable_since = Instant::now();
+            continue;
+        }
+        if stable_since.elapsed() >= Duration::from_millis(120) {
+            return latest;
+        }
+    }
+}
+
+fn file_fingerprint(path: &Path) -> Option<u64> {
+    let bytes = fs::read(path).ok()?;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(hash)
 }
 
 fn validate_project(path: &Path) -> Result<Vec<fluxc::project::ProjectSource>, CliError> {
@@ -317,5 +511,5 @@ fn build_native(c_source: &str, output: &Path) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary]".to_string()
+    "usage: fluxc check <file.flux|package-dir|flux.toml> [--json] | fluxc format <file.flux> [--check] | fluxc emit-c <file.flux|package-dir|flux.toml> [-o file.c] | fluxc build <file.flux|package-dir|flux.toml> [-o binary] | fluxc run <file.flux|package-dir|flux.toml>".to_string()
 }

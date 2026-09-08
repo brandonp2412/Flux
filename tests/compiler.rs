@@ -1,5 +1,7 @@
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
@@ -2735,6 +2737,82 @@ fn check_cli_renders_width_aware_source_diagnostics_and_color() {
             .windows(5)
             .any(|window| window == b"\x1b[31m")
     );
+}
+
+#[test]
+fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
+    let root = std::env::temp_dir().join(format!("flux-run-watch-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary run project should be writable");
+    let dependency = root.join("message.flux");
+    let entry = root.join("main.flux");
+    let log = root.join("run.log");
+    fs::write(&dependency, "pub fn message() -> str { \"version-one\" }\n")
+        .expect("run dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"message.flux\"\nfn main() -> i64 {\n    print(message())\n    return 0\n}\n",
+    )
+    .expect("run entry should be writable");
+
+    let stdout = fs::File::create(&log).expect("run log should be writable");
+    let stderr = stdout.try_clone().expect("run log should be cloneable");
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("run")
+        .arg(&entry)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("fluxc run should start");
+
+    wait_for_log(
+        &log,
+        &["version-one", "run: started"],
+        Duration::from_secs(5),
+    );
+    fs::write(&dependency, "pub fn message() -> str { \"version-two\" }\n")
+        .expect("dependency update should be writable");
+    wait_for_log(
+        &log,
+        &[
+            "version-two",
+            "reload: rebuilt and restarted after source change",
+        ],
+        Duration::from_secs(5),
+    );
+
+    fs::write(&dependency, "pub fn message() -> str { false }\n")
+        .expect("broken dependency should be writable");
+    wait_for_log(
+        &log,
+        &["expected str, got bool", "reload: compile failed"],
+        Duration::from_secs(5),
+    );
+    fs::write(
+        &dependency,
+        "pub fn message() -> str { \"version-three\" }\n",
+    )
+    .expect("repaired dependency should be writable");
+    wait_for_log(&log, &["version-three"], Duration::from_secs(5));
+
+    let _ = runner.kill();
+    let _ = runner.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn wait_for_log(path: &std::path::Path, needles: &[&str], timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if needles.iter().all(|needle| text.contains(needle)) {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for {needles:?}; log was:\n{text}"
+        );
+        thread::sleep(Duration::from_millis(40));
+    }
 }
 
 #[test]

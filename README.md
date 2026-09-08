@@ -35,7 +35,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
-- CLI commands for checking, deterministic formatting, emitting C, and building a native executable, including package-root/`flux.toml` targets;
+- CLI commands for checking, deterministic formatting, emitting C, building native executables, and automatically running/rebuilding development targets, including package-root/`flux.toml` targets;
 - compile-time constant folding for `i64`, `bool`, and `str`, including forward references and short-circuit boolean expressions with no runtime global storage;
 - compiler tests and runnable native examples, including nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, and parameterized view composition.
 
@@ -62,6 +62,14 @@ Build it:
 cargo run -- build examples/hello.flux -o hello
 ./hello
 ```
+
+Run in development mode with automatic save detection:
+
+```sh
+cargo run -- run examples/hello.flux
+```
+
+The bootstrap runner watches imported Flux modules automatically, debounces rapid saves, recompiles on change, and restarts only after a successful replacement build. Compiler errors keep the last good process untouched and the watcher remains active until the next save. State-preserving hot apply is a later development-ABI milestone; the current runner is the controlled-restart foundation for it.
 
 Check without producing a binary:
 
