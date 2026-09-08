@@ -450,18 +450,24 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             );
             format!("{name}({})", rendered.join(", "))
         }
-        ExprKind::EnumVariant {
-            enum_name,
-            variant,
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
             args,
+            named_args,
             ..
-        } => format!(
-            "{enum_name}.{variant}({})",
-            args.iter()
+        } => {
+            let mut rendered = args
+                .iter()
                 .map(|arg| format_expr(arg, 0))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .collect::<Vec<_>>();
+            rendered.extend(
+                named_args
+                    .iter()
+                    .map(|arg| format!("{}: {}", arg.name, format_expr(&arg.value, 0))),
+            );
+            format!("{namespace}.{name}({})", rendered.join(", "))
+        }
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {

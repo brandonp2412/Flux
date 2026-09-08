@@ -118,7 +118,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 
 - [x] `interface` declarations consisting of statically validated function signatures/capabilities, with named-only parameter metadata, formatter/semantic support, namespace diagnostics, and zero-runtime lowering until implementation/dispatch semantics are introduced.
 - [x] Explicit implementation of interfaces by concrete data types without inheritance, using exhaustive capability-to-free-function mappings with concrete first-parameter receiver validation, exact named-parameter/return contracts, formatter/semantic support, and zero-runtime conformance metadata. Module implementations remain naturally downstream of modules/packages.
-- [ ] Static dispatch where the concrete type is known.
+- [x] Static interface dispatch where the concrete receiver type is known, using `Interface.capability(receiver, ...)` syntax and compile-time lowering directly to the mapped free function, including named arguments and multi-value returns with no vtable/dynamic lookup.
 - [ ] Efficient interface/dynamic dispatch where runtime polymorphism is required.
 - [ ] Interface values usable as function arguments and return values.
 - [ ] Interface composition without class inheritance.

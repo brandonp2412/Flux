@@ -108,7 +108,21 @@ impl Storage for FileStorage {
 }
 ```
 
-The mapped free function receives the concrete implementing value as its first positional parameter. Every remaining parameter must match the capability signature's types and named-only shape, named parameters keep their contract names, and the return shape must match exactly. Every interface capability must be mapped exactly once. This gives Flux explicit conformance without methods, hidden receivers, classes, inheritance, or vtables. Implementation declarations themselves add no runtime object; they record compile-time dispatch facts for the static/dynamic dispatch stages that follow.
+The mapped free function receives the concrete implementing value as its first positional parameter. Every remaining parameter must match the capability signature's types and named-only shape, named parameters keep their contract names, and the return shape must match exactly. Every interface capability must be mapped exactly once. This gives Flux explicit conformance without methods, hidden receivers, classes, inheritance, or vtables. Implementation declarations themselves add no runtime object.
+
+When the receiver's concrete type is statically known, the interface namespace can dispatch a capability directly:
+
+```flux
+let data: str, err: error = Storage.load(storage, "settings.flux")
+let save_err: error = Storage.save(
+    storage,
+    "settings.flux",
+    data,
+    durable: true,
+)
+```
+
+`Interface.capability(receiver, ...)` is namespace-qualified function dispatch, not a method call on the receiver. The compiler checks that the receiver type has the declared implementation, validates the remaining capability arguments against the interface signature, resolves the mapping at compile time, and emits a direct call to the mapped free function. Multi-value returns retain their ordinary native return ABI. No vtable, reflection, runtime interface object, or dynamic lookup is introduced for static dispatch.
 
 ## Function parameters
 

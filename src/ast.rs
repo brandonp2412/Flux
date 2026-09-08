@@ -408,12 +408,13 @@ pub enum ExprKind {
         base: Option<Box<Expr>>,
         fields: Vec<StructLiteralField>,
     },
-    EnumVariant {
-        enum_name: String,
-        enum_span: SourceSpan,
-        variant: String,
-        variant_span: SourceSpan,
+    QualifiedCall {
+        namespace: String,
+        namespace_span: SourceSpan,
+        name: String,
+        name_span: SourceSpan,
         args: Vec<Expr>,
+        named_args: Vec<NamedArg>,
     },
     Field {
         base: Box<Expr>,

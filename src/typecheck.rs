@@ -1419,54 +1419,21 @@ pub fn type_of_expr(
                 )),
             }
         }
-        ExprKind::EnumVariant {
-            enum_name,
-            enum_span,
-            variant,
-            variant_span,
-            args,
+        ExprKind::QualifiedCall {
+            namespace, name, ..
         } => {
-            let Some(definition) = signatures.enum_type(enum_name) else {
-                return Err(diag(*enum_span, &format!("unknown enum '{enum_name}'")));
-            };
-            let Some(variant_definition) = definition.variant(variant) else {
-                return Err(diag(
-                    *variant_span,
-                    &format!("enum '{enum_name}' has no variant '{variant}'"),
-                )
-                .with_label(definition.span, format!("'{enum_name}' is declared here")));
-            };
-            if args.len() != variant_definition.payloads.len() {
-                return Err(diag(
+            let returns = check_qualified_call(expr, env, signatures)?;
+            match returns.as_slice() {
+                [] => Ok(Type::Void),
+                [ty] => Ok(ty.clone()),
+                _ => Err(diag(
                     expr.span,
                     &format!(
-                        "variant '{enum_name}.{variant}' expects {} payload value{}, got {}",
-                        variant_definition.payloads.len(),
-                        if variant_definition.payloads.len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
-                        args.len()
+                        "qualified call '{namespace}.{name}' returns {} values; use a destructuring binding",
+                        returns.len()
                     ),
-                )
-                .with_label(
-                    variant_definition.span,
-                    format!("'{variant}' is declared here"),
-                ));
+                )),
             }
-            for (index, (arg, expected)) in
-                args.iter().zip(&variant_definition.payloads).enumerate()
-            {
-                let actual = type_of_expr(arg, env, signatures)?;
-                require_type(
-                    arg.span,
-                    expected,
-                    &actual,
-                    &format!("payload {} of '{}.{variant}'", index + 1, enum_name),
-                )?;
-            }
-            Ok(Type::Named(enum_name.clone()))
         }
         ExprKind::StructLiteral {
             name,
@@ -1788,8 +1755,126 @@ fn value_types_of_expr(
         } if name != "print" && name != "error" => {
             check_call(expr.span, name, args, named_args, env, signatures)
         }
+        ExprKind::QualifiedCall { .. } => check_qualified_call(expr, env, signatures),
         _ => Ok(vec![type_of_expr(expr, env, signatures)?]),
     }
+}
+
+fn check_qualified_call(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    let ExprKind::QualifiedCall {
+        namespace,
+        namespace_span,
+        name,
+        name_span,
+        args,
+        named_args,
+    } = &expr.kind
+    else {
+        return Err(diag(expr.span, "expected a qualified call"));
+    };
+    let span = expr.span;
+    if let Some(definition) = signatures.enum_type(namespace) {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("enum variant '{namespace}.{name}' does not accept named payloads"),
+            ));
+        }
+        let Some(variant_definition) = definition.variant(name) else {
+            return Err(diag(
+                *name_span,
+                &format!("enum '{namespace}' has no variant '{name}'"),
+            )
+            .with_label(definition.span, format!("'{namespace}' is declared here")));
+        };
+        if args.len() != variant_definition.payloads.len() {
+            return Err(diag(
+                span,
+                &format!(
+                    "variant '{namespace}.{name}' expects {} payload value{}, got {}",
+                    variant_definition.payloads.len(),
+                    if variant_definition.payloads.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    args.len()
+                ),
+            )
+            .with_label(
+                variant_definition.span,
+                format!("'{name}' is declared here"),
+            ));
+        }
+        for (index, (arg, expected)) in args.iter().zip(&variant_definition.payloads).enumerate() {
+            let actual = type_of_expr(arg, env, signatures)?;
+            require_type(
+                arg.span,
+                expected,
+                &actual,
+                &format!("payload {} of '{}.{name}'", index + 1, namespace),
+            )?;
+        }
+        return Ok(vec![Type::Named(namespace.to_string())]);
+    }
+
+    let Some(interface) = signatures.interface(namespace) else {
+        return Err(diag(
+            *namespace_span,
+            &format!("unknown enum or interface namespace '{namespace}'"),
+        ));
+    };
+    let Some(member) = interface.functions.get(name) else {
+        return Err(diag(
+            *name_span,
+            &format!("interface '{namespace}' has no capability '{name}'"),
+        )
+        .with_label(interface.span, format!("'{namespace}' is declared here")));
+    };
+    let Some(receiver) = args.first() else {
+        return Err(diag(
+            span,
+            &format!(
+                "static interface call '{namespace}.{name}' requires a concrete receiver as its first argument"
+            ),
+        ));
+    };
+    let receiver_ty = signatures.canonical_type(&type_of_expr(receiver, env, signatures)?);
+    let Type::Named(target_name) = &receiver_ty else {
+        return Err(diag(
+            receiver.span,
+            &format!(
+                "static interface call '{namespace}.{name}' requires a concrete struct or enum receiver"
+            ),
+        ));
+    };
+    let Some(implementation) = signatures.implementation(namespace, target_name) else {
+        return Err(diag(
+            receiver.span,
+            &format!("type '{target_name}' does not implement interface '{namespace}'"),
+        ));
+    };
+    if !implementation.functions.contains_key(name) {
+        return Err(diag(
+            *name_span,
+            &format!(
+                "implementation of '{namespace}' for '{target_name}' does not map capability '{name}'"
+            ),
+        ));
+    }
+    check_declared_call(
+        span,
+        &format!("{namespace}.{name}"),
+        member,
+        &args[1..],
+        named_args,
+        env,
+        signatures,
+    )
 }
 
 fn check_call(
@@ -1834,6 +1919,18 @@ fn check_call(
         }
         return Ok(returns.clone());
     };
+    check_declared_call(span, name, signature, args, named_args, env, signatures)
+}
+
+fn check_declared_call(
+    span: SourceSpan,
+    name: &str,
+    signature: &Signature,
+    args: &[Expr],
+    named_args: &[NamedArg],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
     let positional = signature
         .param_details
         .iter()
@@ -2036,7 +2133,7 @@ fn evaluate_default_expr(
         }
         ExprKind::Nil
         | ExprKind::Call { .. }
-        | ExprKind::EnumVariant { .. }
+        | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. } => Err(diag(
@@ -2164,7 +2261,7 @@ fn evaluate_constant_expr(
         }
         ExprKind::Nil
         | ExprKind::Call { .. }
-        | ExprKind::EnumVariant { .. }
+        | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. } => Err(diag(

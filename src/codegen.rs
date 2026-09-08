@@ -719,24 +719,29 @@ fn emit_expr(
                 ty,
             }
         }
-        ExprKind::EnumVariant {
-            enum_name,
-            variant,
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
             args,
+            named_args,
             ..
         } => {
-            let mut rendered = Vec::with_capacity(args.len());
-            for arg in args {
-                rendered.push(emit_expr(arg, env, signatures)?.code);
-            }
-            EmittedExpr {
-                code: format!(
-                    "{}({})",
-                    enum_variant_helper_name(enum_name, variant),
-                    rendered.join(", ")
-                ),
-                ty: Type::Named(enum_name.clone()),
-            }
+            let (code, returns, _) = emit_qualified_call(
+                expr.span, namespace, name, args, named_args, env, signatures,
+            )?;
+            let ty = match returns.as_slice() {
+                [] => Type::Void,
+                [ty] => ty.clone(),
+                _ => {
+                    return Err(diag(
+                        expr.span,
+                        &format!(
+                            "qualified call '{namespace}.{name}' returns multiple values and requires destructuring"
+                        ),
+                    ));
+                }
+            };
+            EmittedExpr { code, ty }
         }
         ExprKind::StructLiteral {
             name, base, fields, ..
@@ -849,6 +854,91 @@ fn emit_expr(
     Ok(emitted)
 }
 
+fn emit_qualified_call(
+    span: SourceSpan,
+    namespace: &str,
+    name: &str,
+    args: &[Expr],
+    named_args: &[NamedArg],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    if let Some(definition) = signatures.enum_type(namespace) {
+        let variant = definition
+            .variant(name)
+            .ok_or_else(|| diag(span, "unknown enum variant reached code generation"))?;
+        if !named_args.is_empty() || args.len() != variant.payloads.len() {
+            return Err(diag(
+                span,
+                "invalid enum variant call reached code generation",
+            ));
+        }
+        let mut rendered = Vec::with_capacity(args.len());
+        for arg in args {
+            rendered.push(emit_expr(arg, env, signatures)?.code);
+        }
+        return Ok((
+            format!(
+                "{}({})",
+                enum_variant_helper_name(namespace, name),
+                rendered.join(", ")
+            ),
+            vec![Type::Named(namespace.to_string())],
+            None,
+        ));
+    }
+
+    let interface = signatures.interface(namespace).ok_or_else(|| {
+        diag(
+            span,
+            "unknown interface reached static dispatch code generation",
+        )
+    })?;
+    let member = interface
+        .functions
+        .get(name)
+        .ok_or_else(|| diag(span, "unknown interface capability reached code generation"))?;
+    let receiver = args
+        .first()
+        .ok_or_else(|| diag(span, "static interface dispatch requires a receiver"))?;
+    let receiver_value = emit_expr(receiver, env, signatures)?;
+    let receiver_ty = signatures.canonical_type(&receiver_value.ty);
+    let Type::Named(target_name) = receiver_ty else {
+        return Err(diag(
+            receiver.span,
+            "static interface dispatch requires a concrete receiver",
+        ));
+    };
+    let implementation = signatures
+        .implementation(namespace, &target_name)
+        .ok_or_else(|| {
+            diag(
+                receiver.span,
+                "missing interface implementation during code generation",
+            )
+        })?;
+    let mapped = implementation.functions.get(name).ok_or_else(|| {
+        diag(
+            span,
+            "missing interface capability mapping during code generation",
+        )
+    })?;
+    let mut rendered = Vec::with_capacity(member.param_details.len() + 1);
+    rendered.push(receiver_value.code);
+    rendered.extend(emit_call_arguments(
+        member,
+        &args[1..],
+        named_args,
+        env,
+        signatures,
+    )?);
+    Ok((
+        format!("{}({})", function_c_name(mapped), rendered.join(", ")),
+        member.returns.clone(),
+        Some(mapped.clone()),
+    ))
+}
+
 fn emit_call_arguments(
     signature: &Signature,
     args: &[Expr],
@@ -888,34 +978,59 @@ fn emit_multi_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, String), Diagnostic> {
-    let ExprKind::Call {
-        name,
-        args,
-        named_args,
-    } = &expr.kind
-    else {
-        return Err(diag(
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            let signature = signatures.get(name).ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!("unknown function '{name}' during code generation"),
+                )
+            })?;
+            if signature.returns.len() < 2 {
+                return Err(diag(
+                    expr.span,
+                    &format!("function '{name}' does not return multiple values"),
+                ));
+            }
+            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
+            Ok((
+                format!("{}({})", function_c_name(name), rendered.join(", ")),
+                multi_return_struct_name(name),
+            ))
+        }
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
+            args,
+            named_args,
+            ..
+        } => {
+            let (code, returns, mapped) = emit_qualified_call(
+                expr.span, namespace, name, args, named_args, env, signatures,
+            )?;
+            if returns.len() < 2 {
+                return Err(diag(
+                    expr.span,
+                    &format!("qualified call '{namespace}.{name}' does not return multiple values"),
+                ));
+            }
+            let mapped = mapped.ok_or_else(|| {
+                diag(
+                    expr.span,
+                    "only interface static dispatch can return multiple values here",
+                )
+            })?;
+            Ok((code, multi_return_struct_name(&mapped)))
+        }
+        _ => Err(diag(
             expr.span,
-            "only multi-value function calls can be destructured",
-        ));
-    };
-    let signature = signatures.get(name).ok_or_else(|| {
-        diag(
-            expr.span,
-            &format!("unknown function '{name}' during code generation"),
-        )
-    })?;
-    if signature.returns.len() < 2 {
-        return Err(diag(
-            expr.span,
-            &format!("function '{name}' does not return multiple values"),
-        ));
+            "only multi-value function or interface calls can be destructured",
+        )),
     }
-    let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
-    Ok((
-        format!("{}({})", function_c_name(name), rendered.join(", ")),
-        multi_return_struct_name(name),
-    ))
 }
 
 fn c_function_return_type(function: &Function, signatures: &Signatures) -> String {
@@ -1270,9 +1385,14 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(&arg.value, signatures, emitted, helpers);
             }
         }
-        ExprKind::EnumVariant { args, .. } => {
+        ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
             for arg in args {
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
+            }
+            for arg in named_args {
+                collect_update_helpers_from_expr(&arg.value, signatures, emitted, helpers);
             }
         }
         ExprKind::Int(_)

@@ -466,16 +466,21 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(&mut field.value, source_id);
             }
         }
-        ExprKind::EnumVariant {
-            enum_span,
-            variant_span,
+        ExprKind::QualifiedCall {
+            namespace_span,
+            name_span,
             args,
+            named_args,
             ..
         } => {
-            *enum_span = enum_span.with_source(source_id);
-            *variant_span = variant_span.with_source(source_id);
+            *namespace_span = namespace_span.with_source(source_id);
+            *name_span = name_span.with_source(source_id);
             for arg in args {
                 attach_expr_source(arg, source_id);
+            }
+            for arg in named_args {
+                arg.name_span = arg.name_span.with_source(source_id);
+                attach_expr_source(&mut arg.value, source_id);
             }
         }
         ExprKind::Field {
@@ -2566,43 +2571,91 @@ impl ExprParser<'_> {
                 self.tokens.get(self.index).map(|token| &token.kind),
                 Some(TokenKind::LParen)
             ) {
-                let ExprKind::Var(enum_name) = &expr.kind else {
+                let ExprKind::Var(namespace) = &expr.kind else {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Parse,
                         field.span,
-                        "only enum variants may be called through '.'",
+                        "qualified calls require a namespace name before '.'",
                     ));
                 };
-                let enum_name = enum_name.clone();
-                let enum_span = expr.span;
+                let namespace = namespace.clone();
+                let namespace_span = expr.span;
                 self.index += 1;
                 let mut args = Vec::new();
+                let mut named_args = Vec::new();
+                let mut saw_named = false;
                 if !matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
                     Some(TokenKind::RParen)
                 ) {
                     loop {
-                        args.push(self.parse_conditional()?);
+                        let named = match (
+                            self.tokens.get(self.index),
+                            self.tokens.get(self.index + 1).map(|token| &token.kind),
+                        ) {
+                            (Some(token), Some(TokenKind::Colon)) => {
+                                if let TokenKind::Ident(name) = &token.kind {
+                                    Some((name.clone(), token.span))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((arg_name, name_span)) = named {
+                            saw_named = true;
+                            self.index += 2;
+                            if named_args.iter().any(|arg: &NamedArg| arg.name == arg_name) {
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    name_span,
+                                    format!("duplicate named argument '{arg_name}'"),
+                                ));
+                            }
+                            let value = self.parse_conditional()?;
+                            named_args.push(NamedArg {
+                                name: arg_name,
+                                name_span,
+                                value,
+                            });
+                        } else {
+                            if saw_named {
+                                let span = self
+                                    .tokens
+                                    .get(self.index)
+                                    .map(|token| token.span)
+                                    .unwrap_or(field.span);
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    span,
+                                    "positional arguments cannot follow named arguments",
+                                ));
+                            }
+                            args.push(self.parse_conditional()?);
+                        }
                         match self.tokens.get(self.index).map(|token| &token.kind) {
                             Some(TokenKind::Comma) => self.index += 1,
                             Some(TokenKind::RParen) => break,
                             _ => {
                                 return Err(diag(
                                     self.line,
-                                    "expected ',' or ')' in enum variant payload",
+                                    "expected ',' or ')' in qualified call arguments",
                                 ));
                             }
                         }
                     }
                 }
                 let Some(close) = self.tokens.get(self.index) else {
-                    return Err(diag(self.line, "expected ')' after enum variant payload"));
+                    return Err(diag(
+                        self.line,
+                        "expected ')' after qualified call arguments",
+                    ));
                 };
                 if !matches!(close.kind, TokenKind::RParen) {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Parse,
                         close.span,
-                        "expected ')' after enum variant payload",
+                        "expected ')' after qualified call arguments",
                     ));
                 }
                 let close_span = close.span;
@@ -2611,15 +2664,16 @@ impl ExprParser<'_> {
                     line: self.line,
                     span: SourceSpan::new(
                         self.line,
-                        enum_span.column,
-                        close_span.column + close_span.length - enum_span.column,
+                        namespace_span.column,
+                        close_span.column + close_span.length - namespace_span.column,
                     ),
-                    kind: ExprKind::EnumVariant {
-                        enum_name,
-                        enum_span,
-                        variant: name,
-                        variant_span: field.span,
+                    kind: ExprKind::QualifiedCall {
+                        namespace,
+                        namespace_span,
+                        name,
+                        name_span: field.span,
                         args,
+                        named_args,
                     },
                 };
                 continue;

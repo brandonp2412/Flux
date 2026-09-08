@@ -317,9 +317,14 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&arg.value, symbols, signatures);
             }
         }
-        ExprKind::EnumVariant { args, .. } => {
+        ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
             for arg in args {
                 collect_expr_pattern_symbols(arg, symbols, signatures);
+            }
+            for arg in named_args {
+                collect_expr_pattern_symbols(&arg.value, symbols, signatures);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {

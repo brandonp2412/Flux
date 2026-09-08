@@ -28,9 +28,12 @@ fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> er
 
 fn main() -> i64 {
     let storage: FileStorage = FileStorage { root: "/tmp" }
-    let data: str, err: error = file_load(storage, "settings.flux")
+    let data: str, err: error = Storage.load(storage, "settings.flux")
     if err != nil:
         print(err)
     print(data)
+    let save_err: error = Storage.save(storage, "settings.flux", data, durable: true)
+    if save_err != nil:
+        print(save_err)
     return 0
 }

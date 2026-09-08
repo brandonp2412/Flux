@@ -396,6 +396,169 @@ fn main() -> i64 {
 }
 
 #[test]
+fn statically_dispatches_interface_calls_to_mapped_free_functions() {
+    let source = r#"
+interface Storage {
+    fn load(path: str) -> (str, error)
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+
+struct FileStorage {
+    root: str
+}
+
+impl Storage for FileStorage {
+    load: file_load
+    save: file_save
+}
+
+fn file_load(storage: FileStorage, path: str) -> (str, error) {
+    print(storage.root)
+    return path, nil
+}
+
+fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
+    print(storage.root)
+    print(path)
+    print(data)
+    print(durable)
+    return nil
+}
+
+fn reload(storage: FileStorage, path: str) -> (str, error) {
+    return Storage.load(storage, path)
+}
+
+fn main() -> i64 {
+    let storage: FileStorage = FileStorage { root: "/tmp" }
+    let data: str, err: error = Storage.load(storage, "config.flux")
+    if err != nil:
+        print(err)
+    let save_err: error = Storage.save(storage, "config.flux", data, durable: true)
+    if save_err != nil:
+        print(save_err)
+    print(data)
+    return 0
+}
+"#;
+
+    check_source(source).expect("static interface dispatch should typecheck");
+    let generated = compile_to_c(source).expect("static interface dispatch should compile");
+    assert!(generated.contains("flux__fn_file_load(flux__local_storage"));
+    assert!(generated.contains("flux__fn_file_save(flux__local_storage"));
+    assert!(!generated.contains("vtable"));
+    assert!(!generated.contains("dynamic_dispatch"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("static calls should format");
+    assert!(formatted.contains("Storage.load(storage, \"config.flux\")"));
+    assert!(formatted.contains("Storage.save(storage, \"config.flux\", data, durable: true)"));
+}
+
+#[test]
+fn rejects_invalid_static_interface_dispatch() {
+    let missing_impl = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct MemoryStorage {
+    name: str
+}
+fn main() -> i64 {
+    let storage: MemoryStorage = MemoryStorage { name: "memory" }
+    let value: str = Storage.load(storage, "config")
+    print(value)
+    return 0
+}
+"#;
+    let error = check_source(missing_impl).expect_err("receiver must implement interface");
+    assert!(
+        error
+            .message
+            .contains("does not implement interface 'Storage'")
+    );
+
+    let missing_receiver = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct MemoryStorage {
+    name: str
+}
+fn file_load(storage: MemoryStorage, path: str) -> str {
+    return path
+}
+impl Storage for MemoryStorage {
+    load: file_load
+}
+fn main() -> i64 {
+    let value: str = Storage.load()
+    print(value)
+    return 0
+}
+"#;
+    let error = check_source(missing_receiver).expect_err("static call requires receiver");
+    assert!(error.message.contains("requires a concrete receiver"));
+
+    let unknown_capability = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct MemoryStorage {
+    name: str
+}
+fn file_load(storage: MemoryStorage, path: str) -> str {
+    return path
+}
+impl Storage for MemoryStorage {
+    load: file_load
+}
+fn main() -> i64 {
+    let storage: MemoryStorage = MemoryStorage { name: "memory" }
+    let value: str = Storage.missing(storage, "config")
+    print(value)
+    return 0
+}
+"#;
+    let error = check_source(unknown_capability).expect_err("unknown capability should fail");
+    assert!(error.message.contains("has no capability 'missing'"));
+
+    let wrong_arg = r#"
+interface Storage {
+    fn load(path: str) -> str
+}
+struct MemoryStorage {
+    name: str
+}
+fn file_load(storage: MemoryStorage, path: str) -> str {
+    return path
+}
+impl Storage for MemoryStorage {
+    load: file_load
+}
+fn main() -> i64 {
+    let storage: MemoryStorage = MemoryStorage { name: "memory" }
+    let value: str = Storage.load(storage, 42)
+    print(value)
+    return 0
+}
+"#;
+    let error = check_source(wrong_arg).expect_err("capability arguments remain typed");
+    assert!(error.message.contains("expected str, got i64"));
+
+    let named_enum_payload = r#"
+enum Choice {
+    One(i64)
+}
+fn main() -> i64 {
+    let choice: Choice = Choice.One(value: 1)
+    return 0
+}
+"#;
+    let error = check_source(named_enum_payload).expect_err("enum payloads stay positional");
+    assert!(error.message.contains("does not accept named payloads"));
+}
+
+#[test]
 fn rejects_invalid_interface_implementations() {
     let missing_mapping = r#"
 interface Storage {
