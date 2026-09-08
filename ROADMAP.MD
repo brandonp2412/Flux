@@ -360,6 +360,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Grid-first layout.
   - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
   - [ ] Statically type/check element properties against built-in or interface-defined element contracts instead of treating property expressions as untyped view metadata.
+    - [x] Bootstrap built-in element contracts validate known property names and property expression types, including typed function callbacks, without introducing widget classes; semantic symbols expose the property type for editor tooling.
+    - [ ] Interface-defined/custom element contracts after view composition and platform capability rules are mature.
   - [x] Validate placement against declared track counts and define overlap policy: row/column spans that escape the declared grid are static errors, and ordinary sibling grid regions may not overlap. Intentional overlap belongs to the separate explicit overlay/absolute-positioning model.
   - [ ] Consider named grid areas only if they materially improve readability without reintroducing hierarchy.
 - [ ] Flex/flow layout where grid is not appropriate.

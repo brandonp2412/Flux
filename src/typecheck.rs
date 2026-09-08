@@ -397,8 +397,6 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
-    validate_views(program, &mut diagnostics);
-
     for definition in &program.enums {
         let variants = definition
             .variants
@@ -925,6 +923,8 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         );
     }
 
+    validate_views(program, &signatures, &mut diagnostics);
+
     match signatures.get("main") {
         None => diagnostics.push(
             Diagnostic::global(
@@ -958,12 +958,94 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     }
 }
 
-fn validate_views(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
+pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
+    match (kind, property) {
+        ("Text", "text") => Some(Type::Str),
+        ("Text", "selectable") => Some(Type::Bool),
+        ("Button", "text") => Some(Type::Str),
+        ("Button", "enabled") => Some(Type::Bool),
+        ("Button", "on_press") => Some(Type::Function {
+            params: Vec::new(),
+            returns: Vec::new(),
+        }),
+        ("Nav", "label") | ("Chart", "label") | ("Content", "label") => Some(Type::Str),
+        ("Card", "title") | ("Header", "text") => Some(Type::Str),
+        _ => None,
+    }
+}
+
+fn view_element_kind_is_builtin(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Text" | "Button" | "Nav" | "Chart" | "Card" | "Header" | "Content"
+    )
+}
+
+fn view_element_property_names(kind: &str) -> &'static str {
+    match kind {
+        "Text" => "text, selectable",
+        "Button" => "text, enabled, on_press",
+        "Nav" | "Chart" | "Content" => "label",
+        "Card" => "title",
+        "Header" => "text",
+        _ => "",
+    }
+}
+
+fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
     for view in &program.views {
         let row_count = view.grid.rows.len() as u64;
         let column_count = view.grid.columns.len() as u64;
 
         for (index, element) in view.elements.iter().enumerate() {
+            if !view_element_kind_is_builtin(&element.kind) {
+                diagnostics.push(
+                    diag(
+                        element.kind_span,
+                        &format!("unknown built-in view element type '{}'", element.kind),
+                    )
+                    .with_note(
+                        "custom/interface-defined view element contracts are not implemented yet",
+                    ),
+                );
+            }
+
+            let property_env = HashMap::new();
+            for property in &element.properties {
+                let Some(expected) = view_property_type(&element.kind, &property.name) else {
+                    if view_element_kind_is_builtin(&element.kind) {
+                        diagnostics.push(
+                            diag(
+                                property.name_span,
+                                &format!(
+                                    "view element type '{}' has no property '{}'",
+                                    element.kind, property.name
+                                ),
+                            )
+                            .with_note(format!(
+                                "supported properties for '{}': {}",
+                                element.kind,
+                                view_element_property_names(&element.kind)
+                            )),
+                        );
+                    }
+                    continue;
+                };
+                match type_of_expr(&property.value, &property_env, signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) = require_type(
+                            property.value.span,
+                            &expected,
+                            &actual,
+                            &format!("property '{}.{}'", element.kind, property.name),
+                        ) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+            }
+
             let row_start = u64::from(element.row);
             let column_start = u64::from(element.column);
             let row_end = row_start + u64::from(element.row_span) - 1;

@@ -172,7 +172,7 @@ impl SemanticDatabase {
                     symbols.push(SemanticSymbol {
                         name: property.name.clone(),
                         kind: SymbolKind::ViewProperty,
-                        ty: None,
+                        ty: typecheck::view_property_type(&element.kind, &property.name),
                         span: property.name_span,
                     });
                 }

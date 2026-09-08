@@ -3110,6 +3110,86 @@ fn main() -> i64 { 0 }
 }
 
 #[test]
+fn typechecks_bootstrap_view_element_property_contracts() {
+    let valid = r#"
+fn handle_press() -> void {
+    print("pressed")
+}
+
+view App {
+    grid columns: 1fr 1fr
+    grid rows: auto 1fr
+    Text heading at 1,1
+        text: "Hello"
+        selectable: true
+    Button action at 1,2
+        text: "Press"
+        enabled: true
+        on_press: handle_press
+    Chart chart at 2,1
+        label: "Activity"
+    Card summary at 2,2
+        title: "Summary"
+}
+
+fn main() -> i64 { 0 }
+"#;
+    check_source(valid).expect("known view properties with matching types should typecheck");
+    let database =
+        fluxc::semantic::SemanticDatabase::analyze(valid, SourceId::from_name("typed-view.flux"))
+            .expect("typed view properties should be available to editor semantics");
+    let callback = database
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name == "on_press")
+        .expect("callback property should be indexed");
+    assert_eq!(
+        callback.ty,
+        Some(fluxc::ast::Type::Function {
+            params: vec![],
+            returns: vec![]
+        })
+    );
+
+    let invalid = r#"
+view BadProperties {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    Text heading at 1,1
+        text: false
+    Button action at 1,2
+        on_press: 42
+    Text typo at 2,1
+        texxt: "misspelled"
+    Fancy custom at 2,2
+}
+fn main() -> i64 { 0 }
+"#;
+    let diagnostics =
+        check_source_all(invalid).expect_err("invalid built-in view property contracts must fail");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("property 'Text.text'")
+            && diagnostic.message.contains("expected str, got bool")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("property 'Button.on_press'")
+            && diagnostic
+                .message
+                .contains("expected fn() -> void, got i64")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("view element type 'Text' has no property 'texxt'")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("unknown built-in view element type 'Fancy'")
+    }));
+}
+
+#[test]
 fn formatter_preserves_flat_grid_view_structure() {
     let source = "view Dashboard {\n    grid columns: 240 1fr auto\n    grid rows: 64 1fr\n    grid gap: 16\n    Text title at 1,2 span columns 2\n        text: \"Hello\"\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("view should format");

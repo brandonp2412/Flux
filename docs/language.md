@@ -76,7 +76,9 @@ Fixed grid tracks use target-independent logical units, `Nfr` tracks divide rema
 
 The extra indentation under an element configures properties on that sibling element; it does not create child UI elements. UI elements themselves remain at the view's single element level, and deeper element nesting is rejected by the parser. This preserves a grid-oriented source structure that can later lower directly into target-native layout primitives rather than recreating Flutter-style widget construction.
 
-The bootstrap compiler currently parses, formats, merges, and indexes this view metadata while the native rendering/runtime backend remains future work. View declarations therefore emit no runtime C yet.
+Bootstrap built-in elements have concrete property contracts. `Text` supports `text: str` and `selectable: bool`; `Button` supports `text: str`, `enabled: bool`, and `on_press: fn() -> void`; `Nav`, `Chart`, and `Content` expose `label: str`; `Card` exposes `title: str`; and `Header` exposes `text: str`. Supplied property expressions are type-checked through the ordinary Flux expression/type system, so a named function can be passed directly as a callback without a controller object or widget subclass. Unknown built-in element/property names are static errors. Required-property rules and interface-defined/custom element contracts remain future work.
+
+The bootstrap compiler currently parses, formats, merges, type-checks, and indexes this view metadata while the native rendering/runtime backend remains future work. View declarations therefore emit no runtime C yet.
 
 ## Modules and imports
 
