@@ -4063,6 +4063,62 @@ app Screen
 }
 
 #[test]
+fn native_elements_support_common_alignment_and_margins() {
+    let source = r#"
+view Layout {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Centered"
+        align_x: "center"
+        align_y: "end"
+        margin: 8
+        margin_start: 24
+    Button action at 2,1
+        text: "Action"
+        align_x: "fill"
+        margin_top: 12
+}
+app Layout
+"#;
+    check_source(source).expect("common alignment/margin properties should typecheck");
+    let generated = compile_to_c(source).expect("alignment and margins should lower natively");
+    assert!(generated.contains("gtk_widget_set_halign(flux__ui_title, GTK_ALIGN_CENTER)"));
+    assert!(generated.contains("gtk_widget_set_valign(flux__ui_title, GTK_ALIGN_END)"));
+    assert!(generated.contains("gtk_widget_set_margin_top(flux__ui_title, 8)"));
+    assert!(generated.contains("gtk_widget_set_margin_start(flux__ui_title, 24)"));
+    assert!(generated.contains("gtk_widget_set_margin_end(flux__ui_title, 8)"));
+    assert!(generated.contains("gtk_widget_set_halign(flux__ui_action, GTK_ALIGN_FILL)"));
+    assert!(generated.contains("gtk_widget_set_margin_top(flux__ui_action, 12)"));
+
+    let bad_alignment = r#"
+view Layout {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        align_x: "middle"
+}
+app Layout
+"#;
+    check_source(bad_alignment).expect("alignment enum validation happens in native lowering");
+    let error = compile_to_c(bad_alignment).expect_err("unknown alignment must fail");
+    assert!(error.message.contains("align_x must be one of"));
+
+    let bad_margin = r#"
+view Layout {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        margin: -1
+}
+app Layout
+"#;
+    check_source(bad_margin).expect("margin typechecks before native range validation");
+    let error = compile_to_c(bad_margin).expect_err("negative margin must fail");
+    assert!(error.message.contains("margin must be between 0"));
+}
+
+#[test]
 fn native_elements_support_state_visibility_and_minimum_size_constraints() {
     let source = r#"
 view Screen {

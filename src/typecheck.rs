@@ -1097,7 +1097,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             "tooltip" | "accessibility_label" | "accessibility_description" => {
                 return Some(Type::Str);
             }
-            "min_width" | "min_height" => return Some(Type::I64),
+            "min_width" | "min_height" | "margin" | "margin_top" | "margin_bottom"
+            | "margin_start" | "margin_end" => return Some(Type::I64),
+            "align_x" | "align_y" => return Some(Type::Str),
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
@@ -1179,42 +1181,30 @@ fn view_element_kind_is_builtin(kind: &str) -> bool {
     BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind)
 }
 
-pub fn view_property_names(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "Text" => &[
-            "text",
-            "selectable",
-            "size",
-            "bold",
-            "color",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
-        ],
-        "Button" => &[
-            "text",
-            "enabled",
-            "primary",
-            "shortcut",
-            "on_press",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
-        ],
+const COMMON_VIEW_PROPERTIES: &[&str] = &[
+    "visible",
+    "tooltip",
+    "accessibility_label",
+    "accessibility_description",
+    "on_hover",
+    "on_leave",
+    "on_focus",
+    "on_blur",
+    "align_x",
+    "align_y",
+    "margin",
+    "margin_top",
+    "margin_bottom",
+    "margin_start",
+    "margin_end",
+    "min_width",
+    "min_height",
+];
+
+pub fn view_property_names(kind: &str) -> Vec<&'static str> {
+    let specific: &[&str] = match kind {
+        "Text" => &["text", "selectable", "size", "bold", "color"],
+        "Button" => &["text", "enabled", "primary", "shortcut", "on_press"],
         "TextInput" => &[
             "text",
             "placeholder",
@@ -1224,94 +1214,20 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "max_length",
             "on_change",
             "on_submit",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
         ],
-        "Image" => &[
-            "source",
-            "alt",
-            "fit",
-            "can_shrink",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
-        ],
-        "Toggle" => &[
-            "label",
-            "checked",
-            "enabled",
-            "on_change",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
-        ],
-        "Radio" => &[
-            "label",
-            "selected",
-            "enabled",
-            "on_select",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "on_hover",
-            "on_leave",
-            "on_focus",
-            "on_blur",
-            "min_width",
-            "min_height",
-        ],
-        "Nav" | "Chart" | "Content" => &[
-            "label",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "min_width",
-            "min_height",
-        ],
-        "Card" => &[
-            "title",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "min_width",
-            "min_height",
-        ],
-        "Header" => &[
-            "text",
-            "visible",
-            "tooltip",
-            "accessibility_label",
-            "accessibility_description",
-            "min_width",
-            "min_height",
-        ],
-        _ => &[],
-    }
+        "Image" => &["source", "alt", "fit", "can_shrink"],
+        "Toggle" => &["label", "checked", "enabled", "on_change"],
+        "Radio" => &["label", "selected", "enabled", "on_select"],
+        "Nav" | "Chart" | "Content" => &["label"],
+        "Card" => &["title"],
+        "Header" => &["text"],
+        _ => return Vec::new(),
+    };
+    specific
+        .iter()
+        .copied()
+        .chain(COMMON_VIEW_PROPERTIES.iter().copied())
+        .collect()
 }
 
 fn valid_application_id(value: &str) -> bool {

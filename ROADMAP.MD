@@ -499,6 +499,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
 - [ ] Spacing.
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
+  - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
 - [ ] Borders/radii.
 - [ ] Shadows.
 - [ ] Clipping.

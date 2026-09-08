@@ -669,6 +669,8 @@ fn emit_linux_gtk_application(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
             ));
         }
+        emit_element_alignment(out, element, &variable, signatures)?;
+        emit_element_margins(out, element, &variable, signatures)?;
         if view_property(element, "on_hover").is_some()
             || view_property(element, "on_leave").is_some()
         {
@@ -1167,6 +1169,90 @@ fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {
         tracks_size(&view.grid.rows, 90)
             .saturating_add(view.grid.padding.unwrap_or(20).saturating_mul(2)),
     )
+}
+
+fn emit_element_alignment(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    for (property_name, setter) in [("align_x", "halign"), ("align_y", "valign")] {
+        let Some(property) = view_property(element, property_name) else {
+            continue;
+        };
+        let Some(value) = static_expr_str(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must be a compile-time string"),
+            ));
+        };
+        let alignment = match value.as_str() {
+            "start" => "GTK_ALIGN_START",
+            "center" => "GTK_ALIGN_CENTER",
+            "end" => "GTK_ALIGN_END",
+            "fill" => "GTK_ALIGN_FILL",
+            _ => {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be one of 'start', 'center', 'end', or 'fill'"),
+                ));
+            }
+        };
+        out.push_str(&format!(
+            "    gtk_widget_set_{setter}({variable}, {alignment});\n"
+        ));
+    }
+    Ok(())
+}
+
+fn emit_element_margins(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let base = view_property(element, "margin")
+        .map(|property| element_margin_value(property, "margin", signatures))
+        .transpose()?;
+    for (property_name, setter) in [
+        ("margin_top", "top"),
+        ("margin_bottom", "bottom"),
+        ("margin_start", "start"),
+        ("margin_end", "end"),
+    ] {
+        let value = if let Some(property) = view_property(element, property_name) {
+            Some(element_margin_value(property, property_name, signatures)?)
+        } else {
+            base
+        };
+        if let Some(value) = value {
+            out.push_str(&format!(
+                "    gtk_widget_set_margin_{setter}({variable}, {value});\n"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn element_margin_value(
+    property: &crate::ast::ViewProperty,
+    property_name: &str,
+    signatures: &Signatures,
+) -> Result<i64, Diagnostic> {
+    let Some(value) = static_expr_i64(&property.value, signatures) else {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must be a compile-time i64 value"),
+        ));
+    };
+    if !(0..=i64::from(i32::MAX)).contains(&value) {
+        return Err(diag(
+            property.value.span,
+            &format!("{property_name} must be between 0 and 2147483647"),
+        ));
+    }
+    Ok(value)
 }
 
 fn emit_grid_sizing(

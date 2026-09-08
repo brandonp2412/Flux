@@ -1278,7 +1278,7 @@ fn add_builtin_ui_context_completions(
     {
         let existing = view_properties_before_cursor(&lines, element_line, line_index);
         for property in crate::typecheck::view_property_names(kind) {
-            if existing.contains(*property) {
+            if existing.contains(property) {
                 continue;
             }
             let detail = crate::typecheck::view_property_type(kind, property)
@@ -4214,9 +4214,12 @@ mod tests {
         let element = hover_for_document(uri, source, &documents, 3, 5, PositionEncoding::Utf8)
             .expect("built-in element hover should survive incomplete source")
             .to_json();
-        assert!(element.contains(
-            "element Text { text: str, selectable: bool, size: i64, bold: bool, color: str, visible: bool, tooltip: str, accessibility_label: str, accessibility_description: str, on_hover: fn() -> void, on_leave: fn() -> void, on_focus: fn() -> void, on_blur: fn() -> void, min_width: i64, min_height: i64 }"
-        ));
+        assert!(element.contains("element Text { text: str, selectable: bool, size: i64"));
+        assert!(element.contains("accessibility_label: str"));
+        assert!(element.contains("on_hover: fn() -> void"));
+        assert!(element.contains("align_x: str"));
+        assert!(element.contains("margin_start: i64"));
+        assert!(element.contains("min_height: i64"));
 
         let property = hover_for_document(uri, source, &documents, 4, 10, PositionEncoding::Utf8)
             .expect("built-in property hover should survive incomplete source")
