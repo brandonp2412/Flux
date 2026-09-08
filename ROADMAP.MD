@@ -651,7 +651,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] UI syntax awareness.
   - [x] Contextual `textDocument/completion` inside flat `view` blocks uses compiler-owned built-in element/property contract metadata: grid declaration and built-in element kinds are suggested at layout indentation, built-in properties are typed and exclude already-declared properties, and composed view parameters are offered as typed properties when the current source/project parses.
   - [x] UI contract hover recognizes flat element-kind and property positions: built-in element/property types come directly from compiler contracts and remain available even while the surrounding view is temporarily incomplete; valid composed views show their typed parameter contract.
-  - [x] Composed-view property navigation maps a property usage such as `Badge.label:` to the declared `label` parameter on `view Badge(...)`, including public imported views resolved through typed project overlays. Malformed custom-view contract recovery remains pending.
+  - [x] Composed-view property navigation maps a property usage such as `Badge.label:` to the declared `label` parameter on `view Badge(...)`, including public imported views resolved through typed project overlays.
+  - [x] Same-file custom-view property completion recovers contracts declared before the currently malformed view, so ordinary incomplete edits do not erase known parameter suggestions. Imported custom-view contracts during a parse-broken current buffer still require a tolerant workspace contract index.
 - [ ] Hot-reload status integration.
 
 # Milestone 24 — Debugger

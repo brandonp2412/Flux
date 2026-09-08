@@ -675,7 +675,7 @@ fn completion_items_at_position(
         .collect::<HashSet<_>>();
     if let Some(line_index) = line_index {
         add_builtin_ui_context_completions(&mut items, &mut seen, source, line_index);
-        if let Ok(program) = crate::parser::parse_all(source) {
+        if let Some(program) = view_contract_program(source, line_index) {
             add_custom_view_property_completions(
                 &mut items, &mut seen, source, line_index, &program,
             );
@@ -834,6 +834,28 @@ fn add_builtin_ui_context_completions(
             push_completion_item(items, seen, grid, 14, "flat-grid layout declaration");
         }
     }
+}
+
+fn view_contract_program(source: &str, line_index: usize) -> Option<crate::ast::Program> {
+    if let Ok(program) = crate::parser::parse_all(source) {
+        return Some(program);
+    }
+    let mut byte_offset = 0usize;
+    let mut current_view_start = None;
+    for (index, segment) in source.split_inclusive('\n').enumerate() {
+        if index > line_index {
+            break;
+        }
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        if leading_spaces(line) == 0 {
+            let trimmed = line.trim();
+            if trimmed.starts_with("view ") || trimmed.starts_with("pub view ") {
+                current_view_start = Some(byte_offset);
+            }
+        }
+        byte_offset += segment.len();
+    }
+    crate::parser::parse_all(source.get(..current_view_start?)?).ok()
 }
 
 fn add_custom_view_property_completions(
@@ -1922,16 +1944,55 @@ fn definition_for_document(
             ("range", lsp_range(symbol.span, &target.text, encoding)),
         ]));
     }
-    let database = analyzed_document(uri, source)?;
-    if let Some(definition) =
-        ui_property_definition(uri, source, line_index, character, encoding, &database, &[])
+    let database = analyzed_document(uri, source);
+    if let Some(database) = database.as_ref()
+        && let Some(definition) =
+            ui_property_definition(uri, source, line_index, character, encoding, database, &[])
     {
         return Some(definition);
     }
+    if database.is_none()
+        && let Some(definition) =
+            recovered_ui_property_definition(uri, source, line_index, character, encoding)
+    {
+        return Some(definition);
+    }
+    let database = database?;
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
     Some(object([
         ("uri", JsonValue::String(uri.to_string())),
         ("range", lsp_range(symbol.span, source, encoding)),
+    ]))
+}
+
+fn recovered_ui_property_definition(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let line = *lines.get(line_index)?;
+    if leading_spaces(line) < 8 {
+        return None;
+    }
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    let word = identifier_at(line, byte)?;
+    let property = line.trim().split_once(':')?.0.trim();
+    if property != word {
+        return None;
+    }
+    let (kind, _) = enclosing_view_element(&lines, line_index)?;
+    if !crate::typecheck::view_property_names(kind).is_empty() {
+        return None;
+    }
+    let program = view_contract_program(source, line_index)?;
+    let view = program.views.iter().find(|view| view.name == kind)?;
+    let param = view.params.iter().find(|param| param.name == property)?;
+    Some(object([
+        ("uri", JsonValue::String(uri.to_string())),
+        ("range", lsp_range(param.name_span, source, encoding)),
     ]))
 }
 
@@ -2245,14 +2306,14 @@ fn ui_contract_hover(
         if tokens.len() < 4 || tokens[2] != "at" || tokens[0] != word {
             return None;
         }
-        view_element_hover_description(word, source)?
+        view_element_hover_description(word, source, line_index)?
     } else if indent >= 8 {
         let (kind, _) = enclosing_view_element(&lines, line_index)?;
         let property_name = line.trim().split_once(':')?.0.trim();
         if property_name != word {
             return None;
         }
-        view_property_hover_description(kind, property_name, source)?
+        view_property_hover_description(kind, property_name, source, line_index)?
     } else {
         return None;
     };
@@ -2272,7 +2333,7 @@ fn ui_contract_hover(
     ]))
 }
 
-fn view_element_hover_description(kind: &str, source: &str) -> Option<String> {
+fn view_element_hover_description(kind: &str, source: &str, line_index: usize) -> Option<String> {
     let properties = crate::typecheck::view_property_names(kind);
     if !properties.is_empty() {
         let rendered = properties
@@ -2285,7 +2346,7 @@ fn view_element_hover_description(kind: &str, source: &str) -> Option<String> {
             .join(", ");
         return Some(format!("element {kind} {{ {rendered} }}"));
     }
-    let program = crate::parser::parse_all(source).ok()?;
+    let program = view_contract_program(source, line_index)?;
     let view = program.views.iter().find(|view| view.name == kind)?;
     let params = view
         .params
@@ -2296,11 +2357,16 @@ fn view_element_hover_description(kind: &str, source: &str) -> Option<String> {
     Some(format!("view {}({params})", view.name))
 }
 
-fn view_property_hover_description(kind: &str, property: &str, source: &str) -> Option<String> {
+fn view_property_hover_description(
+    kind: &str,
+    property: &str,
+    source: &str,
+    line_index: usize,
+) -> Option<String> {
     if let Some(ty) = crate::typecheck::view_property_type(kind, property) {
         return Some(format!("property {kind}.{property}: {}", ty.name()));
     }
-    let program = crate::parser::parse_all(source).ok()?;
+    let program = view_contract_program(source, line_index)?;
     let view = program.views.iter().find(|view| view.name == kind)?;
     let param = view.params.iter().find(|param| param.name == property)?;
     Some(format!("property {kind}.{property}: {}", param.ty.name()))
@@ -3289,6 +3355,25 @@ mod tests {
     }
 
     #[test]
+    fn custom_view_completion_recovers_contract_before_malformed_current_view() {
+        let uri = "file:///tmp/malformed-custom-view.flux";
+        let source = "view Badge(label: str, count: i64 = 1) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        lab\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source.lines().count().saturating_sub(1);
+        let items = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+        ))
+        .to_json();
+        assert!(items.contains("\"label\":\"label\""));
+        assert!(items.contains("Badge.label: str"));
+        assert!(items.contains("\"label\":\"count\""));
+        assert!(items.contains("Badge.count: i64"));
+    }
+
+    #[test]
     fn completion_uses_compiler_view_contracts_inside_flat_ui_blocks() {
         let source = "view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n        \n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        \n}\nfn main() -> i64 { 0 }\n";
         let uri = "file:///tmp/ui-completion.flux";
@@ -3323,6 +3408,52 @@ mod tests {
         .to_json();
         assert!(layout.contains("\"label\":\"Button\""));
         assert!(layout.contains("\"label\":\"grid columns:\""));
+    }
+
+    #[test]
+    fn custom_view_contracts_survive_an_incomplete_later_view() {
+        let uri = "file:///tmp/incomplete-ui-contract.flux";
+        let source = "view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        \n        label: \"Flux\"\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let property_line = source
+            .lines()
+            .position(|line| line.contains("label: \"Flux\""))
+            .expect("property line should exist");
+        let blank_line = property_line - 1;
+
+        let completion = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(blank_line),
+        ))
+        .to_json();
+        assert!(completion.contains("Badge.label: str"));
+
+        let hover = hover_for_document(
+            uri,
+            source,
+            &documents,
+            property_line,
+            10,
+            PositionEncoding::Utf8,
+        )
+        .expect("custom property hover should recover an earlier complete view")
+        .to_json();
+        assert!(hover.contains("property Badge.label: str"));
+
+        let definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            property_line,
+            10,
+            PositionEncoding::Utf8,
+        )
+        .expect("custom property definition should recover an earlier complete view")
+        .to_json();
+        assert!(definition.contains("\"line\":0"));
+        assert!(definition.contains("\"character\":11"));
     }
 
     #[test]
