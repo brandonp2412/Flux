@@ -611,6 +611,38 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(arg, source_id);
             }
         }
+        ExprKind::List(items) => {
+            for item in items {
+                attach_expr_source(item, source_id);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            attach_expr_source(base, source_id);
+            attach_expr_source(index, source_id);
+        }
+        ExprKind::Slice { base, start, end } => {
+            attach_expr_source(base, source_id);
+            if let Some(start) = start {
+                attach_expr_source(start, source_id);
+            }
+            if let Some(end) = end {
+                attach_expr_source(end, source_id);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding_span,
+            iterable,
+            condition,
+            ..
+        } => {
+            attach_expr_source(value, source_id);
+            *binding_span = binding_span.with_source(source_id);
+            attach_expr_source(iterable, source_id);
+            if let Some(condition) = condition {
+                attach_expr_source(condition, source_id);
+            }
+        }
         ExprKind::StructLiteral {
             name_span,
             base,
@@ -772,6 +804,38 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             name_span.column += offset;
             for arg in args {
                 shift_expr_columns(arg, offset);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                shift_expr_columns(item, offset);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            shift_expr_columns(base, offset);
+            shift_expr_columns(index, offset);
+        }
+        ExprKind::Slice { base, start, end } => {
+            shift_expr_columns(base, offset);
+            if let Some(start) = start {
+                shift_expr_columns(start, offset);
+            }
+            if let Some(end) = end {
+                shift_expr_columns(end, offset);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding_span,
+            iterable,
+            condition,
+            ..
+        } => {
+            shift_expr_columns(value, offset);
+            binding_span.column += offset;
+            shift_expr_columns(iterable, offset);
+            if let Some(condition) = condition {
+                shift_expr_columns(condition, offset);
             }
         }
         ExprKind::StructLiteral {
@@ -3262,8 +3326,8 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
             continue;
         }
         match byte {
-            b'(' | b'{' => depth += 1,
-            b')' | b'}' => depth = depth.saturating_sub(1),
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
                 parts.push((&input[start..index], start));
                 start = index + 1;
@@ -3406,6 +3470,8 @@ enum TokenKind {
     Nil,
     If,
     Else,
+    For,
+    In,
     Plus,
     Minus,
     Star,
@@ -3423,6 +3489,8 @@ enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Colon,
     Dot,
     Comma,
@@ -3775,6 +3843,8 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "nil" => TokenKind::Nil,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
+                "for" => TokenKind::For,
+                "in" => TokenKind::In,
                 ident => TokenKind::Ident(ident.to_string()),
             }
         } else {
@@ -3787,6 +3857,8 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b')' => (TokenKind::RParen, 1),
                 b'{' => (TokenKind::LBrace, 1),
                 b'}' => (TokenKind::RBrace, 1),
+                b'[' => (TokenKind::LBracket, 1),
+                b']' => (TokenKind::RBracket, 1),
                 b':' => (TokenKind::Colon, 1),
                 b'.' => (TokenKind::Dot, 1),
                 b',' => (TokenKind::Comma, 1),
@@ -4054,6 +4126,92 @@ impl ExprParser<'_> {
                 },
             };
         }
+        while matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::LBracket)
+        ) {
+            let open = self.tokens[self.index].span;
+            self.index += 1;
+            let start = if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Colon)
+            ) {
+                None
+            } else {
+                Some(Box::new(self.parse_conditional()?))
+            };
+            if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Colon)
+            ) {
+                self.index += 1;
+                let end = if matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::RBracket)
+                ) {
+                    None
+                } else {
+                    Some(Box::new(self.parse_conditional()?))
+                };
+                let Some(close) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "expected ']' after slice"));
+                };
+                if !matches!(close.kind, TokenKind::RBracket) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ']' after slice",
+                    ));
+                }
+                self.index += 1;
+                let span = SourceSpan::new(
+                    self.line,
+                    expr.span.column,
+                    close.span.column + close.span.length - expr.span.column,
+                );
+                expr = Expr {
+                    line: self.line,
+                    span,
+                    kind: ExprKind::Slice {
+                        base: Box::new(expr),
+                        start,
+                        end,
+                    },
+                };
+            } else {
+                let Some(index) = start else {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        open,
+                        "index expression cannot be empty",
+                    ));
+                };
+                let Some(close) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "expected ']' after index"));
+                };
+                if !matches!(close.kind, TokenKind::RBracket) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ']' after index",
+                    ));
+                }
+                self.index += 1;
+                let span = SourceSpan::new(
+                    self.line,
+                    expr.span.column,
+                    close.span.column + close.span.length - expr.span.column,
+                );
+                expr = Expr {
+                    line: self.line,
+                    span,
+                    kind: ExprKind::Index {
+                        base: Box::new(expr),
+                        index,
+                    },
+                };
+            }
+        }
         Ok(expr)
     }
 
@@ -4090,6 +4248,7 @@ impl ExprParser<'_> {
                 span: token_span,
                 kind: ExprKind::Nil,
             }),
+            TokenKind::LBracket => self.parse_list_literal(token_span),
             TokenKind::Ident(name) => {
                 if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
@@ -4225,6 +4384,123 @@ impl ExprParser<'_> {
                 "expected expression",
             )),
         }
+    }
+
+    fn parse_list_literal(&mut self, open_span: SourceSpan) -> Result<Expr, Diagnostic> {
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBracket)
+        ) {
+            let close = self.tokens[self.index].span;
+            self.index += 1;
+            return Ok(Expr {
+                line: self.line,
+                span: SourceSpan::new(
+                    self.line,
+                    open_span.column,
+                    close.column + close.length - open_span.column,
+                ),
+                kind: ExprKind::List(Vec::new()),
+            });
+        }
+
+        let first = self.parse_conditional()?;
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::For)
+        ) {
+            self.index += 1;
+            let Some(binding_token) = self.tokens.get(self.index).cloned() else {
+                return Err(diag(
+                    self.line,
+                    "list comprehension requires a binding after 'for'",
+                ));
+            };
+            let TokenKind::Ident(binding) = binding_token.kind else {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    binding_token.span,
+                    "list comprehension requires a binding after 'for'",
+                ));
+            };
+            self.index += 1;
+            let Some(in_token) = self.tokens.get(self.index).cloned() else {
+                return Err(diag(self.line, "list comprehension requires 'in'"));
+            };
+            if !matches!(in_token.kind, TokenKind::In) {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    in_token.span,
+                    "list comprehension requires 'in'",
+                ));
+            }
+            self.index += 1;
+            let iterable = self.parse_conditional()?;
+            let condition = if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::If)
+            ) {
+                self.index += 1;
+                Some(Box::new(self.parse_conditional()?))
+            } else {
+                None
+            };
+            let Some(close) = self.tokens.get(self.index).cloned() else {
+                return Err(diag(self.line, "expected ']' after list comprehension"));
+            };
+            if !matches!(close.kind, TokenKind::RBracket) {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    close.span,
+                    "expected ']' after list comprehension",
+                ));
+            }
+            self.index += 1;
+            return Ok(Expr {
+                line: self.line,
+                span: SourceSpan::new(
+                    self.line,
+                    open_span.column,
+                    close.span.column + close.span.length - open_span.column,
+                ),
+                kind: ExprKind::ListComprehension {
+                    value: Box::new(first),
+                    binding,
+                    binding_span: binding_token.span,
+                    iterable: Box::new(iterable),
+                    condition,
+                },
+            });
+        }
+
+        let mut items = vec![first];
+        loop {
+            match self.tokens.get(self.index).map(|token| &token.kind) {
+                Some(TokenKind::Comma) => {
+                    self.index += 1;
+                    if matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::RBracket)
+                    ) {
+                        break;
+                    }
+                    items.push(self.parse_conditional()?);
+                }
+                Some(TokenKind::RBracket) => break,
+                _ => return Err(diag(self.line, "expected ',' or ']' in list literal")),
+            }
+        }
+        let close = self.tokens[self.index].span;
+        self.index += 1;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(
+                self.line,
+                open_span.column,
+                close.column + close.length - open_span.column,
+            ),
+            kind: ExprKind::List(items),
+        })
     }
 
     fn parse_struct_literal(

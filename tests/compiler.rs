@@ -1157,6 +1157,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn list_literals_indexing_slicing_and_comprehensions_are_typed_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3, 4, 5]
+    let middle: i64[] = values[1:4]
+    print middle[0]
+    print values[-1]
+    let doubled: i64[] = [value * 2 for value in values if value > 2]
+    print doubled[0]
+    print doubled[-1]
+    return 0
+}
+"#;
+
+    check_source(source).expect("list syntax should typecheck");
+    let generated = compile_to_c(source).expect("list syntax should lower natively");
+    assert!(generated.contains("struct flux__list"));
+    assert!(generated.contains("flux_list_at"));
+    assert!(generated.contains("flux_list_slice"));
+    assert!(generated.contains("flux__list_buffer_"));
+    assert!(generated.contains("flux__local_value > INT64_C(2)"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("list source should format");
+    assert!(formatted.contains("let values: i64[] = [1, 2, 3, 4, 5]"));
+    assert!(formatted.contains("let middle: i64[] = values[1:4]"));
+    assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_unsafe_or_invalid_bootstrap_list_forms() {
+    let mixed = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, "two"]
+    print values[0]
+    return 0
+}
+"#;
+    let error = check_source(mixed).expect_err("mixed list element types should fail");
+    assert!(
+        error
+            .message
+            .contains("list element: expected i64, got str")
+    );
+
+    let bad_index = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    print values[true]
+    return 0
+}
+"#;
+    let error = check_source(bad_index).expect_err("list index must be i64");
+    assert!(error.message.contains("list index: expected i64, got bool"));
+
+    let bad_filter = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let selected: i64[] = [value for value in values if value]
+    print selected[0]
+    return 0
+}
+"#;
+    let error = check_source(bad_filter).expect_err("comprehension filter must be bool");
+    assert!(
+        error
+            .message
+            .contains("list comprehension filter: expected bool, got i64")
+    );
+
+    let returned = r#"
+fn values() -> i64[] {
+    return [1, 2]
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(returned).expect_err("list returns must remain blocked");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("list values cannot be returned from functions")
+    }));
+
+    let mutable = r#"
+fn main() -> i64 {
+    var values: i64[] = [1, 2]
+    print values[0]
+    return 0
+}
+"#;
+    let error = check_source(mutable).expect_err("mutable list bindings must remain blocked");
+    assert!(
+        error
+            .message
+            .contains("list bindings are currently immutable local values")
+    );
+
+    let stored = r#"
+struct Box {
+    values: i64[]
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(stored).expect_err("lists cannot be stored in aggregates yet");
+    assert!(
+        error
+            .message
+            .contains("list values are currently local-only")
+    );
+}
+
+#[test]
 fn rejects_invalid_concise_single_expression_functions() {
     let void_body = r#"
 fn log(value: str) -> void { print(value) }

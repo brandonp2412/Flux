@@ -11,6 +11,7 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     let mut out = String::new();
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
+    out.push_str("#include <stddef.h>\n");
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
@@ -36,6 +37,11 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("static inline void flux_redirect_str(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value, file); fputc('\\n', file); fclose(file); }\n");
     out.push_str("static inline void flux_redirect_error(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value ? value : \"nil\", file); fputc('\\n', file); fclose(file); }\n");
     out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
+    out.push_str("struct flux__list { void *data; size_t len; };\n");
+    out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
+    out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { return (void *)((char *)list.data + flux_list_index(list.len, index) * elem_size); }\n");
+    out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; }\n");
+    out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, size_t elem_size) { int64_t first = flux_slice_bound(list.len, has_start, start, false); int64_t last = flux_slice_bound(list.len, has_end, end, true); if (last < first) last = first; struct flux__list result = { .data = (void *)((char *)list.data + (size_t)first * elem_size), .len = (size_t)(last - first) }; return result; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
     out.push_str("    return a / b;\n");
@@ -2021,6 +2027,19 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. }
+                if matches!(expr.kind, ExprKind::ListComprehension { .. }) =>
+            {
+                emit_list_comprehension_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
                 if matches!(expr.kind, ExprKind::Match { .. }) =>
             {
@@ -2540,6 +2559,88 @@ fn emit_struct_pattern_bindings(
     Ok(())
 }
 
+fn emit_list_comprehension_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let ExprKind::ListComprehension {
+        value,
+        binding,
+        iterable,
+        condition,
+        ..
+    } = &expr.kind
+    else {
+        unreachable!()
+    };
+    let iterable_ty = type_of_expr(iterable, env, signatures)?;
+    let Type::List(input_element) = signatures.canonical_type(&iterable_ty) else {
+        return Err(diag(expr.span, "list comprehension requires a list source"));
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    let Type::List(output_element) = &result_ty else {
+        return Err(diag(
+            expr.span,
+            "list comprehension binding must have a list type",
+        ));
+    };
+    let source = emit_expr(iterable, env, signatures)?;
+    let source_name = format!("flux__list_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__list_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__list_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__list_index_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n",
+        c_type(output_element, signatures)
+    ));
+    out.push_str(&format!("{pad}size_t {count_name} = 0;\n"));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; {index_name}++) {{\n"
+    ));
+    let mut nested = env.clone();
+    let binding_c = local_c_name(binding);
+    out.push_str(&format!(
+        "{pad}    {} {binding_c} = *(({} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({})));\n",
+        c_type(&input_element, signatures),
+        c_type(&input_element, signatures),
+        c_type(&input_element, signatures)
+    ));
+    nested.insert(binding.clone(), (*input_element).clone());
+    if let Some(condition) = condition {
+        let condition = emit_expr(condition, &nested, signatures)?;
+        out.push_str(&format!(
+            "{pad}    if (!{}) continue;\n",
+            c_condition(&condition.code)
+        ));
+    }
+    let value = emit_expr(value, &nested, signatures)?;
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {};\n",
+        value.code
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name} }};\n",
+        local_c_name(name)
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
 fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signatures) -> Expr {
     let ExprKind::Var(name) = &input.kind else {
         return input.clone();
@@ -2645,6 +2746,68 @@ fn emit_expr(
             };
             return emit_expr(&call, env, signatures);
         }
+        ExprKind::List(items) => {
+            let result_ty = type_of_expr(expr, env, signatures)?;
+            let Type::List(element) = &result_ty else {
+                unreachable!()
+            };
+            let mut rendered = Vec::with_capacity(items.len());
+            for item in items {
+                rendered.push(emit_expr(item, env, signatures)?.code);
+            }
+            let element_c = c_type(element, signatures);
+            EmittedExpr {
+                code: format!(
+                    "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {} }})",
+                    rendered.join(", "),
+                    items.len()
+                ),
+                ty: result_ty,
+            }
+        }
+        ExprKind::Index { base, index } => {
+            let base = emit_expr(base, env, signatures)?;
+            let index = emit_expr(index, env, signatures)?;
+            let result_ty = type_of_expr(expr, env, signatures)?;
+            let element_c = c_type(&result_ty, signatures);
+            EmittedExpr {
+                code: format!(
+                    "(*(({element_c} *)flux_list_at({}, {}, sizeof({element_c}))))",
+                    base.code, index.code
+                ),
+                ty: result_ty,
+            }
+        }
+        ExprKind::Slice { base, start, end } => {
+            let base = emit_expr(base, env, signatures)?;
+            let Type::List(element) = type_of_expr(expr, env, signatures)? else {
+                unreachable!()
+            };
+            let (has_start, start_code) = if let Some(start) = start {
+                ("true", emit_expr(start, env, signatures)?.code)
+            } else {
+                ("false", "INT64_C(0)".to_string())
+            };
+            let (has_end, end_code) = if let Some(end) = end {
+                ("true", emit_expr(end, env, signatures)?.code)
+            } else {
+                ("false", "INT64_C(0)".to_string())
+            };
+            let element_c = c_type(&element, signatures);
+            EmittedExpr {
+                code: format!(
+                    "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, sizeof({element_c}))",
+                    base.code
+                ),
+                ty: Type::List(element),
+            }
+        }
+        ExprKind::ListComprehension { .. } => {
+            return Err(diag(
+                expr.span,
+                "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
         ExprKind::Call { name, args, .. } if name == "print" => {
             let arg = emit_expr(&args[0], env, signatures)?;
             let helper = match arg.ty {
@@ -2658,6 +2821,7 @@ fn emit_expr(
                         "cannot print a named aggregate value directly",
                     ));
                 }
+                Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
                 Type::Function { .. } => {
                     return Err(diag(expr.span, "cannot print a function value directly"));
                 }
@@ -3348,6 +3512,7 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             format!("struct {}", interface_c_name(&name))
         }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
+        Type::List(_) => "struct flux__list".to_string(),
         Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
     }
 }
@@ -3382,6 +3547,7 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Error => "error".to_string(),
         Type::Void => "void".to_string(),
         Type::Named(name) => format!("named_{name}"),
+        Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
         Type::Function { params, returns } => {
             let name = function_type_name(&params, &returns, signatures);
             name.trim_start_matches("flux__fn_").to_string()
@@ -3726,6 +3892,36 @@ fn collect_update_helpers_from_expr(
             collect_update_helpers_from_expr(input, signatures, emitted, helpers);
             for arg in args {
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_update_helpers_from_expr(item, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_update_helpers_from_expr(base, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(index, signatures, emitted, helpers);
+        }
+        ExprKind::Slice { base, start, end } => {
+            collect_update_helpers_from_expr(base, signatures, emitted, helpers);
+            if let Some(start) = start {
+                collect_update_helpers_from_expr(start, signatures, emitted, helpers);
+            }
+            if let Some(end) = end {
+                collect_update_helpers_from_expr(end, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_update_helpers_from_expr(iterable, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+            if let Some(condition) = condition {
+                collect_update_helpers_from_expr(condition, signatures, emitted, helpers);
             }
         }
         ExprKind::QualifiedCall {

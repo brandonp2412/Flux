@@ -458,6 +458,26 @@ Reusable container and algorithm design will therefore rely on a combination of:
 
 The compiler implementation may use generic implementation languages internally; that does not expose generics to Flux programs.
 
+## Bootstrap lists, indexing, slicing, and comprehensions
+
+Flux spells concrete list types as `T[]`, preserving the language rule that source generics do not exist. The current bootstrap supports immutable local lists with homogeneous element types:
+
+```flux
+let values: i64[] = [1, 2, 3, 4, 5]
+let first: i64 = values[0]
+let last: i64 = values[-1]
+let middle: i64[] = values[1:4]
+let tail: i64[] = values[-2:]
+let doubled: i64[] = [value * 2 for value in values]
+let large: i64[] = [value * 2 for value in values if value > 2]
+```
+
+Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices use an exclusive end, accept omitted or negative bounds, and clip bounds to the valid list extent in the same style as Python. Slices are zero-copy views over the source list storage.
+
+Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections.
+
+This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
+
 ## Dart-inspired ergonomics direction
 
 Flux should borrow Dart's strongest expression and collection ergonomics without importing Dart's class-oriented object model. Planned features include optional types, null/optional-aware access and indexing, coalescing, `first`/`last` and related sequence conveniences, cascades that evaluate their target once, collection spreads and collection-level `if`/`for`, records, patterns/destructuring, named/default parameters, concise functions, string interpolation, and async/generator ergonomics.

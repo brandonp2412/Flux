@@ -378,6 +378,36 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(arg, symbols, signatures);
             }
         }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_expr_pattern_symbols(item, symbols, signatures);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_expr_pattern_symbols(base, symbols, signatures);
+            collect_expr_pattern_symbols(index, symbols, signatures);
+        }
+        ExprKind::Slice { base, start, end } => {
+            collect_expr_pattern_symbols(base, symbols, signatures);
+            if let Some(start) = start {
+                collect_expr_pattern_symbols(start, symbols, signatures);
+            }
+            if let Some(end) = end {
+                collect_expr_pattern_symbols(end, symbols, signatures);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_expr_pattern_symbols(iterable, symbols, signatures);
+            collect_expr_pattern_symbols(value, symbols, signatures);
+            if let Some(condition) = condition {
+                collect_expr_pattern_symbols(condition, symbols, signatures);
+            }
+        }
         ExprKind::QualifiedCall {
             args, named_args, ..
         } => {

@@ -178,6 +178,7 @@ impl Signatures {
                 .get(name)
                 .map(|target| self.canonical_type(target))
                 .unwrap_or_else(|| ty.clone()),
+            Type::List(element) => Type::List(Box::new(self.canonical_type(element))),
             Type::Function { params, returns } => Type::Function {
                 params: params.iter().map(|ty| self.canonical_type(ty)).collect(),
                 returns: returns.iter().map(|ty| self.canonical_type(ty)).collect(),
@@ -482,6 +483,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                     diagnostics.push(diagnostic);
                 }
+                if matches!(signatures.canonical_type(ty), Type::List(_)) {
+                    diagnostics.push(diag(
+                        span,
+                        "list values cannot be returned from interface capabilities until collection ownership is implemented",
+                    ));
+                }
                 if definition.public
                     && let Err(diagnostic) = require_publicly_nameable_type(span, ty, &signatures)
                 {
@@ -698,6 +705,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 .unwrap_or(function.return_span);
             if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                 diagnostics.push(diagnostic);
+            }
+            if matches!(signatures.canonical_type(ty), Type::List(_)) {
+                diagnostics.push(diag(
+                    span,
+                    "list values cannot be returned from functions until collection ownership is implemented",
+                ));
             }
             if function.public
                 && let Err(diagnostic) = require_publicly_nameable_type(span, ty, &signatures)
@@ -1996,6 +2009,40 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(arg, reads);
             }
         }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_expr_reads(item, reads);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_expr_reads(base, reads);
+            collect_expr_reads(index, reads);
+        }
+        ExprKind::Slice { base, start, end } => {
+            collect_expr_reads(base, reads);
+            if let Some(start) = start {
+                collect_expr_reads(start, reads);
+            }
+            if let Some(end) = end {
+                collect_expr_reads(end, reads);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_expr_reads(iterable, reads);
+            let mut nested_reads = HashSet::new();
+            collect_expr_reads(value, &mut nested_reads);
+            if let Some(condition) = condition {
+                collect_expr_reads(condition, &mut nested_reads);
+            }
+            nested_reads.remove(binding);
+            reads.extend(nested_reads);
+        }
         ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
@@ -2067,6 +2114,14 @@ fn check_block_all(
             } => {
                 if let Err(diagnostic) = require_known_type(*type_span, ty, signatures) {
                     diagnostics.push(diagnostic);
+                }
+                if matches!(stmt.kind, StmtKind::Var { .. })
+                    && matches!(signatures.canonical_type(ty), Type::List(_))
+                {
+                    diagnostics.push(diag(
+                        *type_span,
+                        "list bindings are currently immutable local values; use 'let' until collection ownership is implemented",
+                    ));
                 }
                 let duplicate = env.contains_key(name);
                 if duplicate {
@@ -2703,6 +2758,105 @@ pub fn type_of_expr(
                 },
             };
             type_of_expr(&call, env, signatures)
+        }
+        ExprKind::List(items) => {
+            let Some(first) = items.first() else {
+                return Err(diag(
+                    expr.span,
+                    "empty list literals cannot infer an element type yet",
+                ));
+            };
+            let element_ty = type_of_expr(first, env, signatures)?;
+            if matches!(element_ty, Type::Void | Type::Function { .. }) {
+                return Err(diag(
+                    first.span,
+                    &format!("list elements cannot have type {}", element_ty.name()),
+                ));
+            }
+            for item in items.iter().skip(1) {
+                let actual = type_of_expr(item, env, signatures)?;
+                require_type(item.span, &element_ty, &actual, "list element")?;
+            }
+            Ok(Type::List(Box::new(element_ty)))
+        }
+        ExprKind::Index { base, index } => {
+            let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+            let Type::List(element) = base_ty else {
+                return Err(diag(base.span, "indexing currently requires a list value"));
+            };
+            let index_ty = type_of_expr(index, env, signatures)?;
+            require_type(index.span, &Type::I64, &index_ty, "list index")?;
+            Ok(*element)
+        }
+        ExprKind::Slice { base, start, end } => {
+            let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+            let Type::List(element) = base_ty else {
+                return Err(diag(base.span, "slicing currently requires a list value"));
+            };
+            for (bound, label) in [
+                (start.as_deref(), "slice start"),
+                (end.as_deref(), "slice end"),
+            ] {
+                if let Some(bound) = bound {
+                    let bound_ty = type_of_expr(bound, env, signatures)?;
+                    require_type(bound.span, &Type::I64, &bound_ty, label)?;
+                }
+            }
+            Ok(Type::List(element))
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding,
+            binding_span,
+            iterable,
+            condition,
+        } => {
+            let iterable_ty = signatures.canonical_type(&type_of_expr(iterable, env, signatures)?);
+            let Type::List(element) = iterable_ty else {
+                return Err(diag(
+                    iterable.span,
+                    "list comprehension 'in' expression must be a list",
+                ));
+            };
+            if env.contains_key(binding) {
+                return Err(diag(
+                    *binding_span,
+                    &format!("list comprehension binding '{binding}' shadows an existing binding"),
+                ));
+            }
+            let mut comprehension_reads = HashSet::new();
+            collect_expr_reads(value, &mut comprehension_reads);
+            if let Some(condition) = condition {
+                collect_expr_reads(condition, &mut comprehension_reads);
+            }
+            if !binding.starts_with('_') && !comprehension_reads.contains(binding) {
+                return Err(diag(
+                    *binding_span,
+                    &format!("unused list comprehension binding '{binding}'"),
+                )
+                .with_note(
+                    "Flux has no lint-warning tier: unused bindings are compile errors; prefix an intentionally ignored binding with '_'",
+                ));
+            }
+            let mut nested = env.clone();
+            nested.insert(binding.clone(), (*element).clone());
+            if let Some(condition) = condition {
+                let condition_ty = type_of_expr(condition, &nested, signatures)?;
+                require_type(
+                    condition.span,
+                    &Type::Bool,
+                    &condition_ty,
+                    "list comprehension filter",
+                )?;
+            }
+            let value_ty = type_of_expr(value, &nested, signatures)?;
+            if matches!(value_ty, Type::Void | Type::Function { .. }) {
+                return Err(diag(
+                    value.span,
+                    &format!("list comprehension cannot produce {}", value_ty.name()),
+                ));
+            }
+            Ok(Type::List(Box::new(value_ty)))
         }
         ExprKind::Call {
             name,
@@ -3613,6 +3767,10 @@ fn evaluate_default_expr(
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
+        | ExprKind::List(_)
+        | ExprKind::Index { .. }
+        | ExprKind::Slice { .. }
+        | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
@@ -3752,6 +3910,10 @@ fn evaluate_constant_expr(
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
+        | ExprKind::List(_)
+        | ExprKind::Index { .. }
+        | ExprKind::Slice { .. }
+        | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
@@ -3957,6 +4119,12 @@ fn require_storable_value_type(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     require_known_type(span, ty, signatures)?;
+    if matches!(signatures.canonical_type(ty), Type::List(_)) {
+        return Err(diag(
+            span,
+            "list values are currently local-only and cannot be stored inside structs or enums",
+        ));
+    }
     if let Type::Named(name) = signatures.canonical_type(ty)
         && signatures.interface(&name).is_some()
     {
@@ -4248,6 +4416,7 @@ fn require_publicly_nameable_type(
             }
             Ok(())
         }
+        Type::List(element) => require_publicly_nameable_type(span, element, signatures),
         Type::Function { params, returns } => {
             for ty in params.iter().chain(returns) {
                 require_publicly_nameable_type(span, ty, signatures)?;
@@ -4266,6 +4435,9 @@ fn require_known_type(
     if let Type::Named(name) = ty {
         require_visible_named_type(span, name, signatures)?;
     }
+    if let Type::List(element) = ty {
+        require_known_type(span, element, signatures)?;
+    }
     match signatures.canonical_type(ty) {
         Type::Named(name)
             if signatures.struct_type(&name).is_none()
@@ -4274,6 +4446,7 @@ fn require_known_type(
         {
             Err(diag(span, &format!("unknown type '{name}'")))
         }
+        Type::List(element) => require_known_type(span, &element, signatures),
         Type::Function { params, returns } => {
             if returns.len() > 1 {
                 return Err(diag(

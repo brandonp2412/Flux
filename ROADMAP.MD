@@ -200,13 +200,13 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 
 ## Indexing and collection conveniences
 
-- [ ] `value[index]` indexing with strict index/key typing.
+- [x] `value[index]` indexing with strict index typing for bootstrap lists, including Python-style negative indices with checked bounds.
 - [ ] Optional indexing (`value?[index]` or Flux-equivalent) for optional receivers.
 - [ ] `first` and `last` conveniences for built-in sequences.
 - [ ] `single` / exactly-one validation.
 - [ ] `length` and `is_empty` / `is_not_empty` conveniences.
 - [ ] Safe first/last forms for possibly empty collections instead of hidden runtime traps.
-- [ ] Slices/ranges with clear bounds semantics.
+- [x] List slices/ranges with clear bounds semantics: `[start:end]`, omitted bounds, negative bounds, and clipping use Python-style exclusive-end behavior.
 - [ ] Indexed iteration without manual counter plumbing.
 - [ ] `map`, `filter`/`where`, `fold`, `reduce`, `any`, `every`, `take`, `skip`, and related functional sequence operations.
 - [ ] Lazy iteration where it avoids needless allocations.
@@ -225,16 +225,16 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 
 ## Collection literals and control flow
 
-- [ ] List/array literals.
+- [x] List literals with homogeneous static element typing and concrete `T[]` source spelling (no source generics).
 - [ ] Set literals.
 - [ ] Map literals.
 - [ ] Spread elements analogous to Dart `...`.
 - [ ] Optional-aware spread analogous to Dart `...?`.
 - [ ] Null/optional-aware collection elements analogous to modern Dart `?element`.
 - [ ] `if` / `else` elements inside collection literals.
-- [ ] `for` elements/comprehensions inside collection literals.
+- [x] Python-style list comprehensions with optional boolean filters: `[expr for item in source if condition]`.
 - [ ] Pattern guards inside collection construction where useful.
-- [ ] Compile these forms directly without constructing intermediate collections unnecessarily.
+- [x] Bootstrap list literals/slices/comprehensions lower directly to native list descriptors; slices are zero-copy and comprehensions use stack-backed output sized from the source list without intermediate collections.
 
 ## Records, patterns, and destructuring
 
@@ -317,6 +317,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 - [ ] Owned string type plus immutable string views/slices.
 - [ ] Arrays/lists.
+  - [x] Bootstrap immutable local `T[]` lists with literals, checked indexing, zero-copy slicing, and filtered comprehensions.
+  - [ ] Owned/escaping list storage, list parameters/returns, aggregate fields, mutation, and lifetime/ownership integration.
 - [ ] Maps.
 - [ ] Sets.
 - [ ] Byte buffers.

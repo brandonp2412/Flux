@@ -8,6 +8,7 @@ pub enum Type {
     Error,
     Void,
     Named(String),
+    List(Box<Type>),
     Function {
         params: Vec<Type>,
         returns: Vec<Type>,
@@ -17,6 +18,9 @@ pub enum Type {
 impl Type {
     pub fn parse(input: &str) -> Option<Self> {
         let input = input.trim();
+        if let Some(inner) = input.strip_suffix("[]") {
+            return Some(Self::List(Box::new(Self::parse(inner)?)));
+        }
         if let Some(rest) = input.strip_prefix("fn(") {
             let close = matching_type_paren(rest)?;
             let params_src = &rest[..close];
@@ -68,6 +72,7 @@ impl Type {
             Self::Error => "error".to_string(),
             Self::Void => "void".to_string(),
             Self::Named(name) => name.clone(),
+            Self::List(element) => format!("{}[]", element.name()),
             Self::Function { params, returns } => {
                 let params = params.iter().map(Type::name).collect::<Vec<_>>().join(", ");
                 let returns = match returns.as_slice() {
@@ -562,6 +567,23 @@ pub enum ExprKind {
         name: String,
         name_span: SourceSpan,
         args: Vec<Expr>,
+    },
+    List(Vec<Expr>),
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Slice {
+        base: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
+    ListComprehension {
+        value: Box<Expr>,
+        binding: String,
+        binding_span: SourceSpan,
+        iterable: Box<Expr>,
+        condition: Option<Box<Expr>>,
     },
     StructLiteral {
         name: String,

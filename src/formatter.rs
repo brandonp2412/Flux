@@ -677,6 +677,45 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 text
             }
         }
+        ExprKind::List(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(|item| format_expr(item, 0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExprKind::Index { base, index } => {
+            format!("{}[{}]", format_expr(base, 7), format_expr(index, 0))
+        }
+        ExprKind::Slice { base, start, end } => format!(
+            "{}[{}:{}]",
+            format_expr(base, 7),
+            start
+                .as_deref()
+                .map(|value| format_expr(value, 0))
+                .unwrap_or_default(),
+            end.as_deref()
+                .map(|value| format_expr(value, 0))
+                .unwrap_or_default(),
+        ),
+        ExprKind::ListComprehension {
+            value,
+            binding,
+            iterable,
+            condition,
+            ..
+        } => {
+            let filter = condition
+                .as_deref()
+                .map(|condition| format!(" if {}", format_expr(condition, 0)))
+                .unwrap_or_default();
+            format!(
+                "[{} for {binding} in {}{filter}]",
+                format_expr(value, 0),
+                format_expr(iterable, 0)
+            )
+        }
         ExprKind::Call {
             name,
             args,
