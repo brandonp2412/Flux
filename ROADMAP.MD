@@ -121,14 +121,14 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 ## Functions
 
-- [ ] Functions as first-class values.
+- [x] Named functions as first-class values: typed function references can be stored, passed, returned, and invoked through native function-pointer lowering.
 - [ ] Closures with safe capture semantics.
 - [ ] Anonymous functions.
 - [ ] Concise single-expression function syntax.
 - [x] Named-only parameters using a `*` delimiter, with statically validated named call arguments and native ABI reordering.
 - [x] Optional positional/named parameters with explicit compile-time primitive defaults, including top-level constant references and call-site default expansion.
 - [x] Required named parameters: named-only parameters without defaults must be supplied explicitly.
-- [ ] Function type aliases.
+- [x] Function type aliases through concrete `type Mapper = fn(...) -> ...` aliases; first-class function values currently support zero or one return value.
 - [ ] Partial application / ergonomic function binding if it remains predictable and allocation-free where possible.
 - [ ] Pipeline/composition syntax only if it materially improves functional code and lowers transparently.
 

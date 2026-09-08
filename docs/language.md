@@ -92,6 +92,26 @@ Parameters before `*` are positional-only. Trailing positional parameters and na
 
 Current defaults are compile-time primitive expressions (`i64`, `bool`, or `str`) and may reference top-level compile-time constants. They cannot depend on another parameter, local state, or a runtime function call. The compiler expands omitted defaults and reorders supplied named arguments into the function's concrete declaration-order native ABI; Flux does not need runtime named-argument dictionaries or reflection.
 
+## First-class functions
+
+Named functions are ordinary typed values. Function types use `fn(parameter_types) -> return_type` and may be given transparent aliases:
+
+```flux
+type Mapper = fn(i64) -> i64
+
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn apply(transform: Mapper, value: i64) -> i64 {
+    return transform(value)
+}
+```
+
+A named function can be assigned to a binding, passed as an argument, returned from another function, and invoked through that binding. Function-value calls are positional because a function type describes the callable ABI rather than declaration-only parameter names/defaults. The bootstrap backend lowers these values to typed native C function pointers with deterministic generated typedefs; there is no callable object, boxing, reflection, or dynamic-dispatch runtime.
+
+First-class function types currently support zero or one return value. Ordinary Flux functions may still return multiple values; making multi-return shapes first-class requires a standardized function-value ABI and remains future work. Anonymous functions and closures are separate planned features because captured values must integrate with the ownership model rather than being hidden heap objects.
+
 ## Error handling
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.

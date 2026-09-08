@@ -8,11 +8,48 @@ pub enum Type {
     Error,
     Void,
     Named(String),
+    Function {
+        params: Vec<Type>,
+        returns: Vec<Type>,
+    },
 }
 
 impl Type {
     pub fn parse(input: &str) -> Option<Self> {
-        match input.trim() {
+        let input = input.trim();
+        if let Some(rest) = input.strip_prefix("fn(") {
+            let close = matching_type_paren(rest)?;
+            let params_src = &rest[..close];
+            let suffix = rest[close + 1..].trim();
+            let returns_src = suffix.strip_prefix("->")?.trim();
+            let params = if params_src.trim().is_empty() {
+                Vec::new()
+            } else {
+                split_type_commas(params_src)
+                    .into_iter()
+                    .map(Self::parse)
+                    .collect::<Option<Vec<_>>>()?
+            };
+            let returns = if returns_src == "void" {
+                Vec::new()
+            } else if let Some(inner) = returns_src
+                .strip_prefix('(')
+                .and_then(|value| value.strip_suffix(')'))
+            {
+                let values = split_type_commas(inner);
+                if values.len() < 2 {
+                    return None;
+                }
+                values
+                    .into_iter()
+                    .map(Self::parse)
+                    .collect::<Option<Vec<_>>>()?
+            } else {
+                vec![Self::parse(returns_src)?]
+            };
+            return Some(Self::Function { params, returns });
+        }
+        match input {
             "i64" => Some(Self::I64),
             "bool" => Some(Self::Bool),
             "str" => Some(Self::Str),
@@ -23,16 +60,68 @@ impl Type {
         }
     }
 
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> String {
         match self {
-            Self::I64 => "i64",
-            Self::Bool => "bool",
-            Self::Str => "str",
-            Self::Error => "error",
-            Self::Void => "void",
-            Self::Named(name) => name,
+            Self::I64 => "i64".to_string(),
+            Self::Bool => "bool".to_string(),
+            Self::Str => "str".to_string(),
+            Self::Error => "error".to_string(),
+            Self::Void => "void".to_string(),
+            Self::Named(name) => name.clone(),
+            Self::Function { params, returns } => {
+                let params = params.iter().map(Type::name).collect::<Vec<_>>().join(", ");
+                let returns = match returns.as_slice() {
+                    [] => "void".to_string(),
+                    [ty] => ty.name(),
+                    _ => format!(
+                        "({})",
+                        returns
+                            .iter()
+                            .map(Type::name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
+                format!("fn({params}) -> {returns}")
+            }
         }
     }
+}
+
+fn matching_type_paren(input: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (index, byte) in input.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_type_commas(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (index, byte) in input.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
 }
 
 fn is_type_identifier(input: &str) -> bool {

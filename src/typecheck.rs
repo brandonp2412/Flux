@@ -127,8 +127,12 @@ impl Signatures {
             Type::Named(name) => self
                 .aliases
                 .get(name)
-                .cloned()
+                .map(|target| self.canonical_type(target))
                 .unwrap_or_else(|| ty.clone()),
+            Type::Function { params, returns } => Type::Function {
+                params: params.iter().map(|ty| self.canonical_type(ty)).collect(),
+                returns: returns.iter().map(|ty| self.canonical_type(ty)).collect(),
+            },
             _ => ty.clone(),
         }
     }
@@ -994,7 +998,18 @@ pub fn type_of_expr(
                     .constant(name)
                     .map(|constant| constant.ty.clone())
             })
-            .ok_or_else(|| diag(expr.span, &format!("unknown binding or constant '{name}'"))),
+            .or_else(|| {
+                signatures.get(name).map(|signature| Type::Function {
+                    params: signature.params.clone(),
+                    returns: signature.returns.clone(),
+                })
+            })
+            .ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!("unknown binding, constant, or function '{name}'"),
+                )
+            }),
         ExprKind::Call {
             name,
             args,
@@ -1261,7 +1276,38 @@ fn check_call(
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
     let Some(signature) = signatures.get(name) else {
-        return Err(diag(span, &format!("unknown function '{name}'")));
+        let Some(Type::Function { params, returns }) = env.get(name) else {
+            return Err(diag(
+                span,
+                &format!("unknown function or callable '{name}'"),
+            ));
+        };
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "first-class function values accept positional arguments only",
+            ));
+        }
+        if args.len() != params.len() {
+            return Err(diag(
+                span,
+                &format!(
+                    "function value '{name}' expects {} arguments, got {}",
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
+            let actual = type_of_expr(arg, env, signatures)?;
+            require_type(
+                arg.span,
+                expected,
+                &actual,
+                &format!("argument {} to function value '{name}'", index + 1),
+            )?;
+        }
+        return Ok(returns.clone());
     };
     let positional = signature
         .param_details
@@ -1689,6 +1735,21 @@ fn require_known_type(
             if signatures.struct_type(&name).is_none() && signatures.enum_type(&name).is_none() =>
         {
             Err(diag(span, &format!("unknown type '{name}'")))
+        }
+        Type::Function { params, returns } => {
+            if returns.len() > 1 {
+                return Err(diag(
+                    span,
+                    "first-class function types currently support zero or one return value",
+                ));
+            }
+            for ty in params.iter().chain(&returns) {
+                require_known_type(span, ty, signatures)?;
+                if matches!(signatures.canonical_type(ty), Type::Void) {
+                    return Err(diag(span, "void cannot be a function value parameter type"));
+                }
+            }
+            Ok(())
         }
         _ => Ok(()),
     }

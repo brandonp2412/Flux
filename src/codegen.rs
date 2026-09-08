@@ -26,6 +26,17 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("    return a / b;\n");
     out.push_str("}\n\n");
 
+    for definition in &program.structs {
+        out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+    }
+    for definition in &program.enums {
+        out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+    }
+    if !program.structs.is_empty() || !program.enums.is_empty() {
+        out.push('\n');
+    }
+    emit_function_type_typedefs(&mut out, program, signatures)?;
+
     for definition in value_type_emit_order(program, signatures)? {
         match definition {
             ValueDef::Struct(definition) => {
@@ -86,11 +97,17 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
         function
             .params
             .iter()
-            .map(|param| format!("{} {}", c_type(&param.ty, signatures), param.name))
+            .map(|param| {
+                format!(
+                    "{} {}",
+                    c_type(&param.ty, signatures),
+                    local_c_name(&param.name)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("{ret} {}({params})", function.name)
+    format!("{ret} {}({params})", function_c_name(&function.name))
 }
 
 fn emit_function(
@@ -133,8 +150,9 @@ fn emit_block(
             StmtKind::Let { name, ty, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!(
-                    "{pad}{} {name} = {};\n",
+                    "{pad}{} {} = {};\n",
                     c_type(ty, signatures),
+                    local_c_name(name),
                     value.code
                 ));
                 env.insert(name.clone(), signatures.canonical_type(ty));
@@ -167,7 +185,7 @@ fn emit_block(
                     out.push_str(&format!(
                         "{pad}{} {} = {temp}.v{index};\n",
                         c_type(&binding.ty, signatures),
-                        binding.name
+                        local_c_name(&binding.name)
                     ));
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                 }
@@ -203,7 +221,7 @@ fn emit_block(
                     out.push_str(&format!(
                         "{pad}{} {} = {temp}.{};\n",
                         c_type(&field_signature.ty, signatures),
-                        field.binding.name,
+                        local_c_name(&field.binding.name),
                         field_c_name(&field.field)
                     ));
                     env.insert(field.binding.name.clone(), field_signature.ty.clone());
@@ -297,8 +315,9 @@ fn emit_block(
                 let end = emit_expr(end, env, signatures)?;
                 let temp = format!("flux__end_{}", *temp_counter);
                 *temp_counter += 1;
+                let c_name = local_c_name(name);
                 out.push_str(&format!(
-                    "{pad}for (int64_t {name} = {}, {temp} = {}; {name} < {temp}; ++{name}) {{\n",
+                    "{pad}for (int64_t {c_name} = {}, {temp} = {}; {c_name} < {temp}; ++{c_name}) {{\n",
                     start.code, end.code
                 ));
                 let mut nested = env.clone();
@@ -351,7 +370,7 @@ fn emit_block(
                         out.push_str(&format!(
                             "{pad}        {} {} = {temp}.payload.{}.v{index};\n",
                             c_type(payload_ty, signatures),
-                            binding.name,
+                            local_c_name(&binding.name),
                             enum_payload_member_name(&arm.variant)
                         ));
                         nested.insert(binding.name.clone(), payload_ty.clone());
@@ -405,7 +424,7 @@ fn emit_expr(
         ExprKind::Var(name) => {
             if let Some(ty) = env.get(name) {
                 EmittedExpr {
-                    code: name.clone(),
+                    code: local_c_name(name),
                     ty: ty.clone(),
                 }
             } else if let Some(constant) = signatures.constant(name) {
@@ -413,10 +432,20 @@ fn emit_expr(
                     code: constant_c_value(&constant.value),
                     ty: constant.ty.clone(),
                 }
+            } else if let Some(signature) = signatures.get(name) {
+                EmittedExpr {
+                    code: function_c_name(name),
+                    ty: Type::Function {
+                        params: signature.params.clone(),
+                        returns: signature.returns.clone(),
+                    },
+                }
             } else {
                 return Err(diag(
                     expr.span,
-                    &format!("unknown binding or constant '{name}' during code generation"),
+                    &format!(
+                        "unknown binding, constant, or function '{name}' during code generation"
+                    ),
                 ));
             }
         }
@@ -428,7 +457,13 @@ fn emit_expr(
                 Type::Str => "flux_print_str",
                 Type::Error => "flux_print_error",
                 Type::Named(_) => {
-                    return Err(diag(expr.span, "cannot print a struct value directly"));
+                    return Err(diag(
+                        expr.span,
+                        "cannot print a named aggregate value directly",
+                    ));
+                }
+                Type::Function { .. } => {
+                    return Err(diag(expr.span, "cannot print a function value directly"));
                 }
                 Type::Void => return Err(diag(expr.span, "cannot print void")),
             };
@@ -449,14 +484,38 @@ fn emit_expr(
             args,
             named_args,
         } => {
-            let signature = signatures.get(name).ok_or_else(|| {
-                diag(
-                    expr.span,
-                    &format!("unknown function '{name}' during code generation"),
+            let (rendered, returns, callee) = if let Some(signature) = signatures.get(name) {
+                (
+                    emit_call_arguments(signature, args, named_args, env, signatures)?,
+                    signature.returns.clone(),
+                    function_c_name(name),
                 )
-            })?;
-            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
-            let ty = match signature.returns.as_slice() {
+            } else {
+                let Some(Type::Function { params, returns }) = env.get(name) else {
+                    return Err(diag(
+                        expr.span,
+                        &format!("unknown function or callable '{name}' during code generation"),
+                    ));
+                };
+                if !named_args.is_empty() {
+                    return Err(diag(
+                        expr.span,
+                        "first-class function values accept positional arguments only",
+                    ));
+                }
+                if args.len() != params.len() {
+                    return Err(diag(
+                        expr.span,
+                        "invalid function value call reached code generation",
+                    ));
+                }
+                let mut rendered = Vec::with_capacity(args.len());
+                for arg in args {
+                    rendered.push(emit_expr(arg, env, signatures)?.code);
+                }
+                (rendered, returns.clone(), local_c_name(name))
+            };
+            let ty = match returns.as_slice() {
                 [] => Type::Void,
                 [ty] => ty.clone(),
                 _ => {
@@ -469,7 +528,7 @@ fn emit_expr(
                 }
             };
             EmittedExpr {
-                code: format!("{name}({})", rendered.join(", ")),
+                code: format!("{callee}({})", rendered.join(", ")),
                 ty,
             }
         }
@@ -643,7 +702,7 @@ fn emit_multi_expr(
     }
     let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
     Ok((
-        format!("{name}({})", rendered.join(", ")),
+        format!("{}({})", function_c_name(name), rendered.join(", ")),
         multi_return_struct_name(name),
     ))
 }
@@ -668,7 +727,188 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         Type::Error => "const char *".to_string(),
         Type::Void => "void".to_string(),
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
+        Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
     }
+}
+
+fn function_type_name(params: &[Type], returns: &[Type], signatures: &Signatures) -> String {
+    let params = if params.is_empty() {
+        "void".to_string()
+    } else {
+        params
+            .iter()
+            .map(|ty| type_mangle(ty, signatures))
+            .collect::<Vec<_>>()
+            .join("__")
+    };
+    let returns = if returns.is_empty() {
+        "void".to_string()
+    } else {
+        returns
+            .iter()
+            .map(|ty| type_mangle(ty, signatures))
+            .collect::<Vec<_>>()
+            .join("__")
+    };
+    format!("flux__fn_{params}__to__{returns}")
+}
+
+fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
+    match signatures.canonical_type(ty) {
+        Type::I64 => "i64".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Str => "str".to_string(),
+        Type::Error => "error".to_string(),
+        Type::Void => "void".to_string(),
+        Type::Named(name) => format!("named_{name}"),
+        Type::Function { params, returns } => {
+            let name = function_type_name(&params, &returns, signatures);
+            name.trim_start_matches("flux__fn_").to_string()
+        }
+    }
+}
+
+fn emit_function_type_typedefs(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let mut types = HashSet::new();
+    for alias in &program.aliases {
+        collect_function_type(&alias.target, signatures, &mut types);
+    }
+    for definition in &program.structs {
+        for field in &definition.fields {
+            collect_function_type(&field.ty, signatures, &mut types);
+        }
+    }
+    for definition in &program.enums {
+        for variant in &definition.variants {
+            for payload in &variant.payloads {
+                collect_function_type(&payload.ty, signatures, &mut types);
+            }
+        }
+    }
+    for function in &program.functions {
+        for param in &function.params {
+            collect_function_type(&param.ty, signatures, &mut types);
+        }
+        for ty in &function.returns {
+            collect_function_type(ty, signatures, &mut types);
+        }
+        collect_function_types_from_block(&function.body, signatures, &mut types);
+    }
+
+    let mut types = types.into_iter().collect::<Vec<_>>();
+    types.sort_by(|left, right| {
+        function_type_depth(left)
+            .cmp(&function_type_depth(right))
+            .then_with(|| left.name().cmp(&right.name()))
+    });
+    for ty in types {
+        let Type::Function { params, returns } = ty else {
+            continue;
+        };
+        if returns.len() > 1 {
+            return Err(diag(
+                SourceSpan::line(1),
+                "first-class function types currently support zero or one return value",
+            ));
+        }
+        let return_type = returns
+            .first()
+            .map(|ty| c_type(ty, signatures))
+            .unwrap_or_else(|| "void".to_string());
+        let params_text = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params
+                .iter()
+                .map(|ty| c_type(ty, signatures))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!(
+            "typedef {return_type} (*{})({params_text});\n",
+            function_type_name(&params, &returns, signatures)
+        ));
+    }
+    if !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    Ok(())
+}
+
+fn collect_function_type(ty: &Type, signatures: &Signatures, types: &mut HashSet<Type>) {
+    let ty = signatures.canonical_type(ty);
+    if let Type::Function { params, returns } = &ty {
+        for nested in params.iter().chain(returns) {
+            collect_function_type(nested, signatures, types);
+        }
+        types.insert(ty);
+    }
+}
+
+fn collect_function_types_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    types: &mut HashSet<Type>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { ty, .. } => collect_function_type(ty, signatures, types),
+            StmtKind::LetDestructure { bindings, .. } => {
+                for binding in bindings {
+                    collect_function_type(&binding.ty, signatures, types);
+                }
+            }
+            StmtKind::LetStructDestructure { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Expr(_) => {}
+            StmtKind::If {
+                body, else_body, ..
+            } => {
+                collect_function_types_from_block(body, signatures, types);
+                collect_function_types_from_block(else_body, signatures, types);
+            }
+            StmtKind::ForRange { body, .. } => {
+                collect_function_types_from_block(body, signatures, types);
+            }
+            StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect_function_types_from_block(&arm.body, signatures, types);
+                }
+            }
+        }
+    }
+}
+
+fn function_type_depth(ty: &Type) -> usize {
+    match ty {
+        Type::Function { params, returns } => {
+            1 + params
+                .iter()
+                .chain(returns)
+                .map(function_type_depth)
+                .max()
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+fn function_c_name(name: &str) -> String {
+    if name == "main" {
+        "main".to_string()
+    } else {
+        format!("flux__fn_{name}")
+    }
+}
+
+fn local_c_name(name: &str) -> String {
+    format!("flux__local_{name}")
 }
 
 fn struct_c_name(name: &str) -> String {

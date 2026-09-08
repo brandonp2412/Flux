@@ -23,8 +23,8 @@ fn main() -> i64 {
 
     check_source(source).expect("program should typecheck");
     let generated = compile_to_c(source).expect("program should compile");
-    assert!(generated.contains("for (int64_t i"));
-    assert!(generated.contains("if (i < INT64_C(2))"));
+    assert!(generated.contains("for (int64_t flux__local_i"));
+    assert!(generated.contains("if (flux__local_i < INT64_C(2))"));
 }
 
 #[test]
@@ -280,6 +280,142 @@ fn formatter_and_semantic_database_preserve_named_parameter_metadata() {
 }
 
 #[test]
+fn accepts_first_class_named_function_values_and_higher_order_calls() {
+    let source = r#"
+type Number = i64
+type Mapper = fn(Number) -> Number
+
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn apply(transform: Mapper, value: i64) -> i64 {
+    return transform(value)
+}
+
+fn choose(double_it: bool) -> Mapper {
+    if double_it:
+        return double
+    return increment
+}
+
+fn main() -> i64 {
+    let mapper: Mapper = double
+    print(apply(mapper, 21))
+    let selected: Mapper = choose(false)
+    print(selected(41))
+    return 0
+}
+"#;
+
+    check_source(source).expect("first-class function values should typecheck");
+    let generated =
+        compile_to_c(source).expect("function values should lower to function pointers");
+    assert!(generated.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
+    assert!(generated.contains("flux__fn_i64__to__i64 flux__local_mapper = flux__fn_double;"));
+    assert!(generated.contains("return flux__local_transform(flux__local_value);"));
+    assert!(generated.contains("return flux__fn_increment;"));
+}
+
+#[test]
+fn rejects_invalid_first_class_function_value_usage() {
+    let wrong_shape = r#"
+type Mapper = fn(i64) -> i64
+fn label(value: str) -> str {
+    return value
+}
+fn main() -> i64 {
+    let mapper: Mapper = label
+    return 0
+}
+"#;
+    let error = check_source(wrong_shape).expect_err("wrong function shape should fail");
+    assert!(
+        error
+            .message
+            .contains("binding: expected fn(i64) -> i64, got fn(str) -> str")
+    );
+
+    let wrong_call = r#"
+type Mapper = fn(i64) -> i64
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+fn apply(transform: Mapper) -> i64 {
+    return transform(false)
+}
+fn main() -> i64 {
+    return apply(double)
+}
+"#;
+    let error = check_source(wrong_call).expect_err("wrong callback argument should fail");
+    assert!(
+        error
+            .message
+            .contains("argument 1 to function value 'transform'")
+    );
+    assert!(error.message.contains("expected i64, got bool"));
+
+    let named_call = r#"
+type Mapper = fn(i64) -> i64
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+fn apply(transform: Mapper) -> i64 {
+    return transform(value: 2)
+}
+fn main() -> i64 {
+    return apply(double)
+}
+"#;
+    let error = check_source(named_call).expect_err("function values should be positional-only");
+    assert!(
+        error
+            .message
+            .contains("function values accept positional arguments only")
+    );
+
+    let multi_return = r#"
+type Loader = fn(str) -> (str, error)
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error =
+        check_source(multi_return).expect_err("multi-return function values are not supported yet");
+    assert!(
+        error
+            .message
+            .contains("first-class function types currently support zero or one return value")
+    );
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_function_types() {
+    let source = "type Mapper=fn(i64)->i64\nfn double(value:i64)->i64 {\n return value*2\n}\nfn apply(transform:Mapper,value:i64)->i64 {\n return transform(value)\n}\nfn main()->i64 {\n let mapper:Mapper=double\n return apply(mapper,21)\n}\n";
+    let expected = "type Mapper = fn(i64) -> i64\nfn double(value: i64) -> i64 {\n    return value * 2\n}\nfn apply(transform: Mapper, value: i64) -> i64 {\n    return transform(value)\n}\nfn main() -> i64 {\n    let mapper: Mapper = double\n    return apply(mapper, 21)\n}\n";
+    let formatted = fluxc::formatter::format_source(source).expect("function types should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(704))
+        .expect("function type source should analyze");
+    let signature = database
+        .signature("apply")
+        .expect("apply signature should exist");
+    assert_eq!(
+        signature.params[0],
+        fluxc::ast::Type::Function {
+            params: vec![fluxc::ast::Type::I64],
+            returns: vec![fluxc::ast::Type::I64],
+        }
+    );
+}
+
+#[test]
 fn rejects_type_mismatches() {
     let source = r#"
 fn main() -> i64 {
@@ -423,7 +559,7 @@ fn main() -> i64 {
 
     check_source(source).expect("struct destructuring should typecheck");
     let generated = compile_to_c(source).expect("struct destructuring should lower natively");
-    assert_eq!(generated.matches("= make_user();").count(), 1);
+    assert_eq!(generated.matches("= flux__fn_make_user();").count(), 1);
     assert!(generated.contains("flux__field_name"));
     assert!(generated.contains("flux__field_age"));
 }
@@ -559,10 +695,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("match should compile");
     let assignment = generated
         .lines()
-        .find(|line| line.contains("flux__match_") && line.contains("= make();"))
+        .find(|line| line.contains("flux__match_") && line.contains("= flux__fn_make();"))
         .expect("match should assign the scrutinee once");
     assert!(assignment.contains("struct flux__type_Outcome"));
-    assert_eq!(generated.matches("= make();").count(), 1);
+    assert_eq!(generated.matches("= flux__fn_make();").count(), 1);
 }
 
 #[test]
@@ -932,7 +1068,9 @@ fn main() -> i64 {
     check_source(source).expect("aliases should typecheck transparently");
     let generated = compile_to_c(source).expect("aliases should lower to concrete native types");
     assert!(generated.contains("int64_t flux__field_id;"));
-    assert!(generated.contains("int64_t user_id(struct flux__type_User user)"));
+    assert!(
+        generated.contains("int64_t flux__fn_user_id(struct flux__type_User flux__local_user)")
+    );
     assert!(!generated.contains("flux__type_UserId"));
     assert!(!generated.contains("flux__type_Person"));
     assert!(!generated.contains("flux__type_Account"));
@@ -1071,7 +1209,9 @@ fn main() -> i64 {
     assert!(generated.contains(
         "static inline struct flux__type_User flux__update_User__age(struct flux__type_User base, int64_t value_age)"
     ));
-    assert!(generated.contains("flux__update_User__age(make_user(INT64_C(41)), INT64_C(42))"));
+    assert!(
+        generated.contains("flux__update_User__age(flux__fn_make_user(INT64_C(41)), INT64_C(42))")
+    );
 }
 
 #[test]
@@ -1531,8 +1671,8 @@ fn main() -> i64 {
     check_source(source).expect("complete branch chain should typecheck and return");
     let generated = compile_to_c(source).expect("branch chain should compile");
     assert!(generated.matches("else {").count() >= 2);
-    assert!(generated.contains("if (value < INT64_C(0))"));
-    assert!(generated.contains("if (value == INT64_C(0))"));
+    assert!(generated.contains("if (flux__local_value < INT64_C(0))"));
+    assert!(generated.contains("if (flux__local_value == INT64_C(0))"));
 }
 
 #[test]
