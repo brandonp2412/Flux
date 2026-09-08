@@ -397,6 +397,8 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    validate_views(program, &mut diagnostics);
+
     for definition in &program.enums {
         let variants = definition
             .variants
@@ -954,6 +956,80 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     } else {
         Err(diagnostics)
     }
+}
+
+fn validate_views(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
+    for view in &program.views {
+        let row_count = view.grid.rows.len() as u64;
+        let column_count = view.grid.columns.len() as u64;
+
+        for (index, element) in view.elements.iter().enumerate() {
+            let row_start = u64::from(element.row);
+            let column_start = u64::from(element.column);
+            let row_end = row_start + u64::from(element.row_span) - 1;
+            let column_end = column_start + u64::from(element.column_span) - 1;
+
+            if row_end > row_count {
+                diagnostics.push(
+                    diag(
+                        element.span,
+                        &format!(
+                            "view element '{}' occupies grid row {row_end}, but view '{}' declares only {row_count} row{}",
+                            element.name,
+                            view.name,
+                            if row_count == 1 { "" } else { "s" }
+                        ),
+                    )
+                    .with_label(view.name_span, "grid is declared by this view"),
+                );
+            }
+            if column_end > column_count {
+                diagnostics.push(
+                    diag(
+                        element.span,
+                        &format!(
+                            "view element '{}' occupies grid column {column_end}, but view '{}' declares only {column_count} column{}",
+                            element.name,
+                            view.name,
+                            if column_count == 1 { "" } else { "s" }
+                        ),
+                    )
+                    .with_label(view.name_span, "grid is declared by this view"),
+                );
+            }
+
+            for previous in &view.elements[..index] {
+                if grid_elements_overlap(previous, element) {
+                    diagnostics.push(
+                        diag(
+                            element.span,
+                            &format!(
+                                "view element '{}' overlaps sibling '{}' in grid '{}'",
+                                element.name, previous.name, view.name
+                            ),
+                        )
+                        .with_label(
+                            previous.span,
+                            format!("'{}' already occupies this grid area", previous.name),
+                        )
+                        .with_note("grid siblings may not overlap; use an explicit overlay/absolute positioning model when overlap is intentional"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn grid_elements_overlap(left: &crate::ast::ViewElement, right: &crate::ast::ViewElement) -> bool {
+    let left_row_end = u64::from(left.row) + u64::from(left.row_span) - 1;
+    let right_row_end = u64::from(right.row) + u64::from(right.row_span) - 1;
+    let left_column_end = u64::from(left.column) + u64::from(left.column_span) - 1;
+    let right_column_end = u64::from(right.column) + u64::from(right.column_span) - 1;
+
+    u64::from(left.row) <= right_row_end
+        && u64::from(right.row) <= left_row_end
+        && u64::from(left.column) <= right_column_end
+        && u64::from(right.column) <= left_column_end
 }
 
 fn check_function_all(
@@ -2914,17 +2990,17 @@ fn require_publicly_nameable_type(
                 }
                 return Ok(());
             }
-            if let Some(definition) = signatures.enum_type(name) {
-                if !definition.public {
-                    return Err(diag(
-                        span,
-                        &format!("public API cannot expose private enum '{name}'"),
-                    )
-                    .with_label(
-                        definition.span,
-                        format!("'{name}' is declared private here"),
-                    ));
-                }
+            if let Some(definition) = signatures.enum_type(name)
+                && !definition.public
+            {
+                return Err(diag(
+                    span,
+                    &format!("public API cannot expose private enum '{name}'"),
+                )
+                .with_label(
+                    definition.span,
+                    format!("'{name}' is declared private here"),
+                ));
             }
             Ok(())
         }

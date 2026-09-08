@@ -72,7 +72,7 @@ view Dashboard {
 }
 ```
 
-Fixed grid tracks use target-independent logical units, `Nfr` tracks divide remaining space proportionally, and `auto` is reserved for intrinsic sizing. Coordinates are one-based `row,column` positions. `span rows N` and `span columns N` extend an element across tracks. Element names must be unique within a view.
+Fixed grid tracks use target-independent logical units, `Nfr` tracks divide remaining space proportionally, and `auto` is reserved for intrinsic sizing. Coordinates are one-based `row,column` positions. `span rows N` and `span columns N` extend an element across tracks. Element names must be unique within a view. Placement is statically checked against the declared row/column counts, including the full extent of spans. Ordinary sibling grid regions must not overlap; intentional overlap will use a separate explicit overlay/absolute-positioning model rather than changing the meaning of ordinary grid placement.
 
 The extra indentation under an element configures properties on that sibling element; it does not create child UI elements. UI elements themselves remain at the view's single element level, and deeper element nesting is rejected by the parser. This preserves a grid-oriented source structure that can later lower directly into target-native layout primitives rather than recreating Flutter-style widget construction.
 
@@ -524,11 +524,12 @@ Conceptual direction:
 
 ```flux
 view Dashboard {
-    grid columns: 240px 1fr, rows: auto 1fr
+    grid columns: 240 1fr
+    grid rows: auto 1fr
 
-    Sidebar at 1 / 1
-    Header  at 2 / 1
-    Content at 2 / 2
+    Nav sidebar at 1,1 span rows 2
+    Header header at 1,2
+    Content content at 2,2
 }
 ```
 

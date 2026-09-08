@@ -3051,6 +3051,65 @@ fn main() -> i64 { 42 }
 }
 
 #[test]
+fn validates_flat_grid_bounds_and_rejects_accidental_overlap() {
+    let valid = r#"
+view Dashboard {
+    grid columns: 1fr 1fr 1fr
+    grid rows: 1fr 1fr
+    Text title at 1,1 span columns 2
+    Button action at 1,3 span rows 2
+    Chart chart at 2,1 span columns 2
+}
+fn main() -> i64 { 0 }
+"#;
+    check_source(valid).expect("touching grid regions that do not overlap should typecheck");
+
+    let out_of_bounds = r#"
+view BadBounds {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    Text title at 2,2 span rows 2 span columns 2
+}
+fn main() -> i64 { 0 }
+"#;
+    let diagnostics =
+        check_source_all(out_of_bounds).expect_err("spans beyond declared tracks must fail");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("occupies grid row 3, but view 'BadBounds' declares only 2 rows")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("occupies grid column 3, but view 'BadBounds' declares only 2 columns")
+    }));
+
+    let overlap = r#"
+view BadOverlap {
+    grid columns: 1fr 1fr 1fr
+    grid rows: 1fr 1fr
+    Card summary at 1,1 span columns 2 span rows 2
+    Text title at 2,2
+}
+fn main() -> i64 { 0 }
+"#;
+    let diagnostics = check_source_all(overlap)
+        .expect_err("overlapping grid siblings must be explicit, not accidental");
+    let overlap_error = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("overlaps sibling 'summary'"))
+        .expect("overlap diagnostic should identify the earlier sibling");
+    assert!(
+        overlap_error
+            .notes
+            .iter()
+            .any(|note| note.contains("explicit overlay/absolute positioning"))
+    );
+    assert_eq!(overlap_error.labels.len(), 1);
+}
+
+#[test]
 fn formatter_preserves_flat_grid_view_structure() {
     let source = "view Dashboard {\n    grid columns: 240 1fr auto\n    grid rows: 64 1fr\n    grid gap: 16\n    Text title at 1,2 span columns 2\n        text: \"Hello\"\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("view should format");
