@@ -3667,6 +3667,48 @@ app Counter
 }
 
 #[test]
+fn app_i64_view_state_supports_arithmetic_and_derived_properties() {
+    let source = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto auto
+    state count: i64 = 0
+    Text status at 1,1
+        text: "positive" if count > 0 else "zero"
+    Button action at 2,1
+        text: "Again" if count > 0 else "Increment"
+        on_press: count => count + 1
+}
+app Counter
+"#;
+
+    check_source(source).expect("i64 view state transition should typecheck");
+    let generated = compile_to_c(source).expect("i64 view state should lower natively");
+    assert!(generated.contains("static int64_t flux__ui_state_count = INT64_C(0);"));
+    assert!(generated.contains("flux__ui_state_count + INT64_C(1)"));
+    assert!(generated.contains("flux__ui_state_count > INT64_C(0)"));
+    assert!(generated.contains("gtk_label_set_text"));
+    assert!(generated.contains("gtk_button_set_label"));
+}
+
+#[test]
+fn app_i64_view_state_uses_checked_integer_division() {
+    let source = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 8
+    Button action at 1,1
+        on_press: count => count / 2
+}
+app Counter
+"#;
+    check_source(source).expect("i64 division state transition should typecheck");
+    let generated = compile_to_c(source).expect("i64 division transition should lower");
+    assert!(generated.contains("flux_div_i64(flux__ui_state_count, INT64_C(2))"));
+}
+
+#[test]
 fn rejects_invalid_view_state_transitions() {
     let unknown = r#"
 view Screen {

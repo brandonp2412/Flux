@@ -130,23 +130,38 @@ fn emit_linux_gtk_application(
     }
 
     for state in &view.states {
-        if signatures.canonical_type(&state.ty) != Type::Bool {
-            return Err(diag(
-                state.type_span,
-                "bootstrap Linux view state currently supports bool; broader native state storage remains pending",
-            ));
+        let state_name = ui_state_c_name(&state.name);
+        match signatures.canonical_type(&state.ty) {
+            Type::Bool => {
+                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Linux bool state requires a compile-time bool initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static bool {state_name} = {};\n",
+                    if initial { "true" } else { "false" }
+                ));
+            }
+            Type::I64 => {
+                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Linux i64 state requires a compile-time integer initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static int64_t {state_name} = INT64_C({initial});\n"
+                ));
+            }
+            _ => {
+                return Err(diag(
+                    state.type_span,
+                    "bootstrap Linux view state currently supports bool and i64; owned/string/aggregate state remains pending",
+                ));
+            }
         }
-        let Some(initial) = static_expr_bool(&state.initial, signatures) else {
-            return Err(diag(
-                state.initial.span,
-                "bootstrap Linux bool state requires a compile-time bool initial value",
-            ));
-        };
-        out.push_str(&format!(
-            "static bool {} = {};\n",
-            ui_state_c_name(&state.name),
-            if initial { "true" } else { "false" }
-        ));
     }
     for element in &view.elements {
         out.push_str(&format!(
@@ -380,10 +395,22 @@ fn ui_expr_c(
                 ConstantValue::Str(value) => Ok(c_string(value)),
             }
         }
-        ExprKind::Unary {
-            op: UnaryOp::Not,
-            expr: inner,
-        } => Ok(format!("(!({}))", ui_expr_c(inner, view, signatures)?)),
+        ExprKind::Unary { op, expr: inner } => {
+            let inner = ui_expr_c(inner, view, signatures)?;
+            Ok(match op {
+                UnaryOp::Neg => format!("(-({inner}))"),
+                UnaryOp::Not => format!("(!({inner}))"),
+            })
+        }
+        ExprKind::Binary { left, op, right } => {
+            let left = ui_expr_c(left, view, signatures)?;
+            let right = ui_expr_c(right, view, signatures)?;
+            if matches!(op, BinOp::Div) {
+                Ok(format!("flux_div_i64({left}, {right})"))
+            } else {
+                Ok(format!("({left} {} {right})", c_operator(*op)))
+            }
+        }
         ExprKind::Conditional {
             then_expr,
             cond,
@@ -396,7 +423,7 @@ fn ui_expr_c(
         )),
         _ => Err(diag(
             expr.span,
-            "bootstrap Linux dynamic UI expression currently supports literals, state/constants, 'not', and conditional expressions",
+            "bootstrap Linux dynamic UI expression currently supports primitive literals, state/constants, primitive operators, and conditional expressions",
         )),
     }
 }
