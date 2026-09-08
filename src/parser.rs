@@ -1705,7 +1705,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
         let insertion = SourceSpan::new(line, input.len() + 1, 0);
         return Err(Diagnostic::new(
             DiagnosticStage::Parse,
-            SourceSpan::line(line),
+            insertion,
             "functions must open their body with '{'",
         )
         .with_fix(insertion, " {", "insert the function body opener"));

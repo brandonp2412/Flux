@@ -30,6 +30,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - first-class named function values and concrete `fn(...) -> ...` function types, lowered to typed native function pointers without callable objects;
 - function signature, return, and argument validation;
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
+- terminal diagnostics that show the offending source, exact carets, related declaration labels and suggested fixes, automatically colorize interactive terminals, and wrap/crop to the current terminal width;
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
 - a native bootstrap backend that emits C and invokes Clang with optimization enabled;
 - checked integer division at runtime;
@@ -66,6 +67,8 @@ Check without producing a binary:
 ```sh
 cargo run -- check examples/hello.flux
 ```
+
+Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
 
 Format source deterministically, or verify canonical formatting in CI:
 

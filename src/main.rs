@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
 enum CliError {
     Message(String),
@@ -38,34 +41,28 @@ fn run() -> Result<(), CliError> {
             let resolved =
                 fluxc::project::resolve_entry(path).unwrap_or_else(|_| path.to_path_buf());
             let source_id = fluxc::SourceId::from_name(resolved.to_string_lossy().as_ref());
-            match fluxc::project::check(path) {
-                Ok(()) if json => {
+            let (diagnostics, sources) = fluxc::project::check_with_sources(path);
+            if diagnostics.is_empty() {
+                if json {
                     println!(
                         "{{\"ok\":true,\"source_id\":{},\"diagnostics\":[]}}",
                         source_id.value()
                     );
-                    Ok(())
-                }
-                Ok(()) => {
+                } else {
                     println!("ok: {}", path.display());
-                    Ok(())
                 }
-                Err(diagnostics) if json => {
-                    println!(
-                        "{{\"ok\":false,\"source_id\":{},\"diagnostics\":{}}}",
-                        source_id.value(),
-                        fluxc::diagnostics_to_json(&diagnostics)
-                    );
-                    Err(CliError::Reported)
-                }
-                Err(diagnostics) => Err(CliError::Message(
-                    diagnostics
-                        .into_iter()
-                        .map(|diagnostic| diagnostic.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )),
+                return Ok(());
             }
+            if json {
+                println!(
+                    "{{\"ok\":false,\"source_id\":{},\"diagnostics\":{}}}",
+                    source_id.value(),
+                    fluxc::diagnostics_to_json(&diagnostics)
+                );
+            } else {
+                report_diagnostics(path, &diagnostics, &sources);
+            }
+            Err(CliError::Reported)
         }
         "format" => {
             let path = require_source(&args)?;
@@ -80,13 +77,19 @@ fn run() -> Result<(), CliError> {
             };
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let formatted = fluxc::formatter::format_source(&source).map_err(|diagnostics| {
-                diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })?;
+            let formatted = match fluxc::formatter::format_source(&source) {
+                Ok(formatted) => formatted,
+                Err(diagnostics) => {
+                    let source_id = canonical_source_id(path);
+                    let source_context = DiagnosticSource::new(
+                        source_id,
+                        path.display().to_string(),
+                        source.clone(),
+                    );
+                    report_diagnostic_context(&diagnostics, &[source_context]);
+                    return Err(CliError::Reported);
+                }
+            };
             if formatted == source {
                 if check_only {
                     println!("formatted: {}", path.display());
@@ -106,8 +109,14 @@ fn run() -> Result<(), CliError> {
         }
         "emit-c" => {
             let path = require_target(&args)?;
-            let generated =
-                fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
+            let sources = validate_project(path)?;
+            let generated = match fluxc::project::compile_to_c(path) {
+                Ok(generated) => generated,
+                Err(diagnostic) => {
+                    report_diagnostics(path, &[diagnostic], &sources);
+                    return Err(CliError::Reported);
+                }
+            };
             if let Some(output) = output_path(&args[2..])? {
                 fs::write(&output, generated)
                     .map_err(|error| format!("failed to write '{}': {error}", output.display()))?;
@@ -118,8 +127,14 @@ fn run() -> Result<(), CliError> {
         }
         "build" => {
             let path = require_target(&args)?;
-            let generated =
-                fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
+            let sources = validate_project(path)?;
+            let generated = match fluxc::project::compile_to_c(path) {
+                Ok(generated) => generated,
+                Err(diagnostic) => {
+                    report_diagnostics(path, &[diagnostic], &sources);
+                    return Err(CliError::Reported);
+                }
+            };
             let output = if let Some(output) = output_path(&args[2..])? {
                 output
             } else {
@@ -138,6 +153,106 @@ fn run() -> Result<(), CliError> {
         }
         _ => Err(CliError::Message(usage())),
     }
+}
+
+fn validate_project(path: &Path) -> Result<Vec<fluxc::project::ProjectSource>, CliError> {
+    let (diagnostics, sources) = fluxc::project::check_with_sources(path);
+    if diagnostics.is_empty() {
+        return Ok(sources);
+    }
+    report_diagnostics(path, &diagnostics, &sources);
+    Err(CliError::Reported)
+}
+
+fn report_diagnostics(
+    target: &Path,
+    diagnostics: &[Diagnostic],
+    project_sources: &[fluxc::project::ProjectSource],
+) {
+    let mut sources = project_sources
+        .iter()
+        .map(|source| {
+            DiagnosticSource::new(
+                source.source_id,
+                source.path.display().to_string(),
+                source.text.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    add_target_source_context(target, &mut sources);
+    report_diagnostic_context(diagnostics, &sources);
+}
+
+fn report_diagnostic_context(diagnostics: &[Diagnostic], sources: &[DiagnosticSource]) {
+    let rendered = fluxc::render_diagnostics(
+        diagnostics,
+        sources,
+        TerminalRenderOptions {
+            width: terminal_width(),
+            color: terminal_color_enabled(),
+        },
+    );
+    eprint!("{rendered}");
+}
+
+fn add_target_source_context(target: &Path, sources: &mut Vec<DiagnosticSource>) {
+    let candidate = if target.is_dir() {
+        target.join("flux.toml")
+    } else {
+        target.to_path_buf()
+    };
+    let Ok(canonical) = fs::canonicalize(&candidate) else {
+        return;
+    };
+    let source_id = fluxc::SourceId::from_name(canonical.to_string_lossy().as_ref());
+    if sources.iter().any(|source| source.source_id == source_id) {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(&canonical) else {
+        return;
+    };
+    sources.push(DiagnosticSource::new(
+        source_id,
+        canonical.display().to_string(),
+        text,
+    ));
+}
+
+fn canonical_source_id(path: &Path) -> fluxc::SourceId {
+    fs::canonicalize(path)
+        .ok()
+        .map(|path| fluxc::SourceId::from_name(path.to_string_lossy().as_ref()))
+        .unwrap_or(fluxc::SourceId::UNKNOWN)
+}
+
+fn terminal_width() -> usize {
+    if let Ok(columns) = env::var("COLUMNS")
+        && let Ok(width) = columns.parse::<usize>()
+        && width >= 24
+    {
+        return width.clamp(24, 240);
+    }
+    if io::stderr().is_terminal()
+        && let Ok(output) = Command::new("tput").arg("cols").output()
+        && output.status.success()
+        && let Ok(text) = std::str::from_utf8(&output.stdout)
+        && let Ok(width) = text.trim().parse::<usize>()
+    {
+        return width.clamp(24, 240);
+    }
+    100
+}
+
+fn terminal_color_enabled() -> bool {
+    if env::var_os("NO_COLOR").is_some() || env::var("TERM").is_ok_and(|term| term == "dumb") {
+        return false;
+    }
+    if env::var("FORCE_COLOR").is_ok_and(|value| value != "0" && !value.is_empty())
+        || env::var("CLICOLOR_FORCE").is_ok_and(|value| value != "0" && !value.is_empty())
+    {
+        return true;
+    }
+    io::stderr().is_terminal()
 }
 
 fn check_json_mode(args: &[String]) -> Result<bool, String> {

@@ -2693,6 +2693,74 @@ fn main() -> i64 {
 }
 
 #[test]
+fn check_cli_renders_width_aware_source_diagnostics_and_color() {
+    let path =
+        std::env::temp_dir().join(format!("flux-human-diagnostic-{}.flux", std::process::id()));
+    fs::write(
+        &path,
+        "fn identity(value: i64) -> i64 {\n    return value\n}\n\nfn main() -> i64 {\n    let deliberately_long_binding_name_for_terminal_width: i64 = identity(false)\n    return 0\n}\n",
+    )
+    .expect("temporary Flux source should be writable");
+
+    let plain = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&path)
+        .env("COLUMNS", "40")
+        .env("NO_COLOR", "1")
+        .env_remove("FORCE_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .expect("fluxc should render a human diagnostic");
+    assert!(!plain.status.success());
+    let stderr = String::from_utf8(plain.stderr).expect("human diagnostic must be UTF-8");
+    assert!(stderr.contains("error[type]:"));
+    assert!(stderr.contains("^^^^^"));
+    assert!(stderr.contains("'identity' is declared here"));
+    assert!(stderr.lines().all(|line| line.chars().count() <= 40));
+    assert!(!stderr.contains("\x1b["));
+
+    let colored = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&path)
+        .env("COLUMNS", "40")
+        .env("FORCE_COLOR", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("fluxc should render forced ANSI color");
+    let _ = fs::remove_file(&path);
+    assert!(!colored.status.success());
+    assert!(
+        colored
+            .stderr
+            .windows(5)
+            .any(|window| window == b"\x1b[31m")
+    );
+}
+
+#[test]
+fn check_cli_points_at_missing_syntax_and_prints_the_fix() {
+    let path =
+        std::env::temp_dir().join(format!("flux-missing-syntax-{}.flux", std::process::id()));
+    fs::write(&path, "fn main() -> i64\n    return 0\n}\n")
+        .expect("temporary Flux source should be writable");
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&path)
+        .env("COLUMNS", "60")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("fluxc should render a missing-syntax diagnostic");
+    let _ = fs::remove_file(&path);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("human diagnostic must be UTF-8");
+    assert!(stderr.contains("functions must open their body with '{'"));
+    assert!(stderr.contains("fn main() -> i64"));
+    assert!(stderr.contains("help: insert the function body opener"));
+    assert!(stderr.contains("^"));
+}
+
+#[test]
 fn check_json_cli_emits_clean_machine_readable_output() {
     let path = std::env::temp_dir().join(format!("flux-json-{}.flux", std::process::id()));
     fs::write(
@@ -3080,6 +3148,28 @@ fn project_imports_report_cycles_and_invalid_paths_at_import_sites() {
             .as_ref(),
     );
     assert_eq!(imported_error.span.unwrap().source_id, expected_source);
+
+    let parse_dependency = root.join("parse_dependency.flux");
+    fs::write(&parse_dependency, "fn broken() -> i64\n    return 1\n}\n")
+        .expect("parse-broken dependency should be writable");
+    let parse_entry = root.join("parse_entry.flux");
+    fs::write(
+        &parse_entry,
+        "import \"parse_dependency.flux\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("parse-error entry should be writable");
+    let (context_errors, context_sources) = fluxc::project::check_with_sources(&parse_entry);
+    assert!(
+        context_errors
+            .iter()
+            .any(|error| error.message.contains("open their body with '{'"))
+    );
+    let parse_dependency = fs::canonicalize(&parse_dependency).unwrap();
+    let context_source = context_sources
+        .iter()
+        .find(|source| source.path == parse_dependency)
+        .expect("parse-failing imported source must remain available for diagnostics");
+    assert!(context_source.text.contains("fn broken() -> i64"));
 
     let invalid_extension = root.join("invalid_extension.flux");
     fs::write(

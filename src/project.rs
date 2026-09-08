@@ -11,6 +11,7 @@ pub struct ProjectSource {
     pub path: PathBuf,
     pub source_id: SourceId,
     pub module_name: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +30,21 @@ pub struct PackageManifest {
 }
 
 pub fn load(target: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {
+    let report = load_report(target)?;
+    if report.diagnostics.is_empty() {
+        Ok((report.program, report.sources))
+    } else {
+        Err(report.diagnostics)
+    }
+}
+
+struct ProjectLoadReport {
+    program: Program,
+    sources: Vec<ProjectSource>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn load_report(target: &Path) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
     let (entry, module_root, package_name) = resolve_project_target(target)?;
     let mut loader = Loader {
         loaded: HashSet::new(),
@@ -40,11 +56,11 @@ pub fn load(target: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnost
         package_name,
     };
     loader.load_file(&entry, None);
-    if loader.diagnostics.is_empty() {
-        Ok((loader.program, loader.sources))
-    } else {
-        Err(loader.diagnostics)
-    }
+    Ok(ProjectLoadReport {
+        program: loader.program,
+        sources: loader.sources,
+        diagnostics: loader.diagnostics,
+    })
 }
 
 pub fn analyze(entry: &Path) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
@@ -59,6 +75,22 @@ pub fn analyze(entry: &Path) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
 
 pub fn check(entry: &Path) -> Result<(), Vec<Diagnostic>> {
     analyze(entry).map(|_| ())
+}
+
+pub fn check_with_sources(entry: &Path) -> (Vec<Diagnostic>, Vec<ProjectSource>) {
+    let (program, sources) = match load_report(entry) {
+        Ok(report) => {
+            if !report.diagnostics.is_empty() {
+                return (report.diagnostics, report.sources);
+            }
+            (report.program, report.sources)
+        }
+        Err(diagnostics) => return (diagnostics, Vec::new()),
+    };
+    match typecheck::check_all(&program) {
+        Ok(_) => (Vec::new(), sources),
+        Err(diagnostics) => (diagnostics, sources),
+    }
 }
 
 pub fn compile_to_c(entry: &Path) -> Result<String, Diagnostic> {
@@ -342,6 +374,9 @@ impl Loader {
             );
             return;
         }
+        if self.sources.iter().any(|entry| entry.path == canonical) {
+            return;
+        }
 
         let source = match fs::read_to_string(&canonical) {
             Ok(source) => source,
@@ -357,6 +392,15 @@ impl Loader {
             }
         };
         let source_id = SourceId::from_name(canonical.to_string_lossy().as_ref());
+        if !self.sources.iter().any(|entry| entry.path == canonical) {
+            let module_name = self.module_name(&canonical);
+            self.sources.push(ProjectSource {
+                path: canonical.clone(),
+                source_id,
+                module_name,
+                text: source.clone(),
+            });
+        }
         let parsed = match parser::parse_all_with_source(&source, source_id) {
             Ok(program) => program,
             Err(mut diagnostics) => {
@@ -418,13 +462,7 @@ impl Loader {
 
         if self.diagnostics.is_empty() || !self.loaded.contains(&canonical) {
             self.merge_program(parsed);
-            self.loaded.insert(canonical.clone());
-            let module_name = self.module_name(&canonical);
-            self.sources.push(ProjectSource {
-                path: canonical,
-                source_id,
-                module_name,
-            });
+            self.loaded.insert(canonical);
         }
     }
 

@@ -5,12 +5,14 @@ pub mod formatter;
 pub mod parser;
 pub mod project;
 pub mod semantic;
+pub mod terminal;
 pub mod typecheck;
 
 pub use diagnostic::{
     Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage, SourceId, SourceSpan,
     diagnostics_to_json,
 };
+pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
 
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
     compile_to_c_with_source(source, SourceId::UNKNOWN)

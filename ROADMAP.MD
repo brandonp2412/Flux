@@ -60,6 +60,7 @@ Implemented on `main`:
 - [x] Stable source IDs carried through AST spans and diagnostics, with caller-supplied or deterministic IDs.
 - [x] Structured diagnostic labels, notes, and machine-applicable fixes.
 - [x] Machine-readable JSON diagnostic output from the CLI/library.
+- [x] Human terminal diagnostics with source excerpts, exact carets, secondary labels/fixes, automatic ANSI color, `NO_COLOR`/forced-color support, and terminal-width-aware wrapping/cropping.
 - [x] Bootstrap C lowering through optimized Clang native compilation.
 - [x] Native end-to-end examples and compiler tests.
 
@@ -77,6 +78,7 @@ Milestone 1 is complete. Parser recovery synchronizes at function boundaries, ty
 - [x] Full token ranges for declarations, bindings, types, and control-flow constructs.
 - [x] Diagnostic labels/notes/fix suggestions.
 - [x] Machine-readable diagnostic output.
+- [x] Human terminal diagnostics render source excerpts, precise labels/fixes, ANSI color when appropriate, and width-aware wrapping/cropping without changing JSON diagnostics.
 - [x] Incremental parse snapshot API suitable for editor use, with stable source identity, source fingerprints, unchanged-source reuse, and reparsing on edits.
 - [x] Semantic query database shared by compiler and LSP, indexing function/parameter/binding/loop symbols and analyzed signatures from one typed program.
 - [x] Deterministic comment-preserving formatter and canonical Flux formatting rules, exposed through `fluxc format` and `fluxc format --check`.
@@ -614,7 +616,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 # Milestone 23 — LSP and editor experience
 
-- [ ] Diagnostics.
+- [ ] Diagnostics. Reuse the same structured diagnostic model and source spans as the terminal renderer; do not create a separate editor-only error model.
 - [ ] Completion.
 - [ ] Signature help.
 - [ ] Hover/type information.
@@ -676,7 +678,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Cross-compilation configuration.
 - [ ] Build cache.
 - [ ] Reproducible builds.
-- [ ] CI-friendly machine output.
+- [x] CI-friendly machine output through `fluxc check --json`, preserving a clean stdout JSON contract with no human diagnostic text on stderr.
 
 # Milestone 27 — Distribution
 
