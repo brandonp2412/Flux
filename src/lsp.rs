@@ -164,6 +164,22 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     publish_empty_diagnostics(&mut writer, uri)?;
                 }
             }
+            Some("textDocument/formatting") => {
+                if let Some(id) = id {
+                    let uri = message
+                        .get("params")
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let edits = uri
+                        .and_then(|uri| documents.get(uri))
+                        .and_then(|source| format_document(source, encoding));
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, JsonValue::Array(edits.unwrap_or_default())).to_json(),
+                    )?;
+                }
+            }
             Some(_) if id.is_some() => {
                 write_message(
                     &mut writer,
@@ -199,6 +215,7 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                         "positionEncoding",
                         JsonValue::String(position_encoding.to_string()),
                     ),
+                    ("documentFormattingProvider", JsonValue::Bool(true)),
                     (
                         "textDocumentSync",
                         object([
@@ -236,6 +253,48 @@ fn negotiate_position_encoding(params: Option<&JsonValue>) -> PositionEncoding {
     } else {
         PositionEncoding::Utf16
     }
+}
+
+fn format_document(source: &str, encoding: PositionEncoding) -> Option<Vec<JsonValue>> {
+    let formatted = crate::formatter::format_source(source).ok()?;
+    if formatted == source {
+        return Some(Vec::new());
+    }
+    Some(vec![object([
+        ("range", whole_document_range(source, encoding)),
+        ("newText", JsonValue::String(formatted)),
+    ])])
+}
+
+fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
+    let line_count = source.lines().count().max(1);
+    let final_line = source.lines().last().unwrap_or("");
+    let end_line = if source.ends_with('\n') {
+        line_count
+    } else {
+        line_count.saturating_sub(1)
+    };
+    let end_character = if source.ends_with('\n') {
+        0
+    } else {
+        encoded_column(final_line, final_line.len(), encoding)
+    };
+    object([
+        (
+            "start",
+            object([
+                ("line", JsonValue::Number(0)),
+                ("character", JsonValue::Number(0)),
+            ]),
+        ),
+        (
+            "end",
+            object([
+                ("line", JsonValue::Number(end_line as i64)),
+                ("character", JsonValue::Number(end_character as i64)),
+            ]),
+        ),
+    ])
 }
 
 fn publish_document_diagnostics<W: Write>(
@@ -783,5 +842,16 @@ mod tests {
         let source = "😀value";
         assert_eq!(encoded_column(source, 4, PositionEncoding::Utf8), 4);
         assert_eq!(encoded_column(source, 4, PositionEncoding::Utf16), 2);
+    }
+
+    #[test]
+    fn formatting_returns_one_whole_document_edit() {
+        let source = "fn main()->i64 {\n  return 0\n}\n";
+        let edits =
+            format_document(source, PositionEncoding::Utf8).expect("valid source should format");
+        assert_eq!(edits.len(), 1);
+        let json = edits[0].to_json();
+        assert!(json.contains("fn main() -> i64"));
+        assert!(json.contains("\\n    return 0\\n"));
     }
 }

@@ -2825,7 +2825,10 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"flux","version":1,"text":"fn main() -> i64 {{\n    let count: i64 = false\n    return count\n}}\n"}}}}}}"#
     );
     let change = format!(
-        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":"fn main() -> i64 {{\n    let count: i64 = 1\n    return count\n}}\n"}}]}}}}"#
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":"fn main()->i64 {{\n  let count:i64=1\n  return count\n}}\n"}}]}}}}"#
+    );
+    let formatting = format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#
     );
     let close = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didClose","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
@@ -2837,6 +2840,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         initialized,
         &open,
         &change,
+        &formatting,
         &close,
         shutdown,
         exit,
@@ -2864,10 +2868,14 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
     assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));
+    assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("textDocument/publishDiagnostics"));
     assert!(stdout.contains("binding: expected i64, got bool"));
     assert!(stdout.contains("\"severity\":1"));
     assert!(stdout.matches("\"diagnostics\":[]").count() >= 2);
+    assert!(stdout.contains("\"id\":3"));
+    assert!(stdout.contains("fn main() -> i64"));
+    assert!(stdout.contains("\\n    let count: i64 = 1\\n"));
     assert!(stdout.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":null"));
 }
 

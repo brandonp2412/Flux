@@ -92,7 +92,7 @@ Editors can launch the bootstrap language server over stdio:
 cargo run -- lsp
 ```
 
-The current LSP slice publishes parse/type diagnostics for standalone open buffers using the same source spans, labels, and fix metadata as the compiler. Workspace/import overlay analysis, completion, navigation, highlighting, formatting, and code actions remain later LSP milestones.
+The current LSP slice publishes parse/type diagnostics for standalone open buffers using the same source spans, labels, and fix metadata as the compiler, and serves canonical whole-document formatting. Workspace/import overlay analysis, completion, navigation, highlighting, and code actions remain later LSP milestones.
 
 Tooling/CI can request structured diagnostics without parsing human text:
 

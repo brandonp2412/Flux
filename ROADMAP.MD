@@ -635,7 +635,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Find references.
 - [ ] Rename.
 - [ ] Semantic highlighting.
-- [ ] Formatting.
+- [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [ ] Code actions/fixes.
 - [ ] Inlay hints where they add value.
 - [ ] Incremental workspace analysis.
