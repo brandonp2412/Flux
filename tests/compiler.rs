@@ -4351,6 +4351,9 @@ view Transformed {
         scale_y_percent: 90 if moved else 100
         skew_x_degrees: 4 if moved else 0
         transform_origin_x_percent: 25 if moved else 50
+        transition_ms: 180
+        transition_delay_ms: 20
+        transition_easing: "ease_out"
     Button toggle at 2,1
         text: "Move"
         on_press: moved => !moved
@@ -4366,6 +4369,25 @@ app Transformed
     assert!(generated.contains("transform-origin: %lld%% %lld%%;"));
     assert!(generated.contains("flux__ui_state_moved"));
     assert!(generated.contains("gtk_css_provider_load_from_data(flux__transform_style_title"));
+    assert!(generated.contains("transition-property: all;"));
+    assert!(generated.contains("transition-duration: 180ms;"));
+    assert!(generated.contains("transition-delay: 20ms;"));
+    assert!(generated.contains("transition-timing-function: ease-out;"));
+
+    let invalid_transition = r#"
+view Transformed {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad transition"
+        transition_easing: "ease_out"
+}
+app Transformed
+"#;
+    check_source(invalid_transition).expect("transition options have compiler-owned types");
+    let error = compile_to_c(invalid_transition)
+        .expect_err("transition easing without a duration should fail clearly");
+    assert!(error.message.contains("require transition_ms"));
 
     let oversized = r#"
 view Transformed {

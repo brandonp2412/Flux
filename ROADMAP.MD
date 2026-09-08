@@ -496,7 +496,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Colors.
   - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes.
   - [x] Every built-in native element accepts compile-time `background_color` / `border_color` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
-- [ ] Typography.
+- [x] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
   - [x] Native text family/slant/decoration/spacing controls: compile-time `font_family`, `italic`, `underline`, `strikethrough`, `letter_spacing`, and `line_height_percent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.
   - [x] Native text layout/overflow controls: `text_align` (`left`/`center`/`right`/`fill`), state-aware `wrap`, compile-time `wrap_mode` (`word`/`char`/`word_char`), `ellipsize` (`none`/`start`/`middle`/`end`), and positive `max_lines` lower directly to `GtkLabel`/Pango layout controls. Variable font axes, richer weight/style enums, and responsive typography remain future typography work.
@@ -522,7 +522,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to the native GTK `suggested-action` style class without exposing platform widget APIs in Flux source.
 - [ ] Animation timelines.
 - [ ] Easing/springs.
-- [ ] Property transitions.
+  - [x] Bootstrap property transitions accept compile-time `transition_easing` values `linear`, `ease`, `ease_in`, `ease_out`, and `ease_in_out`, mapped to native GTK CSS timing functions. Spring curves remain pending.
+- [x] Property transitions.
+  - [x] Every built-in element accepts non-negative compile-time `transition_ms` plus optional `transition_delay_ms` / `transition_easing`. Linux lowers these to standard GTK CSS transitions on `all` animatable properties; this already animates state-driven transform changes without an animation object model. Reduced-motion policy and selective transition-property syntax remain separate follow-up work.
 - [ ] Layout transitions.
 - [ ] Gesture-driven animation.
 - [ ] Frame synchronization.

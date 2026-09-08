@@ -1597,6 +1597,53 @@ fn emit_element_style(
             declarations.push(format!("transform-origin: {origin_x}% {origin_y}%;"));
         }
     }
+    let transition_ms = static_non_negative_style_i64(element, "transition_ms", signatures)?;
+    let transition_delay_ms =
+        static_non_negative_style_i64(element, "transition_delay_ms", signatures)?;
+    let transition_easing = view_property(element, "transition_easing")
+        .map(|property| {
+            let Some(value) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "transition_easing must be a compile-time string",
+                ));
+            };
+            let css_value = match value.as_str() {
+                "linear" => "linear",
+                "ease" => "ease",
+                "ease_in" => "ease-in",
+                "ease_out" => "ease-out",
+                "ease_in_out" => "ease-in-out",
+                _ => {
+                    return Err(diag(
+                        property.value.span,
+                        "transition_easing must be one of 'linear', 'ease', 'ease_in', 'ease_out', or 'ease_in_out'",
+                    ));
+                }
+            };
+            Ok(css_value)
+        })
+        .transpose()?;
+    if (transition_delay_ms.is_some() || transition_easing.is_some()) && transition_ms.is_none() {
+        let property = view_property(element, "transition_delay_ms")
+            .or_else(|| view_property(element, "transition_easing"))
+            .expect("a transition option exists");
+        return Err(diag(
+            property.value.span,
+            "transition_delay_ms and transition_easing require transition_ms",
+        ));
+    }
+    if let Some(duration) = transition_ms {
+        declarations.push("transition-property: all;".to_string());
+        declarations.push(format!("transition-duration: {duration}ms;"));
+        if let Some(delay) = transition_delay_ms {
+            declarations.push(format!("transition-delay: {delay}ms;"));
+        }
+        declarations.push(format!(
+            "transition-timing-function: {};",
+            transition_easing.unwrap_or("ease")
+        ));
+    }
     if declarations.is_empty() {
         return Ok(());
     }

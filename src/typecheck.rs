@@ -1141,11 +1141,13 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "skew_x_degrees"
             | "skew_y_degrees"
             | "transform_origin_x_percent"
-            | "transform_origin_y_percent" => {
+            | "transform_origin_y_percent"
+            | "transition_ms"
+            | "transition_delay_ms" => {
                 return Some(Type::I64);
             }
             "align_x" | "align_y" | "background_color" | "border_color" | "border_style"
-            | "shadow_color" => {
+            | "shadow_color" | "transition_easing" => {
                 return Some(Type::Str);
             }
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
@@ -1289,6 +1291,9 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "skew_y_degrees",
     "transform_origin_x_percent",
     "transform_origin_y_percent",
+    "transition_ms",
+    "transition_delay_ms",
+    "transition_easing",
     "min_width",
     "min_height",
 ];

@@ -21,6 +21,8 @@ view TransformDemo {
         scale_y_percent: 92 if active else 100
         skew_x_degrees: 4 if active else 0
         transform_origin_x_percent: 25 if active else 50
+        transition_ms: 180
+        transition_easing: "ease_out"
 
     Button toggle at 2,1
         text: "Reset" if active else "Transform"
