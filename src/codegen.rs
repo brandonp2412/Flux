@@ -396,6 +396,36 @@ fn emit_linux_gtk_application(
                         "    gtk_widget_set_sensitive({variable}, {enabled});\n"
                     ));
                 }
+                if let Some(property) = view_property(element, "password") {
+                    let Some(password) = static_expr_bool(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.password must be a compile-time bool value",
+                        ));
+                    };
+                    if password {
+                        out.push_str(&format!(
+                            "    gtk_entry_set_visibility(GTK_ENTRY({variable}), FALSE);\n"
+                        ));
+                    }
+                }
+                if let Some(property) = view_property(element, "max_length") {
+                    let Some(max_length) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.max_length must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.max_length must be between 0 and 2147483647",
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "    gtk_entry_set_max_length(GTK_ENTRY({variable}), {max_length});\n"
+                    ));
+                }
                 if view_property(element, "on_change").is_some() {
                     out.push_str(&format!(
                         "    g_signal_connect({variable}, \"changed\", G_CALLBACK(flux__ui_change_{}), NULL);\n",
@@ -634,6 +664,10 @@ fn static_expr_i64(expr: &Expr, signatures: &Signatures) -> Option<i64> {
                     _ => None,
                 })
         }
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => static_expr_i64(expr, signatures)?.checked_neg(),
         _ => None,
     }
 }

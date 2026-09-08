@@ -403,8 +403,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
-  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, and keeps owned/editable string state sequenced behind the ownership/string model.
-  - [ ] Editable Flux-owned text state, change events, selection/caret APIs, validation, password/multiline forms, and portable IME semantics.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `max_length: i64`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and keeps owned/editable string state sequenced behind the ownership/string model.
+  - [ ] Editable Flux-owned text state, selection/caret APIs, richer validation, multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
   - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `on_select`; sibling radios are grouped natively and `on_select` fires only for the newly active control, while shared Flux state remains the source of truth for selection.

@@ -4149,6 +4149,8 @@ view Form {
         placeholder: "Search Flux"
         enabled: true
         autofocus: true
+        password: true
+        max_length: 64
         on_change: submit
         on_submit: submit
 }
@@ -4169,6 +4171,8 @@ app Form
         "g_signal_connect(flux__ui_query, \"activate\", G_CALLBACK(flux__ui_submit_query), NULL)"
     ));
     assert!(generated.contains("gtk_widget_grab_focus(flux__ui_query)"));
+    assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_query), FALSE)"));
+    assert!(generated.contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_query), 64)"));
     assert!(generated.contains("gtk_editable_get_text(GTK_EDITABLE(widget))"));
     assert!(generated.contains("flux__fn_submit(gtk_editable_get_text"));
 
@@ -4183,6 +4187,24 @@ view Form {
 app Form
 "#;
     check_source(bad_callback).expect_err("TextInput.on_submit requires fn(str) -> void");
+
+    let invalid_length = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        max_length: -1
+}
+app Form
+"#;
+    check_source(invalid_length).expect("max_length has the expected i64 type");
+    let error =
+        compile_to_c(invalid_length).expect_err("negative max_length must fail native lowering");
+    assert!(
+        error
+            .message
+            .contains("TextInput.max_length must be between 0")
+    );
 }
 
 #[test]
