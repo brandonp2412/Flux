@@ -85,22 +85,12 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
         }
 
         if let Some(code) = formatted.get(&line_number) {
-            let comment = comment_suffix(raw);
-            if let Some(comment) = comment {
-                output.push(format!("{code} {comment}"));
-            } else {
-                output.push(code.clone());
-            }
+            output.push(code.clone());
             continue;
         }
 
         if trimmed == "}" {
             output.push("}".to_string());
-            continue;
-        }
-
-        if trimmed.starts_with('#') {
-            output.push(trimmed.to_string());
             continue;
         }
 
@@ -769,25 +759,4 @@ fn format_string(value: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn comment_suffix(line: &str) -> Option<&str> {
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-        } else if ch == '#' && !in_string {
-            return Some(line[index..].trim_end());
-        }
-    }
-    None
 }

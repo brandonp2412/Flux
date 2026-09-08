@@ -118,6 +118,8 @@ fn main() -> i64 {
 fn rejects_invalid_named_and_default_parameter_calls() {
     let missing = r#"
 fn describe(prefix: str, *, label: str) -> i64 {
+    print(prefix)
+    print(label)
     return 0
 }
 fn main() -> i64 {
@@ -129,6 +131,8 @@ fn main() -> i64 {
 
     let positional_named = r#"
 fn describe(prefix: str, *, label: str) -> i64 {
+    print(prefix)
+    print(label)
     return 0
 }
 fn main() -> i64 {
@@ -145,6 +149,8 @@ fn main() -> i64 {
 
     let positional_by_name = r#"
 fn describe(prefix: str, *, label: str) -> i64 {
+    print(prefix)
+    print(label)
     return 0
 }
 fn main() -> i64 {
@@ -161,6 +167,7 @@ fn main() -> i64 {
 
     let unknown = r#"
 fn describe(*, label: str) -> i64 {
+    print(label)
     return 0
 }
 fn main() -> i64 {
@@ -256,8 +263,8 @@ fn main() -> i64 {
 
 #[test]
 fn formatter_and_semantic_database_preserve_named_parameter_metadata() {
-    let source = "const DEFAULT:i64=3\nfn describe(prefix:str=\"x\",*,count:i64=DEFAULT,label:str)->i64 {\n return count\n}\nfn main()->i64 {\n return describe(label:\"ok\")\n}\n";
-    let expected = "const DEFAULT: i64 = 3\nfn describe(prefix: str = \"x\", *, count: i64 = DEFAULT, label: str) -> i64 {\n    return count\n}\nfn main() -> i64 {\n    return describe(label: \"ok\")\n}\n";
+    let source = "const DEFAULT:i64=3\nfn describe(prefix:str=\"x\",*,count:i64=DEFAULT,label:str)->i64 {\n print(prefix)\n print(label)\n return count\n}\nfn main()->i64 {\n return describe(label:\"ok\")\n}\n";
+    let expected = "const DEFAULT: i64 = 3\nfn describe(prefix: str = \"x\", *, count: i64 = DEFAULT, label: str) -> i64 {\n    print(prefix)\n    print(label)\n    return count\n}\nfn main() -> i64 {\n    return describe(label: \"ok\")\n}\n";
     let formatted =
         fluxc::formatter::format_source(source).expect("parameter source should format");
     assert_eq!(formatted, expected);
@@ -363,6 +370,7 @@ fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
 }
 
 fn memory_save(storage: MemoryStorage, path: str, data: str, *, durable: bool) -> error {
+    print(storage.label)
     print(path)
     print(data)
     print(durable)
@@ -473,7 +481,7 @@ impl Storage for FileStorage {
     save: file_save
 }
 
-fn file_load(storage: FileStorage, path: str) -> (str, error) {
+fn file_load(_storage: FileStorage, path: str) -> (str, error) {
     return path, nil
 }
 
@@ -601,13 +609,13 @@ impl Storage for MemoryStorage {
     label: memory_label
 }
 
-fn file_load(storage: FileStorage, path: str) -> (str, error) {
+fn file_load(_storage: FileStorage, path: str) -> (str, error) {
     return path, nil
 }
 fn file_label(storage: FileStorage) -> str {
     return storage.root
 }
-fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
+fn memory_load(_storage: MemoryStorage, path: str) -> (str, error) {
     return path, nil
 }
 fn memory_label(storage: MemoryStorage) -> str {
@@ -623,9 +631,11 @@ fn label_any(storage: Storage) -> str {
 }
 
 fn choose(memory: bool) -> Storage {
+    if memory:
+        let ram: MemoryStorage = MemoryStorage { name: "ram" }
+        return Storage(ram)
     let file: FileStorage = FileStorage { root: "/tmp" }
-    let ram: MemoryStorage = MemoryStorage { name: "ram" }
-    return Storage(ram) if memory else Storage(file)
+    return Storage(file)
 }
 
 fn main() -> i64 {
@@ -746,6 +756,7 @@ struct MemoryStorage {
     name: str
 }
 fn file_load(storage: MemoryStorage, path: str) -> str {
+    print(storage.name)
     return path
 }
 impl Storage for MemoryStorage {
@@ -768,6 +779,7 @@ struct MemoryStorage {
     name: str
 }
 fn file_load(storage: MemoryStorage, path: str) -> str {
+    print(storage.name)
     return path
 }
 impl Storage for MemoryStorage {
@@ -791,6 +803,7 @@ struct MemoryStorage {
     name: str
 }
 fn file_load(storage: MemoryStorage, path: str) -> str {
+    print(storage.name)
     return path
 }
 impl Storage for MemoryStorage {
@@ -1003,7 +1016,11 @@ struct Point {
 }
 
 fn square(value: i64) -> i64 { value * value }
-fn choose(flag: bool) -> i64 { 7 if flag else 2 }
+fn choose(flag: bool) -> i64 {
+    if flag:
+        return 7
+    return 2
+}
 fn point(value: i64) -> Point { Point { x: value } }
 fn pair(value: i64) -> (i64, error) { checked(value) }
 
@@ -1595,80 +1612,43 @@ fn main() -> i64 {
 }
 
 #[test]
-fn accepts_python_style_conditional_expressions() {
+fn rejects_conditional_ternary_expressions() {
     let source = r#"
-const FALLBACK: i64 = 7 if true else 9
-
-fn choose(flag: bool, value: i64 = 5 if true else 6) -> i64 {
-    return value if flag else FALLBACK
-}
-
 fn main() -> i64 {
-    let enabled: bool = false
-    let value: i64 = choose(enabled)
-    let nested: i64 = 1 if enabled else 2 if value == 7 else 3
-    print(value)
-    print(nested)
+    let value: i64 = 1 if true else 2
     return value
 }
 "#;
 
-    check_source(source).expect("conditional expressions should typecheck");
-    let generated = compile_to_c(source).expect("conditional expressions should lower natively");
-    assert!(generated.contains(" ? "));
-    assert!(generated.contains("INT64_C(7)"));
-}
-
-#[test]
-fn rejects_invalid_conditional_expression_types() {
-    let bad_condition = r#"
-fn main() -> i64 {
-    let value: i64 = 1 if 42 else 2
-    return value
-}
-"#;
-    let error = check_source(bad_condition).expect_err("conditional condition must be bool");
+    let error = check_source(source).expect_err("Flux must not accept ternary expressions");
     assert!(
         error
             .message
-            .contains("conditional expression condition: expected bool, got i64")
-    );
-
-    let mismatched = r#"
-fn main() -> i64 {
-    let value: i64 = 1 if true else "two"
-    return value
-}
-"#;
-    let error = check_source(mismatched).expect_err("conditional branches must agree");
-    assert!(
-        error
-            .message
-            .contains("conditional expression branch: expected i64, got str")
-    );
-
-    let void_branch = r#"
-fn main() -> i64 {
-    let value: i64 = print("one") if true else 2
-    return value
-}
-"#;
-    let error = check_source(void_branch).expect_err("conditional branches cannot be void");
-    assert!(
-        error
-            .message
-            .contains("conditional expression branches cannot produce void")
+            .contains("conditional/ternary expressions are not part of Flux")
     );
 }
 
 #[test]
-fn formatter_preserves_conditional_expression_precedence() {
-    let source = "fn main()->i64 {\n let enabled:bool=true\n let value:i64=1+2 if enabled else 3+4\n let nested:i64=1 if enabled else 2 if false else 3\n return value+nested\n}\n";
-    let expected = "fn main() -> i64 {\n    let enabled: bool = true\n    let value: i64 = 1 + 2 if enabled else 3 + 4\n    let nested: i64 = 1 if enabled else 2 if false else 3\n    return value + nested\n}\n";
-    let formatted =
-        fluxc::formatter::format_source(source).expect("conditional source should format");
-    assert_eq!(formatted, expected);
-    check_source(&formatted).expect("formatted conditional source should still typecheck");
+fn rejects_flux_comments() {
+    let source = "fn main() -> i64 { # comments are forbidden\n    return 0\n}\n";
+    let error = check_source(source).expect_err("Flux comments must be syntax errors");
+    assert!(
+        error
+            .message
+            .contains("comments are not part of Flux syntax")
+    );
+}
+
+#[test]
+fn formatter_refuses_ternary_syntax() {
+    let source = "fn main()->i64 {\n let value:i64=1 if true else 2\n return value\n}\n";
+    let diagnostics = fluxc::formatter::format_source(source)
+        .expect_err("formatter must reject invalid ternary syntax");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("conditional/ternary expressions are not part of Flux")
+    }));
 }
 
 #[test]
@@ -1912,9 +1892,9 @@ fn pass(value: Outcome) -> Outcome {
 
 fn main() -> i64 {
     let first: Outcome = Outcome.Ok(42)
-    let second: Outcome = Outcome.Error("nope", 7)
-    let third: Outcome = Outcome.Pending()
-    let carried: Outcome = pass(first)
+    let _second: Outcome = Outcome.Error("nope", 7)
+    let _third: Outcome = Outcome.Pending()
+    let _carried: Outcome = pass(first)
     print(1)
     return 0
 }
@@ -1950,7 +1930,7 @@ struct User {
 fn main() -> i64 {
     let user: User = User { name: "Ada" }
     let outcome: Outcome = Outcome.Ok(user)
-    let envelope: Envelope = Envelope { outcome: outcome }
+    let _envelope: Envelope = Envelope { outcome: outcome }
     print(1)
     return 0
 }
@@ -2022,8 +2002,8 @@ fn main() -> i64 {
 
 #[test]
 fn formatter_and_semantic_database_preserve_enums() {
-    let source = "enum Outcome {\n Ok(i64)\n Pending\n}\nfn main()->i64 {\n let value:Outcome=Outcome.Ok(42)\n return 0\n}\n";
-    let expected = "enum Outcome {\n    Ok(i64)\n    Pending\n}\nfn main() -> i64 {\n    let value: Outcome = Outcome.Ok(42)\n    return 0\n}\n";
+    let source = "enum Outcome {\n Ok(i64)\n Pending\n}\nfn main()->i64 {\n let _value:Outcome=Outcome.Ok(42)\n return 0\n}\n";
+    let expected = "enum Outcome {\n    Ok(i64)\n    Pending\n}\nfn main() -> i64 {\n    let _value: Outcome = Outcome.Ok(42)\n    return 0\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("enum source should format");
     assert_eq!(formatted, expected);
 
@@ -2458,9 +2438,9 @@ fn semantic_database_indexes_structs_and_fields() {
 }
 
 #[test]
-fn formatter_is_deterministic_and_preserves_comments() {
-    let source = "fn add(a:i64,b: i64)->i64 { # header\n  let value:i64=a+b # sum\n  if value>0:\n      return value\n  else:\n      return 0\n}\n\n\nfn main()->i64 {\n    return add(1,2)\n}\n";
-    let expected = "fn add(a: i64, b: i64) -> i64 { # header\n    let value: i64 = a + b # sum\n    if value > 0:\n        return value\n    else:\n        return 0\n}\n\nfn main() -> i64 {\n    return add(1, 2)\n}\n";
+fn formatter_is_deterministic_without_comments() {
+    let source = "fn add(a:i64,b: i64)->i64 {\n  let value:i64=a+b\n  if value>0:\n      return value\n  else:\n      return 0\n}\n\n\nfn main()->i64 {\n    return add(1,2)\n}\n";
+    let expected = "fn add(a: i64, b: i64) -> i64 {\n    let value: i64 = a + b\n    if value > 0:\n        return value\n    else:\n        return 0\n}\n\nfn main() -> i64 {\n    return add(1, 2)\n}\n";
 
     let formatted = fluxc::formatter::format_source(source).expect("source should format");
     assert_eq!(formatted, expected);
@@ -3877,16 +3857,20 @@ fn app_view_state_transitions_lower_to_native_state_and_refresh() {
     let source = r##"
 view Counter {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     grid padding: 24
     state clicked: bool = false
     Text title at 1,1
-        text: "Clicked!" if clicked else "Hello"
+        text: "Hello"
+        visible: !clicked
         size: 28
         bold: true
         color: "#4F46E5"
-    Button action at 2,1
-        text: "Reset" if clicked else "Click me"
+    Text status at 2,1
+        text: "Clicked!"
+        visible: clicked
+    Button action at 3,1
+        text: "Toggle"
         primary: true
         on_press: clicked => !clicked
 }
@@ -3954,9 +3938,11 @@ view Counter {
     grid rows: auto auto
     state count: i64 = 0
     Text status at 1,1
-        text: "positive" if count > 0 else "zero"
+        text: "positive"
+        visible: count > 0
     Button action at 2,1
-        text: "Again" if count > 0 else "Increment"
+        text: "Increment"
+        enabled: count >= 0
         on_press: count => count + 1
 }
 app Counter
@@ -4340,23 +4326,23 @@ app Transformed
 
     let dynamic_transform = r#"
 view Transformed {
-    state moved: bool = false
+    state moved: i64 = 0
     grid columns: 1fr
     grid rows: auto auto
     Text title at 1,1
         text: "Dynamic"
-        translate_x: 40 if moved else 0
-        rotate_degrees: 12 if moved else 0
-        scale_percent: 110 if moved else 100
-        scale_y_percent: 90 if moved else 100
-        skew_x_degrees: 4 if moved else 0
-        transform_origin_x_percent: 25 if moved else 50
+        translate_x: moved
+        rotate_degrees: moved
+        scale_percent: 100 + moved
+        scale_y_percent: 100 - moved
+        skew_x_degrees: moved
+        transform_origin_x_percent: 50 + moved
         transition_ms: 180
         transition_delay_ms: 20
         transition_easing: "ease_out"
     Button toggle at 2,1
         text: "Move"
-        on_press: moved => !moved
+        on_press: moved => moved + 4
 }
 app Transformed
 "#;
@@ -4417,14 +4403,16 @@ fn view_environment_tracks_window_geometry_orientation_and_scale() {
     let source = r#"
 view Responsive {
     grid columns: 1fr
-    grid rows: auto auto
-    Text status at 1,1
-        text: "Landscape" if window_is_landscape else "Portrait"
-        visible: window_height >= 300
-        accessibility_description: "portrait" if window_is_portrait else "landscape"
-    Button mode at 2,1
-        text: "Wide" if window_width >= 700 else "Compact"
-        enabled: display_scale >= 1
+    grid rows: auto auto auto
+    Text landscape at 1,1
+        text: "Landscape"
+        visible: window_is_landscape
+    Text portrait at 2,1
+        text: "Portrait"
+        visible: window_is_portrait
+    Button mode at 3,1
+        text: "Responsive"
+        enabled: window_width >= 700 && window_height >= 300 && display_scale >= 1
 }
 app Responsive(width: 720, height: 480)
 "#;
@@ -4568,10 +4556,10 @@ view Gallery {
     grid rows: auto auto
     state alternate: bool = false
     Image artwork at 1,1
-        source: "alternate.png" if alternate else "default.png"
-        alt: "Alternate cover" if alternate else "Default cover"
+        source: "default.png"
+        alt: "Cover"
         fit: "cover"
-        can_shrink: true
+        can_shrink: alternate
         min_width: 240
         min_height: 160
     Button swap at 2,1
@@ -4586,7 +4574,13 @@ app Gallery
     assert!(generated.contains("gtk_picture_set_alternative_text"));
     assert!(generated.contains("GTK_CONTENT_FIT_COVER"));
     assert!(generated.contains("gtk_picture_set_can_shrink"));
-    assert!(generated.contains("gtk_picture_set_filename(GTK_PICTURE(flux__ui_artwork), ((flux__ui_state_alternate) ? (\"alternate.png\") : (\"default.png\")))"));
+    assert!(
+        generated
+            .contains("gtk_picture_set_filename(GTK_PICTURE(flux__ui_artwork), \"default.png\")")
+    );
+    assert!(generated.contains(
+        "gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_artwork), flux__ui_state_alternate)"
+    ));
     assert!(generated.contains("gtk_widget_set_size_request(flux__ui_artwork, 240, 160)"));
 
     let bad_fit = r#"
@@ -4791,9 +4785,10 @@ view HoverCard {
     grid rows: auto auto
     state hovered: bool = false
     Text title at 1,1
-        text: "Hovered" if hovered else "Idle"
-        tooltip: "Leave" if hovered else "Hover me"
-        accessibility_label: "Hovered title" if hovered else "Idle title"
+        text: "Hover state"
+        tooltip: "Hover me"
+        accessibility_label: "Hover state title"
+        visible: hovered
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -4811,8 +4806,9 @@ app HoverCard
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
-    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, ((flux__ui_state_hovered) ? (\"Leave\") : (\"Hover me\")))"));
-    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, ((flux__ui_state_hovered) ? (\"Hovered title\") : (\"Idle title\")), -1"));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, \"Hover me\")"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_title, flux__ui_state_hovered)"));
     assert!(generated.contains("gtk_event_controller_motion_new()"));
     assert!(generated.contains("gtk_event_controller_focus_new()"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_focus_action)"));
@@ -4853,7 +4849,8 @@ view Counter {
     grid rows: auto auto
     state count: i64 = 0
     Text title at 1,1
-        text: "Many" if count >= 2 else "Few"
+        text: "Many"
+        visible: count >= 2
     Button action at 2,1
         text: "Add"
         enabled: count < 3
@@ -5723,7 +5720,7 @@ import "api.flux"
 fn main() -> i64 {
     let id: VisibleId = visible_helper(1)
     let box: VisibleBox = VisibleBox { value: id }
-    let choice: VisibleChoice = VisibleChoice.Yes()
+    let _choice: VisibleChoice = VisibleChoice.Yes()
     print(box.value)
     print(visible_value)
     return 0
@@ -6170,6 +6167,7 @@ fn main() -> i64 {
     let data: str, err: error = load_config("settings")
     if err != nil:
         print(err)
+    print(data)
     return 0
 }
 "#;

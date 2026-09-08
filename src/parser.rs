@@ -680,8 +680,16 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
         }
 
         let indent = raw.bytes().take_while(|byte| *byte == b' ').count();
-        let without_comment = strip_comment(&raw[indent..]);
-        let text = without_comment.trim_end();
+        let source_text = &raw[indent..];
+        if let Some(offset) = comment_marker(source_text) {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                SourceSpan::new(number, indent + offset + 1, 1),
+                "comments are not part of Flux syntax; remove '#...' text",
+            ));
+            continue;
+        }
+        let text = source_text.trim_end();
         if text.trim().is_empty() {
             continue;
         }
@@ -1868,7 +1876,7 @@ fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructD
     })
 }
 
-fn strip_comment(input: &str) -> &str {
+fn comment_marker(input: &str) -> Option<usize> {
     let mut in_string = false;
     let mut escaped = false;
     for (index, ch) in input.char_indices() {
@@ -1885,10 +1893,10 @@ fn strip_comment(input: &str) -> &str {
             continue;
         }
         if ch == '#' && !in_string {
-            return &input[..index];
+            return Some(index);
         }
     }
-    input
+    None
 }
 
 fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
@@ -3254,12 +3262,13 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
     };
     let expr = parser.parse_conditional()?;
     if parser.index != tokens.len() {
-        let span = tokens[parser.index].span;
-        return Err(Diagnostic::new(
-            DiagnosticStage::Parse,
-            span,
-            "unexpected token after expression",
-        ));
+        let token = &tokens[parser.index];
+        let message = if matches!(token.kind, TokenKind::If | TokenKind::Else) {
+            "conditional/ternary expressions are not part of Flux; use an if statement or match"
+        } else {
+            "unexpected token after expression"
+        };
+        return Err(Diagnostic::new(DiagnosticStage::Parse, token.span, message));
     }
     Ok(expr)
 }
@@ -3415,41 +3424,7 @@ struct ExprParser<'a> {
 
 impl ExprParser<'_> {
     fn parse_conditional(&mut self) -> Result<Expr, Diagnostic> {
-        let then_expr = self.parse_binary(1)?;
-        if !matches!(
-            self.tokens.get(self.index).map(|token| &token.kind),
-            Some(TokenKind::If)
-        ) {
-            return Ok(then_expr);
-        }
-        self.index += 1;
-        let cond = self.parse_binary(1)?;
-        let Some(else_token) = self.tokens.get(self.index) else {
-            return Err(diag(self.line, "conditional expression requires 'else'"));
-        };
-        if !matches!(else_token.kind, TokenKind::Else) {
-            return Err(Diagnostic::new(
-                DiagnosticStage::Parse,
-                else_token.span,
-                "conditional expression requires 'else'",
-            ));
-        }
-        self.index += 1;
-        let else_expr = self.parse_conditional()?;
-        let span = SourceSpan::new(
-            self.line,
-            then_expr.span.column,
-            else_expr.span.column + else_expr.span.length - then_expr.span.column,
-        );
-        Ok(Expr {
-            line: self.line,
-            span,
-            kind: ExprKind::Conditional {
-                then_expr: Box::new(then_expr),
-                cond: Box::new(cond),
-                else_expr: Box::new(else_expr),
-            },
-        })
+        self.parse_binary(1)
     }
 
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, Diagnostic> {

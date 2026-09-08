@@ -1093,7 +1093,7 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
     let cursor_indent = leading_spaces(cursor_line);
     for line in lines.iter().take(line_index + 1).rev() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         let indent = leading_spaces(line);
@@ -1958,16 +1958,8 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     let mut index = 0usize;
     let mut in_string = false;
     let mut escaped = false;
-    let mut in_comment = false;
     while index < bytes.len() {
         let byte = bytes[index];
-        if in_comment {
-            if byte == b'\n' {
-                in_comment = false;
-            }
-            index += 1;
-            continue;
-        }
         if in_string {
             if escaped {
                 escaped = false;
@@ -1980,7 +1972,6 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
             continue;
         }
         match byte {
-            b'#' => in_comment = true,
             b'"' => in_string = true,
             b'(' => stack.push(index),
             b')' => {
@@ -2095,7 +2086,6 @@ const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "variable",
     "property",
     "enumMember",
-    "comment",
     "operator",
 ];
 
@@ -2113,8 +2103,7 @@ enum SemanticTokenKind {
     Variable = 9,
     Property = 10,
     EnumMember = 11,
-    Comment = 12,
-    Operator = 13,
+    Operator = 12,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2217,18 +2206,6 @@ fn tokenize_semantic_line(
         if byte.is_ascii_whitespace() {
             index += 1;
             continue;
-        }
-        if byte == b'#' {
-            push_semantic_token(
-                tokens,
-                line,
-                line_index,
-                index,
-                bytes.len(),
-                SemanticTokenKind::Comment,
-                encoding,
-            );
-            break;
         }
         if byte == b'"' {
             let start = index;
@@ -3061,7 +3038,6 @@ fn identifier_occurrences(source: &str, name: &str) -> Vec<SourceSpan> {
         let mut index = 0usize;
         while index < bytes.len() {
             match bytes[index] {
-                b'#' => break,
                 b'"' => {
                     index += 1;
                     let mut escaped = false;
@@ -4618,7 +4594,7 @@ mod tests {
     #[test]
     fn completion_adds_only_lexically_visible_current_function_locals() {
         let uri = "file:///tmp/local-completion.flux";
-        let source = "fn first(other: i64) -> i64 { other }\nfn compute(input: i64) -> i64 {\n    if input > 0:\n        let hidden: i64 = input\n    let count: i64 = input\n    var total: i64 = count\n    return total\n}\nfn main() -> i64 { compute(1) }\n";
+        let source = "fn first(other: i64) -> i64 { other }\nfn compute(input: i64) -> i64 {\n    if input > 0:\n        let hidden: i64 = input\n        print(hidden)\n    let count: i64 = input\n    var total: i64 = count\n    return total\n}\nfn main() -> i64 { compute(1) }\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let items = completion_items_at_position(uri, source, &documents, Some(6));
         let json = JsonValue::Array(items).to_json();
@@ -4635,7 +4611,7 @@ mod tests {
     #[test]
     fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
         let uri = "file:///tmp/call-shapes.flux";
-        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let readable: Readable = Readable(memory)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    print(error(\"boom\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -4759,7 +4735,7 @@ mod tests {
     #[test]
     fn signature_help_supports_first_class_function_values() {
         let uri = "file:///tmp/function-value-signature.flux";
-        let source = "type Mapper = fn(i64, str) -> bool\nfn apply(transform: Mapper) -> bool {\n    return transform(42, \"Flux\")\n}\nfn always_true(value: i64, label: str) -> bool { true }\nfn main() -> i64 {\n    let result: bool = apply(always_true)\n    return 0\n}\n";
+        let source = "type Mapper = fn(i64, str) -> bool\nfn apply(transform: Mapper) -> bool {\n    return transform(42, \"Flux\")\n}\nfn always_true(value: i64, label: str) -> bool {\n    print(value)\n    print(label)\n    return true\n}\nfn main() -> i64 {\n    let result: bool = apply(always_true)\n    print(result)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let call_line_index = source
             .lines()
@@ -4785,7 +4761,7 @@ mod tests {
     #[test]
     fn signature_help_supports_interface_capability_call_shape() {
         let uri = "file:///tmp/interface-signature.flux";
-        let source = "interface Storage {\n    fn load(path: str) -> (str, error)\n}\nstruct Memory {\n    value: str\n}\nfn memory_load(storage: Memory, path: str) -> (str, error) {\n    return path, nil\n}\nimpl Storage for Memory {\n    load: memory_load\n}\nfn main() -> i64 {\n    let memory: Memory = Memory { value: \"x\" }\n    let storage: Storage = Storage(memory)\n    let data: str, err: error = Storage.load(storage, \"settings\")\n    return 0\n}\n";
+        let source = "interface Storage {\n    fn load(path: str) -> (str, error)\n}\nstruct Memory {\n    value: str\n}\nfn memory_load(storage: Memory, path: str) -> (str, error) {\n    print(storage.value)\n    return path, nil\n}\nimpl Storage for Memory {\n    load: memory_load\n}\nfn main() -> i64 {\n    let memory: Memory = Memory { value: \"x\" }\n    let storage: Storage = Storage(memory)\n    let data: str, err: error = Storage.load(storage, \"settings\")\n    print(data)\n    print(err)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let call_line_index = source
             .lines()
@@ -5242,7 +5218,7 @@ mod tests {
     #[test]
     fn inlay_hints_show_only_genuinely_inferred_binding_types() {
         let uri = "file:///tmp/inlay.flux";
-        let source = "struct User {\n    name: str\n}\nfn load() -> User { User { name: \"Flux\" } }\nfn main() -> i64 {\n    let User { name } = load()\n    for i in 0..1:\n        print(name)\n    return 0\n}\n";
+        let source = "struct User {\n    name: str\n}\nfn load() -> User { User { name: \"Flux\" } }\nfn main() -> i64 {\n    let User { name } = load()\n    for i in 0..1:\n        print(name)\n        print(i)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let hints = inlay_hints_for_document(
             uri,
@@ -5287,7 +5263,7 @@ mod tests {
     #[test]
     fn semantic_tokens_mix_lexical_and_typed_categories() {
         let source =
-            "fn double(value: i64) -> i64 { value * 2 } # scale\nfn main() -> i64 { double(21) }\n";
+            "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
         crate::semantic::SemanticDatabase::analyze(source, SourceId::new(1))
             .expect("semantic-token fixture should analyze");
         let data = semantic_tokens("file:///tmp/tokens.flux", source, PositionEncoding::Utf8);
@@ -5311,6 +5287,5 @@ mod tests {
         assert!(kinds.contains(&(SemanticTokenKind::Type as i64)));
         assert!(kinds.contains(&(SemanticTokenKind::Number as i64)));
         assert!(kinds.contains(&(SemanticTokenKind::Operator as i64)));
-        assert!(kinds.contains(&(SemanticTokenKind::Comment as i64)));
     }
 }

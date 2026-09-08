@@ -48,9 +48,11 @@ fn label_any(storage: Storage) -> str {
 }
 
 fn select_storage(memory: bool) -> Storage {
+    if memory:
+        let ram: MemoryStorage = MemoryStorage { name: "ram" }
+        return Storage(ram)
     let file: FileStorage = FileStorage { root: "/tmp" }
-    let ram: MemoryStorage = MemoryStorage { name: "ram" }
-    return Storage(ram) if memory else Storage(file)
+    return Storage(file)
 }
 
 fn main() -> i64 {

@@ -3,7 +3,7 @@ view TransformDemo {
     grid rows: auto auto
     grid gap: 16
     grid padding: 32
-    state active: bool = false
+    state offset: i64 = 0
 
     Text card at 1,1
         text: "Native Flux transform"
@@ -15,20 +15,20 @@ view TransformDemo {
         border_width: 2
         radius: 12
         margin: 16
-        translate_x: 48 if active else 0
-        rotate_degrees: 8 if active else 0
-        scale_percent: 110 if active else 100
-        scale_y_percent: 92 if active else 100
-        skew_x_degrees: 4 if active else 0
-        transform_origin_x_percent: 25 if active else 50
+        translate_x: offset
+        rotate_degrees: offset
+        scale_percent: 100 + offset
+        scale_y_percent: 100 - offset
+        skew_x_degrees: offset
+        transform_origin_x_percent: 50 + offset
         transition_ms: 180
         transition_easing: "ease_out"
 
-    Button toggle at 2,1
-        text: "Reset" if active else "Transform"
+    Button move at 2,1
+        text: "Move"
         primary: true
         align_x: "center"
-        on_press: active => !active
+        on_press: offset => offset + 4
 }
 
 app TransformDemo(title: "Flux transforms", width: 640, height: 360)

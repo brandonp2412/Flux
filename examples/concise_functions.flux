@@ -3,9 +3,14 @@ struct Point {
 }
 
 fn square(value: i64) -> i64 { value * value }
-fn choose(flag: bool) -> i64 { 7 if flag else 2 }
 fn point(value: i64) -> Point { Point { x: value } }
 fn checked(value: i64) -> (i64, error) { pair(value) }
+
+fn choose(flag: bool) -> i64 {
+    if flag:
+        return 7
+    return 2
+}
 
 fn pair(value: i64) -> (i64, error) {
     return value, nil

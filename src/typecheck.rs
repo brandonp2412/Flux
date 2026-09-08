@@ -1773,6 +1773,7 @@ fn check_function_all(
         .map(|ty| signatures.canonical_type(ty))
         .collect::<Vec<_>>();
 
+    let diagnostics_before_body = diagnostics.len();
     check_block_all(
         &function.body,
         &mut env,
@@ -1782,6 +1783,9 @@ fn check_function_all(
         diagnostics,
         0,
     );
+    if diagnostics.len() == diagnostics_before_body {
+        check_unused_function_bindings(function, diagnostics);
+    }
 
     if !function.returns.is_empty() && !block_guarantees_return(&function.body) {
         diagnostics.push(diag(
@@ -1792,6 +1796,225 @@ fn check_function_all(
                 return_types_name(&function.returns)
             ),
         ));
+    }
+}
+
+fn check_unused_function_bindings(function: &Function, diagnostics: &mut Vec<Diagnostic>) {
+    let mut declarations = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), param.name_span, "parameter"))
+        .collect::<Vec<_>>();
+    collect_binding_declarations(&function.body, &mut declarations);
+    let mut reads = HashSet::new();
+    collect_block_reads(&function.body, &mut reads);
+    for (name, span, kind) in declarations {
+        if name.starts_with('_') || reads.contains(&name) {
+            continue;
+        }
+        diagnostics.push(
+            diag(span, &format!("unused {kind} '{name}'"))
+                .with_note("Flux has no lint-warning tier: unused bindings are compile errors; prefix an intentionally ignored binding with '_'"),
+        );
+    }
+}
+
+fn collect_binding_declarations(
+    body: &[Stmt],
+    declarations: &mut Vec<(String, SourceSpan, &'static str)>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let {
+                name, name_span, ..
+            } => {
+                declarations.push((name.clone(), *name_span, "binding"));
+            }
+            StmtKind::Var {
+                name, name_span, ..
+            } => {
+                declarations.push((name.clone(), *name_span, "mutable binding"));
+            }
+            StmtKind::LetDestructure { bindings, .. } => {
+                for binding in bindings {
+                    declarations.push((binding.name.clone(), binding.name_span, "binding"));
+                }
+            }
+            StmtKind::LetStructDestructure { fields, .. } => {
+                collect_struct_pattern_declarations(fields, declarations);
+            }
+            StmtKind::ForRange {
+                name,
+                name_span,
+                body,
+                ..
+            } => {
+                declarations.push((name.clone(), *name_span, "loop variable"));
+                collect_binding_declarations(body, declarations);
+            }
+            StmtKind::If {
+                body, else_body, ..
+            } => {
+                collect_binding_declarations(body, declarations);
+                collect_binding_declarations(else_body, declarations);
+            }
+            StmtKind::While { body, .. } => collect_binding_declarations(body, declarations),
+            StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    for pattern in &arm.patterns {
+                        match pattern {
+                            MatchPattern::Binding(binding) if binding.name != "_" => declarations
+                                .push((binding.name.clone(), binding.span, "match binding")),
+                            MatchPattern::Struct(pattern) => {
+                                collect_struct_pattern_declarations(&pattern.fields, declarations);
+                            }
+                            MatchPattern::Binding(_) => {}
+                        }
+                    }
+                    collect_binding_declarations(&arm.body, declarations);
+                }
+            }
+            StmtKind::Assign { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Expr(_) => {}
+        }
+    }
+}
+
+fn collect_struct_pattern_declarations(
+    fields: &[crate::ast::StructPatternField],
+    declarations: &mut Vec<(String, SourceSpan, &'static str)>,
+) {
+    for field in fields {
+        if field.binding.name != "_" {
+            declarations.push((
+                field.binding.name.clone(),
+                field.binding.span,
+                "destructured binding",
+            ));
+        }
+        if let Some(nested) = &field.nested {
+            collect_struct_pattern_declarations(&nested.fields, declarations);
+        }
+    }
+}
+
+fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. } => collect_expr_reads(expr, reads),
+            StmtKind::LetDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                collect_expr_reads(expr, reads);
+                if *else_return && let Some(binding) = bindings.last() {
+                    reads.insert(binding.name.clone());
+                }
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_expr_reads(value, reads);
+                }
+            }
+            StmtKind::Expr(expr) => collect_expr_reads(expr, reads),
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_expr_reads(cond, reads);
+                collect_block_reads(body, reads);
+                collect_block_reads(else_body, reads);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_expr_reads(start, reads);
+                collect_expr_reads(end, reads);
+                collect_block_reads(body, reads);
+            }
+            StmtKind::While { cond, body } => {
+                collect_expr_reads(cond, reads);
+                collect_block_reads(body, reads);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_expr_reads(value, reads);
+                for arm in arms {
+                    collect_block_reads(&arm.body, reads);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Var(name) => {
+            reads.insert(name.clone());
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            reads.insert(name.clone());
+            for arg in args {
+                collect_expr_reads(arg, reads);
+            }
+            for arg in named_args {
+                collect_expr_reads(&arg.value, reads);
+            }
+        }
+        ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_expr_reads(arg, reads);
+            }
+            for arg in named_args {
+                collect_expr_reads(&arg.value, reads);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_expr_reads(base, reads);
+            }
+            for field in fields {
+                collect_expr_reads(&field.value, reads);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_expr_reads(base, reads);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_expr_reads(value, reads);
+            for arm in arms {
+                collect_expr_reads(&arm.value, reads);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_expr_reads(then_expr, reads);
+            collect_expr_reads(cond, reads);
+            collect_expr_reads(else_expr, reads);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_reads(left, reads);
+            collect_expr_reads(right, reads);
+        }
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {}
     }
 }
 

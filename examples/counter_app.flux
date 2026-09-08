@@ -6,12 +6,14 @@ view CounterApp {
     state count: i64 = 0
 
     Text status at 1,1
-        text: "Count is positive" if count > 0 else "Count is zero"
+        text: "Count is positive"
+        visible: count > 0
         size: 28
         bold: true
 
     Button increment at 2,1
-        text: "Increment again" if count > 0 else "Increment"
+        text: "Increment"
+        enabled: count >= 0
         on_press: count => count + 1
 }
 

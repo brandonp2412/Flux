@@ -44,6 +44,9 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [x] Function bodies use `{}`.
 - [x] Control-flow blocks use indentation.
 - [x] Strict static typing.
+- [x] No comments in Flux source; `#...` outside strings is a syntax error rather than a comment form.
+- [x] No lint/warning tier for source cleanliness: violations such as unused named bindings/parameters/loop or pattern variables are compile errors. A leading `_` explicitly marks an intentionally ignored binding.
+- [x] No ternary/conditional-expression syntax; value selection uses control flow or value-producing `match` rather than `a if condition else b`/`?:` forms.
 - [x] No source-language generics.
 - [x] No `try` / `catch` / exceptions for recoverable failures.
 - [x] Explicit multi-value returns and `error` values form the recoverable-error model.
@@ -90,7 +93,7 @@ Implemented on `main`:
 
 The parser and semantic layer must become robust enough that every later subsystem can share the same source model.
 
-Milestone 1 is complete. Parser recovery synchronizes at function boundaries, type checking batches independent errors while suppressing misleading cascades, diagnostics carry stable source identity plus rich JSON metadata, and all declaration/control-flow/expression syntax retains precise spans. Editor consumers can reuse parse snapshots and query one analyzed semantic database for symbols/signatures. The canonical formatter preserves comments, normalizes indentation/expression spacing, is idempotent, and supports CI check mode. Development can now move into the functional language core.
+Milestone 1 is complete. Parser recovery synchronizes at function boundaries, type checking batches independent errors while suppressing misleading cascades, diagnostics carry stable source identity plus rich JSON metadata, and all declaration/control-flow/expression syntax retains precise spans. Editor consumers can reuse parse snapshots and query one analyzed semantic database for symbols/signatures. Flux deliberately has no comment syntax; the canonical formatter therefore formats code only, normalizes indentation/expression spacing, is idempotent, and supports CI check mode. Development can now move into the functional language core.
 
 - [x] Multi-diagnostic parser recovery instead of stopping at the first syntax error.
 - [x] Multi-diagnostic type checking where safe to continue.
@@ -101,7 +104,7 @@ Milestone 1 is complete. Parser recovery synchronizes at function boundaries, ty
 - [x] Human terminal diagnostics render source excerpts, precise labels/fixes, ANSI color when appropriate, and width-aware wrapping/cropping without changing JSON diagnostics.
 - [x] Incremental parse snapshot API suitable for editor use, with stable source identity, source fingerprints, unchanged-source reuse, and reparsing on edits.
 - [x] Semantic query database shared by compiler and LSP, indexing function/parameter/binding/loop symbols and analyzed signatures from one typed program.
-- [x] Deterministic comment-preserving formatter and canonical Flux formatting rules, exposed through `fluxc format` and `fluxc format --check`.
+- [x] Deterministic canonical Flux formatter, exposed through `fluxc format` and `fluxc format --check`; comments are rejected by the language rather than preserved by formatting.
 
 # Milestone 2 — Functional language core
 
@@ -130,9 +133,8 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 - [x] `break` / `continue` in `for` loops with static scope validation through nested `if` / `match` blocks and native lowering.
 - [x] Indentation-based `while` loops with statically boolean conditions, loop-scoped `break` / `continue`, and native lowering; useful mutation is explicit through typed `var` bindings rather than making ordinary bindings mutable.
-- [x] Value-producing conditional/match expressions for functional code.
-  - [x] Value-producing `match` expressions.
-  - [x] Python-style value-producing conditional expressions (`a if condition else b`) with strict branch typing and native conditional lowering.
+- [x] Value-producing `match` expressions for functional code.
+- [x] Ternary/conditional-expression syntax intentionally removed; ordinary `if`/`elif`/`else` controls statement flow and exhaustive `match` is the value-producing selection form.
 
 ## Interfaces and capabilities
 
@@ -142,7 +144,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 - [x] Explicit implementation of interfaces by concrete data types without inheritance, using exhaustive capability-to-free-function mappings with concrete first-parameter receiver validation, exact named-parameter/return contracts, formatter/semantic support, and zero-runtime conformance metadata. Module implementations remain naturally downstream of modules/packages.
 - [x] Static interface dispatch where the concrete receiver type is known, using `Interface.capability(receiver, ...)` syntax and compile-time lowering directly to the mapped free function, including named arguments and multi-value returns with no vtable/dynamic lookup.
 - [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interface_value, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
-- [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
+- [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, statement-level conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
 - [x] Interface composition without class inheritance using `interface Child: ParentA, ParentB { ... }`; compatible capabilities flatten into one contract for implementation/static/dynamic dispatch, while unknown parents, cycles, duplicate parents, and conflicting inherited signatures are rejected.
 - [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Blocked on modules/imports plus the first real platform backend; do not invent placeholder platform APIs before those exist.
 
@@ -256,7 +258,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] String interpolation. Runtime interpolation is sequenced after owned-string/buffer semantics: the bootstrap `str` currently lowers to borrowed native string pointers, so Flux must not introduce hidden scratch-buffer allocation/lifetime behavior merely for interpolation syntax. Compile-time interpolation may arrive earlier only if it shares the eventual syntax and semantics cleanly.
 - [ ] Multiline strings.
 - [ ] Raw strings.
-- [x] Python-style conditional expression (`a if condition else b`) as the Flux-native value conditional.
+- [x] No ternary expression form: Python-style `a if condition else b` and C-style `?:` are intentionally absent; use statement control flow or `match` values.
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
 - [ ] Concise range syntax beyond current `start..end` where appropriate.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
@@ -709,12 +711,12 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Struct member go-to-definition follows the receiver's concrete/aliased struct type through nested field access and navigates directly to the selected field declaration, including imported project sources.
   - [x] Local go-to-definition uses the active function plus lexical visibility rather than global name uniqueness, resolving same-named parameters/bindings in separate functions safely.
 - [ ] Find references.
-  - [x] Bootstrap `textDocument/references` returns identifier occurrences only after unambiguous semantic target resolution; strings/comments are excluded. From an importing document, references cover the entire typed loaded dependency graph, including imported declarations and unsaved overlays. Reverse dependents outside that graph still require workspace indexing.
+  - [x] Bootstrap `textDocument/references` returns identifier occurrences only after unambiguous semantic target resolution; strings are excluded and Flux has no comment syntax. From an importing document, references cover the entire typed loaded dependency graph, including imported declarations and unsaved overlays. Reverse dependents outside that graph still require workspace indexing.
   - [x] Function-local parameter/binding/pattern/loop references are resolved through lexical visibility rather than global name uniqueness, so same-named locals in other functions/scopes are excluded from the result.
 - [ ] Rename.
   - [x] Bootstrap `textDocument/rename` emits workspace edits only for an unambiguous semantic target and a valid non-keyword Flux identifier; from an importing document it safely edits every occurrence in the typed loaded dependency graph and rejects collisions with existing semantic symbols. Ambiguous/shadowed names are refused rather than edited unsafely; reverse dependents outside the loaded graph remain pending.
   - [x] Function-local parameter/binding/pattern/loop rename is lexical-scope aware, edits only occurrences resolving to the selected local, and refuses names colliding with another local/parameter in the same function.
-- [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, comments, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions.
+- [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions. There is intentionally no comment token category because comments are invalid Flux syntax.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
 - [x] Inlay hints where they add value: `textDocument/inlayHint` reports compiler-inferred types for struct/enum pattern bindings and range-loop variables, while deliberately omitting already-explicit `let`/`var`/parameter types.
