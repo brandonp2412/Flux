@@ -636,7 +636,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Rename.
 - [ ] Semantic highlighting.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
-- [ ] Code actions/fixes.
+- [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
 - [ ] Inlay hints where they add value.
 - [ ] Incremental workspace analysis.
 - [ ] Package/module awareness, including overlay-aware analysis across multiple unsaved imported buffers.

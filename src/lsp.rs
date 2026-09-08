@@ -180,6 +180,23 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("textDocument/codeAction") => {
+                if let Some(id) = id {
+                    let uri = message
+                        .get("params")
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let actions = uri
+                        .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
+                        .map(|(uri, source)| code_actions(uri, source, encoding))
+                        .unwrap_or_default();
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, JsonValue::Array(actions)).to_json(),
+                    )?;
+                }
+            }
             Some(_) if id.is_some() => {
                 write_message(
                     &mut writer,
@@ -215,6 +232,7 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                         "positionEncoding",
                         JsonValue::String(position_encoding.to_string()),
                     ),
+                    ("codeActionProvider", JsonValue::Bool(true)),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
                     (
                         "textDocumentSync",
@@ -297,6 +315,49 @@ fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
     ])
 }
 
+fn document_diagnostics(uri: &str, source: &str) -> Vec<Diagnostic> {
+    let source_id = SourceId::from_name(uri);
+    match crate::parser::parse_all_with_source(source, source_id) {
+        Err(diagnostics) => diagnostics,
+        Ok(program) if program.imports.is_empty() => crate::typecheck::check_all(&program)
+            .err()
+            .unwrap_or_default(),
+        Ok(_) => Vec::new(),
+    }
+}
+
+fn code_actions(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
+    let source_id = SourceId::from_name(uri);
+    document_diagnostics(uri, source)
+        .into_iter()
+        .flat_map(|diagnostic| {
+            let rendered = lsp_diagnostic(&diagnostic, source, source_id, uri, encoding);
+            diagnostic
+                .fixes
+                .iter()
+                .filter(|fix| {
+                    fix.span.source_id == source_id || fix.span.source_id == SourceId::UNKNOWN
+                })
+                .map(|fix| {
+                    let edit = object([
+                        ("range", lsp_range(fix.span, source, encoding)),
+                        ("newText", JsonValue::String(fix.replacement.clone())),
+                    ]);
+                    let mut changes = BTreeMap::new();
+                    changes.insert(uri.to_string(), JsonValue::Array(vec![edit]));
+                    object([
+                        ("title", JsonValue::String(fix.message.clone())),
+                        ("kind", JsonValue::String("quickfix".to_string())),
+                        ("isPreferred", JsonValue::Bool(true)),
+                        ("diagnostics", JsonValue::Array(vec![rendered.clone()])),
+                        ("edit", object([("changes", JsonValue::Object(changes))])),
+                    ])
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn publish_document_diagnostics<W: Write>(
     writer: &mut W,
     uri: &str,
@@ -304,13 +365,7 @@ fn publish_document_diagnostics<W: Write>(
     encoding: PositionEncoding,
 ) -> io::Result<()> {
     let source_id = SourceId::from_name(uri);
-    let diagnostics = match crate::parser::parse_all_with_source(source, source_id) {
-        Err(diagnostics) => diagnostics,
-        Ok(program) if program.imports.is_empty() => crate::typecheck::check_all(&program)
-            .err()
-            .unwrap_or_default(),
-        Ok(_) => Vec::new(),
-    };
+    let diagnostics = document_diagnostics(uri, source);
     let rendered = diagnostics
         .iter()
         .map(|diagnostic| lsp_diagnostic(diagnostic, source, source_id, uri, encoding))
@@ -853,5 +908,16 @@ mod tests {
         let json = edits[0].to_json();
         assert!(json.contains("fn main() -> i64"));
         assert!(json.contains("\\n    return 0\\n"));
+    }
+
+    #[test]
+    fn code_actions_reuse_machine_applicable_compiler_fixes() {
+        let source = "fn main() -> i64\n    return 0\n}\n";
+        let actions = code_actions("file:///tmp/fix.flux", source, PositionEncoding::Utf8);
+        assert_eq!(actions.len(), 1);
+        let json = actions[0].to_json();
+        assert!(json.contains("insert the function body opener"));
+        assert!(json.contains("quickfix"));
+        assert!(json.contains("newText"));
     }
 }

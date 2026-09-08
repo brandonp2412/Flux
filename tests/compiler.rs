@@ -2830,6 +2830,12 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     let formatting = format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#
     );
+    let broken_change = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":3}},"contentChanges":[{{"text":"fn main() -> i64\n    return 0\n}}\n"}}]}}}}"#
+    );
+    let code_action = format!(
+        r#"{{"jsonrpc":"2.0","id":4,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":16}}}},"context":{{"diagnostics":[]}}}}}}"#
+    );
     let close = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didClose","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
     );
@@ -2841,6 +2847,8 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         &open,
         &change,
         &formatting,
+        &broken_change,
+        &code_action,
         &close,
         shutdown,
         exit,
@@ -2868,6 +2876,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
     assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));
+    assert!(stdout.contains("\"codeActionProvider\":true"));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("textDocument/publishDiagnostics"));
     assert!(stdout.contains("binding: expected i64, got bool"));
@@ -2876,6 +2885,10 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"id\":3"));
     assert!(stdout.contains("fn main() -> i64"));
     assert!(stdout.contains("\\n    let count: i64 = 1\\n"));
+    assert!(stdout.contains("\"id\":4"));
+    assert!(stdout.contains("insert the function body opener"));
+    assert!(stdout.contains("\"kind\":\"quickfix\""));
+    assert!(stdout.contains("\"newText\":\" {\""));
     assert!(stdout.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":null"));
 }
 
