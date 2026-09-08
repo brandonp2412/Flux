@@ -728,9 +728,9 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux build`: user-facing native builds support debug/profile/release modes and package/source targets.
 - [ ] `flux test`.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
-- [ ] `flux analyze`.
+- [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
 - [ ] `flux devices`.
-- [ ] `flux doctor`.
+- [x] `flux doctor`: bootstrap Linux doctor reports host support, Clang, GTK4, optional Neovim dogfood availability, and the active Wayland/X11 display before native app testing.
 - [ ] `flux clean`.
 - [ ] `flux package`.
 - [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.

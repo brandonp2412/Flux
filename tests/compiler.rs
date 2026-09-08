@@ -3148,6 +3148,13 @@ fn flux_binary_exposes_the_user_facing_cli_name_and_commands() {
         .expect("flux user-facing binary should run");
     assert!(checked.status.success());
 
+    let analyzed = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("analyze")
+        .arg("examples/hello.flux")
+        .output()
+        .expect("flux analyze should run");
+    assert!(analyzed.status.success());
+
     let usage = Command::new(env!("CARGO_BIN_EXE_flux"))
         .output()
         .expect("flux usage should run");

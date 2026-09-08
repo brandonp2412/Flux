@@ -101,9 +101,9 @@ fn run() -> Result<(), CliError> {
             println!("created: {}", path.display());
             Ok(())
         }
-        "check" => {
+        "check" | "analyze" => {
             let path = require_target(&args)?;
-            let json = check_json_mode(&args[2..])?;
+            let json = analysis_json_mode(&args[0], &args[2..])?;
             let resolved =
                 fluxc::project::resolve_entry(path).unwrap_or_else(|_| path.to_path_buf());
             let source_id = fluxc::SourceId::from_name(resolved.to_string_lossy().as_ref());
@@ -228,6 +228,12 @@ fn run() -> Result<(), CliError> {
                 ));
             }
             run_development(path, options.mode)
+        }
+        "doctor" => {
+            if args.len() != 1 {
+                return Err(CliError::Message("doctor syntax is 'doctor'".to_string()));
+            }
+            run_doctor()
         }
         "lsp" => {
             if args.len() != 1 {
@@ -732,12 +738,85 @@ fn terminal_color_enabled() -> bool {
     io::stderr().is_terminal()
 }
 
-fn check_json_mode(args: &[String]) -> Result<bool, String> {
+fn analysis_json_mode(command: &str, args: &[String]) -> Result<bool, String> {
     match args {
         [] => Ok(false),
         [flag] if flag == "--json" => Ok(true),
-        _ => Err("check syntax is 'check <file.flux> [--json]'".to_string()),
+        _ => Err(format!(
+            "{command} syntax is '{command} <file.flux|package-dir|flux.toml> [--json]'"
+        )),
     }
+}
+
+fn run_doctor() -> Result<(), CliError> {
+    println!("Flux doctor");
+    let mut required_ok = true;
+
+    if cfg!(target_os = "linux") {
+        println!("  [ok] host: Linux");
+    } else {
+        println!("  [fail] host: current bootstrap GUI target requires Linux");
+        required_ok = false;
+    }
+
+    match command_first_line("clang", &["--version"]) {
+        Ok(version) => println!("  [ok] clang: {version}"),
+        Err(message) => {
+            println!("  [fail] clang: {message}");
+            required_ok = false;
+        }
+    }
+
+    match command_first_line("pkg-config", &["--modversion", "gtk4"]) {
+        Ok(version) => println!("  [ok] GTK4: {version}"),
+        Err(message) => {
+            println!("  [fail] GTK4: {message}");
+            required_ok = false;
+        }
+    }
+
+    match command_first_line("nvim", &["--version"]) {
+        Ok(version) => println!("  [ok] Neovim editor dogfood: {version}"),
+        Err(message) => println!("  [warn] Neovim editor dogfood unavailable: {message}"),
+    }
+
+    if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
+        println!("  [ok] display: Wayland ({})", display.to_string_lossy());
+    } else if let Some(display) = env::var_os("DISPLAY") {
+        println!("  [ok] display: X11 ({})", display.to_string_lossy());
+    } else {
+        println!(
+            "  [warn] display: no active Wayland/X11 session detected; GUI builds still work but cannot be launched here"
+        );
+    }
+
+    if required_ok {
+        println!("ready: native Flux Linux build prerequisites are available");
+        Ok(())
+    } else {
+        Err(CliError::Message(
+            "doctor found missing prerequisites for native Linux Flux apps".to_string(),
+        ))
+    }
+}
+
+fn command_first_line(command: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|error| format!("not available ({error})"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.lines().next().unwrap_or("command failed").trim();
+        return Err(detail.to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .next()
+        .unwrap_or("available")
+        .trim()
+        .to_string())
 }
 
 fn require_target(args: &[String]) -> Result<&Path, String> {
@@ -861,7 +940,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} doctor | {command} lsp"
     )
 }
 

@@ -93,10 +93,17 @@ The first native GUI dogfood example uses `app HelloApp` instead of `fn main` an
 
 The bootstrap runner watches imported Flux modules automatically, debounces rapid saves, recompiles on change, and restarts only after a successful replacement build. Compiler errors keep the last good process untouched and the watcher remains active until the next save. State-preserving hot apply is a later development-ABI milestone; the current runner is the controlled-restart foundation for it.
 
-Check without producing a binary:
+Check or explicitly analyze without producing a binary:
 
 ```sh
 ./tools/flux check examples/hello.flux
+./tools/flux analyze examples/hello.flux
+```
+
+Before first native GUI dogfooding on a machine, verify the current Linux prerequisites and editor/display environment:
+
+```sh
+./tools/flux doctor
 ```
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
