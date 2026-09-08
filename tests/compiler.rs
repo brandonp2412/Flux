@@ -2859,6 +2859,14 @@ fn project_imports_compile_transitively_through_cli() {
     let (program, sources) = fluxc::project::load(&entry).expect("import graph should load");
     assert_eq!(sources.len(), 3, "duplicate imports must be loaded once");
     assert_eq!(program.functions.len(), 3);
+    let module_names = sources
+        .iter()
+        .map(|source| source.module_name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        module_names,
+        std::collections::HashSet::from(["main", "math", "service"])
+    );
     let source_ids = sources
         .iter()
         .map(|source| source.source_id)
@@ -2887,6 +2895,41 @@ fn project_imports_compile_transitively_through_cli() {
         .expect("built project binary should run");
     assert!(run.status.success());
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_sources_receive_stable_package_qualified_module_names() {
+    let root = std::env::temp_dir().join(format!("flux-package-modules-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src/util"))
+        .expect("temporary package directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("manifest should be writable");
+    fs::write(
+        root.join("src/util/math.flux"),
+        "pub fn answer() -> i64 { 42 }\n",
+    )
+    .expect("dependency should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        "import \"util/math.flux\"\nfn main() -> i64 { answer() }\n",
+    )
+    .expect("entry should be writable");
+
+    let (_, sources) = fluxc::project::load(&root).expect("package import graph should load");
+    let module_names = sources
+        .iter()
+        .map(|source| source.module_name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        module_names,
+        std::collections::HashSet::from(["sample-app::src::main", "sample-app::src::util::math"])
+    );
+
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -2981,6 +3024,19 @@ fn project_imports_report_cycles_and_invalid_paths_at_import_sites() {
             .iter()
             .any(|error| error.message.contains("must use relative paths"))
     );
+
+    let normalized = root.join("normalized.flux");
+    fs::write(
+        &normalized,
+        "import \"./dep.flux\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("non-normalized import entry should be writable");
+    let errors = fluxc::project::check(&normalized).expect_err("dot-segment import should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("must be normalized and cannot contain '.' or '..' segments")
+    }));
 
     let _ = fs::remove_dir_all(&root);
 }

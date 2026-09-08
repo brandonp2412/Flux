@@ -10,6 +10,7 @@ use crate::{codegen, parser, typecheck};
 pub struct ProjectSource {
     pub path: PathBuf,
     pub source_id: SourceId,
+    pub module_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -27,14 +28,16 @@ pub struct PackageManifest {
     pub path: PathBuf,
 }
 
-pub fn load(entry: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {
-    let entry = resolve_entry(entry)?;
+pub fn load(target: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {
+    let (entry, module_root, package_name) = resolve_project_target(target)?;
     let mut loader = Loader {
         loaded: HashSet::new(),
         stack: Vec::new(),
         program: Program::default(),
         sources: Vec::new(),
         diagnostics: Vec::new(),
+        module_root,
+        package_name,
     };
     loader.load_file(&entry, None);
     if loader.diagnostics.is_empty() {
@@ -64,13 +67,32 @@ pub fn compile_to_c(entry: &Path) -> Result<String, Diagnostic> {
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
-    if target.is_dir() {
-        return read_manifest(&target.join("flux.toml")).map(|manifest| manifest.entry);
+    resolve_project_target(target).map(|(entry, _, _)| entry)
+}
+
+fn resolve_project_target(
+    target: &Path,
+) -> Result<(PathBuf, PathBuf, Option<String>), Vec<Diagnostic>> {
+    if target.is_dir() || target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        let manifest_path = if target.is_dir() {
+            target.join("flux.toml")
+        } else {
+            target.to_path_buf()
+        };
+        let manifest = read_manifest(&manifest_path)?;
+        let root = manifest
+            .path
+            .parent()
+            .expect("canonical manifest path has a parent")
+            .to_path_buf();
+        return Ok((manifest.entry, root, Some(manifest.name)));
     }
-    if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
-        return read_manifest(target).map(|manifest| manifest.entry);
-    }
-    canonical_source(target, "entry source")
+    let entry = canonical_source(target, "entry source")?;
+    let root = entry
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    Ok((entry, root, None))
 }
 
 pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
@@ -286,6 +308,8 @@ struct Loader {
     program: Program,
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
+    module_root: PathBuf,
+    package_name: Option<String>,
 }
 
 impl Loader {
@@ -360,18 +384,67 @@ impl Loader {
                 ));
                 continue;
             }
+            if import_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            }) {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    import.path_span,
+                    "import paths must be normalized and cannot contain '.' or '..' segments",
+                ));
+                continue;
+            }
             let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
-            self.load_file(&parent.join(import_path), Some(import.path_span));
+            let resolved = parent.join(import_path);
+            if self.package_name.is_some() {
+                match fs::canonicalize(&resolved) {
+                    Ok(path) if !path.starts_with(&self.module_root) => {
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            import.path_span,
+                            "package imports must remain inside the package root",
+                        ));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            self.load_file(&resolved, Some(import.path_span));
         }
         self.stack.pop();
 
         if self.diagnostics.is_empty() || !self.loaded.contains(&canonical) {
             self.merge_program(parsed);
             self.loaded.insert(canonical.clone());
+            let module_name = self.module_name(&canonical);
             self.sources.push(ProjectSource {
                 path: canonical,
                 source_id,
+                module_name,
             });
+        }
+    }
+
+    fn module_name(&self, path: &Path) -> String {
+        let relative = path.strip_prefix(&self.module_root).unwrap_or(path);
+        let mut segments = relative
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if let Some(last) = segments.last_mut()
+            && let Some(stem) = last.strip_suffix(".flux")
+        {
+            *last = stem.to_string();
+        }
+        let local = segments.join("::");
+        match &self.package_name {
+            Some(package) if !local.is_empty() => format!("{package}::{local}"),
+            Some(package) => package.clone(),
+            None => local,
         }
     }
 
