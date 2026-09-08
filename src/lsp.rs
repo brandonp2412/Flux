@@ -639,6 +639,14 @@ fn completion_items_at_position(
         .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
         .map(str::to_string)
         .collect::<HashSet<_>>();
+    if let Some(line_index) = line_index {
+        add_builtin_ui_context_completions(&mut items, &mut seen, source, line_index);
+        if let Ok(program) = crate::parser::parse_all(source) {
+            add_custom_view_property_completions(
+                &mut items, &mut seen, source, line_index, &program,
+            );
+        }
+    }
     if let Some(line_index) = line_index
         && let Some(database) = analyzed_document(uri, source)
     {
@@ -737,6 +745,9 @@ fn completion_items_at_position(
             );
         }
     }
+    if let Some(line_index) = line_index {
+        add_custom_view_property_completions(&mut items, &mut seen, source, line_index, &program);
+    }
     if let Some(line_index) = line_index
         && let Ok(signatures) = crate::typecheck::check_all(&program)
     {
@@ -753,6 +764,129 @@ fn completion_items_at_position(
         );
     }
     items
+}
+
+fn add_builtin_ui_context_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    source: &str,
+    line_index: usize,
+) {
+    let lines = source.lines().collect::<Vec<_>>();
+    let Some(current) = lines.get(line_index) else {
+        return;
+    };
+    let indent = leading_spaces(current);
+    if indent >= 8
+        && let Some((kind, element_line)) = enclosing_view_element(&lines, line_index)
+    {
+        let existing = view_properties_before_cursor(&lines, element_line, line_index);
+        for property in crate::typecheck::view_property_names(kind) {
+            if existing.contains(*property) {
+                continue;
+            }
+            let detail = crate::typecheck::view_property_type(kind, property)
+                .map(|ty| format!("{kind}.{property}: {}", ty.name()))
+                .unwrap_or_else(|| format!("{kind}.{property}"));
+            push_completion_item(items, seen, property, 10, &detail);
+        }
+        return;
+    }
+    if indent == 4 && inside_view_block(&lines, line_index) {
+        for kind in crate::typecheck::BUILTIN_VIEW_ELEMENT_KINDS {
+            push_completion_item(items, seen, kind, 22, "built-in Flux view element");
+        }
+        for grid in ["grid columns:", "grid rows:", "grid gap:"] {
+            push_completion_item(items, seen, grid, 14, "flat-grid layout declaration");
+        }
+    }
+}
+
+fn add_custom_view_property_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    source: &str,
+    line_index: usize,
+    program: &crate::ast::Program,
+) {
+    let lines = source.lines().collect::<Vec<_>>();
+    let Some((kind, element_line)) = enclosing_view_element(&lines, line_index) else {
+        return;
+    };
+    if !crate::typecheck::view_property_names(kind).is_empty() {
+        return;
+    }
+    let Some(view) = program.views.iter().find(|view| view.name == kind) else {
+        return;
+    };
+    let existing = view_properties_before_cursor(&lines, element_line, line_index);
+    for param in &view.params {
+        if existing.contains(param.name.as_str()) {
+            continue;
+        }
+        push_completion_item(
+            items,
+            seen,
+            &param.name,
+            10,
+            &format!("{kind}.{}: {}", param.name, param.ty.name()),
+        );
+    }
+}
+
+fn enclosing_view_element<'a>(lines: &'a [&str], line_index: usize) -> Option<(&'a str, usize)> {
+    for index in (0..line_index).rev() {
+        let line = lines.get(index)?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = leading_spaces(line);
+        if indent == 0 {
+            return None;
+        }
+        if indent != 4 {
+            continue;
+        }
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        if tokens.len() >= 4 && tokens[2] == "at" {
+            return Some((tokens[0], index));
+        }
+        return None;
+    }
+    None
+}
+
+fn view_properties_before_cursor(
+    lines: &[&str],
+    element_line: usize,
+    line_index: usize,
+) -> HashSet<String> {
+    lines
+        .iter()
+        .take(line_index)
+        .skip(element_line + 1)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            (leading_spaces(line) >= 8)
+                .then(|| {
+                    trimmed
+                        .split_once(':')
+                        .map(|(name, _)| name.trim().to_string())
+                })
+                .flatten()
+        })
+        .collect()
+}
+
+fn inside_view_block(lines: &[&str], line_index: usize) -> bool {
+    for line in lines.iter().take(line_index).rev() {
+        if line.trim().is_empty() || leading_spaces(line) > 0 {
+            continue;
+        }
+        let trimmed = line.trim();
+        return trimmed.starts_with("view ") && trimmed.ends_with('{');
+    }
+    false
 }
 
 fn add_position_local_completions(
@@ -2655,6 +2789,43 @@ mod tests {
             .expect("unambiguous function usage should hover")
             .to_json();
         assert!(usage.contains("fn double(value: i64) -> i64"));
+    }
+
+    #[test]
+    fn completion_uses_compiler_view_contracts_inside_flat_ui_blocks() {
+        let source = "view Badge(label: str) {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: label\n        \n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Badge badge at 1,1\n        \n}\nfn main() -> i64 { 0 }\n";
+        let uri = "file:///tmp/ui-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let text_properties = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(5),
+        ))
+        .to_json();
+        assert!(text_properties.contains("\"label\":\"selectable\""));
+        assert!(text_properties.contains("Text.selectable: bool"));
+        assert!(!text_properties.contains("\"label\":\"text\",\"kind\":10"));
+
+        let custom_properties = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(11),
+        ))
+        .to_json();
+        assert!(custom_properties.contains("\"label\":\"label\""));
+        assert!(custom_properties.contains("Badge.label: str"));
+
+        let layout = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(8),
+        ))
+        .to_json();
+        assert!(layout.contains("\"label\":\"Button\""));
+        assert!(layout.contains("\"label\":\"grid columns:\""));
     }
 
     #[test]

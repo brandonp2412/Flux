@@ -990,21 +990,22 @@ pub fn view_element_property_type(
     })
 }
 
+pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
+    "Text", "Button", "Nav", "Chart", "Card", "Header", "Content",
+];
+
 fn view_element_kind_is_builtin(kind: &str) -> bool {
-    matches!(
-        kind,
-        "Text" | "Button" | "Nav" | "Chart" | "Card" | "Header" | "Content"
-    )
+    BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind)
 }
 
-fn view_element_property_names(kind: &str) -> &'static str {
+pub fn view_property_names(kind: &str) -> &'static [&'static str] {
     match kind {
-        "Text" => "text, selectable",
-        "Button" => "text, enabled, on_press",
-        "Nav" | "Chart" | "Content" => "label",
-        "Card" => "title",
-        "Header" => "text",
-        _ => "",
+        "Text" => &["text", "selectable"],
+        "Button" => &["text", "enabled", "on_press"],
+        "Nav" | "Chart" | "Content" => &["label"],
+        "Card" => &["title"],
+        "Header" => &["text"],
+        _ => &[],
     }
 }
 
@@ -1106,7 +1107,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                             .with_note(format!(
                                 "supported properties for '{}': {}",
                                 element.kind,
-                                view_element_property_names(&element.kind)
+                                view_property_names(&element.kind).join(", ")
                             )),
                         );
                     } else if let Some(target) = custom_view {

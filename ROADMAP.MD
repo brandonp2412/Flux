@@ -650,6 +650,7 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Bootstrap workspace/package discovery considers canonical open-file targets plus the nearest enclosing `flux.toml`, chooses the broadest valid typed analysis containing the current document, and powers imported completion/hover/signature help, go-to-definition, and dependency-graph references/rename.
   - [ ] Shared cached workspace analysis and a reverse-dependency/scope index for dependents outside the current loaded graph and fully resolved usage-site shadowing across editor services.
 - [ ] UI syntax awareness.
+  - [x] Contextual `textDocument/completion` inside flat `view` blocks uses compiler-owned built-in element/property contract metadata: grid declaration and built-in element kinds are suggested at layout indentation, built-in properties are typed and exclude already-declared properties, and composed view parameters are offered as typed properties when the current source/project parses. Richer UI hover/signature/navigation and completion through temporarily malformed custom-view syntax remain pending.
 - [ ] Hot-reload status integration.
 
 # Milestone 24 — Debugger
