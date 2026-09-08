@@ -518,7 +518,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Design tokens/variables.
 - [ ] System theme integration.
 - [ ] Device/window/orientation queries.
+  - [x] Bootstrap root-view environment exposes read-only typed `window_width: i64`, `window_height: i64`, `window_is_landscape: bool`, `window_is_portrait: bool`, and `display_scale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and mobile orientation semantics remain pending.
 - [ ] Adaptive components where platform differences are valuable.
+  - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
   - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to the native GTK `suggested-action` style class without exposing platform widget APIs in Flux source.
 - [ ] Animation timelines.
 - [ ] Easing/springs.

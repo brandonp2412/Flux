@@ -120,6 +120,12 @@ fn emit_linux_gtk_application(
             )
         })?;
 
+    let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
+    let initial_window_width = application_metadata_i64(application, "width", signatures)
+        .unwrap_or(i64::from(bootstrap_width));
+    let initial_window_height = application_metadata_i64(application, "height", signatures)
+        .unwrap_or(i64::from(bootstrap_height));
+
     for element in &view.elements {
         if !matches!(
             element.kind.as_str(),
@@ -132,6 +138,9 @@ fn emit_linux_gtk_application(
         }
     }
 
+    out.push_str(&format!(
+        "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
+    ));
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -180,6 +189,9 @@ fn emit_linux_gtk_application(
     }
     out.push('\n');
     emit_ui_refresh(out, view, signatures)?;
+    out.push_str(
+        "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n    flux__ui_refresh();\n}\n\n",
+    );
 
     for element in &view.elements {
         if element.kind == "TextInput" {
@@ -301,23 +313,17 @@ fn emit_linux_gtk_application(
             _ => unreachable!("application theme validated by type checking"),
         }
     }
-    out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n");
+    out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n    flux__ui_display_scale = gtk_widget_get_scale_factor(window);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
     out.push_str(&format!(
         "    gtk_window_set_title(GTK_WINDOW(window), {});\n",
         c_string(&title)
     ));
-    let (default_width, default_height) = bootstrap_window_size(view);
-    let window_width = application_metadata_i64(application, "width", signatures)
-        .map(|value| value as u32)
-        .unwrap_or(default_width);
-    let window_height = application_metadata_i64(application, "height", signatures)
-        .map(|value| value as u32)
-        .unwrap_or(default_height);
     out.push_str(&format!(
-        "    gtk_window_set_default_size(GTK_WINDOW(window), {window_width}, {window_height});\n"
+        "    gtk_window_set_default_size(GTK_WINDOW(window), {initial_window_width}, {initial_window_height});\n"
     ));
+    out.push_str("    g_signal_connect(window, \"notify::default-width\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n    g_signal_connect(window, \"notify::default-height\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n    g_signal_connect(window, \"notify::scale-factor\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n");
     if let Some(resizable) = application_metadata_bool(application, "resizable", signatures) {
         out.push_str(&format!(
             "    gtk_window_set_resizable(GTK_WINDOW(window), {});\n",
@@ -1185,13 +1191,24 @@ fn ui_expr_c(
         ExprKind::Int(value) => Ok(format!("INT64_C({value})")),
         ExprKind::Str(value) => Ok(c_string(value)),
         ExprKind::Var(name) => {
+            let environment = match name.as_str() {
+                "window_width" => Some("flux__ui_window_width"),
+                "window_height" => Some("flux__ui_window_height"),
+                "window_is_landscape" => Some("(flux__ui_window_width > flux__ui_window_height)"),
+                "window_is_portrait" => Some("(flux__ui_window_height >= flux__ui_window_width)"),
+                "display_scale" => Some("flux__ui_display_scale"),
+                _ => None,
+            };
+            if let Some(environment) = environment {
+                return Ok(environment.to_string());
+            }
             if view.states.iter().any(|state| state.name == *name) {
                 return Ok(ui_state_c_name(name));
             }
             let Some(constant) = signatures.constant(name) else {
                 return Err(diag(
                     expr.span,
-                    "bootstrap Linux dynamic UI expression may reference only view state or compile-time constants",
+                    "bootstrap Linux dynamic UI expression may reference only view environment, view state, or compile-time constants",
                 ));
             };
             match &constant.value {
@@ -1228,7 +1245,7 @@ fn ui_expr_c(
         )),
         _ => Err(diag(
             expr.span,
-            "bootstrap Linux dynamic UI expression currently supports primitive literals, state/constants, primitive operators, and conditional expressions",
+            "bootstrap Linux dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, and conditional expressions",
         )),
     }
 }

@@ -1100,6 +1100,21 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     }
 }
 
+pub const VIEW_ENVIRONMENT_BINDINGS: &[(&str, Type)] = &[
+    ("window_width", Type::I64),
+    ("window_height", Type::I64),
+    ("window_is_landscape", Type::Bool),
+    ("window_is_portrait", Type::Bool),
+    ("display_scale", Type::I64),
+];
+
+pub fn view_environment_type(name: &str) -> Option<Type> {
+    VIEW_ENVIRONMENT_BINDINGS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, ty)| ty.clone())
+}
+
 pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
@@ -1377,6 +1392,15 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
         }
 
         for param in &view.params {
+            if view_environment_type(&param.name).is_some() {
+                diagnostics.push(diag(
+                    param.name_span,
+                    &format!(
+                        "view parameter '{}' conflicts with a read-only view environment binding",
+                        param.name
+                    ),
+                ));
+            }
             if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, signatures) {
                 diagnostics.push(diagnostic);
             }
@@ -1405,6 +1429,15 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
         }
 
         for state in &view.states {
+            if view_environment_type(&state.name).is_some() {
+                diagnostics.push(diag(
+                    state.name_span,
+                    &format!(
+                        "view state '{}' conflicts with a read-only view environment binding",
+                        state.name
+                    ),
+                ));
+            }
             if let Err(diagnostic) = require_known_type(state.type_span, &state.ty, signatures) {
                 diagnostics.push(diagnostic);
                 continue;
@@ -1444,11 +1477,15 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
     for view in &program.views {
         let row_count = view.grid.rows.len() as u64;
         let column_count = view.grid.columns.len() as u64;
-        let mut property_env = view
-            .params
+        let mut property_env = VIEW_ENVIRONMENT_BINDINGS
             .iter()
-            .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+            .map(|(name, ty)| ((*name).to_string(), ty.clone()))
             .collect::<HashMap<_, _>>();
+        property_env.extend(
+            view.params
+                .iter()
+                .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty))),
+        );
         for state in &view.states {
             property_env.insert(state.name.clone(), signatures.canonical_type(&state.ty));
         }

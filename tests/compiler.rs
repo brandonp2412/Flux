@@ -4413,6 +4413,58 @@ app Transformed
 }
 
 #[test]
+fn view_environment_tracks_window_geometry_orientation_and_scale() {
+    let source = r#"
+view Responsive {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text status at 1,1
+        text: "Landscape" if window_is_landscape else "Portrait"
+        visible: window_height >= 300
+        accessibility_description: "portrait" if window_is_portrait else "landscape"
+    Button mode at 2,1
+        text: "Wide" if window_width >= 700 else "Compact"
+        enabled: display_scale >= 1
+}
+app Responsive(width: 720, height: 480)
+"#;
+    check_source(source)
+        .expect("read-only view environment bindings should typecheck in UI properties");
+    let generated =
+        compile_to_c(source).expect("view environment should lower to native window state");
+    assert!(generated.contains("static int64_t flux__ui_window_width = INT64_C(720);"));
+    assert!(generated.contains("static int64_t flux__ui_window_height = INT64_C(480);"));
+    assert!(generated.contains("static int64_t flux__ui_display_scale = INT64_C(1);"));
+    assert!(generated.contains("gtk_window_get_default_size(GTK_WINDOW(object), &width, &height)"));
+    assert!(generated.contains("gtk_widget_get_scale_factor(GTK_WIDGET(object))"));
+    assert!(generated.contains("notify::default-width"));
+    assert!(generated.contains("notify::default-height"));
+    assert!(generated.contains("notify::scale-factor"));
+    assert!(generated.contains("flux__ui_window_width > flux__ui_window_height"));
+    assert!(generated.contains("flux__ui_window_height >= flux__ui_window_width"));
+    assert!(generated.contains("flux__ui_window_width >= INT64_C(700)"));
+    assert!(generated.contains("flux__ui_display_scale >= INT64_C(1)"));
+
+    let collision = r#"
+view Invalid {
+    state window_width: i64 = 1
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Invalid"
+}
+app Invalid
+"#;
+    let errors = check_source_all(collision)
+        .expect_err("view environment names must remain reserved and read-only");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("conflicts with a read-only view environment binding")
+    }));
+}
+
+#[test]
 fn native_elements_support_common_alignment_and_margins() {
     let source = r#"
 view Layout {

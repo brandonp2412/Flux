@@ -1273,6 +1273,17 @@ fn add_builtin_ui_context_completions(
         return;
     };
     let indent = leading_spaces(current);
+    if inside_view_block(&lines, line_index) {
+        for (name, ty) in crate::typecheck::VIEW_ENVIRONMENT_BINDINGS {
+            push_completion_item(
+                items,
+                seen,
+                name,
+                6,
+                &format!("read-only view environment {name}: {}", ty.name()),
+            );
+        }
+    }
     if indent >= 8
         && let Some((kind, element_line)) = enclosing_view_element(&lines, line_index)
     {
@@ -4464,6 +4475,11 @@ mod tests {
         assert!(text_properties.contains("Text.border_style: str"));
         assert!(text_properties.contains("\"label\":\"transition_easing\""));
         assert!(text_properties.contains("Text.transition_easing: str"));
+        assert!(text_properties.contains("\"label\":\"window_width\""));
+        assert!(text_properties.contains("read-only view environment window_width: i64"));
+        assert!(text_properties.contains("\"label\":\"window_is_landscape\""));
+        assert!(text_properties.contains("read-only view environment window_is_landscape: bool"));
+        assert!(text_properties.contains("\"label\":\"display_scale\""));
         assert!(!text_properties.contains("\"label\":\"text\",\"kind\":10"));
 
         let custom_properties = JsonValue::Array(completion_items_at_position(
