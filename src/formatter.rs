@@ -10,6 +10,9 @@ use crate::parser;
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
     let mut formatted = HashMap::new();
+    for import in &program.imports {
+        formatted.insert(import.line, format!("import {:?}", import.path));
+    }
     for alias in &program.aliases {
         formatted.insert(
             alias.line,

@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod diagnostic;
 pub mod formatter;
 pub mod parser;
+pub mod project;
 pub mod semantic;
 pub mod typecheck;
 

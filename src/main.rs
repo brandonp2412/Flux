@@ -35,10 +35,9 @@ fn run() -> Result<(), CliError> {
         "check" => {
             let path = require_source(&args)?;
             let json = check_json_mode(&args[2..])?;
-            let source = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
-            match fluxc::check_source_all_with_id(&source, source_id) {
+            let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let source_id = fluxc::SourceId::from_name(canonical.to_string_lossy().as_ref());
+            match fluxc::project::check(path) {
                 Ok(()) if json => {
                     println!(
                         "{{\"ok\":true,\"source_id\":{},\"diagnostics\":[]}}",
@@ -106,11 +105,8 @@ fn run() -> Result<(), CliError> {
         }
         "emit-c" => {
             let path = require_source(&args)?;
-            let source = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
-            let generated = fluxc::compile_to_c_with_source(&source, source_id)
-                .map_err(|diagnostic| diagnostic.to_string())?;
+            let generated =
+                fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
             if let Some(output) = output_path(&args[2..])? {
                 fs::write(&output, generated)
                     .map_err(|error| format!("failed to write '{}': {error}", output.display()))?;
@@ -121,11 +117,8 @@ fn run() -> Result<(), CliError> {
         }
         "build" => {
             let path = require_source(&args)?;
-            let source = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-            let source_id = fluxc::SourceId::from_name(path.to_string_lossy().as_ref());
-            let generated = fluxc::compile_to_c_with_source(&source, source_id)
-                .map_err(|diagnostic| diagnostic.to_string())?;
+            let generated =
+                fluxc::project::compile_to_c(path).map_err(|diagnostic| diagnostic.to_string())?;
             let output = output_path(&args[2..])?.unwrap_or_else(|| default_binary_path(path));
             build_native(&generated, &output)?;
             println!("built: {}", output.display());

@@ -1,9 +1,9 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
-    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
-    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
-    UnaryOp,
+    ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping,
+    InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding,
+    Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
+    StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -96,6 +96,7 @@ pub fn parse_all_with_source(
 
 pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
+    let mut imports = Vec::new();
     let mut aliases = Vec::new();
     let mut interfaces = Vec::new();
     let mut implementations = Vec::new();
@@ -112,6 +113,15 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 line.number,
                 "top-level declarations must not be indented",
             ));
+            index += 1;
+            continue;
+        }
+
+        if line.text.starts_with("import ") {
+            match parse_import(line) {
+                Ok(import) => imports.push(import),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
             index += 1;
             continue;
         }
@@ -251,15 +261,9 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         });
     }
 
-    if functions.is_empty() && diagnostics.is_empty() {
-        diagnostics.push(Diagnostic::global(
-            DiagnosticStage::Parse,
-            "Flux source contains no functions",
-        ));
-    }
-
     if diagnostics.is_empty() {
         Ok(Program {
+            imports,
             aliases,
             interfaces,
             implementations,
@@ -283,6 +287,10 @@ fn source_fingerprint(source: &str) -> u64 {
 }
 
 fn attach_program_source(program: &mut Program, source_id: SourceId) {
+    for import in &mut program.imports {
+        import.span = import.span.with_source(source_id);
+        import.path_span = import.path_span.with_source(source_id);
+    }
     for alias in &mut program.aliases {
         alias.span = alias.span.with_source(source_id);
         alias.name_span = alias.name_span.with_source(source_id);
@@ -589,6 +597,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
                 return index + 1;
             }
             if line.text.starts_with("fn ")
+                || line.text.starts_with("import ")
                 || line.text.starts_with("interface ")
                 || line.text.starts_with("impl ")
                 || line.text.starts_with("struct ")
@@ -602,6 +611,30 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
         index += 1;
     }
     index
+}
+
+fn parse_import(line: &Line) -> Result<ImportDef, Diagnostic> {
+    let Some(rest) = line.text.strip_prefix("import ") else {
+        return Err(diag(line.number, "expected import declaration"));
+    };
+    let leading = rest.len() - rest.trim_start().len();
+    let source = rest.trim();
+    let expression = parse_expression_at(source, line.number, 8 + leading)?;
+    let ExprKind::Str(path) = expression.kind else {
+        return Err(diag(
+            line.number,
+            "imports use a quoted relative path: import \"file.flux\"",
+        ));
+    };
+    if path.is_empty() {
+        return Err(diag(line.number, "import path cannot be empty"));
+    }
+    Ok(ImportDef {
+        path,
+        path_span: expression.span,
+        line: line.number,
+        span: line.span(),
+    })
 }
 
 fn parse_interface_declaration(

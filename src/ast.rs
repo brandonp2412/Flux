@@ -133,8 +133,9 @@ fn is_type_identifier(input: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Program {
+    pub imports: Vec<ImportDef>,
     pub aliases: Vec<TypeAlias>,
     pub interfaces: Vec<InterfaceDef>,
     pub implementations: Vec<InterfaceImpl>,
@@ -142,6 +143,14 @@ pub struct Program {
     pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDef {
+    pub path: String,
+    pub path_span: SourceSpan,
+    pub line: usize,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]

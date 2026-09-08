@@ -139,11 +139,11 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 
 ## Modules/packages
 
-- [ ] Modules and imports.
+- [x] Modules and imports using explicit relative `.flux` paths, deterministic recursive loading, duplicate suppression, preserved per-file source IDs, transitive merged semantic/type checking, formatter support, and project-aware CLI check/build/emit-C.
 - [ ] Explicit public/private visibility.
 - [ ] Package manifest (`flux.toml`).
-- [ ] Stable module naming rules.
-- [ ] Cyclic dependency diagnostics.
+- [ ] Stable module naming rules; initial imports are explicit normalized relative file paths, with named module rules following the package manifest.
+- [x] Cyclic dependency diagnostics with the cycle reported at the importing path span and the resolved cycle chain attached as a note.
 - [ ] Package-level constants/resources.
 - [ ] Stable ABI rules for native/library boundaries.
 

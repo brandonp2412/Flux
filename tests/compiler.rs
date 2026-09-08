@@ -2722,6 +2722,164 @@ fn check_json_cli_emits_clean_machine_readable_output() {
 }
 
 #[test]
+fn project_imports_compile_transitively_through_cli() {
+    let root = std::env::temp_dir().join(format!("flux-project-imports-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary project directory should be writable");
+    fs::write(
+        root.join("math.flux"),
+        "fn double(value: i64) -> i64 { value * 2 }\n",
+    )
+    .expect("math module should be writable");
+    fs::write(
+        root.join("service.flux"),
+        "import \"math.flux\"\nfn answer() -> i64 { double(21) }\n",
+    )
+    .expect("service module should be writable");
+    let entry = root.join("main.flux");
+    fs::write(
+        &entry,
+        "import \"service.flux\"\nimport \"math.flux\"\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("entry module should be writable");
+
+    let (program, sources) = fluxc::project::load(&entry).expect("import graph should load");
+    assert_eq!(sources.len(), 3, "duplicate imports must be loaded once");
+    assert_eq!(program.functions.len(), 3);
+    let source_ids = sources
+        .iter()
+        .map(|source| source.source_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        source_ids.len(),
+        3,
+        "each source should retain a distinct ID"
+    );
+
+    let binary = root.join("app");
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&entry)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("fluxc build should run");
+    assert!(
+        output.status.success(),
+        "project build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("built project binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn project_imports_report_cycles_and_invalid_paths_at_import_sites() {
+    let root = std::env::temp_dir().join(format!("flux-project-errors-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary project directory should be writable");
+
+    let a = root.join("a.flux");
+    let b = root.join("b.flux");
+    fs::write(&a, "import \"b.flux\"\nfn main() -> i64 { 0 }\n")
+        .expect("cycle entry should be writable");
+    fs::write(&b, "import \"a.flux\"\nfn helper() -> i64 { 1 }\n")
+        .expect("cycle dependency should be writable");
+    let errors = fluxc::project::check(&a).expect_err("cyclic import should fail");
+    let cycle = errors
+        .iter()
+        .find(|error| error.message.contains("cyclic import"))
+        .expect("cycle diagnostic should be present");
+    assert_ne!(cycle.span.unwrap().source_id, SourceId::UNKNOWN);
+    assert!(
+        cycle
+            .notes
+            .iter()
+            .any(|note| note.contains("import cycle:"))
+    );
+
+    let missing = root.join("missing_entry.flux");
+    fs::write(
+        &missing,
+        "import \"does-not-exist.flux\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("missing-import entry should be writable");
+    let errors = fluxc::project::check(&missing).expect_err("missing import should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("failed to read imported source"))
+    );
+
+    let bad_dependency = root.join("bad_dependency.flux");
+    fs::write(&bad_dependency, "fn broken() -> i64 { \"wrong\" }\n")
+        .expect("bad dependency should be writable");
+    let bad_entry = root.join("bad_entry.flux");
+    fs::write(
+        &bad_entry,
+        "import \"bad_dependency.flux\"\nfn main() -> i64 { broken() }\n",
+    )
+    .expect("bad-dependency entry should be writable");
+    let errors = fluxc::project::check(&bad_entry).expect_err("imported type error should fail");
+    let imported_error = errors
+        .iter()
+        .find(|error| error.message.contains("expected i64, got str"))
+        .expect("imported type diagnostic should be present");
+    let expected_source = SourceId::from_name(
+        fs::canonicalize(&bad_dependency)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref(),
+    );
+    assert_eq!(imported_error.span.unwrap().source_id, expected_source);
+
+    let invalid_extension = root.join("invalid_extension.flux");
+    fs::write(
+        &invalid_extension,
+        "import \"module.txt\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("invalid-extension entry should be writable");
+    let errors =
+        fluxc::project::check(&invalid_extension).expect_err("non-Flux import should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must end in '.flux'"))
+    );
+
+    let absolute = root.join("absolute.flux");
+    let dependency = root.join("dep.flux");
+    fs::write(&dependency, "fn helper() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &absolute,
+        format!(
+            "import {:?}\nfn main() -> i64 {{ 0 }}\n",
+            dependency.to_string_lossy()
+        ),
+    )
+    .expect("absolute-import entry should be writable");
+    let errors = fluxc::project::check(&absolute).expect_err("absolute import should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must use relative paths"))
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn formatter_preserves_canonical_import_declarations() {
+    let source = "import   \"utils.flux\"\nfn main()->i64 { 0 }\n";
+    let formatted = fluxc::formatter::format_source(source).expect("imports should format");
+    assert_eq!(formatted, "import \"utils.flux\"\nfn main() -> i64 { 0 }\n");
+}
+
+#[test]
 fn rejects_missing_function_brace() {
     let source = r#"
 fn main() -> i64

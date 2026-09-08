@@ -54,6 +54,18 @@ let label: str = "Flux"
 
 The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
 
+## Modules and imports
+
+Each `.flux` source file is a module in the bootstrap project model. A module imports another source file with an explicit relative path:
+
+```flux
+import "service.flux"
+```
+
+Imports resolve relative to the importing file, must remain relative, and must end in `.flux`. The project loader recursively parses each source exactly once, preserves a distinct stable source ID for diagnostics, detects import cycles, and then type-checks the merged program as one compilation unit. Imports are transitive, so a module automatically gains access to declarations imported by its dependencies.
+
+The current module namespace is deliberately flat: imported declarations are visible by their declared names and normal duplicate-declaration diagnostics apply across the full import graph. Named module namespaces, visibility/export control, package manifests, and package-level naming rules are separate later steps rather than being simulated prematurely. `fluxc check`, `fluxc emit-c`, and `fluxc build` are project-aware and operate on the complete import graph; `fluxc format` formats the selected source file only.
+
 ## Struct values
 
 Flux structs are plain named value types. They contain data only: no constructors, methods, inheritance, object identity, or hidden heap allocation.
