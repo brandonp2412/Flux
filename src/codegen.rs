@@ -32,7 +32,10 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     for definition in &program.enums {
         out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
     }
-    if !program.structs.is_empty() || !program.enums.is_empty() {
+    for definition in &program.interfaces {
+        out.push_str(&format!("struct {};\n", interface_c_name(&definition.name)));
+    }
+    if !program.structs.is_empty() || !program.enums.is_empty() || !program.interfaces.is_empty() {
         out.push('\n');
     }
     emit_function_type_typedefs(&mut out, program, signatures)?;
@@ -49,6 +52,8 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
         out.push('\n');
     }
 
+    emit_interface_value_definitions(&mut out, program, signatures);
+    out.push_str(&interface_pack_helpers(program, signatures));
     out.push_str(&enum_variant_helpers(program, signatures));
     out.push_str(&struct_update_helpers(program, signatures));
 
@@ -69,12 +74,14 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     {
         out.push('\n');
     }
+    emit_interface_multi_return_structs(&mut out, program, signatures);
 
     for function in &program.functions {
         out.push_str(&function_prototype(function, signatures));
         out.push_str(";\n");
     }
     out.push('\n');
+    emit_interface_dispatch_helpers(&mut out, program, signatures)?;
 
     let mut temp_counter = 0usize;
     for function in &program.functions {
@@ -670,6 +677,39 @@ fn emit_expr(
             name,
             args,
             named_args,
+        } if signatures.interface(name).is_some() => {
+            if !named_args.is_empty() || args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    "invalid interface value conversion reached code generation",
+                ));
+            }
+            let value = emit_expr(&args[0], env, signatures)?;
+            let Type::Named(target_name) = signatures.canonical_type(&value.ty) else {
+                return Err(diag(
+                    args[0].span,
+                    "interface conversion requires a concrete value",
+                ));
+            };
+            if signatures.implementation(name, &target_name).is_none() {
+                return Err(diag(
+                    args[0].span,
+                    "missing interface implementation during value conversion",
+                ));
+            }
+            EmittedExpr {
+                code: format!(
+                    "{}({})",
+                    interface_pack_helper_name(name, &target_name),
+                    value.code
+                ),
+                ty: Type::Named(name.clone()),
+            }
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } => {
             let (rendered, returns, callee) = if let Some(signature) = signatures.get(name) {
                 (
@@ -909,6 +949,27 @@ fn emit_qualified_call(
             "static interface dispatch requires a concrete receiver",
         ));
     };
+    if target_name == namespace && signatures.interface(&target_name).is_some() {
+        let mut rendered = Vec::with_capacity(member.param_details.len() + 1);
+        rendered.push(receiver_value.code);
+        rendered.extend(emit_call_arguments(
+            member,
+            &args[1..],
+            named_args,
+            env,
+            signatures,
+        )?);
+        return Ok((
+            format!(
+                "{}({})",
+                interface_dispatch_helper_name(namespace, name),
+                rendered.join(", ")
+            ),
+            member.returns.clone(),
+            (member.returns.len() > 1)
+                .then(|| interface_multi_return_struct_name(namespace, name)),
+        ));
+    }
     let implementation = signatures
         .implementation(namespace, &target_name)
         .ok_or_else(|| {
@@ -935,7 +996,7 @@ fn emit_qualified_call(
     Ok((
         format!("{}({})", function_c_name(mapped), rendered.join(", ")),
         member.returns.clone(),
-        Some(mapped.clone()),
+        (member.returns.len() > 1).then(|| multi_return_struct_name(mapped)),
     ))
 }
 
@@ -1018,19 +1079,221 @@ fn emit_multi_expr(
                     &format!("qualified call '{namespace}.{name}' does not return multiple values"),
                 ));
             }
-            let mapped = mapped.ok_or_else(|| {
+            let multi_struct = mapped.ok_or_else(|| {
                 diag(
                     expr.span,
-                    "only interface static dispatch can return multiple values here",
+                    "multi-value interface dispatch is missing its native return shape",
                 )
             })?;
-            Ok((code, multi_return_struct_name(&mapped)))
+            Ok((code, multi_struct))
         }
         _ => Err(diag(
             expr.span,
             "only multi-value function or interface calls can be destructured",
         )),
     }
+}
+
+fn interface_targets(program: &Program, interface_name: &str, signatures: &Signatures) -> Vec<String> {
+    let mut targets = Vec::new();
+    for implementation in &program.implementations {
+        if implementation.interface_name != interface_name {
+            continue;
+        }
+        let Type::Named(target_name) =
+            signatures.canonical_type(&Type::Named(implementation.target_name.clone()))
+        else {
+            continue;
+        };
+        if !targets.contains(&target_name) {
+            targets.push(target_name);
+        }
+    }
+    targets
+}
+
+fn emit_interface_value_definitions(out: &mut String, program: &Program, signatures: &Signatures) {
+    for definition in &program.interfaces {
+        let targets = interface_targets(program, &definition.name, signatures);
+        if !targets.is_empty() {
+            out.push_str("enum {\n");
+            for (index, target) in targets.iter().enumerate() {
+                out.push_str(&format!(
+                    "    {} = {},\n",
+                    interface_tag_name(&definition.name, target),
+                    index + 1
+                ));
+            }
+            out.push_str("};\n");
+        }
+        out.push_str(&format!("struct {} {{\n", interface_c_name(&definition.name)));
+        out.push_str("    int32_t tag;\n");
+        if !targets.is_empty() {
+            out.push_str("    union {\n");
+            for target in &targets {
+                out.push_str(&format!(
+                    "        struct {} {};\n",
+                    struct_c_name(target),
+                    interface_value_member_name(target)
+                ));
+            }
+            out.push_str("    } value;\n");
+        }
+        out.push_str("};\n\n");
+    }
+}
+
+fn interface_pack_helpers(program: &Program, signatures: &Signatures) -> String {
+    let mut out = String::new();
+    for definition in &program.interfaces {
+        for target in interface_targets(program, &definition.name, signatures) {
+            out.push_str(&format!(
+                "static inline struct {} {}(struct {} value) {{\n",
+                interface_c_name(&definition.name),
+                interface_pack_helper_name(&definition.name, &target),
+                struct_c_name(&target)
+            ));
+            out.push_str(&format!(
+                "    struct {} result;\n",
+                interface_c_name(&definition.name)
+            ));
+            out.push_str(&format!(
+                "    result.tag = {};\n",
+                interface_tag_name(&definition.name, &target)
+            ));
+            out.push_str(&format!(
+                "    result.value.{} = value;\n",
+                interface_value_member_name(&target)
+            ));
+            out.push_str("    return result;\n}\n");
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+fn emit_interface_multi_return_structs(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) {
+    let mut emitted = false;
+    for definition in &program.interfaces {
+        let Some(interface) = signatures.interface(&definition.name) else {
+            continue;
+        };
+        for member in &definition.functions {
+            let Some(signature) = interface.functions.get(&member.name) else {
+                continue;
+            };
+            if signature.returns.len() < 2 {
+                continue;
+            }
+            emitted = true;
+            out.push_str(&format!(
+                "struct {} {{\n",
+                interface_multi_return_struct_name(&definition.name, &member.name)
+            ));
+            for (index, ty) in signature.returns.iter().enumerate() {
+                out.push_str(&format!("    {} v{index};\n", c_type(ty, signatures)));
+            }
+            out.push_str("};\n");
+        }
+    }
+    if emitted {
+        out.push('\n');
+    }
+}
+
+fn emit_interface_dispatch_helpers(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let mut emitted = false;
+    for definition in &program.interfaces {
+        let Some(interface) = signatures.interface(&definition.name) else {
+            continue;
+        };
+        let targets = interface_targets(program, &definition.name, signatures);
+        for member_ast in &definition.functions {
+            let member = interface
+                .functions
+                .get(&member_ast.name)
+                .expect("type checking records every interface capability");
+            emitted = true;
+            let return_type = match member.returns.as_slice() {
+                [] => "void".to_string(),
+                [ty] => c_type(ty, signatures),
+                _ => format!(
+                    "struct {}",
+                    interface_multi_return_struct_name(&definition.name, &member_ast.name)
+                ),
+            };
+            out.push_str(&format!(
+                "static inline {return_type} {}(struct {} receiver",
+                interface_dispatch_helper_name(&definition.name, &member_ast.name),
+                interface_c_name(&definition.name)
+            ));
+            for (index, param) in member.param_details.iter().enumerate() {
+                out.push_str(&format!(", {} arg_{index}", c_type(&param.ty, signatures)));
+            }
+            out.push_str(") {\n    switch (receiver.tag) {\n");
+            for target in &targets {
+                let implementation = signatures
+                    .implementation(&definition.name, target)
+                    .expect("type checking records each interface implementation");
+                let mapped = implementation
+                    .functions
+                    .get(&member_ast.name)
+                    .expect("type checking requires exhaustive capability mappings");
+                let mut args = vec![format!(
+                    "receiver.value.{}",
+                    interface_value_member_name(target)
+                )];
+                args.extend((0..member.param_details.len()).map(|index| format!("arg_{index}")));
+                let call = format!("{}({})", function_c_name(mapped), args.join(", "));
+                out.push_str(&format!(
+                    "        case {}: {{\n",
+                    interface_tag_name(&definition.name, target)
+                ));
+                match member.returns.as_slice() {
+                    [] => {
+                        out.push_str(&format!("            {call};\n            return;\n"));
+                    }
+                    [_] => {
+                        out.push_str(&format!("            return {call};\n"));
+                    }
+                    returns => {
+                        out.push_str(&format!(
+                            "            struct {} raw = {call};\n",
+                            multi_return_struct_name(mapped)
+                        ));
+                        out.push_str(&format!(
+                            "            struct {} result;\n",
+                            interface_multi_return_struct_name(&definition.name, &member_ast.name)
+                        ));
+                        for index in 0..returns.len() {
+                            out.push_str(&format!(
+                                "            result.v{index} = raw.v{index};\n"
+                            ));
+                        }
+                        out.push_str("            return result;\n");
+                    }
+                }
+                out.push_str("        }\n");
+            }
+            out.push_str(
+                "        default: fputs(\"Flux runtime error: invalid interface value\\n\", stderr); abort();\n    }\n}\n",
+            );
+        }
+    }
+    if emitted {
+        out.push('\n');
+    }
+    Ok(())
 }
 
 fn c_function_return_type(function: &Function, signatures: &Signatures) -> String {
@@ -1045,6 +1308,30 @@ fn multi_return_struct_name(function_name: &str) -> String {
     format!("flux__ret_{function_name}")
 }
 
+fn interface_c_name(interface_name: &str) -> String {
+    format!("flux__iface_{interface_name}")
+}
+
+fn interface_tag_name(interface_name: &str, target_name: &str) -> String {
+    format!("flux__iface_tag_{interface_name}_{target_name}")
+}
+
+fn interface_value_member_name(target_name: &str) -> String {
+    format!("flux__value_{target_name}")
+}
+
+fn interface_pack_helper_name(interface_name: &str, target_name: &str) -> String {
+    format!("flux__iface_pack_{interface_name}_{target_name}")
+}
+
+fn interface_dispatch_helper_name(interface_name: &str, member_name: &str) -> String {
+    format!("flux__iface_call_{interface_name}_{member_name}")
+}
+
+fn interface_multi_return_struct_name(interface_name: &str, member_name: &str) -> String {
+    format!("flux__iface_ret_{interface_name}_{member_name}")
+}
+
 fn c_type(ty: &Type, signatures: &Signatures) -> String {
     match signatures.canonical_type(ty) {
         Type::I64 => "int64_t".to_string(),
@@ -1052,6 +1339,9 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         Type::Str => "const char *".to_string(),
         Type::Error => "const char *".to_string(),
         Type::Void => "void".to_string(),
+        Type::Named(name) if signatures.interface(&name).is_some() => {
+            format!("struct {}", interface_c_name(&name))
+        }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
         Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
     }

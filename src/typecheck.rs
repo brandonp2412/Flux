@@ -367,7 +367,9 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             signature.fields = fields;
         }
         for field in &definition.fields {
-            if let Err(diagnostic) = require_known_type(field.type_span, &field.ty, &signatures) {
+            if let Err(diagnostic) =
+                require_storable_value_type(field.type_span, &field.ty, &signatures)
+            {
                 diagnostics.push(diagnostic);
             }
         }
@@ -393,7 +395,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         for variant in &definition.variants {
             for payload in &variant.payloads {
                 if let Err(diagnostic) =
-                    require_known_type(payload.type_span, &payload.ty, &signatures)
+                    require_storable_value_type(payload.type_span, &payload.ty, &signatures)
                 {
                     diagnostics.push(diagnostic);
                 }
@@ -1405,6 +1407,44 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if signatures.interface(name).is_some() => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("interface value conversion '{name}(...)' does not accept named arguments"),
+                ));
+            }
+            if args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    &format!("interface value conversion '{name}(...)' expects exactly one concrete value"),
+                ));
+            }
+            let concrete = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::Named(target_name) = concrete else {
+                return Err(diag(
+                    args[0].span,
+                    &format!("interface '{name}' can only pack a concrete struct or enum value"),
+                ));
+            };
+            if target_name == *name && signatures.interface(&target_name).is_some() {
+                return Err(diag(
+                    args[0].span,
+                    &format!("value already has interface type '{name}'"),
+                ));
+            }
+            if signatures.implementation(name, &target_name).is_none() {
+                return Err(diag(
+                    args[0].span,
+                    &format!("type '{target_name}' does not implement interface '{name}'"),
+                ));
+            }
+            Ok(Type::Named(name.clone()))
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } => {
             let returns = check_call(expr.span, name, args, named_args, env, signatures)?;
             match returns.as_slice() {
@@ -1748,6 +1788,9 @@ fn value_types_of_expr(
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
     match &expr.kind {
+        ExprKind::Call { name, .. } if signatures.interface(name).is_some() => {
+            Ok(vec![type_of_expr(expr, env, signatures)?])
+        }
         ExprKind::Call {
             name,
             args,
@@ -1852,6 +1895,17 @@ fn check_qualified_call(
             ),
         ));
     };
+    if target_name == namespace && signatures.interface(target_name).is_some() {
+        return check_declared_call(
+            span,
+            &format!("{namespace}.{name}"),
+            member,
+            &args[1..],
+            named_args,
+            env,
+            signatures,
+        );
+    }
     let Some(implementation) = signatures.implementation(namespace, target_name) else {
         return Err(diag(
             receiver.span,
@@ -2460,6 +2514,23 @@ fn bind_struct_pattern_fields(
     }
 }
 
+fn require_storable_value_type(
+    span: SourceSpan,
+    ty: &Type,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    require_known_type(span, ty, signatures)?;
+    if let Type::Named(name) = signatures.canonical_type(ty)
+        && signatures.interface(&name).is_some()
+    {
+        return Err(diag(
+            span,
+            "interface values are currently supported in bindings and function boundaries, not inside struct/enum by-value layouts",
+        ));
+    }
+    Ok(())
+}
+
 fn require_known_type(
     span: SourceSpan,
     ty: &Type,
@@ -2467,7 +2538,9 @@ fn require_known_type(
 ) -> Result<(), Diagnostic> {
     match signatures.canonical_type(ty) {
         Type::Named(name)
-            if signatures.struct_type(&name).is_none() && signatures.enum_type(&name).is_none() =>
+            if signatures.struct_type(&name).is_none()
+                && signatures.enum_type(&name).is_none()
+                && signatures.interface(&name).is_none() =>
         {
             Err(diag(span, &format!("unknown type '{name}'")))
         }

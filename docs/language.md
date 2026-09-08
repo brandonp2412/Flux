@@ -124,6 +124,15 @@ let save_err: error = Storage.save(
 
 `Interface.capability(receiver, ...)` is namespace-qualified function dispatch, not a method call on the receiver. The compiler checks that the receiver type has the declared implementation, validates the remaining capability arguments against the interface signature, resolves the mapping at compile time, and emits a direct call to the mapped free function. Multi-value returns retain their ordinary native return ABI. No vtable, reflection, runtime interface object, or dynamic lookup is introduced for static dispatch.
 
+When runtime polymorphism is needed, a concrete value can be packed explicitly into an interface value:
+
+```flux
+let storage: Storage = Storage(file_storage)
+let data: str, err: error = Storage.load(storage, "settings.flux")
+```
+
+Bootstrap interface values are closed-world tagged values containing the concrete implementing data by value. Dynamic capability dispatch lowers to a native tag switch that calls the corresponding mapped free function. This adds no heap allocation, vtable, reflection, hidden object identity, or source-language object model. Interface values may be passed to and returned from functions, selected by conditional expressions, and used with named capability arguments and multi-value returns. Embedding interface values inside structs/enums is intentionally deferred until ownership and stable layout/ABI rules are defined.
+
 ## Function parameters
 
 Flux keeps ordinary positional parameters simple while supporting explicit named-only APIs. A `*` in the parameter list marks every following parameter as named-only:

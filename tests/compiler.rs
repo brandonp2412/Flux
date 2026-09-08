@@ -455,6 +455,138 @@ fn main() -> i64 {
 }
 
 #[test]
+fn supports_allocation_free_interface_values_and_dynamic_dispatch() {
+    let source = r#"
+interface Storage {
+    fn load(path: str) -> (str, error)
+    fn label() -> str
+}
+
+struct FileStorage {
+    root: str
+}
+
+struct MemoryStorage {
+    name: str
+}
+
+impl Storage for FileStorage {
+    load: file_load
+    label: file_label
+}
+
+impl Storage for MemoryStorage {
+    load: memory_load
+    label: memory_label
+}
+
+fn file_load(storage: FileStorage, path: str) -> (str, error) {
+    return path, nil
+}
+fn file_label(storage: FileStorage) -> str {
+    return storage.root
+}
+fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
+    return path, nil
+}
+fn memory_label(storage: MemoryStorage) -> str {
+    return storage.name
+}
+
+fn load_any(storage: Storage, path: str) -> (str, error) {
+    return Storage.load(storage, path)
+}
+
+fn label_any(storage: Storage) -> str {
+    return Storage.label(storage)
+}
+
+fn choose(memory: bool) -> Storage {
+    let file: FileStorage = FileStorage { root: "/tmp" }
+    let ram: MemoryStorage = MemoryStorage { name: "ram" }
+    return Storage(ram) if memory else Storage(file)
+}
+
+fn main() -> i64 {
+    let storage: Storage = choose(true)
+    print(label_any(storage))
+    let data: str, err: error = load_any(storage, "config.flux")
+    if err != nil:
+        print(err)
+    print(data)
+    return 0
+}
+"#;
+
+    check_source(source).expect("interface values and dynamic dispatch should typecheck");
+    let generated = compile_to_c(source).expect("interface values should lower natively");
+    assert!(generated.contains("struct flux__iface_Storage"));
+    assert!(generated.contains("flux__iface_pack_Storage_FileStorage"));
+    assert!(generated.contains("flux__iface_pack_Storage_MemoryStorage"));
+    assert!(generated.contains("flux__iface_call_Storage_load"));
+    assert!(generated.contains("switch (receiver.tag)"));
+    assert!(generated.contains("case flux__iface_tag_Storage_FileStorage"));
+    assert!(generated.contains("case flux__iface_tag_Storage_MemoryStorage"));
+    assert!(generated.contains("struct flux__iface_ret_Storage_load"));
+    assert!(!generated.contains("malloc("));
+    assert!(!generated.contains("vtable"));
+}
+
+#[test]
+fn rejects_invalid_interface_value_conversions_and_layout_embedding() {
+    let missing_impl = r#"
+interface Storage {
+    fn label() -> str
+}
+struct FileStorage {
+    root: str
+}
+fn main() -> i64 {
+    let file: FileStorage = FileStorage { root: "/tmp" }
+    let storage: Storage = Storage(file)
+    return 0
+}
+"#;
+    let error = check_source(missing_impl).expect_err("packing requires implementation");
+    assert!(error.message.contains("does not implement interface 'Storage'"));
+
+    let wrong_arity = r#"
+interface Storage {
+    fn label() -> str
+}
+struct FileStorage {
+    root: str
+}
+fn file_label(storage: FileStorage) -> str {
+    return storage.root
+}
+impl Storage for FileStorage {
+    label: file_label
+}
+fn main() -> i64 {
+    let storage: Storage = Storage()
+    return 0
+}
+"#;
+    let error = check_source(wrong_arity).expect_err("packing requires one value");
+    assert!(error.message.contains("expects exactly one concrete value"));
+
+    let embedded = r#"
+interface Storage {
+    fn label() -> str
+}
+struct Wrapper {
+    storage: Storage
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(embedded).expect_err("interface values are not layout fields yet");
+    assert!(error.message.contains("not inside struct/enum by-value layouts"));
+}
+
+#[test]
 fn rejects_invalid_static_interface_dispatch() {
     let missing_impl = r#"
 interface Storage {
