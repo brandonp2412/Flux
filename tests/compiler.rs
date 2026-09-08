@@ -280,6 +280,121 @@ fn formatter_and_semantic_database_preserve_named_parameter_metadata() {
 }
 
 #[test]
+fn accepts_zero_runtime_interface_capability_declarations() {
+    let source = r#"
+interface Storage {
+    fn load(path: str) -> (str, error)
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+
+interface Clock {
+    fn now() -> i64
+}
+
+fn main() -> i64 {
+    print("interfaces")
+    return 0
+}
+"#;
+
+    check_source(source).expect("interface declarations should typecheck");
+    let generated = compile_to_c(source).expect("interfaces should have zero-runtime lowering");
+    assert!(!generated.contains("flux__fn_load"));
+    assert!(!generated.contains("flux__fn_save"));
+    assert!(!generated.contains("flux__fn_now"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("interfaces should format");
+    assert!(formatted.contains("interface Storage {"));
+    assert!(formatted.contains("    fn load(path: str) -> (str, error)"));
+    assert!(formatted.contains("    fn save(path: str, data: str, *, durable: bool) -> error"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(705))
+        .expect("interfaces should analyze");
+    let storage = database
+        .symbols_named("Storage")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Interface)
+        .expect("interface should be indexed");
+    assert_eq!(span_text(&formatted, storage.span), "Storage");
+    let load = database
+        .symbols_named("load")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::InterfaceFunction)
+        .expect("interface function should be indexed");
+    assert_eq!(span_text(&formatted, load.span), "load");
+    assert_eq!(
+        load.ty,
+        Some(fluxc::ast::Type::Function {
+            params: vec![fluxc::ast::Type::Str],
+            returns: vec![fluxc::ast::Type::Str, fluxc::ast::Type::Error],
+        })
+    );
+    let signature = database
+        .signatures()
+        .interface("Storage")
+        .expect("interface signature should be queryable");
+    assert_eq!(signature.functions["save"].params.len(), 3);
+    assert!(signature.functions["save"].param_details[2].named_only);
+}
+
+#[test]
+fn rejects_invalid_interface_declarations() {
+    let unknown_type = r#"
+interface Storage {
+    fn load(path: Missing) -> str
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(unknown_type).expect_err("interface types must be known");
+    assert!(error.message.contains("unknown type 'Missing'"));
+
+    let default_param = r#"
+interface Storage {
+    fn load(path: str = "default") -> str
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(default_param).expect_err("interface defaults should fail");
+    assert!(
+        error
+            .message
+            .contains("interface function parameters cannot declare defaults")
+    );
+
+    let duplicate_member = r#"
+interface Storage {
+    fn load(path: str) -> str
+    fn load(path: str) -> str
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(duplicate_member).expect_err("duplicate members should fail");
+    assert!(
+        error
+            .message
+            .contains("duplicate interface function 'load'")
+    );
+
+    let conflict = r#"
+interface User {
+    fn name() -> str
+}
+struct User {
+    name: str
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(conflict).expect_err("interface/type name conflicts should fail");
+    assert!(error.message.contains("conflicts with an interface name"));
+}
+
+#[test]
 fn accepts_first_class_named_function_values_and_higher_order_calls() {
     let source = r#"
 type Number = i64

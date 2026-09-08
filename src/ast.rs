@@ -136,10 +136,34 @@ fn is_type_identifier(input: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub aliases: Vec<TypeAlias>,
+    pub interfaces: Vec<InterfaceDef>,
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceDef {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub functions: Vec<InterfaceFunction>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceFunction {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub keyword_span: SourceSpan,
+    pub params: Vec<Param>,
+    pub returns: Vec<Type>,
+    pub return_span: SourceSpan,
+    pub return_type_spans: Vec<SourceSpan>,
+    pub line: usize,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]

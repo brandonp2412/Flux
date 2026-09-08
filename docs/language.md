@@ -72,6 +72,21 @@ let User { name, age: years } = load_user()
 
 Shorthand fields bind to the same local name; `field: local` renames the binding and `field: _` ignores a field. The pattern may select only the fields it needs. The source expression is evaluated exactly once, aliases of the struct type are accepted, unknown fields and wrong source types are compile-time errors, and pattern bindings may not silently shadow an existing local.
 
+## Interfaces and capabilities
+
+Interfaces are compile-time capability contracts made only from function signatures. They do not define objects, constructors, fields, inheritance, mixins, or hidden instance state:
+
+```flux
+interface Storage {
+    fn load(path: str) -> (str, error)
+    fn save(path: str, data: str, *, durable: bool) -> error
+}
+```
+
+An interface declaration requires at least one function signature. Member parameter and return types are checked statically using the same concrete type system as ordinary functions; named-only parameters are preserved as part of the contract. Interface members do not have bodies or parameter defaults. Duplicate members and collisions between interface names and other type namespaces are compile-time errors.
+
+At this stage, declarations are intentionally zero-runtime metadata: the bootstrap native backend emits no function, object, vtable, allocation, or reflection data merely because an interface is declared. Explicit implementation, static dispatch, runtime interface values, and dynamic dispatch are separate roadmap stages so those semantics can be designed without smuggling a class model into Flux.
+
 ## Function parameters
 
 Flux keeps ordinary positional parameters simple while supporting explicit named-only APIs. A `*` in the parameter list marks every following parameter as named-only:

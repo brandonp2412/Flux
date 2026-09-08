@@ -16,6 +16,9 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
             format!("type {} = {}", alias.name, alias.target.name()),
         );
     }
+    for definition in &program.interfaces {
+        format_interface(definition, &mut formatted);
+    }
     for constant in &program.constants {
         formatted.insert(
             constant.line,
@@ -82,6 +85,30 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     }
 
     Ok(format!("{}\n", output.join("\n")))
+}
+
+fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<usize, String>) {
+    lines.insert(definition.line, format!("interface {} {{", definition.name));
+    for function in &definition.functions {
+        let mut param_parts = Vec::new();
+        let mut emitted_named_marker = false;
+        for param in &function.params {
+            if param.named_only && !emitted_named_marker {
+                param_parts.push("*".to_string());
+                emitted_named_marker = true;
+            }
+            param_parts.push(format!("{}: {}", param.name, param.ty.name()));
+        }
+        lines.insert(
+            function.line,
+            format!(
+                "    fn {}({}) -> {}",
+                function.name,
+                param_parts.join(", "),
+                format_return_types(&function.returns)
+            ),
+        );
+    }
 }
 
 fn format_enum(definition: &crate::ast::EnumDef, lines: &mut HashMap<usize, String>) {

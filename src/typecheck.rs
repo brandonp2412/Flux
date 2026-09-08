@@ -49,6 +49,12 @@ pub struct EnumSignature {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone)]
+pub struct InterfaceSignature {
+    pub functions: HashMap<String, Signature>,
+    pub span: SourceSpan,
+}
+
 impl EnumSignature {
     pub fn variant(&self, name: &str) -> Option<&EnumVariantSignature> {
         self.variants.iter().find(|variant| variant.name == name)
@@ -88,6 +94,7 @@ impl StructSignature {
 #[derive(Debug, Clone, Default)]
 pub struct Signatures {
     functions: HashMap<String, Signature>,
+    interfaces: HashMap<String, InterfaceSignature>,
     structs: HashMap<String, StructSignature>,
     enums: HashMap<String, EnumSignature>,
     aliases: HashMap<String, Type>,
@@ -97,6 +104,14 @@ pub struct Signatures {
 impl Signatures {
     pub fn get(&self, name: &str) -> Option<&Signature> {
         self.functions.get(name)
+    }
+
+    pub fn interface(&self, name: &str) -> Option<&InterfaceSignature> {
+        self.interfaces.get(name)
+    }
+
+    pub fn interfaces(&self) -> &HashMap<String, InterfaceSignature> {
+        &self.interfaces
     }
 
     pub fn struct_type(&self, name: &str) -> Option<&StructSignature> {
@@ -201,11 +216,61 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    for definition in &program.interfaces {
+        if matches!(
+            definition.name.as_str(),
+            "i64" | "bool" | "str" | "error" | "void"
+        ) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!(
+                    "interface '{}' conflicts with a built-in type",
+                    definition.name
+                ),
+            ));
+            continue;
+        }
+        if signatures.aliases.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!(
+                    "interface '{}' conflicts with a type alias",
+                    definition.name
+                ),
+            ));
+            continue;
+        }
+        if signatures.interfaces.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!("duplicate interface '{}'", definition.name),
+            ));
+            continue;
+        }
+        signatures.interfaces.insert(
+            definition.name.clone(),
+            InterfaceSignature {
+                functions: HashMap::new(),
+                span: definition.name_span,
+            },
+        );
+    }
+
     for definition in &program.structs {
         if signatures.aliases.contains_key(&definition.name) {
             diagnostics.push(diag(
                 definition.name_span,
                 &format!("struct '{}' conflicts with a type alias", definition.name),
+            ));
+            continue;
+        }
+        if signatures.interfaces.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!(
+                    "struct '{}' conflicts with an interface name",
+                    definition.name
+                ),
             ));
             continue;
         }
@@ -230,6 +295,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             diagnostics.push(diag(
                 definition.name_span,
                 &format!("enum '{}' conflicts with a type alias", definition.name),
+            ));
+            continue;
+        }
+        if signatures.interfaces.contains_key(&definition.name) {
+            diagnostics.push(diag(
+                definition.name_span,
+                &format!(
+                    "enum '{}' conflicts with an interface name",
+                    definition.name
+                ),
             ));
             continue;
         }
@@ -310,9 +385,59 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         }
     }
 
+    for definition in &program.interfaces {
+        if !signatures.interfaces.contains_key(&definition.name) {
+            continue;
+        }
+        let mut members = HashMap::new();
+        for function in &definition.functions {
+            let mut param_details = Vec::with_capacity(function.params.len());
+            for param in &function.params {
+                if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures)
+                {
+                    diagnostics.push(diagnostic);
+                }
+                param_details.push(ParamSignature {
+                    name: param.name.clone(),
+                    ty: signatures.canonical_type(&param.ty),
+                    named_only: param.named_only,
+                    default: None,
+                    span: param.name_span,
+                });
+            }
+            for (index, ty) in function.returns.iter().enumerate() {
+                let span = function
+                    .return_type_spans
+                    .get(index)
+                    .copied()
+                    .unwrap_or(function.return_span);
+                if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
+                    diagnostics.push(diagnostic);
+                }
+            }
+            members.insert(
+                function.name.clone(),
+                Signature {
+                    params: param_details.iter().map(|param| param.ty.clone()).collect(),
+                    param_details,
+                    returns: function
+                        .returns
+                        .iter()
+                        .map(|ty| signatures.canonical_type(ty))
+                        .collect(),
+                    span: function.name_span,
+                },
+            );
+        }
+        if let Some(interface) = signatures.interfaces.get_mut(&definition.name) {
+            interface.functions = members;
+        }
+    }
+
     let mut constant_defs = HashMap::new();
     for constant in &program.constants {
         if signatures.aliases.contains_key(&constant.name)
+            || signatures.interfaces.contains_key(&constant.name)
             || signatures.structs.contains_key(&constant.name)
             || signatures.enums.contains_key(&constant.name)
         {
@@ -367,6 +492,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             diagnostics.push(diag(
                 function.name_span,
                 &format!("'{}' is a built-in function name", function.name),
+            ));
+            continue;
+        }
+        if signatures.interfaces.contains_key(&function.name) {
+            diagnostics.push(diag(
+                function.name_span,
+                &format!(
+                    "function '{}' conflicts with an interface name",
+                    function.name
+                ),
             ));
             continue;
         }

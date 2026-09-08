@@ -6,6 +6,8 @@ use crate::typecheck::{self, Signature, Signatures};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
     TypeAlias,
+    Interface,
+    InterfaceFunction,
     Constant,
     Enum,
     EnumVariant,
@@ -49,6 +51,37 @@ impl SemanticDatabase {
                 ty: Some(alias.target.clone()),
                 span: alias.name_span,
             });
+        }
+        for definition in &program.interfaces {
+            symbols.push(SemanticSymbol {
+                name: definition.name.clone(),
+                kind: SymbolKind::Interface,
+                ty: None,
+                span: definition.name_span,
+            });
+            for function in &definition.functions {
+                symbols.push(SemanticSymbol {
+                    name: function.name.clone(),
+                    kind: SymbolKind::InterfaceFunction,
+                    ty: Some(Type::Function {
+                        params: function
+                            .params
+                            .iter()
+                            .map(|param| param.ty.clone())
+                            .collect(),
+                        returns: function.returns.clone(),
+                    }),
+                    span: function.name_span,
+                });
+                for param in &function.params {
+                    symbols.push(SemanticSymbol {
+                        name: param.name.clone(),
+                        kind: SymbolKind::Parameter,
+                        ty: Some(param.ty.clone()),
+                        span: param.name_span,
+                    });
+                }
+            }
         }
         for constant in &program.constants {
             symbols.push(SemanticSymbol {

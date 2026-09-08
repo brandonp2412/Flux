@@ -1,8 +1,8 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
-    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
-    UnaryOp,
+    InterfaceDef, InterfaceFunction, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
+    PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
+    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -96,6 +96,7 @@ pub fn parse_all_with_source(
 pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let (lines, mut diagnostics) = preprocess(source);
     let mut aliases = Vec::new();
+    let mut interfaces = Vec::new();
     let mut structs = Vec::new();
     let mut enums = Vec::new();
     let mut constants = Vec::new();
@@ -128,6 +129,17 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
             index += 1;
+            continue;
+        }
+
+        if line.text.starts_with("interface ") {
+            match parse_interface_declaration(&lines, &mut index) {
+                Ok(definition) => interfaces.push(definition),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                }
+            }
             continue;
         }
 
@@ -221,6 +233,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     if diagnostics.is_empty() {
         Ok(Program {
             aliases,
+            interfaces,
             structs,
             enums,
             constants,
@@ -245,6 +258,24 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         alias.span = alias.span.with_source(source_id);
         alias.name_span = alias.name_span.with_source(source_id);
         alias.target_span = alias.target_span.with_source(source_id);
+    }
+    for definition in &mut program.interfaces {
+        definition.span = definition.span.with_source(source_id);
+        definition.keyword_span = definition.keyword_span.with_source(source_id);
+        definition.name_span = definition.name_span.with_source(source_id);
+        for function in &mut definition.functions {
+            function.span = function.span.with_source(source_id);
+            function.keyword_span = function.keyword_span.with_source(source_id);
+            function.name_span = function.name_span.with_source(source_id);
+            function.return_span = function.return_span.with_source(source_id);
+            for span in &mut function.return_type_spans {
+                *span = span.with_source(source_id);
+            }
+            for param in &mut function.params {
+                param.name_span = param.name_span.with_source(source_id);
+                param.type_span = param.type_span.with_source(source_id);
+            }
+        }
     }
     for definition in &mut program.enums {
         definition.span = definition.span.with_source(source_id);
@@ -511,6 +542,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
                 return index + 1;
             }
             if line.text.starts_with("fn ")
+                || line.text.starts_with("interface ")
                 || line.text.starts_with("struct ")
                 || line.text.starts_with("enum ")
                 || line.text.starts_with("type ")
@@ -522,6 +554,121 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
         index += 1;
     }
     index
+}
+
+fn parse_interface_declaration(
+    lines: &[Line],
+    index: &mut usize,
+) -> Result<InterfaceDef, Diagnostic> {
+    let header = &lines[*index];
+    let Some(rest) = header.text.strip_prefix("interface ") else {
+        return Err(diag(header.number, "expected interface declaration"));
+    };
+    let Some(raw_name) = rest.strip_suffix('{') else {
+        return Err(diag(
+            header.number,
+            "interface declarations must open their body with '{'",
+        ));
+    };
+    let name = raw_name.trim();
+    validate_identifier(name, header.number)?;
+    let leading = raw_name.len() - raw_name.trim_start().len();
+    let name_span = SourceSpan::new(header.number, 11 + leading, name.len());
+    let definition_span = header.span();
+    *index += 1;
+
+    let mut functions = Vec::new();
+    if *index < lines.len() && lines[*index].indent > 0 {
+        let member_indent = lines[*index].indent;
+        while *index < lines.len() {
+            let line = &lines[*index];
+            if line.indent < member_indent {
+                break;
+            }
+            if line.indent > member_indent {
+                return Err(diag(
+                    line.number,
+                    "unexpected indentation in interface body",
+                ));
+            }
+            if line.text == "}" {
+                break;
+            }
+            if !line.text.starts_with("fn ") {
+                return Err(diag(
+                    line.number,
+                    "interface bodies contain only function signatures",
+                ));
+            }
+            if line.text.ends_with('{') {
+                return Err(diag(
+                    line.number,
+                    "interface function signatures do not have bodies",
+                ));
+            }
+            let synthetic = format!("{} {{", line.text);
+            let mut parsed = parse_function_header(&synthetic, line.number)?;
+            parsed.name_span.column += line.indent;
+            parsed.return_span.column += line.indent;
+            for span in &mut parsed.return_type_spans {
+                span.column += line.indent;
+            }
+            for param in &mut parsed.params {
+                param.name_span.column += line.indent;
+                param.type_span.column += line.indent;
+            }
+            if parsed.params.iter().any(|param| param.default.is_some()) {
+                return Err(diag(
+                    line.number,
+                    "interface function parameters cannot declare defaults",
+                ));
+            }
+            if functions
+                .iter()
+                .any(|existing: &InterfaceFunction| existing.name == parsed.name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate interface function '{}'", parsed.name),
+                ));
+            }
+            functions.push(InterfaceFunction {
+                name: parsed.name,
+                name_span: parsed.name_span,
+                keyword_span: SourceSpan::new(line.number, line.indent + 1, 2),
+                params: parsed.params,
+                returns: parsed.returns,
+                return_span: parsed.return_span,
+                return_type_spans: parsed.return_type_spans,
+                line: line.number,
+                span: line.span(),
+            });
+            *index += 1;
+        }
+    }
+
+    if functions.is_empty() {
+        return Err(diag(
+            header.number,
+            "interface declarations require at least one function signature",
+        ));
+    }
+    if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
+        return Err(diag(
+            header.number,
+            "interface body must end with a top-level '}'",
+        ));
+    }
+    *index += 1;
+
+    Ok(InterfaceDef {
+        name: name.to_string(),
+        name_span,
+        keyword_span: SourceSpan::new(header.number, 1, 9),
+        functions,
+        line: header.number,
+        span: definition_span,
+    })
 }
 
 fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
