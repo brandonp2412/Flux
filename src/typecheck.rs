@@ -1114,8 +1114,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             })
         }
         ("TextInput", "text") | ("TextInput", "placeholder") => Some(Type::Str),
-        ("TextInput", "enabled") => Some(Type::Bool),
-        ("TextInput", "on_submit") => Some(Type::Function {
+        ("TextInput", "enabled") | ("TextInput", "autofocus") => Some(Type::Bool),
+        ("TextInput", "on_submit") | ("TextInput", "on_change") => Some(Type::Function {
             params: vec![Type::Str],
             returns: Vec::new(),
         }),
@@ -1188,6 +1188,8 @@ pub fn view_property_names(kind: &str) -> &'static [&'static str] {
             "text",
             "placeholder",
             "enabled",
+            "autofocus",
+            "on_change",
             "on_submit",
             "visible",
             "min_width",

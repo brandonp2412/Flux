@@ -177,20 +177,25 @@ fn emit_linux_gtk_application(
 
     for element in &view.elements {
         if element.kind == "TextInput" {
-            let Some(action) = view_property(element, "on_submit") else {
-                continue;
-            };
-            let ExprKind::Var(function) = &action.value.kind else {
-                return Err(diag(
-                    action.value.span,
-                    "bootstrap TextInput.on_submit lowering requires a named fn(str) -> void callback",
+            for (property_name, callback_name) in [("on_change", "change"), ("on_submit", "submit")]
+            {
+                let Some(action) = view_property(element, property_name) else {
+                    continue;
+                };
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        &format!(
+                            "bootstrap TextInput.{property_name} lowering requires a named fn(str) -> void callback"
+                        ),
+                    ));
+                };
+                out.push_str(&format!(
+                    "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
+                    element.name,
+                    function_c_name(function),
                 ));
-            };
-            out.push_str(&format!(
-                "static void flux__ui_submit_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
-                element.name,
-                function_c_name(function),
-            ));
+            }
             continue;
         }
         let action_name = match element.kind.as_str() {
@@ -391,11 +396,28 @@ fn emit_linux_gtk_application(
                         "    gtk_widget_set_sensitive({variable}, {enabled});\n"
                     ));
                 }
+                if view_property(element, "on_change").is_some() {
+                    out.push_str(&format!(
+                        "    g_signal_connect({variable}, \"changed\", G_CALLBACK(flux__ui_change_{}), NULL);\n",
+                        element.name
+                    ));
+                }
                 if view_property(element, "on_submit").is_some() {
                     out.push_str(&format!(
                         "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
                         element.name
                     ));
+                }
+                if let Some(property) = view_property(element, "autofocus") {
+                    let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.autofocus must be a compile-time bool value",
+                        ));
+                    };
+                    if autofocus {
+                        out.push_str(&format!("    gtk_widget_grab_focus({variable});\n"));
+                    }
                 }
             }
             "Radio" => {

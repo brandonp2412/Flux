@@ -403,7 +403,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.
-  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, submits the current borrowed entry text synchronously to a named Flux callback, and keeps owned/editable string state sequenced behind the ownership/string model.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, and keeps owned/editable string state sequenced behind the ownership/string model.
   - [ ] Editable Flux-owned text state, change events, selection/caret APIs, validation, password/multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
@@ -462,7 +462,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Pointer/mouse input.
 - [ ] Touch input.
 - [ ] Keyboard input.
+  - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `on_change` receives the current borrowed text and Enter dispatches `on_submit`. Portable key events and explicit keyboard handling remain pending.
 - [ ] Focus model.
+  - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Programmatic focus movement, focus events, scopes, and restoration remain pending.
 - [x] Hover.
   - [x] Common `on_hover` / `on_leave` events on native Text/Button/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.

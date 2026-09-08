@@ -3986,6 +3986,8 @@ view Form {
         text: "initial"
         placeholder: "Search Flux"
         enabled: true
+        autofocus: true
+        on_change: submit
         on_submit: submit
 }
 app Form
@@ -3999,8 +4001,12 @@ app Form
             .contains("gtk_entry_set_placeholder_text(GTK_ENTRY(flux__ui_query), \"Search Flux\")")
     );
     assert!(generated.contains(
+        "g_signal_connect(flux__ui_query, \"changed\", G_CALLBACK(flux__ui_change_query), NULL)"
+    ));
+    assert!(generated.contains(
         "g_signal_connect(flux__ui_query, \"activate\", G_CALLBACK(flux__ui_submit_query), NULL)"
     ));
+    assert!(generated.contains("gtk_widget_grab_focus(flux__ui_query)"));
     assert!(generated.contains("gtk_editable_get_text(GTK_EDITABLE(widget))"));
     assert!(generated.contains("flux__fn_submit(gtk_editable_get_text"));
 
