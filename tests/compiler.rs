@@ -4731,6 +4731,45 @@ app Screen(resizable: 1)
 }
 
 #[test]
+fn application_theme_metadata_validates_and_lowers() {
+    let dark = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(theme: "dark")
+"#;
+    check_source(dark).expect("dark application theme should typecheck");
+    let generated = compile_to_c(dark).expect("dark application theme should lower natively");
+    assert!(generated.contains("gtk-application-prefer-dark-theme"));
+    assert!(generated.contains("TRUE, NULL"));
+
+    let system = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(theme: "system")
+"#;
+    let generated = compile_to_c(system).expect("system theme should preserve platform choice");
+    assert!(!generated.contains("gtk-application-prefer-dark-theme"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(theme: "sepia")
+"#;
+    let errors = check_source_all(invalid).expect_err("unknown application theme must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application theme must be one of 'system', 'light', or 'dark'")
+    }));
+}
+
+#[test]
 fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
     let source = r#"
 fn started() -> void {

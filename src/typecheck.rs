@@ -993,7 +993,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
             match evaluate_default_expr(&field.value, &signatures) {
                 Ok(value) => match field.name.as_str() {
-                    "title" | "id" if value.ty() != Type::Str => diagnostics.push(diag(
+                    "title" | "id" | "theme" if value.ty() != Type::Str => diagnostics.push(diag(
                         field.value.span,
                         &format!(
                             "application {} must be str, got {}",
@@ -1008,6 +1008,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                             diagnostics.push(diag(
                                 field.value.span,
                                 "application id must be a valid reverse-DNS-style identifier",
+                            ));
+                        }
+                    }
+                    "theme" => {
+                        if let ConstantValue::Str(value) = value
+                            && !matches!(value.as_str(), "system" | "light" | "dark")
+                        {
+                            diagnostics.push(diag(
+                                field.value.span,
+                                "application theme must be one of 'system', 'light', or 'dark'",
                             ));
                         }
                     }

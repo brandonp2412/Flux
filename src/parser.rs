@@ -900,7 +900,13 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
             validate_identifier(field_name, line.number)?;
             if !matches!(
                 field_name,
-                "id" | "title" | "width" | "height" | "resizable" | "on_start" | "on_exit"
+                "id" | "title"
+                    | "width"
+                    | "height"
+                    | "resizable"
+                    | "theme"
+                    | "on_start"
+                    | "on_exit"
             ) {
                 return Err(diag(
                     line.number,

@@ -287,6 +287,14 @@ fn emit_linux_gtk_application(
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("    {}();\n", function_c_name(function)));
     }
+    if let Some(theme) = application_metadata_string(application, "theme", signatures) {
+        match theme.as_str() {
+            "dark" => out.push_str("    g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\", TRUE, NULL);\n"),
+            "light" => out.push_str("    g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\", FALSE, NULL);\n"),
+            "system" => {}
+            _ => unreachable!("application theme validated by type checking"),
+        }
+    }
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());

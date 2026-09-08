@@ -508,7 +508,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Clipping.
   - [x] Bootstrap common `clip: bool` is state-aware and lowers to the native GTK overflow mode on the existing element; changing the driving Flux state refreshes clipping in place without wrapper widgets. Shape/path clipping remains future rendering work.
 - [ ] Transforms.
-- [ ] Light/dark themes.
+- [x] Light/dark themes.
+  - [x] Bootstrap application-level `theme: "system" | "light" | "dark"` metadata is compile-time validated and lowers to the native GTK theme preference when explicitly light/dark; `system` leaves the platform preference untouched. Theme tokens, runtime theme switching, and per-view overrides remain future work.
 - [ ] Design tokens/variables.
 - [ ] System theme integration.
 - [ ] Device/window/orientation queries.
