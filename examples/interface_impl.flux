@@ -32,8 +32,8 @@ fn main() -> i64 {
     if err != nil:
         print(err)
     print(data)
-    let save_err: error = Storage.save(storage, "settings.flux", data, durable: true)
-    if save_err != nil:
-        print(save_err)
+    let saveErr: error = Storage.save(storage, "settings.flux", data, durable: true)
+    if saveErr != nil:
+        print(saveErr)
     return 0
 }

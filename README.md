@@ -8,6 +8,7 @@ Flux is an experimental compiled language for building native applications and s
 - Function bodies are delimited by `{}`.
 - Control-flow bodies use indentation (`if`, `for`, etc.).
 - Strict static typing; implicit type coercions are deliberately minimized, unused bindings are compile errors, and Flux has no warning-only lint tier.
+- Canonical variable-style naming is lower camelCase (`safeFirst`, `requestCount`, `windowHeight`). snake_case remains valid syntax but is non-canonical style and does not produce warnings.
 - No comment syntax and no ternary/conditional expression syntax.
 - Function-first architecture built from data, functions, and interfaces rather than classes, inheritance, mixins, or widget/controller object hierarchies.
 - No generics in the Flux language.

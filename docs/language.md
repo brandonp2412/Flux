@@ -46,6 +46,8 @@ Tabs are not valid indentation. Blocks must use consistent indentation at each n
 
 Flux has no lint-warning tier: an unused parameter or binding is a compile error unless its name begins with `_` to mark it intentionally ignored.
 
+Variable-style names use lower camelCase in canonical Flux code: local bindings, mutable bindings, parameters, loop bindings, and destructured value bindings should look like `safeFirst`, `requestCount`, or `windowHeight`. snake_case identifiers remain syntactically valid for compatibility, but they are non-canonical style and the compiler does not warn about naming style.
+
 Bindings are explicitly typed and immutable by default:
 
 ```flux
@@ -206,7 +208,7 @@ When the receiver's concrete type is statically known, the interface namespace c
 
 ```flux
 let data: str, err: error = Storage.load(storage, "settings.flux")
-let save_err: error = Storage.save(
+let saveErr: error = Storage.save(
     storage,
     "settings.flux",
     data,
@@ -470,7 +472,7 @@ let middle: i64[] = values[1:4]
 let tail: i64[] = values[-2:]
 let evens: i64[] = values[::2]
 let reversed: i64[] = values[::-1]
-let reverse_middle: i64[] = values[3:0:-2]
+let reverseMiddle: i64[] = values[3:0:-2]
 let count: i64 = values.length
 let empty: bool = values.is_empty
 let present: bool = values.is_not_empty
@@ -478,11 +480,11 @@ let first: i64 = values.first
 let last: i64 = values.last
 let one: i64 = values[2:3].single
 let window: i64[] = values | skip 1 | take 3
-let safe_first: i64 = values[:0] | first_or 99
-let safe_last: i64 = values[:0] | last_or 88
+let safeFirst: i64 = values[:0] | first_or 99
+let safeLast: i64 = values[:0] | last_or 88
 let checks: bool[] = [value > 2 for value in values]
-let has_large: bool = checks | any
-let all_large: bool = checks | every
+let hasLarge: bool = checks | any
+let allLarge: bool = checks | every
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
