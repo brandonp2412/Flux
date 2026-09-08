@@ -52,6 +52,8 @@ Scaffold a minimal native GUI package that is immediately ready for the P0 dogfo
 
 Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `flux new` also creates `tests/smoke.flux`, so the package can immediately exercise the bootstrap integration-test runner with `./tools/flux test my-flux-app`. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
 
+Create the first host-native distribution bundle with `./tools/flux package my-flux-app`. By default it writes `dist/<name>-<version>-<os>-<arch>/` containing the package-named native executable and the exact `flux.toml`; `-o <directory>` chooses another destination and `--mode` selects debug/profile/release. Existing bundle directories are not overwritten. This is intentionally a bootstrap host bundle, not yet a self-contained distro/store package: GTK and other native runtime dependencies remain host responsibilities.
+
 ## Example
 
 ```flux

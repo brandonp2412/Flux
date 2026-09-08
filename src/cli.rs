@@ -218,6 +218,11 @@ fn run() -> Result<(), CliError> {
             println!("built ({}): {}", options.mode.name(), output.display());
             Ok(())
         }
+        "package" => {
+            let path = require_target(&args)?;
+            let options = build_options(&args[2..], BuildMode::Release)?;
+            package_target(path, options)
+        }
         "run" => {
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Debug)?;
@@ -269,6 +274,87 @@ fn run() -> Result<(), CliError> {
         }
         _ => Err(CliError::Message(usage())),
     }
+}
+
+fn package_target(target: &Path, options: BuildOptions) -> Result<(), CliError> {
+    let manifest_path = if target.is_dir() {
+        target.join("flux.toml")
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        target.to_path_buf()
+    } else {
+        return Err(CliError::Message(
+            "package requires a manifest-backed package directory or flux.toml".to_string(),
+        ));
+    };
+    let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let package_root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest has a parent");
+    let artifact_name = package_artifact_name(&manifest.name, manifest.version.as_deref())?;
+    let output = options
+        .output
+        .unwrap_or_else(|| package_root.join("dist").join(&artifact_name));
+    if output.exists() {
+        return Err(CliError::Message(format!(
+            "package output '{}' already exists; remove it or choose another path with -o",
+            output.display()
+        )));
+    }
+
+    let sources = validate_project(&manifest.path)?;
+    let generated = match fluxc::project::compile_to_c(&manifest.path) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(&manifest.path, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    fs::create_dir_all(&output)
+        .map_err(|error| format!("failed to create package '{}': {error}", output.display()))?;
+    let binary = output.join(&manifest.name);
+    if let Err(error) = build_native(&generated, &binary, options.mode) {
+        let _ = fs::remove_dir_all(&output);
+        return Err(CliError::Message(error));
+    }
+    if let Err(error) = fs::copy(&manifest.path, output.join("flux.toml")) {
+        let _ = fs::remove_dir_all(&output);
+        return Err(CliError::Message(format!(
+            "failed to copy package manifest: {error}"
+        )));
+    }
+    println!("packaged ({}): {}", options.mode.name(), output.display());
+    Ok(())
+}
+
+fn package_artifact_name(name: &str, version: Option<&str>) -> Result<String, CliError> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(CliError::Message(
+            "package name must be a safe filesystem name without path separators".to_string(),
+        ));
+    }
+    let version = version.unwrap_or("unversioned");
+    if version.is_empty()
+        || version == "."
+        || version == ".."
+        || version.contains('/')
+        || version.contains('\\')
+    {
+        return Err(CliError::Message(
+            "package version must be safe for a package artifact name".to_string(),
+        ));
+    }
+    Ok(format!(
+        "{name}-{version}-{}-{}",
+        env::consts::OS,
+        env::consts::ARCH
+    ))
 }
 
 fn create_project(target: &Path) -> Result<(), CliError> {
@@ -1126,7 +1212,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 

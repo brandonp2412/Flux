@@ -3229,6 +3229,70 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
 }
 
 #[test]
+fn flux_package_builds_a_manifest_backed_linux_bundle() {
+    let root = std::env::temp_dir().join(format!("flux-package-cli-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src"))
+        .expect("package fixture source directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"package-test\"\nversion = \"1.2.3\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("package fixture manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        "fn main() -> i64 {\n    print(42)\n    return 0\n}\n",
+    )
+    .expect("package fixture entry should be writable");
+    let output = root.join("bundle");
+
+    let packaged = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .expect("flux package should run");
+    assert!(
+        packaged.status.success(),
+        "flux package failed: {}",
+        String::from_utf8_lossy(&packaged.stderr)
+    );
+    assert!(output.join("package-test").is_file());
+    assert_eq!(
+        fs::read_to_string(output.join("flux.toml")).expect("bundle manifest should be readable"),
+        fs::read_to_string(root.join("flux.toml")).expect("source manifest should be readable")
+    );
+    let run = Command::new(output.join("package-test"))
+        .output()
+        .expect("packaged native binary should execute");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+
+    let repeated = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .expect("repeated flux package should run");
+    assert!(!repeated.status.success());
+    assert!(String::from_utf8_lossy(&repeated.stderr).contains("already exists"));
+
+    let raw_source = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(root.join("src/main.flux"))
+        .arg("-o")
+        .arg(root.join("source-bundle"))
+        .output()
+        .expect("source package rejection should run");
+    assert!(!raw_source.status.success());
+    assert!(String::from_utf8_lossy(&raw_source.stderr).contains("manifest-backed"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn flux_devices_reports_the_bootstrap_linux_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("devices")
