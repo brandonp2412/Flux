@@ -44,6 +44,8 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("static inline size_t flux_list_count(size_t len, int64_t count) { if (count < 0) { fputs(\"Flux runtime error: list count must be non-negative\\n\", stderr); abort(); } uint64_t value = (uint64_t)count; return value > (uint64_t)len ? len : (size_t)value; }\n");
     out.push_str("static inline struct flux__list flux_list_take(struct flux__list list, int64_t count) { list.len = flux_list_count(list.len, count); return list; }\n");
     out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); list.data = (void *)((char *)list.data + skipped * elem_size); list.len -= skipped; return list; }\n");
+    out.push_str("static inline bool flux_list_any_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return true; } return false; }\n");
+    out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return false; } return true; }\n");
     out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; }\n");
     out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, size_t elem_size) { int64_t first = flux_slice_bound(list.len, has_start, start, false); int64_t last = flux_slice_bound(list.len, has_end, end, true); if (last < first) last = first; struct flux__list result = { .data = (void *)((char *)list.data + (size_t)first * elem_size), .len = (size_t)(last - first) }; return result; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
@@ -2863,6 +2865,34 @@ fn emit_expr(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
             ));
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "any" || name == "every" => {
+            if !named_args.is_empty() || args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    "invalid boolean sequence call reached code generation",
+                ));
+            }
+            let list = emit_expr(&args[0], env, signatures)?;
+            if list.ty != Type::List(Box::new(Type::Bool)) {
+                return Err(diag(
+                    expr.span,
+                    "boolean sequence operation requires a bool[] value",
+                ));
+            }
+            let helper = if name == "any" {
+                "flux_list_any_bool"
+            } else {
+                "flux_list_every_bool"
+            };
+            EmittedExpr {
+                code: format!("{helper}({})", list.code),
+                ty: Type::Bool,
+            }
         }
         ExprKind::Call {
             name,

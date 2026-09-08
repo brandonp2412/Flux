@@ -1183,6 +1183,16 @@ fn main() -> i64 {
     let safe_last: i64 = empty | last_or 88
     print safe_first
     print safe_last
+    let checks: bool[] = [value > 2 for value in values]
+    let has_large: bool = checks | any
+    let all_large: bool = checks | every
+    print has_large
+    print all_large
+    let no_checks: bool[] = checks[:0]
+    let empty_any: bool = no_checks | any
+    let empty_every: bool = no_checks | every
+    print empty_any
+    print empty_every
     return 0
 }
 "#;
@@ -1206,6 +1216,8 @@ fn main() -> i64 {
     assert!(generated.contains("len == 0 ?"));
     assert!(generated.contains("INT64_C(99)"));
     assert!(generated.contains("INT64_C(88)"));
+    assert!(generated.contains("flux_list_any_bool"));
+    assert!(generated.contains("flux_list_every_bool"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");
@@ -1215,6 +1227,8 @@ fn main() -> i64 {
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
     assert!(formatted.contains("let safe_first: i64 = empty | first_or 99"));
     assert!(formatted.contains("let safe_last: i64 = empty | last_or 88"));
+    assert!(formatted.contains("let has_large: bool = checks | any"));
+    assert!(formatted.contains("let all_large: bool = checks | every"));
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
     assert_eq!(formatted_again, formatted);
@@ -1277,6 +1291,24 @@ fn main() -> i64 {
         error
             .message
             .contains("last_or fallback: expected i64, got bool")
+    );
+}
+
+#[test]
+fn rejects_invalid_boolean_sequence_operations() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let result: bool = any(values)
+    print result
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err("any should require bool[]");
+    assert!(
+        error
+            .message
+            .contains("any input: expected bool[], got i64[]")
     );
 }
 

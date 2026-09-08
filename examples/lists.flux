@@ -22,6 +22,16 @@ fn main() -> i64 {
     let safe_last: i64 = empty | last_or 88
     print safe_first
     print safe_last
+    let checks: bool[] = [value > 2 for value in values]
+    let has_large: bool = checks | any
+    let all_large: bool = checks | every
+    print has_large
+    print all_large
+    let no_checks: bool[] = checks[:0]
+    let empty_any: bool = no_checks | any
+    let empty_every: bool = no_checks | every
+    print empty_any
+    print empty_every
     for value in middle:
         print value
     for index, value in middle:

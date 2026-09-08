@@ -604,7 +604,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     for function in &program.functions {
         if matches!(
             function.name.as_str(),
-            "print" | "error" | "take" | "skip" | "first_or" | "last_or"
+            "print" | "error" | "take" | "skip" | "first_or" | "last_or" | "any" | "every"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -2936,6 +2936,32 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "any" || name == "every" => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} does not accept named arguments"),
+                ));
+            }
+            if args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} expects exactly one bool[] argument"),
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            require_type(
+                args[0].span,
+                &Type::List(Box::new(Type::Bool)),
+                &list_ty,
+                &format!("{name} input"),
+            )?;
+            Ok(Type::Bool)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "first_or" || name == "last_or" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3486,7 +3512,10 @@ fn value_types_of_expr(
         }
         ExprKind::Call { name, .. }
             if signatures.interface(name).is_some()
-                || matches!(name.as_str(), "take" | "skip" | "first_or" | "last_or") =>
+                || matches!(
+                    name.as_str(),
+                    "take" | "skip" | "first_or" | "last_or" | "any" | "every"
+                ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])
         }

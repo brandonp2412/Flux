@@ -692,6 +692,20 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
         3,
         "fn last_or(list: T[], fallback: T) -> T",
     );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "any",
+        3,
+        "fn any(list: bool[]) -> bool",
+    );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "every",
+        3,
+        "fn every(list: bool[]) -> bool",
+    );
 
     let Ok(program) = crate::parser::parse_all(source) else {
         return items;
@@ -1790,6 +1804,14 @@ fn signature_help_for_document_cached(
             call_name,
             &["list: T[]", "fallback: T"],
             "T",
+            active_parameter,
+        ));
+    }
+    if call_name == "any" || call_name == "every" {
+        return Some(signature_help_for_builtin(
+            call_name,
+            &["list: bool[]"],
+            "bool",
             active_parameter,
         ));
     }
@@ -4809,7 +4831,7 @@ mod tests {
     #[test]
     fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
         let uri = "file:///tmp/call-shapes.flux";
-        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _safe: i64 = first_or(values, 0)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _safe: i64 = first_or(values, 0)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -4821,6 +4843,8 @@ mod tests {
                 line.find("error(").unwrap() + "error(\"boom\"".len()
             } else if needle == "first_or(" {
                 line.find("first_or(").unwrap() + "first_or(values, ".len()
+            } else if needle == "any(" {
+                line.find("any(").unwrap() + "any(".len()
             } else {
                 line.len().saturating_sub(1)
             };
@@ -4846,6 +4870,8 @@ mod tests {
         assert!(error_help.contains("fn error(message: str) -> error"));
         let first_or_help = help_for("first_or(");
         assert!(first_or_help.contains("fn first_or(list: T[], fallback: T) -> T"));
+        let any_help = help_for("any(");
+        assert!(any_help.contains("fn any(list: bool[]) -> bool"));
     }
 
     #[test]
@@ -5209,6 +5235,9 @@ mod tests {
         assert!(json.contains("\"label\":\"first_or\""));
         assert!(json.contains("fn first_or(list: T[], fallback: T) -> T"));
         assert!(json.contains("\"label\":\"last_or\""));
+        assert!(json.contains("\"label\":\"any\""));
+        assert!(json.contains("fn any(list: bool[]) -> bool"));
+        assert!(json.contains("\"label\":\"every\""));
     }
 
     #[test]
