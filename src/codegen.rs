@@ -2034,6 +2034,19 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
+                if sequence_reduction(expr).is_some() =>
+            {
+                emit_sequence_reduction_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. }
                 if matches!(expr.kind, ExprKind::ListComprehension { .. }) =>
             {
@@ -2618,6 +2631,143 @@ fn emit_struct_pattern_bindings(
     Ok(())
 }
 
+enum SequenceReduction<'a> {
+    Fold {
+        list: &'a Expr,
+        initial: &'a Expr,
+        reducer: &'a Expr,
+    },
+    Reduce {
+        list: &'a Expr,
+        reducer: &'a Expr,
+    },
+}
+
+fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "fold" && args.len() == 3 => {
+            Some(SequenceReduction::Fold {
+                list: &args[0],
+                initial: &args[1],
+                reducer: &args[2],
+            })
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "reduce" && args.len() == 2 => {
+            Some(SequenceReduction::Reduce {
+                list: &args[0],
+                reducer: &args[1],
+            })
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "fold" && args.len() == 2 => Some(SequenceReduction::Fold {
+            list: input,
+            initial: &args[0],
+            reducer: &args[1],
+        }),
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "reduce" && args.len() == 1 => Some(SequenceReduction::Reduce {
+            list: input,
+            reducer: &args[0],
+        }),
+        _ => None,
+    }
+}
+
+fn emit_sequence_reduction_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let reduction = sequence_reduction(expr).ok_or_else(|| {
+        diag(
+            expr.span,
+            "invalid sequence reduction reached code generation",
+        )
+    })?;
+    let (list_expr, initial, reducer_expr, reduce) = match reduction {
+        SequenceReduction::Fold {
+            list,
+            initial,
+            reducer,
+        } => (list, Some(initial), reducer, false),
+        SequenceReduction::Reduce { list, reducer } => (list, None, reducer, true),
+    };
+    let list = emit_expr(list_expr, env, signatures)?;
+    let Type::List(element) = signatures.canonical_type(&list.ty) else {
+        return Err(diag(expr.span, "sequence reduction requires a list source"));
+    };
+    let reducer = emit_expr(reducer_expr, env, signatures)?;
+    let Type::Function { .. } = reducer.ty else {
+        return Err(diag(
+            expr.span,
+            "sequence reduction requires a function reducer",
+        ));
+    };
+    let source_name = format!("flux__reduce_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__reduce_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__reduce_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let target_name = local_c_name(name);
+    let element_c = c_type(&element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        list.code
+    ));
+    if reduce {
+        out.push_str(&format!(
+            "{pad}if ({source_name}.len == 0) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }}\n"
+        ));
+        out.push_str(&format!(
+            "{pad}{} {target_name} = *(({element_c} *)flux_list_at({source_name}, INT64_C(0), sizeof({element_c})));\n",
+            c_type(declared_ty, signatures)
+        ));
+        out.push_str(&format!(
+            "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+        ));
+    } else {
+        let initial = emit_expr(
+            initial.expect("fold reduction has an initial value"),
+            env,
+            signatures,
+        )?;
+        out.push_str(&format!(
+            "{pad}{} {target_name} = {};\n",
+            c_type(declared_ty, signatures),
+            initial.code
+        ));
+        out.push_str(&format!(
+            "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c})));\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {target_name} = {}({target_name}, {item_name});\n",
+        reducer.code
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+    env.insert(name.to_string(), signatures.canonical_type(declared_ty));
+    Ok(())
+}
+
 fn emit_list_comprehension_binding(
     out: &mut String,
     pad: &str,
@@ -2876,6 +3026,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "fold" || name == "reduce" => {
+            return Err(diag(
+                expr.span,
+                "fold/reduce currently lower only when bound directly to a local value",
             ));
         }
         ExprKind::Call {

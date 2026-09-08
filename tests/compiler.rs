@@ -1343,6 +1343,109 @@ fn main() -> i64 {
 }
 
 #[test]
+fn fold_and_reduce_are_typed_and_native() {
+    let source = r#"
+type Reducer = fn(i64, i64) -> i64
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn allPositive(current: bool, value: i64) -> bool {
+    return current && value > 0
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3, 4, 5]
+    let reversed: i64[] = values[::-1]
+    let total: i64 = reversed | reduce add
+    let reducer: Reducer = add
+    let boundTotal: i64 = values | reduce reducer
+    let directTotal: i64 = fold(values, 0, add)
+    let positive: bool = values | fold true allPositive
+    let empty: i64[] = values[:0]
+    let emptyTotal: i64 = empty | fold 7 add
+    print total
+    print boundTotal
+    print directTotal
+    print positive
+    print emptyTotal
+    return 0
+}
+"#;
+
+    check_source(source).expect("fold/reduce should typecheck");
+    let generated = compile_to_c(source).expect("fold/reduce should lower natively");
+    assert!(generated.contains("Flux runtime error: reduce requires a non-empty list"));
+    assert!(generated.contains("flux__reduce_source_"));
+    assert!(generated.contains("flux__fn_add(flux__local_total"));
+    assert!(generated.contains("flux__local_reducer(flux__local_boundTotal"));
+    assert!(generated.contains("flux__fn_add(flux__local_directTotal"));
+    assert!(generated.contains("flux__fn_allPositive(flux__local_positive"));
+    assert!(generated.contains("flux_list_at(flux__reduce_source_"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("fold/reduce source should format");
+    assert!(formatted.contains("let total: i64 = reversed | reduce add"));
+    assert!(formatted.contains("let boundTotal: i64 = values | reduce reducer"));
+    assert!(formatted.contains("let directTotal: i64 = fold(values, 0, add)"));
+    assert!(formatted.contains("let positive: bool = values | fold true allPositive"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted fold/reduce source should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_fold_and_reduce_calls() {
+    let non_list = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+fn main() -> i64 {
+    let total: i64 = fold(7, 0, add)
+    print total
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("fold should require a list");
+    assert!(
+        error
+            .message
+            .contains("fold expects a list as its first argument")
+    );
+
+    let wrong_reducer = r#"
+fn wrong(value: i64) -> i64 {
+    return value
+}
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let total: i64 = values | reduce wrong
+    print total
+    return 0
+}
+"#;
+    let error = check_source(wrong_reducer).expect_err("reduce reducer shape should be checked");
+    assert!(error.message.contains("reduce reducer"));
+    assert!(error.message.contains("expected fn(i64, i64) -> i64"));
+
+    let wrong_accumulator = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let valid: bool = values | fold true add
+    print valid
+    return 0
+}
+"#;
+    let error = check_source(wrong_accumulator).expect_err("fold reducer accumulator should match");
+    assert!(error.message.contains("fold reducer"));
+    assert!(error.message.contains("expected fn(bool, i64) -> bool"));
+}
+
+#[test]
 fn rejects_invalid_boolean_sequence_operations() {
     let source = r#"
 fn main() -> i64 {

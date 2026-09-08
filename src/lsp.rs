@@ -706,6 +706,20 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
         3,
         "fn every(list: bool[]) -> bool",
     );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "fold",
+        3,
+        "fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A",
+    );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "reduce",
+        3,
+        "fn reduce(list: T[], reducer: fn(T, T) -> T) -> T",
+    );
 
     let Ok(program) = crate::parser::parse_all(source) else {
         return items;
@@ -1812,6 +1826,22 @@ fn signature_help_for_document_cached(
             call_name,
             &["list: bool[]"],
             "bool",
+            active_parameter,
+        ));
+    }
+    if call_name == "fold" {
+        return Some(signature_help_for_builtin(
+            "fold",
+            &["list: T[]", "initial: A", "reducer: fn(A, T) -> A"],
+            "A",
+            active_parameter,
+        ));
+    }
+    if call_name == "reduce" {
+        return Some(signature_help_for_builtin(
+            "reduce",
+            &["list: T[]", "reducer: fn(T, T) -> T"],
+            "T",
             active_parameter,
         ));
     }
@@ -4831,7 +4861,7 @@ mod tests {
     #[test]
     fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
         let uri = "file:///tmp/call-shapes.flux";
-        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _safe: i64 = first_or(values, 0)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nfn add(left: i64, right: i64) -> i64 { left + right }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _safe: i64 = first_or(values, 0)\n    let _folded: i64 = fold(values, 0, add)\n    let _reduced: i64 = reduce(values, add)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -4845,6 +4875,10 @@ mod tests {
                 line.find("first_or(").unwrap() + "first_or(values, ".len()
             } else if needle == "any(" {
                 line.find("any(").unwrap() + "any(".len()
+            } else if needle == "fold(" {
+                line.find("fold(").unwrap() + "fold(values, 0, ".len()
+            } else if needle == "reduce(" {
+                line.find("reduce(").unwrap() + "reduce(values, ".len()
             } else {
                 line.len().saturating_sub(1)
             };
@@ -4872,6 +4906,10 @@ mod tests {
         assert!(first_or_help.contains("fn first_or(list: T[], fallback: T) -> T"));
         let any_help = help_for("any(");
         assert!(any_help.contains("fn any(list: bool[]) -> bool"));
+        let fold_help = help_for("fold(");
+        assert!(fold_help.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
+        let reduce_help = help_for("reduce(");
+        assert!(reduce_help.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
     }
 
     #[test]
@@ -5238,6 +5276,10 @@ mod tests {
         assert!(json.contains("\"label\":\"any\""));
         assert!(json.contains("fn any(list: bool[]) -> bool"));
         assert!(json.contains("\"label\":\"every\""));
+        assert!(json.contains("\"label\":\"fold\""));
+        assert!(json.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
+        assert!(json.contains("\"label\":\"reduce\""));
+        assert!(json.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
     }
 
     #[test]

@@ -604,7 +604,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
     for function in &program.functions {
         if matches!(
             function.name.as_str(),
-            "print" | "error" | "take" | "skip" | "first_or" | "last_or" | "any" | "every"
+            "print"
+                | "error"
+                | "take"
+                | "skip"
+                | "first_or"
+                | "last_or"
+                | "any"
+                | "every"
+                | "fold"
+                | "reduce"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -2959,6 +2968,66 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "fold" || name == "reduce" => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} does not accept named arguments"),
+                ));
+            }
+            let expected_len = if name == "fold" { 3 } else { 2 };
+            if args.len() != expected_len {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} expects exactly {expected_len} arguments"),
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(element) = list_ty else {
+                return Err(diag(
+                    args[0].span,
+                    &format!("{name} expects a list as its first argument"),
+                ));
+            };
+            let (result_ty, reducer_index, expected_params) = if name == "fold" {
+                let initial_ty =
+                    signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                (
+                    initial_ty.clone(),
+                    2usize,
+                    vec![initial_ty, (*element).clone()],
+                )
+            } else {
+                (
+                    (*element).clone(),
+                    1usize,
+                    vec![(*element).clone(), (*element).clone()],
+                )
+            };
+            if !matches!(args[reducer_index].kind, ExprKind::Var(_)) {
+                return Err(diag(
+                    args[reducer_index].span,
+                    &format!("{name} reducer must be a named function or function binding"),
+                ));
+            }
+            let reducer_ty =
+                signatures.canonical_type(&type_of_expr(&args[reducer_index], env, signatures)?);
+            let expected_reducer = Type::Function {
+                params: expected_params,
+                returns: vec![result_ty.clone()],
+            };
+            require_type(
+                args[reducer_index].span,
+                &expected_reducer,
+                &reducer_ty,
+                &format!("{name} reducer"),
+            )?;
+            Ok(result_ty)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "any" || name == "every" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3537,7 +3606,7 @@ fn value_types_of_expr(
             if signatures.interface(name).is_some()
                 || matches!(
                     name.as_str(),
-                    "take" | "skip" | "first_or" | "last_or" | "any" | "every"
+                    "take" | "skip" | "first_or" | "last_or" | "any" | "every" | "fold" | "reduce"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

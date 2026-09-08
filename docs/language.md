@@ -485,6 +485,9 @@ let safeLast: i64 = values[:0] | last_or 88
 let checks: bool[] = [value > 2 for value in values]
 let hasLarge: bool = checks | any
 let allLarge: bool = checks | every
+let total: i64 = values | reduce add
+let positive: bool = values | fold true allPositive
+let emptyTotal: i64 = values[:0] | fold 7 add
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -502,6 +505,8 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 `first_or(list, fallback)` and `last_or(list, fallback)` are non-throwing accessors for possibly empty lists. The fallback must have exactly the list element type. On an empty list the fallback is returned; otherwise the corresponding edge element is returned. They compose with the same typed pipeline syntax, for example `values[:0] | first_or 99`.
 
 `any(list)` and `every(list)` currently accept `bool[]`. `any` returns true when at least one element is true and returns false for an empty list. `every` returns true only when every element is true and uses the standard vacuous-truth identity of true for an empty list. Predicate-style queries remain explicit and allocation-free in source by composing a boolean comprehension with the pipeline, for example `[value > 2 for value in values] | any`.
+
+`fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a named function or function binding with an exact concrete type: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly without materializing them, and compose through pipelines such as `values[::-1] | reduce add`. During the bootstrap they lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

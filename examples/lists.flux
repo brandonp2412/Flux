@@ -1,3 +1,11 @@
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn allPositive(current: bool, value: i64) -> bool {
+    return current && value > 0
+}
+
 fn main() -> i64 {
     let values: i64[] = [1, 2, 3, 4, 5]
     let middle: i64[] = values[1:4]
@@ -47,6 +55,12 @@ fn main() -> i64 {
     let emptyEvery: bool = noChecks | every
     print emptyAny
     print emptyEvery
+    let total: i64 = values | reduce add
+    let positive: bool = values | fold true allPositive
+    let emptyTotal: i64 = empty | fold 7 add
+    print total
+    print positive
+    print emptyTotal
     for value in middle:
         print value
     for index, value in middle:
