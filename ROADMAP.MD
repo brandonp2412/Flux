@@ -400,6 +400,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, and `bold: bool`, including grid placement, native wrapping/alignment, and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.
 - [ ] Images/vector images.
+  - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `can_shrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scale_down`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
 - [ ] Text inputs.

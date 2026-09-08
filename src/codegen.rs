@@ -123,11 +123,11 @@ fn emit_linux_gtk_application(
     for element in &view.elements {
         if !matches!(
             element.kind.as_str(),
-            "Text" | "Button" | "TextInput" | "Toggle" | "Radio"
+            "Text" | "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
         ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Linux app backend currently renders Text, Button, TextInput, Toggle, and Radio elements",
+                "bootstrap Linux app backend currently renders Text, Button, TextInput, Image, Toggle, and Radio elements",
             ));
         }
     }
@@ -485,6 +485,50 @@ fn emit_linux_gtk_application(
                     if autofocus {
                         out.push_str(&format!("    gtk_widget_grab_focus({variable});\n"));
                     }
+                }
+            }
+            "Image" => {
+                let source = match view_property(element, "source") {
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                    None => c_string(""),
+                };
+                out.push_str(&format!(
+                    "    {variable} = gtk_picture_new_for_filename({source});\n"
+                ));
+                if let Some(property) = view_property(element, "alt") {
+                    let alt = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_picture_set_alternative_text(GTK_PICTURE({variable}), {alt});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "can_shrink") {
+                    let can_shrink = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    gtk_picture_set_can_shrink(GTK_PICTURE({variable}), {can_shrink});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "fit") {
+                    let Some(fit) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "Image.fit must be a compile-time string",
+                        ));
+                    };
+                    let fit = match fit.as_str() {
+                        "fill" => "GTK_CONTENT_FIT_FILL",
+                        "contain" => "GTK_CONTENT_FIT_CONTAIN",
+                        "cover" => "GTK_CONTENT_FIT_COVER",
+                        "scale_down" => "GTK_CONTENT_FIT_SCALE_DOWN",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "Image.fit must be one of 'fill', 'contain', 'cover', or 'scale_down'",
+                            ));
+                        }
+                    };
+                    out.push_str(&format!(
+                        "    gtk_picture_set_content_fit(GTK_PICTURE({variable}), {fit});\n"
+                    ));
                 }
             }
             "Radio" => {
@@ -1022,6 +1066,26 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
+                    ));
+                }
+            }
+            "Image" => {
+                if let Some(property) = view_property(element, "source") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_picture_set_filename(GTK_PICTURE({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "alt") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_picture_set_alternative_text(GTK_PICTURE({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "can_shrink") {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_picture_set_can_shrink(GTK_PICTURE({widget}), {value});\n"
                     ));
                 }
             }

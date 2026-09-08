@@ -4103,6 +4103,50 @@ app Screen
 }
 
 #[test]
+fn image_control_lowers_file_source_alt_text_fit_and_state_refresh() {
+    let source = r#"
+view Gallery {
+    grid columns: 1fr
+    grid rows: auto auto
+    state alternate: bool = false
+    Image artwork at 1,1
+        source: "alternate.png" if alternate else "default.png"
+        alt: "Alternate cover" if alternate else "Default cover"
+        fit: "cover"
+        can_shrink: true
+        min_width: 240
+        min_height: 160
+    Button swap at 2,1
+        text: "Swap"
+        on_press: alternate => !alternate
+}
+app Gallery
+"#;
+    check_source(source).expect("Image properties and state-derived source should typecheck");
+    let generated = compile_to_c(source).expect("Image should lower to native GtkPicture");
+    assert!(generated.contains("gtk_picture_new_for_filename"));
+    assert!(generated.contains("gtk_picture_set_alternative_text"));
+    assert!(generated.contains("GTK_CONTENT_FIT_COVER"));
+    assert!(generated.contains("gtk_picture_set_can_shrink"));
+    assert!(generated.contains("gtk_picture_set_filename(GTK_PICTURE(flux__ui_artwork), ((flux__ui_state_alternate) ? (\"alternate.png\") : (\"default.png\")))"));
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_artwork, 240, 160)"));
+
+    let bad_fit = r#"
+view Gallery {
+    grid columns: 1fr
+    grid rows: auto
+    Image artwork at 1,1
+        source: "cover.png"
+        fit: "stretchy"
+}
+app Gallery
+"#;
+    check_source(bad_fit).expect("Image.fit typechecks before backend enum validation");
+    let error = compile_to_c(bad_fit).expect_err("unknown Image.fit mode must fail");
+    assert!(error.message.contains("Image.fit must be one of"));
+}
+
+#[test]
 fn radio_controls_group_native_selection_and_update_shared_state_once() {
     let source = r#"
 view Choice {
