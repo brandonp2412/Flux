@@ -18,6 +18,26 @@ At the **start of every Flux development session**:
 
 Do not let the roadmap become an aspirational document that diverges from the compiler.
 
+## Priority 1 — Minimal end-to-end manual dogfooding
+
+**This is the immediate project priority.** Until this milestone is complete, prefer work that directly enables a developer to write a small Flux GUI program in a real editor, receive first-class Flux language tooling, compile it, launch it as a real native application, interact with it, and visually verify the result. Other roadmap work should be sequenced behind this unless it is a prerequisite for this path or fixes a correctness regression in an already-supported feature.
+
+The minimum acceptance path is deliberately small: one Linux desktop target first, one native window, the existing flat grid layout, `Text` and `Button`, one click-driven state update/repaint, and the existing save-triggered development loop. This milestone does **not** require completing the full UI toolkit, ownership model, Android target, animation, navigation, package ecosystem, debugger, or profiler before manual dogfooding starts.
+
+- [ ] **P0 manual E2E:** from a fresh example project, open `.flux` source in an editor, see Flux semantic/LSP colouring and diagnostics/completion/hover, run the project, get a real native Linux window, click a button, observe visible state change, edit/save source, and see the running app update through the development loop.
+  - [x] Compiler-backed flat `view`/grid syntax with typed built-in UI properties and composed views.
+  - [x] `fluxc lsp` foundation with diagnostics, semantic highlighting, completion, hover, signature help, navigation/refactoring, formatting, fixes, inlay hints, and UI syntax awareness.
+  - [x] `fluxc run` automatic save detection with rebuild and safe controlled restart on successful recompilation.
+  - [ ] Minimal application entry/runtime that opens a real native Linux window from a Flux program.
+  - [ ] Native lowering/render path for the existing flat grid into measured window-space rectangles.
+  - [ ] Render usable `Text` and `Button` primitives with enough default styling to visually test an app.
+  - [ ] Pointer/click dispatch from the native window to a typed Flux `Button.on_press` callback.
+  - [ ] Minimal functional local UI state and invalidation/repaint so a click can visibly update text without controller/widget objects.
+  - [ ] Editor integration/setup that makes `.flux` syntax + `fluxc lsp` practical to launch as an actual editing experience rather than requiring raw protocol tooling.
+  - [ ] Checked-in `hello_app`-style manual acceptance example and documented command that exercises editor → compile → native window → interaction → save/reload end to end.
+
+When choosing work, pull the smallest prerequisites from later milestones forward as needed to finish this P0 path. Do not expand those prerequisites into their full eventual subsystem before the manual E2E is working.
+
 ## Non-negotiable language/product principles
 
 - [x] Python-like readability with low ceremony.
@@ -405,7 +425,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] `flux run` watches the project automatically in development mode.
   - [x] Bootstrap `fluxc run` builds and launches a native development binary, then continuously watches the real project/import graph plus `flux.toml` where applicable.
 - [ ] Saving a source file automatically triggers incremental recompilation.
-  - [x] Bootstrap runner automatically triggers a full project recompile on save; incremental compiler reuse remains pending rather than being implied by the watcher.
+  - [x] Bootstrap runner automatically recompiles on save through the reusable project-analysis cache: unchanged whole graphs are reused, and changed graphs reuse parsed ASTs for unaffected modules. Whole-program type checking/codegen still rerun after a semantic change, so true incremental recompilation remains pending.
 - [x] No hot-reload hotkey is required for the normal workflow: the bootstrap runner reacts to saves automatically.
 - [ ] Apply compatible function/view changes to the running process automatically.
 - [ ] Preserve compatible application/UI state across reloads.
@@ -417,6 +437,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Watch dependency/module changes using the compiler's loaded import graph, refreshing the watch set after successful recompilation and retaining known paths across failed edits.
 - [ ] Stable development ABI/function indirection strategy.
 - [ ] Incremental compiler cache.
+  - [x] `fluxc run` owns a persistent `ProjectAnalysisCache`, avoiding the former separate check + compile analysis on successful rebuilds and reusing unchanged module ASTs across changed graphs.
+  - [ ] Incremental semantic/type/codegen reuse for changed graphs, plus durable on-disk cache artifacts where they materially improve cold-start development builds.
 - [ ] Target: save-to-visible-update latency competitive with modern React Fast Refresh for ordinary UI edits.
 
 # Milestone 12 — Input and interaction
