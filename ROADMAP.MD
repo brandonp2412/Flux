@@ -528,7 +528,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Layout transitions.
 - [ ] Gesture-driven animation.
 - [ ] Frame synchronization.
-- [ ] Reduced-motion accessibility handling.
+- [x] Reduced-motion accessibility handling.
+  - [x] Native property-transition styles include a `prefers-reduced-motion: reduce` override that removes transition duration/delay, and each transition CSS provider live-binds GTK's system `gtk-interface-reduced-motion` setting into its `prefers-reduced-motion` property. The application therefore follows the platform accessibility preference without a Flux-specific toggle.
 
 # Milestone 15 — Android target
 

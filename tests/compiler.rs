@@ -4373,6 +4373,9 @@ app Transformed
     assert!(generated.contains("transition-duration: 180ms;"));
     assert!(generated.contains("transition-delay: 20ms;"));
     assert!(generated.contains("transition-timing-function: ease-out;"));
+    assert!(generated.contains("@media (prefers-reduced-motion: reduce)"));
+    assert!(generated.contains("\"gtk-interface-reduced-motion\""));
+    assert!(generated.contains("\"prefers-reduced-motion\""));
 
     let invalid_transition = r#"
 view Transformed {

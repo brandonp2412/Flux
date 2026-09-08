@@ -1649,12 +1649,26 @@ fn emit_element_style(
     }
     let widget_name = format!("flux-ui-{}", element.name);
     let provider = format!("flux__style_{}", element.name);
-    let css = format!("#{widget_name} {{ {} }}", declarations.join(" "));
+    let css = if transition_ms.is_some() {
+        format!(
+            "#{widget_name} {{ {} }} @media (prefers-reduced-motion: reduce) {{ #{widget_name} {{ transition-duration: 0ms; transition-delay: 0ms; }} }}",
+            declarations.join(" ")
+        )
+    } else {
+        format!("#{widget_name} {{ {} }}", declarations.join(" "))
+    };
     out.push_str(&format!(
-        "    gtk_widget_set_name({variable}, {});\n    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n    g_object_unref({provider});\n",
+        "    gtk_widget_set_name({variable}, {});\n    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n",
         c_string(&widget_name),
         c_string(&css),
     ));
+    if transition_ms.is_some() {
+        let settings = format!("flux__settings_{}", element.name);
+        out.push_str(&format!(
+            "    GtkSettings *{settings} = gtk_settings_get_default();\n    if ({settings} != NULL) g_object_bind_property({settings}, \"gtk-interface-reduced-motion\", {provider}, \"prefers-reduced-motion\", G_BINDING_SYNC_CREATE);\n"
+        ));
+    }
+    out.push_str(&format!("    g_object_unref({provider});\n"));
     Ok(())
 }
 
