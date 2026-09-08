@@ -155,6 +155,7 @@ pub struct ImportDef {
 
 #[derive(Debug, Clone)]
 pub struct InterfaceDef {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
@@ -205,6 +206,7 @@ pub struct InterfaceImplMapping {
 
 #[derive(Debug, Clone)]
 pub struct TypeAlias {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub target: Type,
@@ -215,6 +217,7 @@ pub struct TypeAlias {
 
 #[derive(Debug, Clone)]
 pub struct ConstantDef {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub ty: Type,
@@ -226,6 +229,7 @@ pub struct ConstantDef {
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
@@ -249,6 +253,7 @@ pub struct EnumPayload {
 
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
@@ -267,6 +272,7 @@ pub struct StructField {
 
 #[derive(Debug, Clone)]
 pub struct Function {
+    pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,

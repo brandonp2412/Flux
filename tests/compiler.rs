@@ -2728,12 +2728,12 @@ fn project_imports_compile_transitively_through_cli() {
     fs::create_dir_all(&root).expect("temporary project directory should be writable");
     fs::write(
         root.join("math.flux"),
-        "fn double(value: i64) -> i64 { value * 2 }\n",
+        "pub fn double(value: i64) -> i64 { value * 2 }\n",
     )
     .expect("math module should be writable");
     fs::write(
         root.join("service.flux"),
-        "import \"math.flux\"\nfn answer() -> i64 { double(21) }\n",
+        "import \"math.flux\"\npub fn answer() -> i64 { double(21) }\n",
     )
     .expect("service module should be writable");
     let entry = root.join("main.flux");
@@ -2870,6 +2870,259 @@ fn project_imports_report_cycles_and_invalid_paths_at_import_sites() {
     );
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn module_visibility_is_private_by_default_and_pub_exports_cross_file_api() {
+    let root = std::env::temp_dir().join(format!("flux-project-visibility-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary visibility project should be writable");
+    let api = root.join("api.flux");
+    fs::write(
+        &api,
+        r#"
+const hidden_value: i64 = 3
+pub const visible_value: i64 = 7
+
+type HiddenId = i64
+pub type VisibleId = i64
+
+struct HiddenBox {
+    value: i64
+}
+
+pub struct VisibleBox {
+    value: i64
+}
+
+enum HiddenChoice {
+    Yes
+}
+
+pub enum VisibleChoice {
+    Yes
+}
+
+interface HiddenCapability {
+    fn value() -> i64
+}
+
+pub interface VisibleCapability {
+    fn value() -> i64
+}
+
+fn hidden_helper(value: i64) -> i64 { value + hidden_value }
+pub fn visible_helper(value: i64) -> i64 { hidden_helper(value) + visible_value }
+"#,
+    )
+    .expect("API module should be writable");
+
+    let good = root.join("good.flux");
+    fs::write(
+        &good,
+        r#"
+import "api.flux"
+fn main() -> i64 {
+    let id: VisibleId = visible_helper(1)
+    let box: VisibleBox = VisibleBox { value: id }
+    let choice: VisibleChoice = VisibleChoice.Yes()
+    print(box.value)
+    print(visible_value)
+    return 0
+}
+"#,
+    )
+    .expect("public API entry should be writable");
+    fluxc::project::check(&good).expect("pub declarations should cross module boundaries");
+
+    let private_function = root.join("private_function.flux");
+    fs::write(
+        &private_function,
+        "import \"api.flux\"\nfn main() -> i64 { hidden_helper(1) }\n",
+    )
+    .expect("private-function entry should be writable");
+    let errors = fluxc::project::check(&private_function)
+        .expect_err("private function must not cross module boundary");
+    assert!(
+        errors.iter().any(|error| {
+            error
+                .message
+                .contains("private function 'hidden_helper' is not accessible from this module")
+        }),
+        "unexpected diagnostics: {errors:#?}"
+    );
+
+    let private_constant = root.join("private_constant.flux");
+    fs::write(
+        &private_constant,
+        "import \"api.flux\"\nfn main() -> i64 { hidden_value }\n",
+    )
+    .expect("private-constant entry should be writable");
+    let errors = fluxc::project::check(&private_constant)
+        .expect_err("private constant must not cross module boundary");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("private constant 'hidden_value' is not accessible from this module")
+    }));
+
+    let private_types = root.join("private_types.flux");
+    fs::write(
+        &private_types,
+        r#"
+import "api.flux"
+fn main() -> i64 {
+    let id: HiddenId = 1
+    let box: HiddenBox = HiddenBox { value: id }
+    let choice: HiddenChoice = HiddenChoice.Yes()
+    return 0
+}
+"#,
+    )
+    .expect("private-types entry should be writable");
+    let errors = fluxc::project::check(&private_types)
+        .expect_err("private named types must not cross module boundary");
+    let messages = errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("private type alias 'HiddenId'"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("private struct 'HiddenBox'"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("private enum 'HiddenChoice'"))
+    );
+
+    let private_interface = root.join("private_interface.flux");
+    fs::write(
+        &private_interface,
+        "import \"api.flux\"\nfn consume(value: HiddenCapability) -> i64 { 0 }\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("private-interface entry should be writable");
+    let errors = fluxc::project::check(&private_interface)
+        .expect_err("private interface must not cross module boundary");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("private interface 'HiddenCapability' is not accessible from this module")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn public_apis_cannot_expose_private_named_types() {
+    let source = r#"
+struct Secret {
+    value: i64
+}
+
+enum HiddenChoice {
+    Yes
+}
+
+interface HiddenCapability {
+    fn value() -> i64
+}
+
+pub type LeakedAlias = Secret
+
+pub struct Wrapper {
+    secret: Secret
+}
+
+pub enum Event {
+    SecretValue(Secret)
+}
+
+pub interface PublicCapability {
+    fn secret() -> Secret
+}
+
+pub interface InvalidComposition: HiddenCapability {
+}
+
+pub fn leak() -> Secret { Secret { value: 1 } }
+pub fn consume(value: HiddenChoice) -> i64 { 0 }
+
+fn main() -> i64 { 0 }
+"#;
+    let errors = check_source_all(source).expect_err("public APIs must not expose private types");
+    let messages = errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("public API cannot expose private struct 'Secret'"))
+    );
+    assert!(messages.iter().any(|message| message.contains("public API cannot expose private enum 'HiddenChoice'")));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("cannot compose private interface 'HiddenCapability'"))
+    );
+}
+
+#[test]
+fn formatter_preserves_pub_visibility_and_precise_name_spans() {
+    let source = "pub type UserId=i64\npub const LIMIT:i64=3\npub struct Box {\n value:i64\n}\npub enum Choice {\n Yes\n}\npub interface Named {\n fn name()->str\n}\npub fn identity(value:i64)->i64 { value }\nfn main()->i64 { 0 }\n";
+    let formatted =
+        fluxc::formatter::format_source(source).expect("pub declarations should format");
+    assert!(formatted.contains("pub type UserId = i64"));
+    assert!(formatted.contains("pub const LIMIT: i64 = 3"));
+    assert!(formatted.contains("pub struct Box {"));
+    assert!(formatted.contains("pub enum Choice {"));
+    assert!(formatted.contains("pub interface Named {"));
+    assert!(formatted.contains("pub fn identity(value: i64) -> i64 { value }"));
+
+    let program = fluxc::parser::parse_all_with_source(&formatted, SourceId::new(901))
+        .expect("formatted pub source should parse");
+    let identity = program
+        .functions
+        .iter()
+        .find(|function| function.name == "identity")
+        .expect("identity should exist");
+    assert!(identity.public);
+    assert_eq!(span_text(&formatted, identity.name_span), "identity");
+    assert_eq!(identity.name_span.source_id, SourceId::new(901));
+}
+
+#[test]
+fn rejects_pub_on_imports_and_implementations() {
+    let import = "pub import \"dep.flux\"\nfn main() -> i64 { 0 }\n";
+    let error = fluxc::parser::parse(import).expect_err("pub import should fail");
+    assert!(error.message.contains("imports cannot be declared pub"));
+
+    let implementation = r#"
+interface Capability {
+    fn value() -> i64
+}
+struct Data {
+    value: i64
+}
+pub impl Capability for Data {
+    value: data_value
+}
+fn data_value(data: Data) -> i64 { data.value }
+fn main() -> i64 { 0 }
+"#;
+    let error = fluxc::parser::parse(implementation).expect_err("pub impl should fail");
+    assert!(
+        error
+            .message
+            .contains("interface implementations cannot be declared pub")
+    );
 }
 
 #[test]

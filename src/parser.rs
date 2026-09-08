@@ -117,7 +117,14 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("import ") {
+        let (declaration_text, public, visibility_offset) = split_visibility(&line.text);
+
+        if declaration_text.starts_with("import ") {
+            if public {
+                diagnostics.push(diag(line.number, "imports cannot be declared pub"));
+                index += 1;
+                continue;
+            }
             match parse_import(line) {
                 Ok(import) => imports.push(import),
                 Err(diagnostic) => diagnostics.push(diagnostic),
@@ -126,7 +133,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("type ") {
+        if declaration_text.starts_with("type ") {
             match parse_type_alias(line) {
                 Ok(alias) => aliases.push(alias),
                 Err(diagnostic) => diagnostics.push(diagnostic),
@@ -135,7 +142,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("const ") {
+        if declaration_text.starts_with("const ") {
             match parse_constant(line) {
                 Ok(constant) => constants.push(constant),
                 Err(diagnostic) => diagnostics.push(diagnostic),
@@ -144,7 +151,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("interface ") {
+        if declaration_text.starts_with("interface ") {
             match parse_interface_declaration(&lines, &mut index) {
                 Ok(definition) => interfaces.push(definition),
                 Err(diagnostic) => {
@@ -155,7 +162,15 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("impl ") {
+        if declaration_text.starts_with("impl ") {
+            if public {
+                diagnostics.push(diag(
+                    line.number,
+                    "interface implementations cannot be declared pub",
+                ));
+                index = recover_after_malformed_declaration(&lines, index.saturating_add(1));
+                continue;
+            }
             match parse_interface_implementation(&lines, &mut index) {
                 Ok(implementation) => implementations.push(implementation),
                 Err(diagnostic) => {
@@ -166,7 +181,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("struct ") {
+        if declaration_text.starts_with("struct ") {
             match parse_struct_declaration(&lines, &mut index) {
                 Ok(definition) => structs.push(definition),
                 Err(diagnostic) => {
@@ -177,7 +192,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
-        if line.text.starts_with("enum ") {
+        if declaration_text.starts_with("enum ") {
             match parse_enum_declaration(&lines, &mut index) {
                 Ok(definition) => enums.push(definition),
                 Err(diagnostic) => {
@@ -202,8 +217,11 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             }
         }
 
-        let header = match parse_function_header(&line.text, line.number) {
-            Ok(header) => header,
+        let header = match parse_function_header(declaration_text, line.number) {
+            Ok(mut header) => {
+                shift_function_header(&mut header, visibility_offset);
+                header
+            }
             Err(diagnostic) => {
                 diagnostics.push(diagnostic);
                 index = recover_after_malformed_declaration(&lines, index + 1);
@@ -247,9 +265,10 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         index += 1;
 
         functions.push(Function {
+            public,
             name,
             name_span,
-            keyword_span: SourceSpan::new(function_line, 1, 2),
+            keyword_span: SourceSpan::new(function_line, 1 + visibility_offset, 2),
             params,
             returns,
             return_span,
@@ -589,6 +608,150 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
     (lines, diagnostics)
 }
 
+fn split_visibility(input: &str) -> (&str, bool, usize) {
+    input
+        .strip_prefix("pub ")
+        .map(|rest| (rest, true, 4))
+        .unwrap_or((input, false, 0))
+}
+
+fn shift_expr_columns(expr: &mut Expr, offset: usize) {
+    if offset == 0 {
+        return;
+    }
+    expr.span.column += offset;
+    match &mut expr.kind {
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                shift_expr_columns(arg, offset);
+            }
+            for arg in named_args {
+                arg.name_span.column += offset;
+                shift_expr_columns(&mut arg.value, offset);
+            }
+        }
+        ExprKind::StructLiteral {
+            name_span,
+            base,
+            fields,
+            ..
+        } => {
+            name_span.column += offset;
+            if let Some(base) = base {
+                shift_expr_columns(base, offset);
+            }
+            for field in fields {
+                field.name_span.column += offset;
+                shift_expr_columns(&mut field.value, offset);
+            }
+        }
+        ExprKind::QualifiedCall {
+            namespace_span,
+            name_span,
+            args,
+            named_args,
+            ..
+        } => {
+            namespace_span.column += offset;
+            name_span.column += offset;
+            for arg in args {
+                shift_expr_columns(arg, offset);
+            }
+            for arg in named_args {
+                arg.name_span.column += offset;
+                shift_expr_columns(&mut arg.value, offset);
+            }
+        }
+        ExprKind::Field {
+            base, name_span, ..
+        } => {
+            name_span.column += offset;
+            shift_expr_columns(base, offset);
+        }
+        ExprKind::Match { value, arms } => {
+            shift_expr_columns(value, offset);
+            for arm in arms {
+                arm.enum_span.column += offset;
+                arm.variant_span.column += offset;
+                arm.span.column += offset;
+                for pattern in &mut arm.patterns {
+                    shift_match_pattern_columns(pattern, offset);
+                }
+                shift_expr_columns(&mut arm.value, offset);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            shift_expr_columns(then_expr, offset);
+            shift_expr_columns(cond, offset);
+            shift_expr_columns(else_expr, offset);
+        }
+        ExprKind::Unary { expr, .. } => shift_expr_columns(expr, offset),
+        ExprKind::Binary { left, right, .. } => {
+            shift_expr_columns(left, offset);
+            shift_expr_columns(right, offset);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn shift_match_pattern_columns(pattern: &mut MatchPattern, offset: usize) {
+    match pattern {
+        MatchPattern::Binding(binding) => binding.span.column += offset,
+        MatchPattern::Struct(pattern) => {
+            pattern.struct_span.column += offset;
+            for field in &mut pattern.fields {
+                field.field_span.column += offset;
+                field.binding.span.column += offset;
+                if let Some(nested) = &mut field.nested {
+                    nested.struct_span.column += offset;
+                    for nested_field in &mut nested.fields {
+                        shift_struct_pattern_field_columns(nested_field, offset);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shift_struct_pattern_field_columns(field: &mut StructPatternField, offset: usize) {
+    field.field_span.column += offset;
+    field.binding.span.column += offset;
+    if let Some(nested) = &mut field.nested {
+        nested.struct_span.column += offset;
+        for field in &mut nested.fields {
+            shift_struct_pattern_field_columns(field, offset);
+        }
+    }
+}
+
+fn shift_function_header(header: &mut FunctionHeader, offset: usize) {
+    if offset == 0 {
+        return;
+    }
+    header.name_span.column += offset;
+    header.return_span.column += offset;
+    for span in &mut header.return_type_spans {
+        span.column += offset;
+    }
+    for param in &mut header.params {
+        param.name_span.column += offset;
+        param.type_span.column += offset;
+        if let Some(default) = &mut param.default {
+            shift_expr_columns(default, offset);
+        }
+    }
+}
+
 fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usize {
     while index < lines.len() {
         let line = &lines[index];
@@ -596,14 +759,15 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
             if line.text == "}" {
                 return index + 1;
             }
-            if line.text.starts_with("fn ")
-                || line.text.starts_with("import ")
-                || line.text.starts_with("interface ")
-                || line.text.starts_with("impl ")
-                || line.text.starts_with("struct ")
-                || line.text.starts_with("enum ")
-                || line.text.starts_with("type ")
-                || line.text.starts_with("const ")
+            let (text, _, _) = split_visibility(&line.text);
+            if text.starts_with("fn ")
+                || text.starts_with("import ")
+                || text.starts_with("interface ")
+                || text.starts_with("impl ")
+                || text.starts_with("struct ")
+                || text.starts_with("enum ")
+                || text.starts_with("type ")
+                || text.starts_with("const ")
             {
                 return index;
             }
@@ -642,7 +806,8 @@ fn parse_interface_declaration(
     index: &mut usize,
 ) -> Result<InterfaceDef, Diagnostic> {
     let header = &lines[*index];
-    let Some(rest) = header.text.strip_prefix("interface ") else {
+    let (header_text, public, visibility_offset) = split_visibility(&header.text);
+    let Some(rest) = header_text.strip_prefix("interface ") else {
         return Err(diag(header.number, "expected interface declaration"));
     };
     let Some(raw_name) = rest.strip_suffix('{') else {
@@ -662,7 +827,7 @@ fn parse_interface_declaration(
     };
     validate_identifier(name, header.number)?;
     let leading = raw_name.len() - raw_name.trim_start().len();
-    let name_span = SourceSpan::new(header.number, 11 + leading, name.len());
+    let name_span = SourceSpan::new(header.number, visibility_offset + 11 + leading, name.len());
     let mut parents = Vec::new();
     if let Some(parents_source) = parents_source {
         if parents_source.is_empty() {
@@ -671,10 +836,10 @@ fn parse_interface_declaration(
                 "interface composition requires at least one parent after ':'",
             ));
         }
-        let parents_column = header
-            .text
+        let parents_column = header_text
             .find(':')
             .expect("interface composition colon was parsed")
+            + visibility_offset
             + 2;
         for (raw_parent, offset) in split_top_level_commas_with_offsets(parents_source) {
             let (parent, parent_column) = trim_with_column(raw_parent, parents_column + offset);
@@ -782,9 +947,10 @@ fn parse_interface_declaration(
     *index += 1;
 
     Ok(InterfaceDef {
+        public,
         name: name.to_string(),
         name_span,
-        keyword_span: SourceSpan::new(header.number, 1, 9),
+        keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 9),
         parents,
         functions,
         line: header.number,
@@ -896,7 +1062,8 @@ fn parse_interface_implementation(
 }
 
 fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
-    let Some(rest) = line.text.strip_prefix("type ") else {
+    let (text, public, visibility_offset) = split_visibility(&line.text);
+    let Some(rest) = text.strip_prefix("type ") else {
         return Err(diag(line.number, "expected type alias declaration"));
     };
     let Some(eq_offset) = rest.find('=') else {
@@ -907,14 +1074,16 @@ fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
     };
     let raw_name = &rest[..eq_offset];
     let raw_target = &rest[eq_offset + 1..];
-    let (name, name_column) = trim_with_column(raw_name, 6);
+    let (name, name_column) = trim_with_column(raw_name, 6 + visibility_offset);
     validate_identifier(name, line.number)?;
-    let (target_text, target_column) = trim_with_column(raw_target, 6 + eq_offset + 1);
+    let (target_text, target_column) =
+        trim_with_column(raw_target, 6 + visibility_offset + eq_offset + 1);
     let target = parse_type(target_text, line.number)?;
     if target == Type::Void {
         return Err(diag(line.number, "type aliases cannot target void"));
     }
     Ok(TypeAlias {
+        public,
         name: name.to_string(),
         name_span: SourceSpan::new(line.number, name_column, name.len()),
         target,
@@ -925,7 +1094,8 @@ fn parse_type_alias(line: &Line) -> Result<TypeAlias, Diagnostic> {
 }
 
 fn parse_constant(line: &Line) -> Result<ConstantDef, Diagnostic> {
-    let Some(rest) = line.text.strip_prefix("const ") else {
+    let (text, public, visibility_offset) = split_visibility(&line.text);
+    let Some(rest) = text.strip_prefix("const ") else {
         return Err(diag(line.number, "expected constant declaration"));
     };
     let Some(eq_offset) = rest.find('=') else {
@@ -936,11 +1106,12 @@ fn parse_constant(line: &Line) -> Result<ConstantDef, Diagnostic> {
     };
     let binding_src = &rest[..eq_offset];
     let raw_value = &rest[eq_offset + 1..];
-    let binding = parse_binding(binding_src.trim(), line.number, 7)?;
-    let raw_value_column = 7 + eq_offset + 1;
+    let binding = parse_binding(binding_src.trim(), line.number, 7 + visibility_offset)?;
+    let raw_value_column = 7 + visibility_offset + eq_offset + 1;
     let (value_src, value_column) = trim_with_column(raw_value, raw_value_column);
     let value = parse_expression_at(value_src, line.number, value_column)?;
     Ok(ConstantDef {
+        public,
         name: binding.name,
         name_span: binding.name_span,
         ty: binding.ty,
@@ -953,7 +1124,8 @@ fn parse_constant(line: &Line) -> Result<ConstantDef, Diagnostic> {
 
 fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, Diagnostic> {
     let header = &lines[*index];
-    let Some(rest) = header.text.strip_prefix("enum ") else {
+    let (header_text, public, visibility_offset) = split_visibility(&header.text);
+    let Some(rest) = header_text.strip_prefix("enum ") else {
         return Err(diag(header.number, "expected enum declaration"));
     };
     let Some(raw_name) = rest.strip_suffix('{') else {
@@ -965,7 +1137,7 @@ fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, 
     let name = raw_name.trim();
     validate_identifier(name, header.number)?;
     let leading = raw_name.len() - raw_name.trim_start().len();
-    let name_span = SourceSpan::new(header.number, 6 + leading, name.len());
+    let name_span = SourceSpan::new(header.number, visibility_offset + 6 + leading, name.len());
     let definition_span = header.span();
     *index += 1;
 
@@ -1053,9 +1225,10 @@ fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, 
     *index += 1;
 
     Ok(EnumDef {
+        public,
         name: name.to_string(),
         name_span,
-        keyword_span: SourceSpan::new(header.number, 1, 4),
+        keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 4),
         variants,
         line: header.number,
         span: definition_span,
@@ -1064,7 +1237,8 @@ fn parse_enum_declaration(lines: &[Line], index: &mut usize) -> Result<EnumDef, 
 
 fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructDef, Diagnostic> {
     let header = &lines[*index];
-    let Some(rest) = header.text.strip_prefix("struct ") else {
+    let (header_text, public, visibility_offset) = split_visibility(&header.text);
+    let Some(rest) = header_text.strip_prefix("struct ") else {
         return Err(diag(header.number, "expected struct declaration"));
     };
     let Some(raw_name) = rest.strip_suffix('{') else {
@@ -1076,7 +1250,7 @@ fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructD
     let name = raw_name.trim();
     validate_identifier(name, header.number)?;
     let leading = raw_name.len() - raw_name.trim_start().len();
-    let name_span = SourceSpan::new(header.number, 8 + leading, name.len());
+    let name_span = SourceSpan::new(header.number, visibility_offset + 8 + leading, name.len());
     let definition_span = header.span();
     *index += 1;
 
@@ -1132,9 +1306,10 @@ fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructD
     *index += 1;
 
     Ok(StructDef {
+        public,
         name: name.to_string(),
         name_span,
-        keyword_span: SourceSpan::new(header.number, 1, 6),
+        keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 6),
         fields,
         line: header.number,
         span: definition_span,
@@ -1165,26 +1340,30 @@ fn strip_comment(input: &str) -> &str {
 }
 
 fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
-    if !line.text.starts_with("fn ") || !line.text.ends_with('}') {
+    let (text, public, visibility_offset) = split_visibility(&line.text);
+    if !text.starts_with("fn ") || !text.ends_with('}') {
         return Ok(None);
     }
-    let Some(open_offset) = line.text.find('{') else {
+    let Some(open_offset) = text.find('{') else {
         return Ok(None);
     };
-    if open_offset + 1 >= line.text.len() {
+    if open_offset + 1 >= text.len() {
         return Ok(None);
     }
-    let header_source = line.text[..=open_offset].trim_end();
-    let header = parse_function_header(header_source, line.number)?;
+    let header_source = text[..=open_offset].trim_end();
+    let mut header = parse_function_header(header_source, line.number)?;
+    shift_function_header(&mut header, visibility_offset);
     if header.returns.is_empty() {
         return Err(diag(
             line.number,
             "single-expression functions require a non-void return type",
         ));
     }
-    let raw_expression = &line.text[open_offset + 1..line.text.len() - 1];
-    let (expression_source, expression_column) =
-        trim_with_column(raw_expression, line.indent + open_offset + 2);
+    let raw_expression = &text[open_offset + 1..text.len() - 1];
+    let (expression_source, expression_column) = trim_with_column(
+        raw_expression,
+        line.indent + visibility_offset + open_offset + 2,
+    );
     if expression_source.is_empty() {
         return Err(diag(
             line.number,
@@ -1194,9 +1373,10 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
     let expression = parse_expression_at(expression_source, line.number, expression_column)?;
     let expression_span = expression.span;
     Ok(Some(Function {
+        public,
         name: header.name,
         name_span: header.name_span,
-        keyword_span: SourceSpan::new(line.number, line.indent + 1, 2),
+        keyword_span: SourceSpan::new(line.number, line.indent + 1 + visibility_offset, 2),
         params: header.params,
         returns: header.returns,
         return_span: header.return_span,

@@ -4,10 +4,11 @@ use crate::ast::{
     BinOp, ConstantDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, Stmt, StmtKind,
     StructPatternField, Type, UnaryOp,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
 #[derive(Debug, Clone)]
 pub struct Signature {
+    pub public: bool,
     pub params: Vec<Type>,
     pub param_details: Vec<ParamSignature>,
     pub returns: Vec<Type>,
@@ -32,6 +33,7 @@ pub struct StructFieldSignature {
 
 #[derive(Debug, Clone)]
 pub struct StructSignature {
+    pub public: bool,
     pub fields: Vec<StructFieldSignature>,
     pub span: SourceSpan,
 }
@@ -45,12 +47,14 @@ pub struct EnumVariantSignature {
 
 #[derive(Debug, Clone)]
 pub struct EnumSignature {
+    pub public: bool,
     pub variants: Vec<EnumVariantSignature>,
     pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceSignature {
+    pub public: bool,
     pub functions: HashMap<String, Signature>,
     pub span: SourceSpan,
 }
@@ -88,6 +92,7 @@ impl ConstantValue {
 
 #[derive(Debug, Clone)]
 pub struct ConstantSignature {
+    pub public: bool,
     pub ty: Type,
     pub value: ConstantValue,
     pub span: SourceSpan,
@@ -107,6 +112,7 @@ pub struct Signatures {
     structs: HashMap<String, StructSignature>,
     enums: HashMap<String, EnumSignature>,
     aliases: HashMap<String, Type>,
+    alias_visibility: HashMap<String, (SourceSpan, bool)>,
     constants: HashMap<String, ConstantSignature>,
 }
 
@@ -154,6 +160,10 @@ impl Signatures {
 
     pub fn type_alias(&self, name: &str) -> Option<&Type> {
         self.aliases.get(name)
+    }
+
+    fn alias_declaration(&self, name: &str) -> Option<(SourceSpan, bool)> {
+        self.alias_visibility.get(name).copied()
     }
 
     pub fn constant(&self, name: &str) -> Option<&ConstantSignature> {
@@ -227,6 +237,9 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         match resolve_alias_target(&alias.target, &alias_targets, &mut vec![alias.name.clone()]) {
             Ok(target) => {
                 signatures.aliases.insert(alias.name.clone(), target);
+                signatures
+                    .alias_visibility
+                    .insert(alias.name.clone(), (alias.name_span, alias.public));
             }
             Err(chain) => diagnostics.push(
                 diag(
@@ -272,6 +285,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         signatures.interfaces.insert(
             definition.name.clone(),
             InterfaceSignature {
+                public: definition.public,
                 functions: HashMap::new(),
                 span: definition.name_span,
             },
@@ -306,6 +320,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         signatures.structs.insert(
             definition.name.clone(),
             StructSignature {
+                public: definition.public,
                 fields: Vec::new(),
                 span: definition.name_span,
             },
@@ -347,6 +362,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         signatures.enums.insert(
             definition.name.clone(),
             EnumSignature {
+                public: definition.public,
                 variants: Vec::new(),
                 span: definition.name_span,
             },
@@ -369,6 +385,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         for field in &definition.fields {
             if let Err(diagnostic) =
                 require_storable_value_type(field.type_span, &field.ty, &signatures)
+            {
+                diagnostics.push(diagnostic);
+            }
+            if definition.public
+                && let Err(diagnostic) =
+                    require_publicly_nameable_type(field.type_span, &field.ty, &signatures)
             {
                 diagnostics.push(diagnostic);
             }
@@ -399,12 +421,24 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 {
                     diagnostics.push(diagnostic);
                 }
+                if definition.public
+                    && let Err(diagnostic) =
+                        require_publicly_nameable_type(payload.type_span, &payload.ty, &signatures)
+                {
+                    diagnostics.push(diagnostic);
+                }
             }
         }
     }
 
     for alias in &program.aliases {
         if let Err(diagnostic) = require_known_type(alias.target_span, &alias.target, &signatures) {
+            diagnostics.push(diagnostic);
+        }
+        if alias.public
+            && let Err(diagnostic) =
+                require_publicly_nameable_type(alias.target_span, &alias.target, &signatures)
+        {
             diagnostics.push(diagnostic);
         }
     }
@@ -418,6 +452,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             let mut param_details = Vec::with_capacity(function.params.len());
             for param in &function.params {
                 if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures)
+                {
+                    diagnostics.push(diagnostic);
+                }
+                if definition.public
+                    && let Err(diagnostic) =
+                        require_publicly_nameable_type(param.type_span, &param.ty, &signatures)
                 {
                     diagnostics.push(diagnostic);
                 }
@@ -438,10 +478,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                     diagnostics.push(diagnostic);
                 }
+                if definition.public
+                    && let Err(diagnostic) = require_publicly_nameable_type(span, ty, &signatures)
+                {
+                    diagnostics.push(diagnostic);
+                }
             }
             members.insert(
                 function.name.clone(),
                 Signature {
+                    public: true,
                     params: param_details.iter().map(|param| param.ty.clone()).collect(),
                     param_details,
                     returns: function
@@ -508,6 +554,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             ));
         }
         if let Err(diagnostic) = require_known_type(constant.type_span, &constant.ty, &signatures) {
+            diagnostics.push(diagnostic);
+        }
+        if constant.public
+            && let Err(diagnostic) =
+                require_publicly_nameable_type(constant.type_span, &constant.ty, &signatures)
+        {
             diagnostics.push(diagnostic);
         }
         let declared = signatures.canonical_type(&constant.ty);
@@ -596,6 +648,12 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures) {
                 diagnostics.push(diagnostic);
             }
+            if function.public
+                && let Err(diagnostic) =
+                    require_publicly_nameable_type(param.type_span, &param.ty, &signatures)
+            {
+                diagnostics.push(diagnostic);
+            }
             let ty = signatures.canonical_type(&param.ty);
             let default = if let Some(default) = &param.default {
                 match evaluate_default_expr(default, &signatures) {
@@ -637,10 +695,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                 diagnostics.push(diagnostic);
             }
+            if function.public
+                && let Err(diagnostic) = require_publicly_nameable_type(span, ty, &signatures)
+            {
+                diagnostics.push(diagnostic);
+            }
         }
         signatures.insert_function(
             function.name.clone(),
             Signature {
+                public: function.public,
                 params: param_details.iter().map(|param| param.ty.clone()).collect(),
                 param_details,
                 returns: function
@@ -664,6 +728,24 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             ));
             continue;
         };
+        if let Err(diagnostic) = require_visible_declaration(
+            implementation.interface_span,
+            interface.span,
+            interface.public,
+            "interface",
+            &implementation.interface_name,
+        ) {
+            diagnostics.push(diagnostic);
+            continue;
+        }
+        if let Err(diagnostic) = require_visible_named_type(
+            implementation.target_span,
+            &implementation.target_name,
+            &signatures,
+        ) {
+            diagnostics.push(diagnostic);
+            continue;
+        }
         let target_ty = signatures.canonical_type(&Type::Named(implementation.target_name.clone()));
         let Type::Named(target_name) = &target_ty else {
             diagnostics.push(diag(
@@ -718,6 +800,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 ));
                 continue;
             };
+            if let Err(diagnostic) = require_visible_declaration(
+                mapping.function_span,
+                function.span,
+                function.public,
+                "function",
+                &mapping.function,
+            ) {
+                diagnostics.push(diagnostic);
+                continue;
+            }
             if function.params.len() != member.params.len() + 1 {
                 diagnostics.push(diag(
                     mapping.function_span,
@@ -1375,26 +1467,38 @@ pub fn type_of_expr(
         ExprKind::Bool(_) => Ok(Type::Bool),
         ExprKind::Str(_) => Ok(Type::Str),
         ExprKind::Nil => Ok(Type::Error),
-        ExprKind::Var(name) => env
-            .get(name)
-            .cloned()
-            .or_else(|| {
-                signatures
-                    .constant(name)
-                    .map(|constant| constant.ty.clone())
-            })
-            .or_else(|| {
-                signatures.get(name).map(|signature| Type::Function {
+        ExprKind::Var(name) => {
+            if let Some(ty) = env.get(name) {
+                return Ok(ty.clone());
+            }
+            if let Some(constant) = signatures.constant(name) {
+                require_visible_declaration(
+                    expr.span,
+                    constant.span,
+                    constant.public,
+                    "constant",
+                    name,
+                )?;
+                return Ok(constant.ty.clone());
+            }
+            if let Some(signature) = signatures.get(name) {
+                require_visible_declaration(
+                    expr.span,
+                    signature.span,
+                    signature.public,
+                    "function",
+                    name,
+                )?;
+                return Ok(Type::Function {
                     params: signature.params.clone(),
                     returns: signature.returns.clone(),
-                })
-            })
-            .ok_or_else(|| {
-                diag(
-                    expr.span,
-                    &format!("unknown binding, constant, or function '{name}'"),
-                )
-            }),
+                });
+            }
+            Err(diag(
+                expr.span,
+                &format!("unknown binding, constant, or function '{name}'"),
+            ))
+        }
         ExprKind::Call {
             name,
             args,
@@ -1435,6 +1539,16 @@ pub fn type_of_expr(
             args,
             named_args,
         } if signatures.interface(name).is_some() => {
+            let interface = signatures
+                .interface(name)
+                .expect("interface was checked above");
+            require_visible_declaration(
+                expr.span,
+                interface.span,
+                interface.public,
+                "interface",
+                name,
+            )?;
             if !named_args.is_empty() {
                 return Err(diag(
                     expr.span,
@@ -1515,6 +1629,13 @@ pub fn type_of_expr(
             let Some(definition) = signatures.struct_type(name) else {
                 return Err(diag(*name_span, &format!("unknown struct '{name}'")));
             };
+            require_visible_declaration(
+                *name_span,
+                definition.span,
+                definition.public,
+                "struct",
+                name,
+            )?;
             if let Some(base) = base {
                 let base_ty = type_of_expr(base, env, signatures)?;
                 require_type(
@@ -1852,6 +1973,13 @@ fn check_qualified_call(
     };
     let span = expr.span;
     if let Some(definition) = signatures.enum_type(namespace) {
+        require_visible_declaration(
+            *namespace_span,
+            definition.span,
+            definition.public,
+            "enum",
+            namespace,
+        )?;
         if !named_args.is_empty() {
             return Err(diag(
                 span,
@@ -1902,6 +2030,13 @@ fn check_qualified_call(
             &format!("unknown enum or interface namespace '{namespace}'"),
         ));
     };
+    require_visible_declaration(
+        *namespace_span,
+        interface.span,
+        interface.public,
+        "interface",
+        namespace,
+    )?;
     let Some(member) = interface.functions.get(name) else {
         return Err(diag(
             *name_span,
@@ -2004,6 +2139,7 @@ fn check_call(
         }
         return Ok(returns.clone());
     };
+    require_visible_declaration(span, signature.span, signature.public, "function", name)?;
     check_declared_call(span, name, signature, args, named_args, env, signatures)
 }
 
@@ -2156,17 +2292,24 @@ fn evaluate_default_expr(
         ExprKind::Int(value) => Ok(ConstantValue::I64(*value)),
         ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
-        ExprKind::Var(name) => signatures
-            .constant(name)
-            .map(|constant| constant.value.clone())
-            .ok_or_else(|| {
-                diag(
+        ExprKind::Var(name) => {
+            let Some(constant) = signatures.constant(name) else {
+                return Err(diag(
                     expr.span,
                     &format!(
                         "parameter defaults may reference only compile-time constants; '{name}' is not one"
                     ),
-                )
-            }),
+                ));
+            };
+            require_visible_declaration(
+                expr.span,
+                constant.span,
+                constant.public,
+                "constant",
+                name,
+            )?;
+            Ok(constant.value.clone())
+        }
         ExprKind::Conditional {
             then_expr,
             cond,
@@ -2262,6 +2405,7 @@ fn evaluate_constant(
         &format!("constant '{name}'"),
     )?;
     let signature = ConstantSignature {
+        public: definition.public,
         ty: declared,
         value,
         span: definition.name_span,
@@ -2282,12 +2426,19 @@ fn evaluate_constant_expr(
         ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
         ExprKind::Var(name) => {
-            if !definitions.contains_key(name.as_str()) {
+            let Some(definition) = definitions.get(name.as_str()) else {
                 return Err(diag(
                     expr.span,
                     &format!("unknown constant '{name}' in constant expression"),
                 ));
-            }
+            };
+            require_visible_declaration(
+                expr.span,
+                definition.name_span,
+                definition.public,
+                "constant",
+                name,
+            )?;
             evaluate_constant(name, definitions, signatures, cache, stack)
                 .map(|constant| constant.value)
         }
@@ -2597,6 +2748,30 @@ fn resolve_interface_composition(
                 &format!("unknown composed interface '{}'", parent.name),
             ));
         }
+        let parent_signature = signatures
+            .interface(&parent.name)
+            .expect("known composed interface has a signature");
+        if definition.public && !parent_signature.public {
+            visiting.pop();
+            return Err(diag(
+                parent.span,
+                &format!(
+                    "public interface '{}' cannot compose private interface '{}'",
+                    definition.name, parent.name
+                ),
+            )
+            .with_label(
+                parent_signature.span,
+                format!("'{}' is declared private here", parent.name),
+            ));
+        }
+        require_visible_declaration(
+            parent.span,
+            parent_signature.span,
+            parent_signature.public,
+            "interface",
+            &parent.name,
+        )?;
         let inherited =
             resolve_interface_composition(&parent.name, definitions, signatures, cache, visiting)?;
         for (member_name, inherited_signature) in inherited {
@@ -2636,11 +2811,141 @@ fn same_interface_contract(left: &Signature, right: &Signature) -> bool {
             })
 }
 
+fn same_module(declaration: SourceSpan, usage: SourceSpan) -> bool {
+    declaration.source_id == SourceId::UNKNOWN
+        || usage.source_id == SourceId::UNKNOWN
+        || declaration.source_id == usage.source_id
+}
+
+fn require_visible_declaration(
+    usage: SourceSpan,
+    declaration: SourceSpan,
+    public: bool,
+    kind: &str,
+    name: &str,
+) -> Result<(), Diagnostic> {
+    if public || same_module(declaration, usage) {
+        Ok(())
+    } else {
+        Err(diag(
+            usage,
+            &format!("private {kind} '{name}' is not accessible from this module"),
+        )
+        .with_label(declaration, format!("'{name}' is declared private here")))
+    }
+}
+
+fn require_visible_named_type(
+    span: SourceSpan,
+    name: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    if let Some((declaration, public)) = signatures.alias_declaration(name) {
+        return require_visible_declaration(span, declaration, public, "type alias", name);
+    }
+    if let Some(definition) = signatures.interface(name) {
+        return require_visible_declaration(
+            span,
+            definition.span,
+            definition.public,
+            "interface",
+            name,
+        );
+    }
+    if let Some(definition) = signatures.struct_type(name) {
+        return require_visible_declaration(
+            span,
+            definition.span,
+            definition.public,
+            "struct",
+            name,
+        );
+    }
+    if let Some(definition) = signatures.enum_type(name) {
+        return require_visible_declaration(span, definition.span, definition.public, "enum", name);
+    }
+    Ok(())
+}
+
+fn require_publicly_nameable_type(
+    span: SourceSpan,
+    ty: &Type,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    match ty {
+        Type::Named(name) => {
+            if let Some((declaration, public)) = signatures.alias_declaration(name) {
+                if !public {
+                    return Err(diag(
+                        span,
+                        &format!("public API cannot expose private type alias '{name}'"),
+                    )
+                    .with_label(declaration, format!("'{name}' is declared private here")));
+                }
+                let canonical = signatures.canonical_type(ty);
+                if canonical != *ty {
+                    return require_publicly_nameable_type(span, &canonical, signatures);
+                }
+                return Ok(());
+            }
+            if let Some(definition) = signatures.interface(name) {
+                if !definition.public {
+                    return Err(diag(
+                        span,
+                        &format!("public API cannot expose private interface '{name}'"),
+                    )
+                    .with_label(
+                        definition.span,
+                        format!("'{name}' is declared private here"),
+                    ));
+                }
+                return Ok(());
+            }
+            if let Some(definition) = signatures.struct_type(name) {
+                if !definition.public {
+                    return Err(diag(
+                        span,
+                        &format!("public API cannot expose private struct '{name}'"),
+                    )
+                    .with_label(
+                        definition.span,
+                        format!("'{name}' is declared private here"),
+                    ));
+                }
+                return Ok(());
+            }
+            if let Some(definition) = signatures.enum_type(name) {
+                if !definition.public {
+                    return Err(diag(
+                        span,
+                        &format!("public API cannot expose private enum '{name}'"),
+                    )
+                    .with_label(
+                        definition.span,
+                        format!("'{name}' is declared private here"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Type::Function { params, returns } => {
+            for ty in params.iter().chain(returns) {
+                require_publicly_nameable_type(span, ty, signatures)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn require_known_type(
     span: SourceSpan,
     ty: &Type,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
+    if let Type::Named(name) = ty {
+        require_visible_named_type(span, name, signatures)?;
+    }
     match signatures.canonical_type(ty) {
         Type::Named(name)
             if signatures.struct_type(&name).is_none()

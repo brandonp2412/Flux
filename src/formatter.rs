@@ -14,9 +14,10 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
         formatted.insert(import.line, format!("import {:?}", import.path));
     }
     for alias in &program.aliases {
+        let visibility = if alias.public { "pub " } else { "" };
         formatted.insert(
             alias.line,
-            format!("type {} = {}", alias.name, alias.target.name()),
+            format!("{visibility}type {} = {}", alias.name, alias.target.name()),
         );
     }
     for definition in &program.interfaces {
@@ -26,10 +27,11 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
         format_interface_implementation(implementation, &mut formatted);
     }
     for constant in &program.constants {
+        let visibility = if constant.public { "pub " } else { "" };
         formatted.insert(
             constant.line,
             format!(
-                "const {}: {} = {}",
+                "{visibility}const {}: {} = {}",
                 constant.name,
                 constant.ty.name(),
                 format_expr(&constant.value, 0)
@@ -94,6 +96,7 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
 }
 
 fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<usize, String>) {
+    let visibility = if definition.public { "pub " } else { "" };
     let parents = if definition.parents.is_empty() {
         String::new()
     } else {
@@ -109,7 +112,7 @@ fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<u
     };
     lines.insert(
         definition.line,
-        format!("interface {}{parents} {{", definition.name),
+        format!("{visibility}interface {}{parents} {{", definition.name),
     );
     for function in &definition.functions {
         let mut param_parts = Vec::new();
@@ -153,7 +156,11 @@ fn format_interface_implementation(
 }
 
 fn format_enum(definition: &crate::ast::EnumDef, lines: &mut HashMap<usize, String>) {
-    lines.insert(definition.line, format!("enum {} {{", definition.name));
+    let visibility = if definition.public { "pub " } else { "" };
+    lines.insert(
+        definition.line,
+        format!("{visibility}enum {} {{", definition.name),
+    );
     for variant in &definition.variants {
         let payloads = variant
             .payloads
@@ -171,7 +178,11 @@ fn format_enum(definition: &crate::ast::EnumDef, lines: &mut HashMap<usize, Stri
 }
 
 fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, String>) {
-    lines.insert(definition.line, format!("struct {} {{", definition.name));
+    let visibility = if definition.public { "pub " } else { "" };
+    lines.insert(
+        definition.line,
+        format!("{visibility}struct {} {{", definition.name),
+    );
     for field in &definition.fields {
         lines.insert(
             field.name_span.line,
@@ -181,6 +192,7 @@ fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, 
 }
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
+    let visibility = if function.public { "pub " } else { "" };
     let mut param_parts = Vec::new();
     let mut emitted_named_marker = false;
     for param in &function.params {
@@ -208,7 +220,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         lines.insert(
             function.line,
             format!(
-                "fn {}({params}) -> {} {{ {} }}",
+                "{visibility}fn {}({params}) -> {} {{ {} }}",
                 function.name,
                 format_return_types(&function.returns),
                 format_expr(expression, 0)
@@ -219,7 +231,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     lines.insert(
         function.line,
         format!(
-            "fn {}({params}) -> {} {{",
+            "{visibility}fn {}({params}) -> {} {{",
             function.name,
             format_return_types(&function.returns)
         ),
