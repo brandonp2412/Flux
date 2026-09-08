@@ -2039,13 +2039,21 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             collect_expr_reads(base, reads);
             collect_expr_reads(index, reads);
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             collect_expr_reads(base, reads);
             if let Some(start) = start {
                 collect_expr_reads(start, reads);
             }
             if let Some(end) = end {
                 collect_expr_reads(end, reads);
+            }
+            if let Some(step) = step {
+                collect_expr_reads(step, reads);
             }
         }
         ExprKind::ListComprehension {
@@ -2862,7 +2870,12 @@ pub fn type_of_expr(
             require_type(index.span, &Type::I64, &index_ty, "list index")?;
             Ok(*element)
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
             let Type::List(element) = base_ty else {
                 return Err(diag(base.span, "slicing currently requires a list value"));
@@ -2870,11 +2883,21 @@ pub fn type_of_expr(
             for (bound, label) in [
                 (start.as_deref(), "slice start"),
                 (end.as_deref(), "slice end"),
+                (step.as_deref(), "slice step"),
             ] {
                 if let Some(bound) = bound {
                     let bound_ty = type_of_expr(bound, env, signatures)?;
                     require_type(bound.span, &Type::I64, &bound_ty, label)?;
                 }
+            }
+            if matches!(
+                step.as_deref().map(|step| &step.kind),
+                Some(ExprKind::Int(0))
+            ) {
+                return Err(diag(
+                    step.as_deref().expect("zero step exists").span,
+                    "list slice step cannot be zero",
+                ));
             }
             Ok(Type::List(element))
         }

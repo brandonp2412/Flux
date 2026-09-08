@@ -634,13 +634,21 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             attach_expr_source(base, source_id);
             attach_expr_source(index, source_id);
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             attach_expr_source(base, source_id);
             if let Some(start) = start {
                 attach_expr_source(start, source_id);
             }
             if let Some(end) = end {
                 attach_expr_source(end, source_id);
+            }
+            if let Some(step) = step {
+                attach_expr_source(step, source_id);
             }
         }
         ExprKind::ListComprehension {
@@ -829,13 +837,21 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             shift_expr_columns(base, offset);
             shift_expr_columns(index, offset);
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             shift_expr_columns(base, offset);
             if let Some(start) = start {
                 shift_expr_columns(start, offset);
             }
             if let Some(end) = end {
                 shift_expr_columns(end, offset);
+            }
+            if let Some(step) = step {
+                shift_expr_columns(step, offset);
             }
         }
         ExprKind::ListComprehension {
@@ -4217,11 +4233,27 @@ impl ExprParser<'_> {
                 self.index += 1;
                 let end = if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
-                    Some(TokenKind::RBracket)
+                    Some(TokenKind::RBracket | TokenKind::Colon)
                 ) {
                     None
                 } else {
                     Some(Box::new(self.parse_conditional()?))
+                };
+                let step = if matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::Colon)
+                ) {
+                    self.index += 1;
+                    if matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::RBracket)
+                    ) {
+                        None
+                    } else {
+                        Some(Box::new(self.parse_conditional()?))
+                    }
+                } else {
+                    None
                 };
                 let Some(close) = self.tokens.get(self.index).cloned() else {
                     return Err(diag(self.line, "expected ']' after slice"));
@@ -4246,6 +4278,7 @@ impl ExprParser<'_> {
                         base: Box::new(expr),
                         start,
                         end,
+                        step,
                     },
                 };
             } else {

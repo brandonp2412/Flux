@@ -37,17 +37,18 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("static inline void flux_redirect_str(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value, file); fputc('\\n', file); fclose(file); }\n");
     out.push_str("static inline void flux_redirect_error(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value ? value : \"nil\", file); fputc('\\n', file); fclose(file); }\n");
     out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
-    out.push_str("struct flux__list { void *data; size_t len; };\n");
+    out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    out.push_str("static inline ptrdiff_t flux_list_stride(struct flux__list list, size_t elem_size) { return list.stride == 0 ? (ptrdiff_t)elem_size : list.stride; }\n");
     out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
-    out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { return (void *)((char *)list.data + flux_list_index(list.len, index) * elem_size); }\n");
+    out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { ptrdiff_t stride = flux_list_stride(list, elem_size); return (void *)((char *)list.data + (ptrdiff_t)flux_list_index(list.len, index) * stride); }\n");
     out.push_str("static inline void *flux_list_single(struct flux__list list) { if (list.len != 1) { fputs(\"Flux runtime error: list.single requires exactly one element\\n\", stderr); abort(); } return list.data; }\n");
     out.push_str("static inline size_t flux_list_count(size_t len, int64_t count) { if (count < 0) { fputs(\"Flux runtime error: list count must be non-negative\\n\", stderr); abort(); } uint64_t value = (uint64_t)count; return value > (uint64_t)len ? len : (size_t)value; }\n");
     out.push_str("static inline struct flux__list flux_list_take(struct flux__list list, int64_t count) { list.len = flux_list_count(list.len, count); return list; }\n");
-    out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); list.data = (void *)((char *)list.data + skipped * elem_size); list.len -= skipped; return list; }\n");
+    out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); ptrdiff_t stride = flux_list_stride(list, elem_size); list.data = (void *)((char *)list.data + (ptrdiff_t)skipped * stride); list.len -= skipped; list.stride = stride; return list; }\n");
     out.push_str("static inline bool flux_list_any_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return true; } return false; }\n");
     out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return false; } return true; }\n");
-    out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; }\n");
-    out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, size_t elem_size) { int64_t first = flux_slice_bound(list.len, has_start, start, false); int64_t last = flux_slice_bound(list.len, has_end, end, true); if (last < first) last = first; struct flux__list result = { .data = (void *)((char *)list.data + (size_t)first * elem_size), .len = (size_t)(last - first) }; return result; }\n");
+    out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
+    out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
     out.push_str("    return a / b;\n");
@@ -2692,8 +2693,9 @@ fn emit_list_comprehension_binding(
     ));
     out.push_str(&format!("{pad}}}\n"));
     out.push_str(&format!(
-        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name} }};\n",
-        local_c_name(name)
+        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({}) }};\n",
+        local_c_name(name),
+        c_type(output_element, signatures)
     ));
     env.insert(name.to_string(), result_ty);
     Ok(())
@@ -2816,7 +2818,7 @@ fn emit_expr(
             let element_c = c_type(element, signatures);
             EmittedExpr {
                 code: format!(
-                    "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {} }})",
+                    "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {}, .stride = sizeof({element_c}) }})",
                     rendered.join(", "),
                     items.len()
                 ),
@@ -2836,7 +2838,12 @@ fn emit_expr(
                 ty: result_ty,
             }
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             let base = emit_expr(base, env, signatures)?;
             let Type::List(element) = type_of_expr(expr, env, signatures)? else {
                 unreachable!()
@@ -2851,10 +2858,15 @@ fn emit_expr(
             } else {
                 ("false", "INT64_C(0)".to_string())
             };
+            let step_code = if let Some(step) = step {
+                emit_expr(step, env, signatures)?.code
+            } else {
+                "INT64_C(1)".to_string()
+            };
             let element_c = c_type(&element, signatures);
             EmittedExpr {
                 code: format!(
-                    "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, sizeof({element_c}))",
+                    "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, {step_code}, sizeof({element_c}))",
                     base.code
                 ),
                 ty: Type::List(element),
@@ -4077,13 +4089,21 @@ fn collect_update_helpers_from_expr(
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
             collect_update_helpers_from_expr(index, signatures, emitted, helpers);
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
             if let Some(start) = start {
                 collect_update_helpers_from_expr(start, signatures, emitted, helpers);
             }
             if let Some(end) = end {
                 collect_update_helpers_from_expr(end, signatures, emitted, helpers);
+            }
+            if let Some(step) = step {
+                collect_update_helpers_from_expr(step, signatures, emitted, helpers);
             }
         }
         ExprKind::ListComprehension {

@@ -468,6 +468,9 @@ let first: i64 = values[0]
 let last: i64 = values[-1]
 let middle: i64[] = values[1:4]
 let tail: i64[] = values[-2:]
+let evens: i64[] = values[::2]
+let reversed: i64[] = values[::-1]
+let reverse_middle: i64[] = values[3:0:-2]
 let count: i64 = values.length
 let empty: bool = values.is_empty
 let present: bool = values.is_not_empty
@@ -488,7 +491,7 @@ for index, value in values:
     print(index + value)
 ```
 
-Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices use an exclusive end, accept omitted or negative bounds, and clip bounds to the valid list extent in the same style as Python. Slices are zero-copy views over the source list storage. Compiler-known list values also expose `length: i64`, `is_empty: bool`, and `is_not_empty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
+Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices follow Python-style exclusive-end semantics with `[start:end]` and `[start:end:step]`: bounds may be omitted or negative, bounds clip to the list extent, positive steps move forward, negative steps move backward, and `[::-1]` reverses a list view. A literal zero step is rejected at compile time and a dynamically computed zero step raises an explicit Flux runtime error. Slices remain zero-copy even when stepped or reversed: the native list descriptor carries a byte stride, and slicing an already-strided view composes the strides instead of copying elements. Compiler-known list values also expose `length: i64`, `is_empty: bool`, and `is_not_empty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
 
 Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
 

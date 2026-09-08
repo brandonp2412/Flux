@@ -705,17 +705,27 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Index { base, index } => {
             format!("{}[{}]", format_expr(base, 7), format_expr(index, 0))
         }
-        ExprKind::Slice { base, start, end } => format!(
-            "{}[{}:{}]",
-            format_expr(base, 7),
-            start
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            let base = format_expr(base, 7);
+            let start = start
                 .as_deref()
                 .map(|value| format_expr(value, 0))
-                .unwrap_or_default(),
-            end.as_deref()
+                .unwrap_or_default();
+            let end = end
+                .as_deref()
                 .map(|value| format_expr(value, 0))
-                .unwrap_or_default(),
-        ),
+                .unwrap_or_default();
+            if let Some(step) = step {
+                format!("{base}[{start}:{end}:{}]", format_expr(step, 0))
+            } else {
+                format!("{base}[{start}:{end}]")
+            }
+        }
         ExprKind::ListComprehension {
             value,
             binding,

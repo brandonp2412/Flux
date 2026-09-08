@@ -1,6 +1,21 @@
 fn main() -> i64 {
     let values: i64[] = [1, 2, 3, 4, 5]
     let middle: i64[] = values[1:4]
+    let evens: i64[] = values[::2]
+    let reversed: i64[] = values[::-1]
+    let reverse_middle: i64[] = values[3:0:-2]
+    let chained: i64[] = values[::-1][1:4:2]
+    let reverse_window: i64[] = values[::-1] | skip 1 | take 2
+    print evens.first
+    print evens.last
+    print reversed.first
+    print reversed.last
+    print reverse_middle.first
+    print reverse_middle.last
+    print chained.first
+    print chained.last
+    print reverse_window.first
+    print reverse_window.last
     print values.length
     print middle.is_empty
     print middle.is_not_empty

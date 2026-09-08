@@ -1162,6 +1162,21 @@ fn list_literals_indexing_slicing_and_comprehensions_are_typed_and_native() {
 fn main() -> i64 {
     let values: i64[] = [1, 2, 3, 4, 5]
     let middle: i64[] = values[1:4]
+    let evens: i64[] = values[::2]
+    let reversed: i64[] = values[::-1]
+    let reverse_middle: i64[] = values[3:0:-2]
+    let chained: i64[] = values[::-1][1:4:2]
+    let reverse_window: i64[] = values[::-1] | skip 1 | take 2
+    print evens.first
+    print evens.last
+    print reversed.first
+    print reversed.last
+    print reverse_middle.first
+    print reverse_middle.last
+    print chained.first
+    print chained.last
+    print reverse_window.first
+    print reverse_window.last
     print values.length
     print middle.is_empty
     print middle.is_not_empty
@@ -1202,6 +1217,9 @@ fn main() -> i64 {
     assert!(generated.contains("struct flux__list"));
     assert!(generated.contains("flux_list_at"));
     assert!(generated.contains("flux_list_slice"));
+    assert!(generated.contains("ptrdiff_t stride"));
+    assert!(generated.contains("list slice step cannot be zero"));
+    assert!(generated.contains(".stride = sizeof(int64_t)"));
     assert!(generated.contains("flux__list_buffer_"));
     assert!(generated.contains("(flux__local_values).len"));
     assert!(generated.contains("((flux__local_middle).len == 0)"));
@@ -1223,6 +1241,11 @@ fn main() -> i64 {
     let formatted = fluxc::formatter::format_source(source).expect("list source should format");
     assert!(formatted.contains("let values: i64[] = [1, 2, 3, 4, 5]"));
     assert!(formatted.contains("let middle: i64[] = values[1:4]"));
+    assert!(formatted.contains("let evens: i64[] = values[::2]"));
+    assert!(formatted.contains("let reversed: i64[] = values[::-1]"));
+    assert!(formatted.contains("let reverse_middle: i64[] = values[3:0:-2]"));
+    assert!(formatted.contains("let chained: i64[] = values[::-1][1:4:2]"));
+    assert!(formatted.contains("let reverse_window: i64[] = values[::-1] | skip 1 | take 2"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
     assert!(formatted.contains("let safe_first: i64 = empty | first_or 99"));
@@ -1232,6 +1255,31 @@ fn main() -> i64 {
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
     assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_slice_steps() {
+    let bad_type = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    let selected: i64[] = values[::true]
+    print selected.length
+    return 0
+}
+"#;
+    let error = check_source(bad_type).expect_err("slice step should require i64");
+    assert!(error.message.contains("slice step: expected i64, got bool"));
+
+    let zero = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    let selected: i64[] = values[::0]
+    print selected.length
+    return 0
+}
+"#;
+    let error = check_source(zero).expect_err("literal zero slice step should fail statically");
+    assert!(error.message.contains("list slice step cannot be zero"));
 }
 
 #[test]

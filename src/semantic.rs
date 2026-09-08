@@ -387,13 +387,21 @@ fn collect_expr_pattern_symbols(
             collect_expr_pattern_symbols(base, symbols, signatures);
             collect_expr_pattern_symbols(index, symbols, signatures);
         }
-        ExprKind::Slice { base, start, end } => {
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
             if let Some(start) = start {
                 collect_expr_pattern_symbols(start, symbols, signatures);
             }
             if let Some(end) = end {
                 collect_expr_pattern_symbols(end, symbols, signatures);
+            }
+            if let Some(step) = step {
+                collect_expr_pattern_symbols(step, symbols, signatures);
             }
         }
         ExprKind::ListComprehension {
