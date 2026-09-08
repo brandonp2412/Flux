@@ -2521,6 +2521,18 @@ fn symbol_for_position<'a>(
         })
 }
 
+fn is_local_symbol_kind(kind: crate::semantic::SymbolKind) -> bool {
+    use crate::semantic::SymbolKind;
+    matches!(
+        kind,
+        SymbolKind::Parameter
+            | SymbolKind::Binding
+            | SymbolKind::MutableBinding
+            | SymbolKind::PatternBinding
+            | SymbolKind::LoopVariable
+    )
+}
+
 fn visible_local_symbol_for_position<'a>(
     database: &'a crate::semantic::SemanticDatabase,
     source: &str,
@@ -2528,7 +2540,6 @@ fn visible_local_symbol_for_position<'a>(
     line: usize,
     name: &str,
 ) -> Option<&'a crate::semantic::SemanticSymbol> {
-    use crate::semantic::SymbolKind;
     let function = database.program().functions.iter().find(|function| {
         function.name_span.source_id == source_id
             && function.line <= line
@@ -2542,14 +2553,7 @@ fn visible_local_symbol_for_position<'a>(
                 && symbol.span.source_id == source_id
                 && symbol.span.line >= function.line
                 && symbol.span.line <= line
-                && matches!(
-                    symbol.kind,
-                    SymbolKind::Parameter
-                        | SymbolKind::Binding
-                        | SymbolKind::MutableBinding
-                        | SymbolKind::PatternBinding
-                        | SymbolKind::LoopVariable
-                )
+                && is_local_symbol_kind(symbol.kind)
                 && local_symbol_visible_at_line(source, symbol, line)
         })
         .max_by_key(|symbol| (symbol.span.line, symbol.span.column))
@@ -2801,6 +2805,45 @@ fn references_for_document(
     )
 }
 
+fn local_symbol_occurrences(
+    source: &str,
+    source_id: SourceId,
+    target: &crate::semantic::SemanticSymbol,
+    database: &crate::semantic::SemanticDatabase,
+) -> Vec<SourceSpan> {
+    identifier_occurrences(source, &target.name)
+        .into_iter()
+        .filter(|span| {
+            visible_local_symbol_for_position(database, source, source_id, span.line, &target.name)
+                .is_some_and(|symbol| symbol.span == target.span)
+        })
+        .collect()
+}
+
+fn local_symbol_name_conflicts(
+    source: &str,
+    target: &crate::semantic::SemanticSymbol,
+    new_name: &str,
+    database: &crate::semantic::SemanticDatabase,
+) -> bool {
+    let source_id = target.span.source_id;
+    let Some(function) = database.program().functions.iter().find(|function| {
+        function.name_span.source_id == source_id
+            && function.line <= target.span.line
+            && function_contains_line(source, function.line, target.span.line)
+    }) else {
+        return true;
+    };
+    database.symbols().iter().any(|symbol| {
+        symbol.span != target.span
+            && symbol.name == new_name
+            && symbol.span.source_id == source_id
+            && symbol.span.line >= function.line
+            && function_contains_line(source, function.line, symbol.span.line)
+            && is_local_symbol_kind(symbol.kind)
+    })
+}
+
 fn references_for_document_cached(
     uri: &str,
     source: &str,
@@ -2816,6 +2859,28 @@ fn references_for_document_cached(
         else {
             return Vec::new();
         };
+        if is_local_symbol_kind(symbol.kind) {
+            let Some(project_source) = sources
+                .iter()
+                .find(|source| source.source_id == symbol.span.source_id)
+            else {
+                return Vec::new();
+            };
+            return local_symbol_occurrences(
+                &project_source.text,
+                project_source.source_id,
+                symbol,
+                &database,
+            )
+            .into_iter()
+            .map(|span| {
+                object([
+                    ("uri", JsonValue::String(project_source_uri(project_source))),
+                    ("range", lsp_range(span, &project_source.text, encoding)),
+                ])
+            })
+            .collect();
+        }
         return sources
             .iter()
             .flat_map(|project_source| {
@@ -2838,7 +2903,12 @@ fn references_for_document_cached(
     else {
         return Vec::new();
     };
-    identifier_occurrences(source, &symbol.name)
+    let occurrences = if is_local_symbol_kind(symbol.kind) {
+        local_symbol_occurrences(source, source_id_for_uri(uri), symbol, &database)
+    } else {
+        identifier_occurrences(source, &symbol.name)
+    };
+    occurrences
         .into_iter()
         .map(|span| {
             object([
@@ -2888,6 +2958,31 @@ fn rename_for_document_cached(
     }
     if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
         let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+        if is_local_symbol_kind(symbol.kind) {
+            let project_source = sources
+                .iter()
+                .find(|source| source.source_id == symbol.span.source_id)?;
+            if local_symbol_name_conflicts(&project_source.text, symbol, new_name, &database) {
+                return None;
+            }
+            let edits = local_symbol_occurrences(
+                &project_source.text,
+                project_source.source_id,
+                symbol,
+                &database,
+            )
+            .into_iter()
+            .map(|span| {
+                object([
+                    ("range", lsp_range(span, &project_source.text, encoding)),
+                    ("newText", JsonValue::String(new_name.to_string())),
+                ])
+            })
+            .collect::<Vec<_>>();
+            let mut changes = BTreeMap::new();
+            changes.insert(project_source_uri(project_source), JsonValue::Array(edits));
+            return Some(object([("changes", JsonValue::Object(changes))]));
+        }
         if database.symbols_named(new_name).next().is_some() {
             return None;
         }
@@ -2910,6 +3005,23 @@ fn rename_for_document_cached(
     }
     let database = analyzed_document(uri, source)?;
     let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+    if is_local_symbol_kind(symbol.kind) {
+        if local_symbol_name_conflicts(source, symbol, new_name, &database) {
+            return None;
+        }
+        let edits = local_symbol_occurrences(source, source_id_for_uri(uri), symbol, &database)
+            .into_iter()
+            .map(|span| {
+                object([
+                    ("range", lsp_range(span, source, encoding)),
+                    ("newText", JsonValue::String(new_name.to_string())),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let mut changes = BTreeMap::new();
+        changes.insert(uri.to_string(), JsonValue::Array(edits));
+        return Some(object([("changes", JsonValue::Object(changes))]));
+    }
     if database.symbols_named(new_name).next().is_some() {
         return None;
     }
@@ -4760,6 +4872,84 @@ mod tests {
         assert!(
             rename_for_document(uri, source, &documents, 1, 19, "fn", PositionEncoding::Utf8,)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn local_references_and_rename_follow_function_scope() {
+        let uri = "file:///tmp/local-references.flux";
+        let source = "fn first(value: i64) -> i64 {\n    let item: i64 = value\n    return item\n}\nfn second(value: i64) -> i64 {\n    let item: i64 = value + 1\n    return item\n}\nfn main() -> i64 { 0 }\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line = 2usize;
+        let character = source
+            .lines()
+            .nth(line)
+            .and_then(|line| line.find("item"))
+            .expect("local usage should exist")
+            + 1;
+
+        let database =
+            analyzed_document(uri, source).expect("standalone local source should analyze");
+        let target = visible_local_symbol_for_position(
+            &database,
+            source,
+            source_id_for_uri(uri),
+            line + 1,
+            "item",
+        )
+        .expect("local binding should resolve at its usage");
+        assert!(is_local_symbol_kind(target.kind));
+        assert_eq!(target.span.line, 2);
+        assert_eq!(
+            local_symbol_occurrences(source, source_id_for_uri(uri), target, &database).len(),
+            2
+        );
+
+        let references = references_for_document(
+            uri,
+            source,
+            &documents,
+            line,
+            character,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(references.len(), 2);
+        let references_json = JsonValue::Array(references).to_json();
+        assert!(references_json.contains("\"line\":1"));
+        assert!(references_json.contains("\"line\":2"));
+        assert!(!references_json.contains("\"line\":5"));
+        assert!(!references_json.contains("\"line\":6"));
+
+        let rename = rename_for_document(
+            uri,
+            source,
+            &documents,
+            line,
+            character,
+            "result",
+            PositionEncoding::Utf8,
+        )
+        .expect("local rename should stay inside the resolved function scope")
+        .to_json();
+        assert_eq!(rename.matches("newText").count(), 2);
+        assert!(rename.contains("result"));
+        assert!(rename.contains("\"line\":1"));
+        assert!(rename.contains("\"line\":2"));
+        assert!(!rename.contains("\"line\":5"));
+        assert!(!rename.contains("\"line\":6"));
+
+        assert!(
+            rename_for_document(
+                uri,
+                source,
+                &documents,
+                line,
+                character,
+                "value",
+                PositionEncoding::Utf8,
+            )
+            .is_none(),
+            "renaming a local onto another symbol in the same function must be rejected"
         );
     }
 
