@@ -1,14 +1,24 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, ConstantDef, Expr, ExprKind, Function, Program, Stmt, StmtKind, Type, UnaryOp,
+    BinOp, ConstantDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 
 #[derive(Debug, Clone)]
 pub struct Signature {
     pub params: Vec<Type>,
+    pub param_details: Vec<ParamSignature>,
     pub returns: Vec<Type>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParamSignature {
+    pub name: String,
+    pub ty: Type,
+    pub named_only: bool,
+    pub default: Option<ConstantValue>,
     pub span: SourceSpan,
 }
 
@@ -390,10 +400,42 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             ));
             continue;
         }
+        let mut param_details = Vec::with_capacity(function.params.len());
         for param in &function.params {
             if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures) {
                 diagnostics.push(diagnostic);
             }
+            let ty = signatures.canonical_type(&param.ty);
+            let default = if let Some(default) = &param.default {
+                match evaluate_default_expr(default, &signatures) {
+                    Ok(value) => {
+                        if let Err(diagnostic) = require_type(
+                            default.span,
+                            &ty,
+                            &value.ty(),
+                            &format!("default for parameter '{}'", param.name),
+                        ) {
+                            diagnostics.push(diagnostic);
+                            None
+                        } else {
+                            Some(value)
+                        }
+                    }
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            param_details.push(ParamSignature {
+                name: param.name.clone(),
+                ty,
+                named_only: param.named_only,
+                default,
+                span: param.name_span,
+            });
         }
         for (index, ty) in function.returns.iter().enumerate() {
             let span = function
@@ -408,11 +450,8 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         signatures.insert_function(
             function.name.clone(),
             Signature {
-                params: function
-                    .params
-                    .iter()
-                    .map(|param| signatures.canonical_type(&param.ty))
-                    .collect(),
+                params: param_details.iter().map(|param| param.ty.clone()).collect(),
+                param_details,
                 returns: function
                     .returns
                     .iter()
@@ -956,7 +995,14 @@ pub fn type_of_expr(
                     .map(|constant| constant.ty.clone())
             })
             .ok_or_else(|| diag(expr.span, &format!("unknown binding or constant '{name}'"))),
-        ExprKind::Call { name, args } if name == "print" => {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "print" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "print does not accept named arguments"));
+            }
             if args.len() != 1 {
                 return Err(diag(expr.span, "print expects exactly one argument"));
             }
@@ -969,7 +1015,14 @@ pub fn type_of_expr(
             }
             Ok(Type::Void)
         }
-        ExprKind::Call { name, args } if name == "error" => {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "error" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "error does not accept named arguments"));
+            }
             if args.len() != 1 {
                 return Err(diag(expr.span, "error expects exactly one string argument"));
             }
@@ -977,8 +1030,12 @@ pub fn type_of_expr(
             require_type(expr.span, &Type::Str, &ty, "error message")?;
             Ok(Type::Error)
         }
-        ExprKind::Call { name, args } => {
-            let returns = check_call(expr.span, name, args, env, signatures)?;
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            let returns = check_call(expr.span, name, args, named_args, env, signatures)?;
             match returns.as_slice() {
                 [] => Ok(Type::Void),
                 [ty] => Ok(ty.clone()),
@@ -1184,8 +1241,12 @@ fn value_types_of_expr(
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
     match &expr.kind {
-        ExprKind::Call { name, args } if name != "print" && name != "error" => {
-            check_call(expr.span, name, args, env, signatures)
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name != "print" && name != "error" => {
+            check_call(expr.span, name, args, named_args, env, signatures)
         }
         _ => Ok(vec![type_of_expr(expr, env, signatures)?]),
     }
@@ -1195,35 +1256,99 @@ fn check_call(
     span: SourceSpan,
     name: &str,
     args: &[Expr],
+    named_args: &[NamedArg],
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
     let Some(signature) = signatures.get(name) else {
         return Err(diag(span, &format!("unknown function '{name}'")));
     };
-    if args.len() != signature.params.len() {
+    let positional = signature
+        .param_details
+        .iter()
+        .filter(|param| !param.named_only)
+        .collect::<Vec<_>>();
+    if args.len() > positional.len() {
         return Err(diag(
             span,
             &format!(
-                "function '{name}' expects {} arguments, got {}",
-                signature.params.len(),
+                "function '{name}' accepts at most {} positional argument{}, got {}",
+                positional.len(),
+                if positional.len() == 1 { "" } else { "s" },
                 args.len()
             ),
         )
         .with_label(signature.span, format!("'{name}' is declared here")));
     }
-    for (index, (arg, expected)) in args.iter().zip(&signature.params).enumerate() {
+
+    let mut supplied = HashSet::new();
+    for (index, (arg, expected)) in args.iter().zip(&positional).enumerate() {
         let actual = type_of_expr(arg, env, signatures)?;
         require_type(
             arg.span,
-            expected,
+            &expected.ty,
             &actual,
-            &format!("argument {} to '{name}'", index + 1),
+            &format!("argument {} ('{}') to '{name}'", index + 1, expected.name),
         )
         .map_err(|diagnostic| {
             diagnostic.with_label(signature.span, format!("'{name}' is declared here"))
         })?;
+        supplied.insert(expected.name.as_str());
     }
+
+    for arg in named_args {
+        let Some(expected) = signature
+            .param_details
+            .iter()
+            .find(|param| param.name == arg.name)
+        else {
+            return Err(diag(
+                arg.name_span,
+                &format!("function '{name}' has no named parameter '{}'", arg.name),
+            )
+            .with_label(signature.span, format!("'{name}' is declared here")));
+        };
+        if !expected.named_only {
+            return Err(diag(
+                arg.name_span,
+                &format!(
+                    "parameter '{}' of '{name}' is positional; it cannot be passed by name",
+                    arg.name
+                ),
+            )
+            .with_label(expected.span, format!("'{}' is declared here", arg.name)));
+        }
+        let actual = type_of_expr(&arg.value, env, signatures)?;
+        require_type(
+            arg.value.span,
+            &expected.ty,
+            &actual,
+            &format!("named argument '{}' to '{name}'", arg.name),
+        )
+        .map_err(|diagnostic| {
+            diagnostic.with_label(expected.span, format!("'{}' is declared here", arg.name))
+        })?;
+        supplied.insert(expected.name.as_str());
+    }
+
+    let missing = signature
+        .param_details
+        .iter()
+        .filter(|param| !supplied.contains(param.name.as_str()) && param.default.is_none())
+        .map(|param| param.name.as_str())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(diag(
+            span,
+            &format!(
+                "function '{name}' is missing required argument{} {}",
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join(", ")
+            ),
+        )
+        .with_label(signature.span, format!("'{name}' is declared here")));
+    }
+
     Ok(signature.returns.clone())
 }
 
@@ -1267,6 +1392,68 @@ fn return_types_name(types: &[Type]) -> String {
             "({})",
             types.iter().map(Type::name).collect::<Vec<_>>().join(", ")
         ),
+    }
+}
+
+fn evaluate_default_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<ConstantValue, Diagnostic> {
+    match &expr.kind {
+        ExprKind::Int(value) => Ok(ConstantValue::I64(*value)),
+        ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
+        ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
+        ExprKind::Var(name) => signatures
+            .constant(name)
+            .map(|constant| constant.value.clone())
+            .ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!(
+                        "parameter defaults may reference only compile-time constants; '{name}' is not one"
+                    ),
+                )
+            }),
+        ExprKind::Unary { op, expr: inner } => {
+            let value = evaluate_default_expr(inner, signatures)?;
+            match (op, value) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    Ok(ConstantValue::I64(value.wrapping_neg()))
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => Ok(ConstantValue::Bool(!value)),
+                (UnaryOp::Neg, actual) => Err(constant_type_error(
+                    expr.span,
+                    "unary '-'",
+                    &Type::I64,
+                    &actual.ty(),
+                )),
+                (UnaryOp::Not, actual) => Err(constant_type_error(
+                    expr.span,
+                    "unary '!'",
+                    &Type::Bool,
+                    &actual.ty(),
+                )),
+            }
+        }
+        ExprKind::Binary { left, op, right } => {
+            let left = evaluate_default_expr(left, signatures)?;
+            if matches!(op, BinOp::And) && left == ConstantValue::Bool(false) {
+                return Ok(ConstantValue::Bool(false));
+            }
+            if matches!(op, BinOp::Or) && left == ConstantValue::Bool(true) {
+                return Ok(ConstantValue::Bool(true));
+            }
+            let right = evaluate_default_expr(right, signatures)?;
+            evaluate_constant_binary(expr.span, *op, left, right)
+        }
+        ExprKind::Nil
+        | ExprKind::Call { .. }
+        | ExprKind::EnumVariant { .. }
+        | ExprKind::StructLiteral { .. }
+        | ExprKind::Field { .. } => Err(diag(
+            expr.span,
+            "parameter defaults must be compile-time primitive expressions",
+        )),
     }
 }
 

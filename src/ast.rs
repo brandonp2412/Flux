@@ -135,6 +135,8 @@ pub struct Param {
     pub name_span: SourceSpan,
     pub ty: Type,
     pub type_span: SourceSpan,
+    pub named_only: bool,
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +240,7 @@ pub enum ExprKind {
     Call {
         name: String,
         args: Vec<Expr>,
+        named_args: Vec<NamedArg>,
     },
     StructLiteral {
         name: String,
@@ -266,6 +269,13 @@ pub enum ExprKind {
         op: BinOp,
         right: Box<Expr>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedArg {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone)]

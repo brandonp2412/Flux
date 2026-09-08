@@ -81,6 +81,205 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_named_required_and_default_parameters_with_native_reordering() {
+    let source = r#"
+const DEFAULT_COUNT: i64 = 3
+
+fn describe(prefix: str, suffix: str = "!", *, count: i64 = DEFAULT_COUNT, label: str) -> i64 {
+    print(prefix)
+    print(suffix)
+    print(label)
+    return count
+}
+
+fn parenthesized(value: i64 = (40 + 2)) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    print(describe("hello", label: "world"))
+    print(describe("hi", "?", count: 5, label: "there"))
+    print(parenthesized())
+    return 0
+}
+"#;
+
+    check_source(source).expect("named/default parameter program should typecheck");
+    let generated = compile_to_c(source).expect("named/default parameters should lower natively");
+    assert!(generated.contains("describe(\"hello\", \"!\", INT64_C(3), \"world\")"));
+    assert!(generated.contains("describe(\"hi\", \"?\", INT64_C(5), \"there\")"));
+    assert!(generated.contains("parenthesized(INT64_C(42))"));
+}
+
+#[test]
+fn rejects_invalid_named_and_default_parameter_calls() {
+    let missing = r#"
+fn describe(prefix: str, *, label: str) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return describe("hello")
+}
+"#;
+    let error = check_source(missing).expect_err("missing required named arg should fail");
+    assert!(error.message.contains("missing required argument label"));
+
+    let positional_named = r#"
+fn describe(prefix: str, *, label: str) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return describe("hello", "world")
+}
+"#;
+    let error =
+        check_source(positional_named).expect_err("named-only arg passed positionally should fail");
+    assert!(
+        error
+            .message
+            .contains("accepts at most 1 positional argument")
+    );
+
+    let positional_by_name = r#"
+fn describe(prefix: str, *, label: str) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return describe(prefix: "hello", label: "world")
+}
+"#;
+    let error =
+        check_source(positional_by_name).expect_err("positional arg passed by name should fail");
+    assert!(
+        error
+            .message
+            .contains("'prefix' of 'describe' is positional")
+    );
+
+    let unknown = r#"
+fn describe(*, label: str) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return describe(nope: "hello", label: "world")
+}
+"#;
+    let error = check_source(unknown).expect_err("unknown named arg should fail");
+    assert!(error.message.contains("has no named parameter 'nope'"));
+
+    let wrong_type = r#"
+fn describe(*, count: i64) -> i64 {
+    return count
+}
+fn main() -> i64 {
+    return describe(count: false)
+}
+"#;
+    let error = check_source(wrong_type).expect_err("wrong named arg type should fail");
+    assert!(error.message.contains("named argument 'count'"));
+    assert!(error.message.contains("expected i64, got bool"));
+}
+
+#[test]
+fn rejects_invalid_parameter_defaults_and_call_argument_ordering() {
+    let default_type = r#"
+fn value(count: i64 = false) -> i64 {
+    return count
+}
+fn main() -> i64 {
+    return value()
+}
+"#;
+    let error = check_source(default_type).expect_err("wrong default type should fail");
+    assert!(error.message.contains("default for parameter 'count'"));
+
+    let non_constant = r#"
+fn value(seed: i64, next: i64 = seed + 1) -> i64 {
+    return next
+}
+fn main() -> i64 {
+    return value(1)
+}
+"#;
+    let error = check_source(non_constant).expect_err("parameter reference in default should fail");
+    assert!(
+        error
+            .message
+            .contains("parameter defaults may reference only compile-time constants")
+    );
+
+    let bad_order = r#"
+fn value(first: i64 = 1, second: i64) -> i64 {
+    return first + second
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(bad_order).expect_err("required positional after default should fail");
+    assert!(
+        error
+            .message
+            .contains("required positional parameters cannot follow")
+    );
+
+    let positional_after_named = r#"
+fn value(first: i64, *, second: i64) -> i64 {
+    return first + second
+}
+fn main() -> i64 {
+    return value(1, second: 2, 3)
+}
+"#;
+    let error =
+        check_source(positional_after_named).expect_err("positional after named should fail");
+    assert!(
+        error
+            .message
+            .contains("positional arguments cannot follow named arguments")
+    );
+
+    let duplicate_named = r#"
+fn value(*, count: i64) -> i64 {
+    return count
+}
+fn main() -> i64 {
+    return value(count: 1, count: 2)
+}
+"#;
+    let error = check_source(duplicate_named).expect_err("duplicate named args should fail");
+    assert!(error.message.contains("duplicate named argument 'count'"));
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_named_parameter_metadata() {
+    let source = "const DEFAULT:i64=3\nfn describe(prefix:str=\"x\",*,count:i64=DEFAULT,label:str)->i64 {\n return count\n}\nfn main()->i64 {\n return describe(label:\"ok\")\n}\n";
+    let expected = "const DEFAULT: i64 = 3\nfn describe(prefix: str = \"x\", *, count: i64 = DEFAULT, label: str) -> i64 {\n    return count\n}\nfn main() -> i64 {\n    return describe(label: \"ok\")\n}\n";
+    let formatted =
+        fluxc::formatter::format_source(source).expect("parameter source should format");
+    assert_eq!(formatted, expected);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(703))
+        .expect("parameter source should analyze");
+    let signature = database
+        .signature("describe")
+        .expect("signature should exist");
+    assert_eq!(
+        signature.params,
+        vec![
+            fluxc::ast::Type::Str,
+            fluxc::ast::Type::I64,
+            fluxc::ast::Type::Str
+        ]
+    );
+    assert!(!signature.param_details[0].named_only);
+    assert!(signature.param_details[1].named_only);
+    assert!(signature.param_details[1].default.is_some());
+    assert!(signature.param_details[2].named_only);
+    assert!(signature.param_details[2].default.is_none());
+}
+
+#[test]
 fn rejects_type_mismatches() {
     let source = r#"
 fn main() -> i64 {

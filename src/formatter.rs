@@ -110,12 +110,21 @@ fn format_struct(definition: &crate::ast::StructDef, lines: &mut HashMap<usize, 
 }
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
-    let params = function
-        .params
-        .iter()
-        .map(|param| format!("{}: {}", param.name, param.ty.name()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut param_parts = Vec::new();
+    let mut emitted_named_marker = false;
+    for param in &function.params {
+        if param.named_only && !emitted_named_marker {
+            param_parts.push("*".to_string());
+            emitted_named_marker = true;
+        }
+        let default = param
+            .default
+            .as_ref()
+            .map(|value| format!(" = {}", format_expr(value, 0)))
+            .unwrap_or_default();
+        param_parts.push(format!("{}: {}{default}", param.name, param.ty.name()));
+    }
+    let params = param_parts.join(", ");
     lines.insert(
         function.line,
         format!(
@@ -289,13 +298,22 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Str(value) => format_string(value),
         ExprKind::Nil => "nil".to_string(),
         ExprKind::Var(name) => name.clone(),
-        ExprKind::Call { name, args } => format!(
-            "{name}({})",
-            args.iter()
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            let mut rendered = args
+                .iter()
                 .map(|arg| format_expr(arg, 0))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .collect::<Vec<_>>();
+            rendered.extend(
+                named_args
+                    .iter()
+                    .map(|arg| format!("{}: {}", arg.name, format_expr(&arg.value, 0))),
+            );
+            format!("{name}({})", rendered.join(", "))
+        }
         ExprKind::EnumVariant {
             enum_name,
             variant,

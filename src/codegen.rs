@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, Program, Stmt, StmtKind, StructDef, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, StructDef, Type,
+    UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
-use crate::typecheck::{ConstantValue, Signatures, type_of_expr};
+use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     let mut out = String::new();
@@ -419,7 +420,7 @@ fn emit_expr(
                 ));
             }
         }
-        ExprKind::Call { name, args } if name == "print" => {
+        ExprKind::Call { name, args, .. } if name == "print" => {
             let arg = emit_expr(&args[0], env, signatures)?;
             let helper = match arg.ty {
                 Type::I64 => "flux_print_i64",
@@ -436,24 +437,25 @@ fn emit_expr(
                 ty: Type::Void,
             }
         }
-        ExprKind::Call { name, args } if name == "error" => {
+        ExprKind::Call { name, args, .. } if name == "error" => {
             let message = emit_expr(&args[0], env, signatures)?;
             EmittedExpr {
                 code: message.code,
                 ty: Type::Error,
             }
         }
-        ExprKind::Call { name, args } => {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
             let signature = signatures.get(name).ok_or_else(|| {
                 diag(
                     expr.span,
                     &format!("unknown function '{name}' during code generation"),
                 )
             })?;
-            let mut rendered = Vec::with_capacity(args.len());
-            for arg in args {
-                rendered.push(emit_expr(arg, env, signatures)?.code);
-            }
+            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
             let ty = match signature.returns.as_slice() {
                 [] => Type::Void,
                 [ty] => ty.clone(),
@@ -577,12 +579,51 @@ fn emit_expr(
     Ok(emitted)
 }
 
+fn emit_call_arguments(
+    signature: &Signature,
+    args: &[Expr],
+    named_args: &[NamedArg],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<String>, Diagnostic> {
+    let mut rendered = Vec::with_capacity(signature.param_details.len());
+    let mut positional_index = 0usize;
+    for param in &signature.param_details {
+        if !param.named_only && positional_index < args.len() {
+            rendered.push(emit_expr(&args[positional_index], env, signatures)?.code);
+            positional_index += 1;
+            continue;
+        }
+        if let Some(named) = named_args.iter().find(|arg| arg.name == param.name) {
+            rendered.push(emit_expr(&named.value, env, signatures)?.code);
+            continue;
+        }
+        if let Some(default) = &param.default {
+            rendered.push(constant_c_value(default));
+            continue;
+        }
+        return Err(diag(
+            param.span,
+            &format!(
+                "missing argument '{}' reached code generation after type checking",
+                param.name
+            ),
+        ));
+    }
+    Ok(rendered)
+}
+
 fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, String), Diagnostic> {
-    let ExprKind::Call { name, args } = &expr.kind else {
+    let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &expr.kind
+    else {
         return Err(diag(
             expr.span,
             "only multi-value function calls can be destructured",
@@ -600,10 +641,7 @@ fn emit_multi_expr(
             &format!("function '{name}' does not return multiple values"),
         ));
     }
-    let mut rendered = Vec::with_capacity(args.len());
-    for arg in args {
-        rendered.push(emit_expr(arg, env, signatures)?.code);
-    }
+    let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
     Ok((
         format!("{name}({})", rendered.join(", ")),
         multi_return_struct_name(name),
@@ -756,7 +794,17 @@ fn collect_update_helpers_from_expr(
             collect_update_helpers_from_expr(left, signatures, emitted, helpers);
             collect_update_helpers_from_expr(right, signatures, emitted, helpers);
         }
-        ExprKind::Call { args, .. } | ExprKind::EnumVariant { args, .. } => {
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
+            }
+            for arg in named_args {
+                collect_update_helpers_from_expr(&arg.value, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::EnumVariant { args, .. } => {
             for arg in args {
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
             }

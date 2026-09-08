@@ -125,9 +125,9 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [ ] Closures with safe capture semantics.
 - [ ] Anonymous functions.
 - [ ] Concise single-expression function syntax.
-- [ ] Named parameters.
-- [ ] Optional parameters with explicit defaults.
-- [ ] Required named parameters.
+- [x] Named-only parameters using a `*` delimiter, with statically validated named call arguments and native ABI reordering.
+- [x] Optional positional/named parameters with explicit compile-time primitive defaults, including top-level constant references and call-site default expansion.
+- [x] Required named parameters: named-only parameters without defaults must be supplied explicitly.
 - [ ] Function type aliases.
 - [ ] Partial application / ergonomic function binding if it remains predictable and allocation-free where possible.
 - [ ] Pipeline/composition syntax only if it materially improves functional code and lowers transparently.

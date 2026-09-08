@@ -1,6 +1,6 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
-    MatchArm, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
+    MatchArm, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
     StructLiteralField, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
@@ -282,6 +282,9 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         for param in &mut function.params {
             param.name_span = param.name_span.with_source(source_id);
             param.type_span = param.type_span.with_source(source_id);
+            if let Some(default) = &mut param.default {
+                attach_expr_source(default, source_id);
+            }
         }
         attach_block_source(&mut function.body, source_id);
     }
@@ -373,9 +376,15 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
 fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
     expr.span = expr.span.with_source(source_id);
     match &mut expr.kind {
-        ExprKind::Call { args, .. } => {
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
             for arg in args {
                 attach_expr_source(arg, source_id);
+            }
+            for arg in named_args {
+                arg.name_span = arg.name_span.with_source(source_id);
+                attach_expr_source(&mut arg.value, source_id);
             }
         }
         ExprKind::StructLiteral {
@@ -767,10 +776,9 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     validate_identifier(name, line)?;
     let name_span = SourceSpan::new(line, 4 + raw_name.find(name).unwrap_or(0), name.len());
 
-    let Some(close_rel) = rest[open + 1..].find(')') else {
+    let Some(close) = find_matching_paren(rest, open) else {
         return Err(diag(line, "expected ')' after function parameters"));
     };
-    let close = open + 1 + close_rel;
     let params_src = &rest[open + 1..close];
     let suffix = rest[close + 1..].trim();
     let Some(ret_src) = suffix.strip_prefix("->") else {
@@ -802,17 +810,35 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     let mut params = Vec::new();
     if !params_src.trim().is_empty() {
         let params_base_column = 4 + open + 1;
-        for (raw_param, param_offset) in split_top_level_commas_with_offsets(params_src) {
-            let Some(colon_offset) = raw_param.find(':') else {
+        let raw_params = split_top_level_commas_with_offsets(params_src);
+        let mut named_only = false;
+        let mut saw_named_marker = false;
+        let mut saw_positional_default = false;
+        for (raw_param, param_offset) in raw_params {
+            let (param_src, param_column) =
+                trim_with_column(raw_param, params_base_column + param_offset);
+            if param_src == "*" {
+                if saw_named_marker {
+                    return Err(diag(
+                        line,
+                        "function parameters may contain only one '*' marker",
+                    ));
+                }
+                saw_named_marker = true;
+                named_only = true;
+                continue;
+            }
+
+            let (binding_src, default_src) = split_parameter_default(param_src);
+            let Some(colon_offset) = binding_src.find(':') else {
                 return Err(diag(line, "parameters use 'name: type' syntax"));
             };
-            let raw_name = &raw_param[..colon_offset];
-            let raw_ty = &raw_param[colon_offset + 1..];
-            let (param_name, name_column) =
-                trim_with_column(raw_name, params_base_column + param_offset);
+            let raw_name = &binding_src[..colon_offset];
+            let raw_ty = &binding_src[colon_offset + 1..];
+            let (param_name, name_column) = trim_with_column(raw_name, param_column);
             validate_identifier(param_name, line)?;
             let (type_text, type_column) =
-                trim_with_column(raw_ty, params_base_column + param_offset + colon_offset + 1);
+                trim_with_column(raw_ty, param_column + colon_offset + 1);
             let ty = parse_type(type_text, line)?;
             if ty == Type::Void {
                 return Err(diag(line, "parameters cannot have type void"));
@@ -820,12 +846,41 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
             if params.iter().any(|param: &Param| param.name == param_name) {
                 return Err(diag(line, &format!("duplicate parameter '{param_name}'")));
             }
+
+            let default = if let Some((raw_default, default_offset)) = default_src {
+                let (default_src, default_column) =
+                    trim_with_column(raw_default, param_column + default_offset);
+                if default_src.is_empty() {
+                    return Err(diag(line, "parameter default requires an expression"));
+                }
+                if !named_only {
+                    saw_positional_default = true;
+                }
+                Some(parse_expression_at(default_src, line, default_column)?)
+            } else {
+                if !named_only && saw_positional_default {
+                    return Err(diag(
+                        line,
+                        "required positional parameters cannot follow a positional parameter with a default",
+                    ));
+                }
+                None
+            };
+
             params.push(Param {
                 name: param_name.to_string(),
                 name_span: SourceSpan::new(line, name_column, param_name.len()),
                 ty,
                 type_span: SourceSpan::new(line, type_column, type_text.len()),
+                named_only,
+                default,
             });
+        }
+        if saw_named_marker && !params.iter().any(|param| param.named_only) {
+            return Err(diag(
+                line,
+                "'*' must be followed by at least one named parameter",
+            ));
         }
     }
 
@@ -837,6 +892,85 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
         return_span,
         return_type_spans,
     })
+}
+
+fn find_matching_paren(input: &str, open: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().copied().enumerate().skip(open) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_parameter_default(input: &str) -> (&str, Option<(&str, usize)>) {
+    let bytes = input.as_bytes();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' | b'{' => depth += 1,
+                b')' | b'}' => depth = depth.saturating_sub(1),
+                b'=' if depth == 0
+                    && bytes.get(index.wrapping_sub(1)) != Some(&b'!')
+                    && bytes.get(index.wrapping_sub(1)) != Some(&b'<')
+                    && bytes.get(index.wrapping_sub(1)) != Some(&b'>')
+                    && bytes.get(index.wrapping_sub(1)) != Some(&b'=')
+                    && bytes.get(index + 1) != Some(&b'=') =>
+                {
+                    return (&input[..index], Some((&input[index + 1..], index + 1)));
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    (input, None)
 }
 
 fn return_type_spans(return_text: &str, return_span: SourceSpan) -> Vec<SourceSpan> {
@@ -2000,12 +2134,57 @@ impl ExprParser<'_> {
                 }
                 self.index += 1;
                 let mut args = Vec::new();
+                let mut named_args = Vec::new();
+                let mut saw_named = false;
                 if !matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
                     Some(TokenKind::RParen)
                 ) {
                     loop {
-                        args.push(self.parse_binary(1)?);
+                        let named = match (
+                            self.tokens.get(self.index),
+                            self.tokens.get(self.index + 1).map(|token| &token.kind),
+                        ) {
+                            (Some(token), Some(TokenKind::Colon)) => {
+                                if let TokenKind::Ident(name) = &token.kind {
+                                    Some((name.clone(), token.span))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((arg_name, name_span)) = named {
+                            saw_named = true;
+                            self.index += 2;
+                            if named_args.iter().any(|arg: &NamedArg| arg.name == arg_name) {
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    name_span,
+                                    format!("duplicate named argument '{arg_name}'"),
+                                ));
+                            }
+                            let value = self.parse_binary(1)?;
+                            named_args.push(NamedArg {
+                                name: arg_name,
+                                name_span,
+                                value,
+                            });
+                        } else {
+                            if saw_named {
+                                let span = self
+                                    .tokens
+                                    .get(self.index)
+                                    .map(|token| token.span)
+                                    .unwrap_or(token_span);
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    span,
+                                    "positional arguments cannot follow named arguments",
+                                ));
+                            }
+                            args.push(self.parse_binary(1)?);
+                        }
                         match self.tokens.get(self.index).map(|token| &token.kind) {
                             Some(TokenKind::Comma) => self.index += 1,
                             Some(TokenKind::RParen) => break,
@@ -2037,7 +2216,11 @@ impl ExprParser<'_> {
                         token_span.column,
                         close_span.column + close_span.length - token_span.column,
                     ),
-                    kind: ExprKind::Call { name, args },
+                    kind: ExprKind::Call {
+                        name,
+                        args,
+                        named_args,
+                    },
                 })
             }
             TokenKind::LParen => {

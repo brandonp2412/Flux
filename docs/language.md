@@ -72,6 +72,26 @@ let User { name, age: years } = load_user()
 
 Shorthand fields bind to the same local name; `field: local` renames the binding and `field: _` ignores a field. The pattern may select only the fields it needs. The source expression is evaluated exactly once, aliases of the struct type are accepted, unknown fields and wrong source types are compile-time errors, and pattern bindings may not silently shadow an existing local.
 
+## Function parameters
+
+Flux keeps ordinary positional parameters simple while supporting explicit named-only APIs. A `*` in the parameter list marks every following parameter as named-only:
+
+```flux
+const DEFAULT_COUNT: i64 = 3
+
+fn describe(prefix: str, suffix: str = "!", *, count: i64 = DEFAULT_COUNT, label: str) -> i64 {
+    return count
+}
+
+fn main() -> i64 {
+    return describe("hello", label: "world")
+}
+```
+
+Parameters before `*` are positional-only. Trailing positional parameters and named-only parameters may provide defaults with `= expression`; a named-only parameter without a default is required. Required positional parameters may not follow a positional parameter with a default. Calls place positional arguments first and use `name: value` for named arguments. Positional arguments cannot follow named arguments, duplicate/unknown named arguments are rejected, and positional-only parameters cannot be supplied by name.
+
+Current defaults are compile-time primitive expressions (`i64`, `bool`, or `str`) and may reference top-level compile-time constants. They cannot depend on another parameter, local state, or a runtime function call. The compiler expands omitted defaults and reorders supplied named arguments into the function's concrete declaration-order native ABI; Flux does not need runtime named-argument dictionaries or reflection.
+
 ## Error handling
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
