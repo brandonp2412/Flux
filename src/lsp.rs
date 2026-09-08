@@ -2510,10 +2510,49 @@ fn symbol_for_position<'a>(
         .symbol_at(source_id, line_index + 1, byte + 1)
         .or_else(|| {
             let name = identifier_at(line, byte)?;
+            if let Some(local) =
+                visible_local_symbol_for_position(database, source, source_id, line_index + 1, name)
+            {
+                return Some(local);
+            }
             let mut matches = database.symbols_named(name);
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
+}
+
+fn visible_local_symbol_for_position<'a>(
+    database: &'a crate::semantic::SemanticDatabase,
+    source: &str,
+    source_id: SourceId,
+    line: usize,
+    name: &str,
+) -> Option<&'a crate::semantic::SemanticSymbol> {
+    use crate::semantic::SymbolKind;
+    let function = database.program().functions.iter().find(|function| {
+        function.name_span.source_id == source_id
+            && function.line <= line
+            && function_contains_line(source, function.line, line)
+    })?;
+    database
+        .symbols()
+        .iter()
+        .filter(|symbol| {
+            symbol.name == name
+                && symbol.span.source_id == source_id
+                && symbol.span.line >= function.line
+                && symbol.span.line <= line
+                && matches!(
+                    symbol.kind,
+                    SymbolKind::Parameter
+                        | SymbolKind::Binding
+                        | SymbolKind::MutableBinding
+                        | SymbolKind::PatternBinding
+                        | SymbolKind::LoopVariable
+                )
+                && local_symbol_visible_at_line(source, symbol, line)
+        })
+        .max_by_key(|symbol| (symbol.span.line, symbol.span.column))
 }
 
 #[cfg(test)]
@@ -4482,6 +4521,41 @@ mod tests {
         assert!(print_help.contains("fn print(value: i64 | bool | str | error) -> void"));
         let error_help = help_for("error(");
         assert!(error_help.contains("fn error(message: str) -> error"));
+    }
+
+    #[test]
+    fn local_hover_and_definition_resolve_same_named_parameters_by_function_scope() {
+        let uri = "file:///tmp/local-shadow-navigation.flux";
+        let source = "fn first(value: i64) -> i64 {\n    return value\n}\nfn second(value: str) -> str {\n    return value\n}\nfn main() -> i64 { 0 }\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = 4usize;
+        let line = source.lines().nth(line_index).unwrap();
+        let character = line.find("value").expect("usage should exist") + 1;
+
+        let hover = hover_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            character,
+            PositionEncoding::Utf8,
+        )
+        .expect("same-named parameter usage should resolve in its function")
+        .to_json();
+        assert!(hover.contains("value: str"));
+
+        let definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            character,
+            PositionEncoding::Utf8,
+        )
+        .expect("same-named parameter usage should navigate in its function")
+        .to_json();
+        assert!(definition.contains("\"line\":3"));
+        assert!(definition.contains("\"character\":10"));
     }
 
     #[test]

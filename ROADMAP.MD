@@ -678,9 +678,11 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Hover/type information.
   - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves unambiguous usage-site hover across the loaded forward import graph, including unsaved overlays. Scope-resolved local shadowing and reverse-workspace discovery remain pending with richer reference indexing.
   - [x] Struct member hover is receiver-type-aware for nested field paths, so repeated field names across unrelated structs resolve to the field selected by the actual typed receiver instead of requiring global field-name uniqueness.
+  - [x] Local hover resolves parameters/bindings by the active function and lexical visibility rules already shared with completion, so same-named locals in other functions no longer make an otherwise unambiguous usage disappear.
 - [ ] Go to definition.
   - [x] Bootstrap `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous; when the current file imports modules, typed overlay project analysis resolves public imported declarations to their actual source-file URI/range. Scope-aware shadow resolution and reverse-workspace discovery remain pending.
   - [x] Struct member go-to-definition follows the receiver's concrete/aliased struct type through nested field access and navigates directly to the selected field declaration, including imported project sources.
+  - [x] Local go-to-definition uses the active function plus lexical visibility rather than global name uniqueness, resolving same-named parameters/bindings in separate functions safely.
 - [ ] Find references.
   - [x] Bootstrap `textDocument/references` returns identifier occurrences only after unambiguous semantic target resolution; strings/comments are excluded. From an importing document, references cover the entire typed loaded dependency graph, including imported declarations and unsaved overlays. Reverse dependents outside that graph still require workspace indexing.
 - [ ] Rename.
