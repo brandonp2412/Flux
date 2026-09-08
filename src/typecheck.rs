@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, ConstantDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, Type, UnaryOp,
+    BinOp, ConstantDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind,
+    StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 
@@ -672,7 +673,7 @@ fn check_block_all(
                     ));
                     continue;
                 };
-                let Some(definition) = signatures.struct_type(concrete_name) else {
+                let Some(_) = signatures.struct_type(concrete_name) else {
                     diagnostics.push(diag(
                         *struct_span,
                         &format!("struct pattern '{struct_name}' does not name a struct type"),
@@ -689,32 +690,7 @@ fn check_block_all(
                     }
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
-                for field in fields {
-                    let Some(field_signature) = definition.field(&field.field) else {
-                        diagnostics.push(
-                            diag(
-                                field.field_span,
-                                &format!("struct '{concrete_name}' has no field '{}'", field.field),
-                            )
-                            .with_label(
-                                definition.span,
-                                format!("'{concrete_name}' is declared here"),
-                            ),
-                        );
-                        continue;
-                    };
-                    if field.binding.name == "_" {
-                        continue;
-                    }
-                    if env.contains_key(&field.binding.name) {
-                        diagnostics.push(diag(
-                            field.binding.span,
-                            &format!("'{}' is already defined in this scope", field.binding.name),
-                        ));
-                    } else {
-                        env.insert(field.binding.name.clone(), field_signature.ty.clone());
-                    }
-                }
+                bind_struct_pattern_fields(fields, concrete_name, env, signatures, diagnostics);
             }
             StmtKind::Return(expressions) => {
                 let actuals = if expressions.len() == 1 {
@@ -1723,6 +1699,79 @@ fn resolve_alias_target(
     let resolved = resolve_alias_target(target, aliases, chain);
     chain.pop();
     resolved
+}
+
+fn bind_struct_pattern_fields(
+    fields: &[StructPatternField],
+    concrete_name: &str,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(definition) = signatures.struct_type(concrete_name) else {
+        return;
+    };
+    for field in fields {
+        let Some(field_signature) = definition.field(&field.field) else {
+            diagnostics.push(
+                diag(
+                    field.field_span,
+                    &format!("struct '{concrete_name}' has no field '{}'", field.field),
+                )
+                .with_label(
+                    definition.span,
+                    format!("'{concrete_name}' is declared here"),
+                ),
+            );
+            continue;
+        };
+        if let Some(nested) = &field.nested {
+            let expected = signatures.canonical_type(&Type::Named(nested.struct_name.clone()));
+            let actual = signatures.canonical_type(&field_signature.ty);
+            if let Err(diagnostic) = require_type(
+                nested.struct_span,
+                &expected,
+                &actual,
+                "nested struct pattern",
+            ) {
+                diagnostics.push(diagnostic);
+                continue;
+            }
+            let Type::Named(nested_name) = expected else {
+                diagnostics.push(diag(
+                    nested.struct_span,
+                    &format!(
+                        "struct pattern '{}' does not name a struct type",
+                        nested.struct_name
+                    ),
+                ));
+                continue;
+            };
+            if signatures.struct_type(&nested_name).is_none() {
+                diagnostics.push(diag(
+                    nested.struct_span,
+                    &format!(
+                        "struct pattern '{}' does not name a struct type",
+                        nested.struct_name
+                    ),
+                ));
+                continue;
+            }
+            bind_struct_pattern_fields(&nested.fields, &nested_name, env, signatures, diagnostics);
+            continue;
+        }
+        if field.binding.name == "_" {
+            continue;
+        }
+        if env.contains_key(&field.binding.name) {
+            diagnostics.push(diag(
+                field.binding.span,
+                &format!("'{}' is already defined in this scope", field.binding.name),
+            ));
+        } else {
+            env.insert(field.binding.name.clone(), field_signature.ty.clone());
+        }
+    }
 }
 
 fn require_known_type(

@@ -1,7 +1,7 @@
 use crate::ast::{
     BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind, Function,
     MatchArm, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind, StructDef, StructField,
-    StructLiteralField, StructPatternField, Type, TypeAlias, UnaryOp,
+    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -320,8 +320,7 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
             } => {
                 *struct_span = struct_span.with_source(source_id);
                 for field in fields {
-                    field.field_span = field.field_span.with_source(source_id);
-                    field.binding.span = field.binding.span.with_source(source_id);
+                    attach_struct_pattern_field_source(field, source_id);
                 }
                 attach_expr_source(expr, source_id);
             }
@@ -1422,6 +1421,17 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
     })
 }
 
+fn attach_struct_pattern_field_source(field: &mut StructPatternField, source_id: SourceId) {
+    field.field_span = field.field_span.with_source(source_id);
+    field.binding.span = field.binding.span.with_source(source_id);
+    if let Some(nested) = &mut field.nested {
+        nested.struct_span = nested.struct_span.with_source(source_id);
+        for field in &mut nested.fields {
+            attach_struct_pattern_field_source(field, source_id);
+        }
+    }
+}
+
 fn parse_struct_destructure_pattern(
     input: &str,
     line: usize,
@@ -1474,7 +1484,16 @@ fn parse_struct_destructure_pattern(
                 (entry, entry_column, entry, entry_column)
             };
         validate_identifier(field_name, line)?;
-        if binding_name != "_" {
+        let nested = parse_struct_destructure_pattern(binding_name, line, binding_column)?.map(
+            |(struct_name, struct_span, fields)| {
+                Box::new(StructPattern {
+                    struct_name,
+                    struct_span,
+                    fields,
+                })
+            },
+        );
+        if nested.is_none() && binding_name != "_" {
             validate_identifier(binding_name, line)?;
         }
         if fields
@@ -1486,10 +1505,11 @@ fn parse_struct_destructure_pattern(
                 &format!("duplicate struct pattern field '{field_name}'"),
             ));
         }
-        if binding_name != "_"
-            && fields
-                .iter()
-                .any(|existing: &StructPatternField| existing.binding.name == binding_name)
+        if nested.is_none()
+            && binding_name != "_"
+            && fields.iter().any(|existing: &StructPatternField| {
+                existing.nested.is_none() && existing.binding.name == binding_name
+            })
         {
             return Err(diag(
                 line,
@@ -1500,9 +1520,14 @@ fn parse_struct_destructure_pattern(
             field: field_name.to_string(),
             field_span: SourceSpan::new(line, field_name_column, field_name.len()),
             binding: PatternBinding {
-                name: binding_name.to_string(),
+                name: if nested.is_some() {
+                    "_".to_string()
+                } else {
+                    binding_name.to_string()
+                },
                 span: SourceSpan::new(line, binding_column, binding_name.len()),
             },
+            nested,
         });
     }
 

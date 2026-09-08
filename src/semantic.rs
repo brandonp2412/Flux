@@ -1,4 +1,4 @@
-use crate::ast::{Program, Stmt, StmtKind, Type};
+use crate::ast::{Program, Stmt, StmtKind, StructPatternField, Type};
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
@@ -151,6 +151,38 @@ impl SemanticDatabase {
     }
 }
 
+fn collect_struct_pattern_symbols(
+    fields: &[StructPatternField],
+    struct_name: &str,
+    symbols: &mut Vec<SemanticSymbol>,
+    signatures: &Signatures,
+) {
+    let Some(definition) = signatures.struct_type(struct_name) else {
+        return;
+    };
+    for field in fields {
+        let Some(field_signature) = definition.field(&field.field) else {
+            continue;
+        };
+        if let Some(nested) = &field.nested {
+            let Type::Named(nested_name) = signatures.canonical_type(&field_signature.ty) else {
+                continue;
+            };
+            collect_struct_pattern_symbols(&nested.fields, &nested_name, symbols, signatures);
+            continue;
+        }
+        if field.binding.name == "_" {
+            continue;
+        }
+        symbols.push(SemanticSymbol {
+            name: field.binding.name.clone(),
+            kind: SymbolKind::PatternBinding,
+            ty: Some(field_signature.ty.clone()),
+            span: field.binding.span,
+        });
+    }
+}
+
 fn collect_block_symbols(
     body: &[Stmt],
     symbols: &mut Vec<SemanticSymbol>,
@@ -189,21 +221,7 @@ fn collect_block_symbols(
                     Type::Named(name) => name,
                     _ => struct_name.clone(),
                 };
-                for field in fields {
-                    if field.binding.name == "_" {
-                        continue;
-                    }
-                    let ty = signatures
-                        .struct_type(&concrete_name)
-                        .and_then(|definition| definition.field(&field.field))
-                        .map(|field| field.ty.clone());
-                    symbols.push(SemanticSymbol {
-                        name: field.binding.name.clone(),
-                        kind: SymbolKind::PatternBinding,
-                        ty,
-                        span: field.binding.span,
-                    });
-                }
+                collect_struct_pattern_symbols(fields, &concrete_name, symbols, signatures);
             }
             StmtKind::If {
                 body, else_body, ..

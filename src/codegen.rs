@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, StructDef, Type,
-    UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, NamedArg, Program, Stmt, StmtKind, StructDef,
+    StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
@@ -198,12 +198,12 @@ fn emit_block(
                         "struct destructuring code generation requires a struct value",
                     ));
                 };
-                let definition = signatures.struct_type(struct_name).ok_or_else(|| {
-                    diag(
+                if signatures.struct_type(struct_name).is_none() {
+                    return Err(diag(
                         stmt.span,
                         "struct destructuring code generation requires a struct value",
-                    )
-                })?;
+                    ));
+                }
                 let temp = format!("flux__destructure_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
@@ -211,21 +211,15 @@ fn emit_block(
                     c_type(&value.ty, signatures),
                     value.code
                 ));
-                for field in fields {
-                    if field.binding.name == "_" {
-                        continue;
-                    }
-                    let field_signature = definition
-                        .field(&field.field)
-                        .expect("type checking guarantees struct pattern fields exist");
-                    out.push_str(&format!(
-                        "{pad}{} {} = {temp}.{};\n",
-                        c_type(&field_signature.ty, signatures),
-                        local_c_name(&field.binding.name),
-                        field_c_name(&field.field)
-                    ));
-                    env.insert(field.binding.name.clone(), field_signature.ty.clone());
-                }
+                emit_struct_pattern_bindings(
+                    out,
+                    &pad,
+                    fields,
+                    struct_name,
+                    &temp,
+                    env,
+                    signatures,
+                )?;
             }
             StmtKind::Return(values) if values.is_empty() => {
                 out.push_str(&format!("{pad}return;\n"));
@@ -397,6 +391,54 @@ fn emit_block(
 struct EmittedExpr {
     code: String,
     ty: Type,
+}
+
+fn emit_struct_pattern_bindings(
+    out: &mut String,
+    pad: &str,
+    fields: &[StructPatternField],
+    struct_name: &str,
+    base: &str,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let definition = signatures
+        .struct_type(struct_name)
+        .expect("type checking guarantees struct pattern type exists");
+    for field in fields {
+        let field_signature = definition
+            .field(&field.field)
+            .expect("type checking guarantees struct pattern fields exist");
+        let access = format!("{base}.{}", field_c_name(&field.field));
+        if let Some(nested) = &field.nested {
+            let Type::Named(nested_name) = signatures.canonical_type(&field_signature.ty) else {
+                return Err(diag(
+                    nested.struct_span,
+                    "nested struct pattern code generation requires a struct value",
+                ));
+            };
+            emit_struct_pattern_bindings(
+                out,
+                pad,
+                &nested.fields,
+                &nested_name,
+                &access,
+                env,
+                signatures,
+            )?;
+            continue;
+        }
+        if field.binding.name == "_" {
+            continue;
+        }
+        out.push_str(&format!(
+            "{pad}{} {} = {access};\n",
+            c_type(&field_signature.ty, signatures),
+            local_c_name(&field.binding.name),
+        ));
+        env.insert(field.binding.name.clone(), field_signature.ty.clone());
+    }
+    Ok(())
 }
 
 fn emit_expr(

@@ -306,10 +306,18 @@ pub struct PatternBinding {
 }
 
 #[derive(Debug, Clone)]
+pub struct StructPattern {
+    pub struct_name: String,
+    pub struct_span: SourceSpan,
+    pub fields: Vec<StructPatternField>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StructPatternField {
     pub field: String,
     pub field_span: SourceSpan,
     pub binding: PatternBinding,
+    pub nested: Option<Box<StructPattern>>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, Expr, ExprKind, Function, Stmt, StmtKind, Type, UnaryOp};
+use crate::ast::{
+    BinOp, Expr, ExprKind, Function, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+};
 use crate::diagnostic::Diagnostic;
 use crate::parser;
 
@@ -170,13 +172,7 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
             } => {
                 let fields = fields
                     .iter()
-                    .map(|field| {
-                        if field.field == field.binding.name {
-                            field.field.clone()
-                        } else {
-                            format!("{}: {}", field.field, field.binding.name)
-                        }
-                    })
+                    .map(format_struct_pattern_field)
                     .collect::<Vec<_>>()
                     .join(", ");
                 lines.insert(
@@ -288,6 +284,23 @@ fn format_return_types(types: &[Type]) -> String {
             "({})",
             types.iter().map(Type::name).collect::<Vec<_>>().join(", ")
         ),
+    }
+}
+
+fn format_struct_pattern_field(field: &StructPatternField) -> String {
+    if let Some(nested) = &field.nested {
+        let fields = nested
+            .fields
+            .iter()
+            .map(format_struct_pattern_field)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("{}: {} {{ {} }}", field.field, nested.struct_name, fields);
+    }
+    if field.field == field.binding.name {
+        field.field.clone()
+    } else {
+        format!("{}: {}", field.field, field.binding.name)
     }
 }
 

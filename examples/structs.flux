@@ -16,9 +16,10 @@ fn main() -> i64 {
     let profile: Profile = Profile { user: User { name: "Ada", age: 41 }, active: true }
     let disabled: Profile = Profile { ..profile, active: false }
     let older: User = birthday(disabled.user)
-    let User { name, age: years } = older
+    let updated: Profile = Profile { ..disabled, user: older }
+    let Profile { user: User { name, age: years }, active } = updated
     print(name)
     print(years)
-    print(disabled.active)
+    print(active)
     return 0
 }

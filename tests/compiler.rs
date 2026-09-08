@@ -565,6 +565,46 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_nested_struct_destructuring_patterns() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+struct Profile {
+    user: User
+    active: bool
+}
+fn make_profile() -> Profile {
+    return Profile { user: User { name: "Ada", age: 42 }, active: true }
+}
+fn main() -> i64 {
+    let Profile { user: User { name, age: years }, active } = make_profile()
+    print(name)
+    print(years)
+    print(active)
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested struct patterns should typecheck");
+    let generated = compile_to_c(source).expect("nested struct patterns should lower natively");
+    assert_eq!(generated.matches("= flux__fn_make_profile();").count(), 1);
+    assert!(generated.contains("flux__destructure_0.flux__field_user.flux__field_name"));
+    assert!(generated.contains("flux__destructure_0.flux__field_user.flux__field_age"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("nested pattern should format");
+    assert!(formatted.contains("Profile { user: User { name, age: years }, active }"));
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(705))
+        .expect("nested pattern should analyze");
+    let years = database
+        .symbols_named("years")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("nested binding should be indexed");
+    assert_eq!(years.ty, Some(fluxc::ast::Type::I64));
+}
+
+#[test]
 fn rejects_invalid_struct_destructuring_patterns() {
     let unknown_field = r#"
 struct User {
@@ -597,6 +637,26 @@ fn main() -> i64 {
         error
             .message
             .contains("struct destructuring: expected User, got Other")
+    );
+
+    let wrong_nested_type = r#"
+struct User {
+    name: str
+}
+struct Profile {
+    user: User
+}
+fn main() -> i64 {
+    let profile: Profile = Profile { user: User { name: "Ada" } }
+    let Profile { user: Profile { user } } = profile
+    return 0
+}
+"#;
+    let error = check_source(wrong_nested_type).expect_err("wrong nested pattern type should fail");
+    assert!(
+        error
+            .message
+            .contains("nested struct pattern: expected Profile, got User")
     );
 
     let shadow = r#"
