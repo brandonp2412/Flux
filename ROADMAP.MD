@@ -407,7 +407,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
   - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `on_select`; sibling radios are grouped natively and `on_select` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
 - [ ] Lists/grids with virtualization.
-- [ ] Scrolling.
+- [x] Scrolling.
+  - [x] Flat root grids may declare `grid scroll: true`; Linux lowers the existing grid into a native `GtkScrolledWindow` with automatic scrollbars while Flux source remains a flat sibling element set with no scroll-wrapper widget hierarchy.
 - [ ] Overlays/popovers/tooltips.
 - [ ] Dialogs/sheets.
 - [ ] Menus/context menus.

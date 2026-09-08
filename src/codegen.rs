@@ -255,7 +255,14 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "    gtk_widget_set_margin_top(grid, {padding});\n    gtk_widget_set_margin_bottom(grid, {padding});\n    gtk_widget_set_margin_start(grid, {padding});\n    gtk_widget_set_margin_end(grid, {padding});\n"
     ));
-    out.push_str("    gtk_window_set_child(GTK_WINDOW(window), grid);\n");
+    if view.grid.scroll.unwrap_or(false) {
+        out.push_str("    GtkWidget *scroller = gtk_scrolled_window_new();\n");
+        out.push_str("    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);\n");
+        out.push_str("    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), grid);\n");
+        out.push_str("    gtk_window_set_child(GTK_WINDOW(window), scroller);\n");
+    } else {
+        out.push_str("    gtk_window_set_child(GTK_WINDOW(window), grid);\n");
+    }
 
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);

@@ -263,6 +263,9 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
     if let (Some(padding), Some(line)) = (view.grid.padding, view.grid.padding_line) {
         lines.insert(line, format!("    grid padding: {padding}"));
     }
+    if let (Some(scroll), Some(line)) = (view.grid.scroll, view.grid.scroll_line) {
+        lines.insert(line, format!("    grid scroll: {scroll}"));
+    }
     for state in &view.states {
         lines.insert(
             state.line,

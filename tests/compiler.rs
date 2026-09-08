@@ -3759,6 +3759,48 @@ app Counter
 }
 
 #[test]
+fn root_grid_can_lower_to_native_scrolling_without_source_wrappers() {
+    let source = r#"
+view Feed {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    grid scroll: true
+    Text first at 1,1
+        text: "One"
+    Text second at 2,1
+        text: "Two"
+    Text third at 3,1
+        text: "Three"
+}
+app Feed(width: 320, height: 120)
+"#;
+    check_source(source).expect("scrollable flat grid should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("scrolling should format");
+    assert!(formatted.contains("grid scroll: true"));
+    let generated = compile_to_c(source).expect("scrolling should lower natively");
+    assert!(generated.contains("gtk_scrolled_window_new()"));
+    assert!(
+        generated.contains("gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), grid)")
+    );
+    assert!(generated.contains("gtk_window_set_child(GTK_WINDOW(window), scroller)"));
+
+    let invalid = r#"
+view Feed {
+    grid columns: 1fr
+    grid rows: auto
+    grid scroll: yes
+}
+app Feed
+"#;
+    let errors = check_source_all(invalid).expect_err("grid scroll must require a bool literal");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("grid scroll must be the boolean literal true or false")
+    }));
+}
+
+#[test]
 fn native_elements_support_state_visibility_and_minimum_size_constraints() {
     let source = r#"
 view Screen {
@@ -3826,8 +3868,8 @@ app Choice
         generated.contains("if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(widget))) return;")
     );
     assert!(generated.contains("flux__ui_state_selected = INT64_C(1);"));
-    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_first), ((flux__ui_state_selected) == (INT64_C(0))))"));
-    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_second), ((flux__ui_state_selected) == (INT64_C(1))))"));
+    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_first), (flux__ui_state_selected == INT64_C(0)))"));
+    assert!(generated.contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_second), (flux__ui_state_selected == INT64_C(1)))"));
 }
 
 #[test]

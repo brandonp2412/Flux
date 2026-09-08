@@ -1531,6 +1531,25 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             continue;
         }
 
+        if let Some(value) = line.text.strip_prefix("grid scroll:") {
+            if grid.scroll.is_some() {
+                return Err(diag(line.number, "grid scroll may only be declared once"));
+            }
+            grid.scroll = Some(match value.trim() {
+                "true" => true,
+                "false" => false,
+                _ => {
+                    return Err(diag(
+                        line.number,
+                        "grid scroll must be the boolean literal true or false",
+                    ));
+                }
+            });
+            grid.scroll_line = Some(line.number);
+            *index += 1;
+            continue;
+        }
+
         let mut element = parse_view_element(line)?;
         if elements
             .iter()
@@ -1578,7 +1597,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 ));
             }
             let (transition, expression_source, expression_column) =
-                if matches!(property_name, "on_press" | "on_change") {
+                if matches!(property_name, "on_press" | "on_change" | "on_select") {
                     if let Some((raw_state, _)) = value_source.split_once("=>") {
                         let state = raw_state.trim();
                         validate_identifier(state, property_line.number)?;

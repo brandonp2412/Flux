@@ -322,6 +322,8 @@ pub struct GridLayout {
     pub gap: Option<u32>,
     pub padding: Option<u32>,
     pub padding_line: Option<usize>,
+    pub scroll: Option<bool>,
+    pub scroll_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
