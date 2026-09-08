@@ -3322,6 +3322,58 @@ fn project_analysis_uses_unsaved_source_overlays_across_imports() {
 }
 
 #[test]
+fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_sources() {
+    let root = std::env::temp_dir().join(format!("flux-project-cache-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary cached project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let overlays = std::collections::HashMap::new();
+    cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("first analysis should succeed");
+    cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("unchanged analysis should be reused");
+    assert_eq!(
+        cache.stats(),
+        fluxc::project::ProjectAnalysisCacheStats { hits: 1, misses: 1 }
+    );
+
+    let dependency = fs::canonicalize(dependency).unwrap();
+    let overlays = std::collections::HashMap::from([(
+        dependency.clone(),
+        "pub fn value() -> str { \"overlay\" }\n".to_string(),
+    )]);
+    let errors = cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect_err("changed overlay must invalidate the cached project");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("expected i64, got str"))
+    );
+    assert_eq!(cache.stats().misses, 2);
+
+    cache.invalidate_path(&dependency);
+    fs::write(&dependency, "pub fn value() -> i64 { 2 }\n")
+        .expect("dependency update should be writable");
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalidated dependency should be reanalyzed");
+    assert_eq!(cache.stats().misses, 3);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn package_sources_receive_stable_package_qualified_module_names() {
     let root = std::env::temp_dir().join(format!("flux-package-modules-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

@@ -21,12 +21,122 @@ pub struct ProjectAnalysis {
     pub sources: Vec<ProjectSource>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectAnalysisCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CachedProjectAnalysis {
+    analysis: ProjectAnalysis,
+    manifest_text: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ProjectAnalysisCache {
+    entries: HashMap<PathBuf, CachedProjectAnalysis>,
+    hits: usize,
+    misses: usize,
+}
+
+impl ProjectAnalysisCache {
+    pub fn analyze_with_overlays(
+        &mut self,
+        target: &Path,
+        overlays: &HashMap<PathBuf, String>,
+    ) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
+        let key = cache_target_key(target)?;
+        if let Some(entry) = self.entries.get(&key)
+            && cached_analysis_is_current(&key, entry, overlays)
+        {
+            self.hits += 1;
+            return Ok(entry.analysis.clone());
+        }
+
+        self.misses += 1;
+        let analysis = analyze_with_overlays(target, overlays)?;
+        self.entries.insert(
+            key.clone(),
+            CachedProjectAnalysis {
+                analysis: analysis.clone(),
+                manifest_text: manifest_snapshot(&key),
+            },
+        );
+        Ok(analysis)
+    }
+
+    pub fn invalidate_path(&mut self, path: &Path) {
+        let Ok(path) = fs::canonicalize(path) else {
+            return;
+        };
+        self.entries.retain(|target, entry| {
+            target != &path
+                && !entry
+                    .analysis
+                    .sources
+                    .iter()
+                    .any(|source| source.path == path)
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub const fn stats(&self) -> ProjectAnalysisCacheStats {
+        ProjectAnalysisCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
     pub name: String,
     pub version: Option<String>,
     pub entry: PathBuf,
     pub path: PathBuf,
+}
+
+fn cache_target_key(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
+    let candidate = if target.is_dir() {
+        target.join("flux.toml")
+    } else {
+        target.to_path_buf()
+    };
+    fs::canonicalize(&candidate).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "failed to resolve project target '{}': {error}",
+                target.display()
+            ),
+        )]
+    })
+}
+
+fn manifest_snapshot(target: &Path) -> Option<String> {
+    (target.file_name().and_then(|name| name.to_str()) == Some("flux.toml"))
+        .then(|| fs::read_to_string(target).ok())
+        .flatten()
+}
+
+fn cached_analysis_is_current(
+    target: &Path,
+    entry: &CachedProjectAnalysis,
+    overlays: &HashMap<PathBuf, String>,
+) -> bool {
+    if manifest_snapshot(target) != entry.manifest_text {
+        return false;
+    }
+    entry.analysis.sources.iter().all(|source| {
+        overlays.get(&source.path).map_or_else(
+            || fs::read_to_string(&source.path).is_ok_and(|text| text == source.text),
+            |overlay| overlay == &source.text,
+        )
+    })
 }
 
 pub fn load(target: &Path) -> Result<(Program, Vec<ProjectSource>), Vec<Diagnostic>> {

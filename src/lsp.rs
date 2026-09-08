@@ -10,6 +10,11 @@ enum PositionEncoding {
     Utf16,
 }
 
+struct LspRequestContext<'a> {
+    encoding: PositionEncoding,
+    cache: Option<&'a mut crate::project::ProjectAnalysisCache>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum JsonValue {
     Null,
@@ -85,6 +90,7 @@ pub fn run_stdio() -> io::Result<()> {
 
 fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<()> {
     let mut documents = HashMap::<String, String>::new();
+    let mut analysis_cache = crate::project::ProjectAnalysisCache::default();
     let mut encoding = PositionEncoding::Utf16;
     let mut shutdown = false;
 
@@ -139,6 +145,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                             .and_then(JsonValue::as_str),
                     )
                 {
+                    invalidate_lsp_analysis_path(&mut analysis_cache, uri);
                     documents.insert(uri.to_string(), text.to_string());
                     publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
                 }
@@ -157,6 +164,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(|change| change.get("text"))
                         .and_then(JsonValue::as_str)
                 {
+                    invalidate_lsp_analysis_path(&mut analysis_cache, uri);
                     documents.insert(uri.to_string(), text.to_string());
                     publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
                 }
@@ -168,6 +176,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     .and_then(|doc| doc.get("uri"))
                     .and_then(JsonValue::as_str)
                 {
+                    invalidate_lsp_analysis_path(&mut analysis_cache, uri);
                     documents.remove(uri);
                     publish_empty_diagnostics(&mut writer, uri)?;
                     publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
@@ -224,8 +233,14 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let hover = match (uri, line, character) {
                         (Some(uri), Some(line), Some(character)) => {
                             documents.get(uri).and_then(|source| {
-                                hover_for_document(
-                                    uri, source, &documents, line, character, encoding,
+                                hover_for_document_cached(
+                                    uri,
+                                    source,
+                                    &documents,
+                                    line,
+                                    character,
+                                    encoding,
+                                    Some(&mut analysis_cache),
                                 )
                             })
                         }
@@ -295,8 +310,14 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params")).and_then(
                         |(uri, line, character)| {
                             documents.get(uri).and_then(|source| {
-                                definition_for_document(
-                                    uri, source, &documents, line, character, encoding,
+                                definition_for_document_cached(
+                                    uri,
+                                    source,
+                                    &documents,
+                                    line,
+                                    character,
+                                    encoding,
+                                    Some(&mut analysis_cache),
                                 )
                             })
                         },
@@ -312,8 +333,14 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params"))
                         .and_then(|(uri, line, character)| {
                             documents.get(uri).map(|source| {
-                                references_for_document(
-                                    uri, source, &documents, line, character, encoding,
+                                references_for_document_cached(
+                                    uri,
+                                    source,
+                                    &documents,
+                                    line,
+                                    character,
+                                    encoding,
+                                    Some(&mut analysis_cache),
                                 )
                             })
                         })
@@ -333,8 +360,17 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(params).and_then(|(uri, line, character)| {
                         let new_name = new_name?;
                         documents.get(uri).and_then(|source| {
-                            rename_for_document(
-                                uri, source, &documents, line, character, new_name, encoding,
+                            rename_for_document_cached(
+                                uri,
+                                source,
+                                &documents,
+                                line,
+                                character,
+                                new_name,
+                                LspRequestContext {
+                                    encoding,
+                                    cache: Some(&mut analysis_cache),
+                                },
                             )
                         })
                     });
@@ -362,8 +398,14 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let items = uri
                         .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
                         .map(|(uri, source)| {
-                            completion_items_at_cursor(
-                                uri, source, &documents, line, character, encoding,
+                            completion_items_at_cursor_cached(
+                                uri,
+                                source,
+                                &documents,
+                                line,
+                                character,
+                                encoding,
+                                Some(&mut analysis_cache),
                             )
                         })
                         .unwrap_or_else(|| completion_items(""));
@@ -378,8 +420,14 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     let result = request_position(message.get("params")).and_then(
                         |(uri, line, character)| {
                             documents.get(uri).and_then(|source| {
-                                signature_help_for_document(
-                                    uri, source, &documents, line, character, encoding,
+                                signature_help_for_document_cached(
+                                    uri,
+                                    source,
+                                    &documents,
+                                    line,
+                                    character,
+                                    encoding,
+                                    Some(&mut analysis_cache),
                                 )
                             })
                         },
@@ -667,6 +715,7 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     items
 }
 
+#[cfg(test)]
 fn completion_items_at_cursor(
     uri: &str,
     source: &str,
@@ -674,6 +723,20 @@ fn completion_items_at_cursor(
     line_index: Option<usize>,
     character: Option<usize>,
     encoding: PositionEncoding,
+) -> Vec<JsonValue> {
+    completion_items_at_cursor_cached(
+        uri, source, documents, line_index, character, encoding, None,
+    )
+}
+
+fn completion_items_at_cursor_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: Option<usize>,
+    character: Option<usize>,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
 ) -> Vec<JsonValue> {
     let mut items = completion_items_at_position(uri, source, documents, line_index);
     let mut seen = items
@@ -688,7 +751,9 @@ fn completion_items_at_cursor(
     else {
         return items;
     };
-    if let Some(program) = completion_contract_program(uri, source, documents, line_index) {
+    if let Some(program) =
+        completion_contract_program_cached(uri, source, documents, line_index, cache)
+    {
         add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program);
     }
     items
@@ -858,13 +923,14 @@ fn qualified_namespace_at_cursor(
         .flatten()
 }
 
-fn completion_contract_program(
+fn completion_contract_program_cached(
     uri: &str,
     source: &str,
     documents: &HashMap<String, String>,
     line_index: usize,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
 ) -> Option<crate::ast::Program> {
-    if let Some((database, _)) = analyzed_project_document(uri, documents) {
+    if let Some((database, _)) = analyzed_project_document_cached(uri, documents, cache) {
         return Some(database.program().clone());
     }
     let prefix = source_before_active_top_level_declaration(source, line_index);
@@ -1336,6 +1402,7 @@ fn function_contains_line(source: &str, start_line: usize, line: usize) -> bool 
         .is_some_and(|(end_index, _)| line <= end_index + 1)
 }
 
+#[cfg(test)]
 fn signature_help_for_document(
     uri: &str,
     source: &str,
@@ -1343,6 +1410,20 @@ fn signature_help_for_document(
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    signature_help_for_document_cached(
+        uri, source, documents, line_index, character, encoding, None,
+    )
+}
+
+fn signature_help_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
 ) -> Option<JsonValue> {
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte_in_line = byte_offset_for_encoded_column(line, character, encoding);
@@ -1354,7 +1435,7 @@ fn signature_help_for_document(
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
     let (call_name, active_parameter) = active_call(prefix)?;
-    let project_analysis = analyzed_project_document(uri, documents);
+    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
     let standalone_database;
     let database = if let Some((database, _)) = project_analysis.as_ref() {
         database
@@ -2188,6 +2269,7 @@ fn symbol_for_position<'a>(
         })
 }
 
+#[cfg(test)]
 fn definition_for_document(
     uri: &str,
     source: &str,
@@ -2196,7 +2278,21 @@ fn definition_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
-    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+    definition_for_document_cached(
+        uri, source, documents, line_index, character, encoding, None,
+    )
+}
+
+fn definition_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
+) -> Option<JsonValue> {
+    if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
         if let Some(definition) = ui_property_definition(
             uri, source, line_index, character, encoding, &database, &sources,
         ) {
@@ -2327,6 +2423,17 @@ fn analyzed_project_document(
     crate::semantic::SemanticDatabase,
     Vec<crate::project::ProjectSource>,
 )> {
+    analyzed_project_document_cached(uri, documents, None)
+}
+
+fn analyzed_project_document_cached(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
+) -> Option<(
+    crate::semantic::SemanticDatabase,
+    Vec<crate::project::ProjectSource>,
+)> {
     let current_path = std::fs::canonicalize(file_uri_path(uri)?).ok()?;
     let overlays = document_overlays(documents);
     let mut candidates = workspace_project_targets(documents);
@@ -2340,8 +2447,14 @@ fn analyzed_project_document(
     candidates.dedup();
 
     let mut best: Option<(usize, bool, crate::project::ProjectAnalysis)> = None;
+    let mut cache = cache;
     for candidate in candidates {
-        let Ok(analysis) = crate::project::analyze_with_overlays(&candidate, &overlays) else {
+        let analysis = if let Some(cache) = cache.as_deref_mut() {
+            cache.analyze_with_overlays(&candidate, &overlays)
+        } else {
+            crate::project::analyze_with_overlays(&candidate, &overlays)
+        };
+        let Ok(analysis) = analysis else {
             continue;
         };
         if !analysis
@@ -2369,6 +2482,7 @@ fn analyzed_project_document(
     Some((database, analysis.sources))
 }
 
+#[cfg(test)]
 fn references_for_document(
     uri: &str,
     source: &str,
@@ -2377,7 +2491,21 @@ fn references_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Vec<JsonValue> {
-    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+    references_for_document_cached(
+        uri, source, documents, line_index, character, encoding, None,
+    )
+}
+
+fn references_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
+) -> Vec<JsonValue> {
+    if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
         let Some(symbol) =
             symbol_for_position(&database, uri, source, line_index, character, encoding)
         else {
@@ -2416,6 +2544,7 @@ fn references_for_document(
         .collect()
 }
 
+#[cfg(test)]
 fn rename_for_document(
     uri: &str,
     source: &str,
@@ -2425,10 +2554,34 @@ fn rename_for_document(
     new_name: &str,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
+    rename_for_document_cached(
+        uri,
+        source,
+        documents,
+        line_index,
+        character,
+        new_name,
+        LspRequestContext {
+            encoding,
+            cache: None,
+        },
+    )
+}
+
+fn rename_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    character: usize,
+    new_name: &str,
+    context: LspRequestContext<'_>,
+) -> Option<JsonValue> {
+    let LspRequestContext { encoding, cache } = context;
     if !is_valid_identifier(new_name) || is_flux_keyword(new_name) {
         return None;
     }
-    if let Some((database, sources)) = analyzed_project_document(uri, documents) {
+    if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
         let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
         if database.symbols_named(new_name).next().is_some() {
             return None;
@@ -2522,6 +2675,7 @@ fn is_valid_identifier(name: &str) -> bool {
         && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
+#[cfg(test)]
 fn hover_for_document(
     uri: &str,
     source: &str,
@@ -2530,11 +2684,26 @@ fn hover_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
+    hover_for_document_cached(
+        uri, source, documents, line_index, character, encoding, None,
+    )
+}
+
+fn hover_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
+) -> Option<JsonValue> {
     if let Some(hover) = ui_contract_hover(uri, source, documents, line_index, character, encoding)
     {
         return Some(hover);
     }
-    let project_database = analyzed_project_document(uri, documents).map(|(database, _)| database);
+    let project_database =
+        analyzed_project_document_cached(uri, documents, cache).map(|(database, _)| database);
     let standalone_database;
     let database = if let Some(database) = project_database.as_ref() {
         database
@@ -2894,6 +3063,12 @@ fn nearest_package_manifest(path: &std::path::Path) -> Option<PathBuf> {
         directory = current.parent();
     }
     None
+}
+
+fn invalidate_lsp_analysis_path(cache: &mut crate::project::ProjectAnalysisCache, uri: &str) {
+    if let Some(path) = file_uri_path(uri) {
+        cache.invalidate_path(&path);
+    }
 }
 
 fn document_overlays(documents: &HashMap<String, String>) -> HashMap<PathBuf, String> {
@@ -4217,6 +4392,31 @@ mod tests {
         assert!(rename.contains("main.flux"));
         assert!(rename.contains("answer"));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_analysis_cache_is_used_by_repeated_lsp_queries() {
+        let root = std::env::temp_dir().join(format!("flux-lsp-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP cache project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 1 }\n")
+            .expect("dependency should be writable");
+        let source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let uri = file_uri_from_path(&main);
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+        let mut cache = crate::project::ProjectAnalysisCache::default();
+
+        analyzed_project_document_cached(&uri, &documents, Some(&mut cache))
+            .expect("first LSP analysis should succeed");
+        analyzed_project_document_cached(&uri, &documents, Some(&mut cache))
+            .expect("second LSP analysis should reuse the cache");
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 1);
         let _ = std::fs::remove_dir_all(root);
     }
 
