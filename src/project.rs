@@ -392,15 +392,13 @@ impl Loader {
             }
         };
         let source_id = SourceId::from_name(canonical.to_string_lossy().as_ref());
-        if !self.sources.iter().any(|entry| entry.path == canonical) {
-            let module_name = self.module_name(&canonical);
-            self.sources.push(ProjectSource {
-                path: canonical.clone(),
-                source_id,
-                module_name,
-                text: source.clone(),
-            });
-        }
+        let module_name = self.module_name(&canonical);
+        self.sources.push(ProjectSource {
+            path: canonical.clone(),
+            source_id,
+            module_name,
+            text: source.clone(),
+        });
         let parsed = match parser::parse_all_with_source(&source, source_id) {
             Ok(program) => program,
             Err(mut diagnostics) => {
