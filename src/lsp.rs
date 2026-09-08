@@ -313,14 +313,20 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
             }
             Some("textDocument/completion") => {
                 if let Some(id) = id {
-                    let uri = message
-                        .get("params")
+                    let params = message.get("params");
+                    let uri = params
                         .and_then(|params| params.get("textDocument"))
                         .and_then(|doc| doc.get("uri"))
                         .and_then(JsonValue::as_str);
+                    let line = params
+                        .and_then(|params| params.get("position"))
+                        .and_then(|position| position.get("line"))
+                        .and_then(JsonValue::as_usize);
                     let items = uri
                         .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
-                        .map(|(uri, source)| completion_items_for_document(uri, source, &documents))
+                        .map(|(uri, source)| {
+                            completion_items_at_position(uri, source, &documents, line)
+                        })
                         .unwrap_or_else(|| completion_items(""));
                     write_message(
                         &mut writer,
@@ -626,6 +632,15 @@ fn completion_items_for_document(
     source: &str,
     documents: &HashMap<String, String>,
 ) -> Vec<JsonValue> {
+    completion_items_at_position(uri, source, documents, None)
+}
+
+fn completion_items_at_position(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    line_index: Option<usize>,
+) -> Vec<JsonValue> {
     let mut items = completion_items(source);
     let mut seen = items
         .iter()
@@ -717,7 +732,88 @@ fn completion_items_for_document(
             );
         }
     }
+    if let Some(line_index) = line_index
+        && let Ok(signatures) = crate::typecheck::check_all(&program)
+    {
+        let database = crate::semantic::SemanticDatabase::from_analyzed(program.clone(), signatures);
+        add_position_local_completions(
+            &mut items,
+            &mut seen,
+            source,
+            current_id,
+            line_index + 1,
+            &program,
+            &database,
+        );
+    }
     items
+}
+
+fn add_position_local_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    source: &str,
+    source_id: SourceId,
+    line: usize,
+    program: &crate::ast::Program,
+    database: &crate::semantic::SemanticDatabase,
+) {
+    let Some(function) = program.functions.iter().find(|function| {
+        function.name_span.source_id == source_id
+            && function.line <= line
+            && function_contains_line(source, function.line, line)
+    }) else {
+        return;
+    };
+    use crate::semantic::SymbolKind;
+    for symbol in database.symbols().iter().filter(|symbol| {
+        symbol.span.source_id == source_id
+            && symbol.span.line >= function.line
+            && symbol.span.line <= line
+            && matches!(
+                symbol.kind,
+                SymbolKind::Parameter
+                    | SymbolKind::Binding
+                    | SymbolKind::MutableBinding
+                    | SymbolKind::PatternBinding
+                    | SymbolKind::LoopVariable
+            )
+    }) {
+        let prefix = match symbol.kind {
+            SymbolKind::Parameter => "parameter",
+            SymbolKind::MutableBinding => "var",
+            SymbolKind::Binding => "let",
+            SymbolKind::PatternBinding => "pattern",
+            SymbolKind::LoopVariable => "loop",
+            _ => unreachable!("filtered local completion symbol kind"),
+        };
+        let detail = symbol
+            .ty
+            .as_ref()
+            .map(|ty| format!("{prefix} {}: {}", symbol.name, ty.name()))
+            .unwrap_or_else(|| format!("{prefix} {}", symbol.name));
+        push_completion_item(items, seen, &symbol.name, 6, &detail);
+    }
+}
+
+fn function_contains_line(source: &str, start_line: usize, line: usize) -> bool {
+    if line < start_line {
+        return false;
+    }
+    let Some(header) = source.lines().nth(start_line.saturating_sub(1)) else {
+        return false;
+    };
+    if header.trim_end().ends_with('}') {
+        return line == start_line;
+    }
+    source
+        .lines()
+        .enumerate()
+        .skip(start_line)
+        .find(|(_, candidate)| {
+            candidate.len() == candidate.trim_start().len() && candidate.trim() == "}"
+        })
+        .is_some_and(|(end_index, _)| line <= end_index + 1)
 }
 
 fn signature_help_for_document(
@@ -1295,10 +1391,7 @@ fn definition_for_document(
             .iter()
             .find(|candidate| candidate.source_id == symbol.span.source_id)?;
         return Some(object([
-            (
-                "uri",
-                JsonValue::String(format!("file://{}", target.path.display())),
-            ),
+            ("uri", JsonValue::String(file_uri_from_path(&target.path))),
             ("range", lsp_range(symbol.span, &target.text, encoding)),
         ]));
     }
@@ -1460,7 +1553,7 @@ fn rename_for_document(
 }
 
 fn project_source_uri(source: &crate::project::ProjectSource) -> String {
-    format!("file://{}", source.path.display())
+    file_uri_from_path(&source.path)
 }
 
 fn identifier_occurrences(source: &str, name: &str) -> Vec<SourceSpan> {
@@ -1808,6 +1901,22 @@ fn canonical_source_id(path: &std::path::Path) -> Option<SourceId> {
         .map(|path| SourceId::from_name(path.to_string_lossy().as_ref()))
 }
 
+fn file_uri_from_path(path: &std::path::Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::from("file://");
+    if cfg!(windows) && !normalized.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~') {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
 fn file_uri_path(uri: &str) -> Option<PathBuf> {
     let encoded = uri.strip_prefix("file://")?;
     let mut bytes = Vec::with_capacity(encoded.len());
@@ -1823,7 +1932,14 @@ fn file_uri_path(uri: &str) -> Option<PathBuf> {
             index += 1;
         }
     }
-    String::from_utf8(bytes).ok().map(PathBuf::from)
+    let decoded = String::from_utf8(bytes).ok()?;
+    #[cfg(windows)]
+    let decoded = decoded
+        .strip_prefix('/')
+        .filter(|path| path.as_bytes().get(1) == Some(&b':'))
+        .unwrap_or(&decoded)
+        .to_string();
+    Some(PathBuf::from(decoded))
 }
 
 fn code_actions(
@@ -2425,6 +2541,15 @@ mod tests {
     }
 
     #[test]
+    fn file_uri_round_trip_encodes_reserved_path_bytes() {
+        let path = PathBuf::from("/tmp/flux project/100%#example.flux");
+        let uri = file_uri_from_path(&path);
+        assert!(uri.contains("flux%20project"));
+        assert!(uri.contains("100%25%23example.flux"));
+        assert_eq!(file_uri_path(&uri), Some(path));
+    }
+
+    #[test]
     fn formatting_returns_one_whole_document_edit() {
         let source = "fn main()->i64 {\n  return 0\n}\n";
         let edits =
@@ -2467,6 +2592,22 @@ mod tests {
             .expect("unambiguous function usage should hover")
             .to_json();
         assert!(usage.contains("fn double(value: i64) -> i64"));
+    }
+
+    #[test]
+    fn completion_adds_current_function_locals_declared_before_the_cursor() {
+        let uri = "file:///tmp/local-completion.flux";
+        let source = "fn first(other: i64) -> i64 { other }\nfn main(input: i64) -> i64 {\n    let count: i64 = input\n    var total: i64 = count\n    return total\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(4));
+        let json = JsonValue::Array(items).to_json();
+        assert!(json.contains("\"label\":\"input\""));
+        assert!(json.contains("parameter input: i64"));
+        assert!(json.contains("\"label\":\"count\""));
+        assert!(json.contains("let count: i64"));
+        assert!(json.contains("\"label\":\"total\""));
+        assert!(json.contains("var total: i64"));
+        assert!(!json.contains("\"label\":\"other\""));
     }
 
     #[test]
