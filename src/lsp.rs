@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 
@@ -139,7 +140,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )
                 {
                     documents.insert(uri.to_string(), text.to_string());
-                    publish_document_diagnostics(&mut writer, uri, text, encoding)?;
+                    publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
                 }
             }
             Some("textDocument/didChange") => {
@@ -157,7 +158,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(JsonValue::as_str)
                 {
                     documents.insert(uri.to_string(), text.to_string());
-                    publish_document_diagnostics(&mut writer, uri, text, encoding)?;
+                    publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
                 }
             }
             Some("textDocument/didClose") => {
@@ -169,6 +170,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                 {
                     documents.remove(uri);
                     publish_empty_diagnostics(&mut writer, uri)?;
+                    publish_workspace_diagnostics(&mut writer, &documents, encoding)?;
                 }
             }
             Some("textDocument/formatting") => {
@@ -196,7 +198,7 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(JsonValue::as_str);
                     let actions = uri
                         .and_then(|uri| documents.get(uri).map(|source| (uri, source)))
-                        .map(|(uri, source)| code_actions(uri, source, encoding))
+                        .map(|(uri, source)| code_actions(uri, source, &documents, encoding))
                         .unwrap_or_default();
                     write_message(
                         &mut writer,
@@ -1405,7 +1407,27 @@ fn byte_offset_for_encoded_column(
     }
 }
 
-fn document_diagnostics(uri: &str, source: &str) -> Vec<Diagnostic> {
+fn document_diagnostics_with_overlays(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+) -> Vec<Diagnostic> {
+    if let Some(path) = file_uri_path(uri)
+        && path.exists()
+    {
+        let overlays = document_overlays(documents);
+        let current_id = canonical_source_id(&path).unwrap_or_else(|| SourceId::from_name(uri));
+        let (diagnostics, _) = crate::project::check_with_overlays(&path, &overlays);
+        return diagnostics
+            .into_iter()
+            .filter(|diagnostic| {
+                diagnostic.span.is_none_or(|span| {
+                    span.source_id == current_id || span.source_id == SourceId::UNKNOWN
+                })
+            })
+            .collect();
+    }
+
     let source_id = SourceId::from_name(uri);
     match crate::parser::parse_all_with_source(source, source_id) {
         Err(diagnostics) => diagnostics,
@@ -1416,9 +1438,52 @@ fn document_diagnostics(uri: &str, source: &str) -> Vec<Diagnostic> {
     }
 }
 
-fn code_actions(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
-    let source_id = SourceId::from_name(uri);
-    document_diagnostics(uri, source)
+fn document_overlays(documents: &HashMap<String, String>) -> HashMap<PathBuf, String> {
+    documents
+        .iter()
+        .filter_map(|(uri, source)| {
+            let path = file_uri_path(uri)?;
+            let canonical = std::fs::canonicalize(path).ok()?;
+            Some((canonical, source.clone()))
+        })
+        .collect()
+}
+
+fn canonical_source_id(path: &std::path::Path) -> Option<SourceId> {
+    std::fs::canonicalize(path)
+        .ok()
+        .map(|path| SourceId::from_name(path.to_string_lossy().as_ref()))
+}
+
+fn file_uri_path(uri: &str) -> Option<PathBuf> {
+    let encoded = uri.strip_prefix("file://")?;
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let input = encoded.as_bytes();
+    let mut index = 0usize;
+    while index < input.len() {
+        if input[index] == b'%' && index + 2 < input.len() {
+            let hex = std::str::from_utf8(&input[index + 1..index + 3]).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            bytes.push(input[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(bytes).ok().map(PathBuf::from)
+}
+
+fn code_actions(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    encoding: PositionEncoding,
+) -> Vec<JsonValue> {
+    let source_id = file_uri_path(uri)
+        .as_deref()
+        .and_then(canonical_source_id)
+        .unwrap_or_else(|| SourceId::from_name(uri));
+    document_diagnostics_with_overlays(uri, source, documents)
         .into_iter()
         .flat_map(|diagnostic| {
             let rendered = lsp_diagnostic(&diagnostic, source, source_id, uri, encoding);
@@ -1448,14 +1513,31 @@ fn code_actions(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<Json
         .collect()
 }
 
+fn publish_workspace_diagnostics<W: Write>(
+    writer: &mut W,
+    documents: &HashMap<String, String>,
+    encoding: PositionEncoding,
+) -> io::Result<()> {
+    let mut open_documents = documents.iter().collect::<Vec<_>>();
+    open_documents.sort_by_key(|(uri, _)| *uri);
+    for (uri, source) in open_documents {
+        publish_document_diagnostics(writer, uri, source, documents, encoding)?;
+    }
+    Ok(())
+}
+
 fn publish_document_diagnostics<W: Write>(
     writer: &mut W,
     uri: &str,
     source: &str,
+    documents: &HashMap<String, String>,
     encoding: PositionEncoding,
 ) -> io::Result<()> {
-    let source_id = SourceId::from_name(uri);
-    let diagnostics = document_diagnostics(uri, source);
+    let source_id = file_uri_path(uri)
+        .as_deref()
+        .and_then(canonical_source_id)
+        .unwrap_or_else(|| SourceId::from_name(uri));
+    let diagnostics = document_diagnostics_with_overlays(uri, source, documents);
     let rendered = diagnostics
         .iter()
         .map(|diagnostic| lsp_diagnostic(diagnostic, source, source_id, uri, encoding))
@@ -2003,7 +2085,13 @@ mod tests {
     #[test]
     fn code_actions_reuse_machine_applicable_compiler_fixes() {
         let source = "fn main() -> i64\n    return 0\n}\n";
-        let actions = code_actions("file:///tmp/fix.flux", source, PositionEncoding::Utf8);
+        let documents = HashMap::from([("file:///tmp/fix.flux".to_string(), source.to_string())]);
+        let actions = code_actions(
+            "file:///tmp/fix.flux",
+            source,
+            &documents,
+            PositionEncoding::Utf8,
+        );
         assert_eq!(actions.len(), 1);
         let json = actions[0].to_json();
         assert!(json.contains("insert the function body opener"));
@@ -2090,6 +2178,37 @@ mod tests {
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
+    }
+
+    #[test]
+    fn imported_document_diagnostics_use_open_buffer_overlays() {
+        let root = std::env::temp_dir().join(format!("flux-lsp-overlays-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 1 }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let dependency = std::fs::canonicalize(dependency).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let dependency_uri = format!("file://{}", dependency.display());
+        let main_uri = format!("file://{}", main.display());
+        let documents = HashMap::from([
+            (main_uri.clone(), main_source.to_string()),
+            (
+                dependency_uri,
+                "pub fn value() -> str { \"unsaved\" }\n".to_string(),
+            ),
+        ]);
+        let diagnostics = document_diagnostics_with_overlays(&main_uri, main_source, &documents);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("expected i64, got str") })
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

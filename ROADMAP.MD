@@ -627,7 +627,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [ ] Diagnostics. Reuse the same structured diagnostic model and source spans as the terminal renderer; do not create a separate editor-only error model.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
-  - [ ] Workspace/import-aware unsaved-buffer diagnostics. Until overlay analysis exists, buffers containing imports intentionally publish parse diagnostics only rather than type-checking without their module context.
+  - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics published for a document are filtered to that document's stable source ID.
 - [ ] Completion.
   - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, and top-level declarations parsed from the current buffer, including typed signature/detail text. Scope-aware locals and imported/package symbols remain pending with workspace reference indexing.
 - [ ] Signature help.
@@ -644,8 +644,10 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
 - [ ] Inlay hints where they add value.
-- [ ] Incremental workspace analysis.
-- [ ] Package/module awareness, including overlay-aware analysis across multiple unsaved imported buffers.
+- [ ] Incremental workspace analysis. Overlay-aware project analysis now exists, but the bootstrap LSP still rebuilds the affected project analysis rather than caching/reusing typed workspace state between edits.
+- [ ] Package/module awareness.
+  - [x] Open-buffer import graphs use the compiler's real module loader and in-memory overlays, preserving module visibility/import semantics across unsaved files.
+  - [ ] Workspace-root/package discovery and shared cached analysis for navigation/completion/refactoring across imported modules.
 - [ ] UI syntax awareness.
 - [ ] Hot-reload status integration.
 

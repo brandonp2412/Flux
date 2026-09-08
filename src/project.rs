@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +45,13 @@ struct ProjectLoadReport {
 }
 
 fn load_report(target: &Path) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
+    load_report_with_overlays(target, &HashMap::new())
+}
+
+fn load_report_with_overlays(
+    target: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
     let (entry, module_root, package_name) = resolve_project_target(target)?;
     let mut loader = Loader {
         loaded: HashSet::new(),
@@ -54,6 +61,7 @@ fn load_report(target: &Path) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
         diagnostics: Vec::new(),
         module_root,
         package_name,
+        overlays: overlays.clone(),
     };
     loader.load_file(&entry, None);
     Ok(ProjectLoadReport {
@@ -78,7 +86,14 @@ pub fn check(entry: &Path) -> Result<(), Vec<Diagnostic>> {
 }
 
 pub fn check_with_sources(entry: &Path) -> (Vec<Diagnostic>, Vec<ProjectSource>) {
-    let (program, sources) = match load_report(entry) {
+    check_with_overlays(entry, &HashMap::new())
+}
+
+pub fn check_with_overlays(
+    entry: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> (Vec<Diagnostic>, Vec<ProjectSource>) {
+    let (program, sources) = match load_report_with_overlays(entry, overlays) {
         Ok(report) => {
             if !report.diagnostics.is_empty() {
                 return (report.diagnostics, report.sources);
@@ -342,6 +357,7 @@ struct Loader {
     diagnostics: Vec<Diagnostic>,
     module_root: PathBuf,
     package_name: Option<String>,
+    overlays: HashMap<PathBuf, String>,
 }
 
 impl Loader {
@@ -378,17 +394,21 @@ impl Loader {
             return;
         }
 
-        let source = match fs::read_to_string(&canonical) {
-            Ok(source) => source,
-            Err(error) => {
-                self.diagnostics.push(import_diagnostic(
-                    via,
-                    format!(
-                        "failed to read imported source '{}': {error}",
-                        canonical.display()
-                    ),
-                ));
-                return;
+        let source = if let Some(source) = self.overlays.get(&canonical) {
+            source.clone()
+        } else {
+            match fs::read_to_string(&canonical) {
+                Ok(source) => source,
+                Err(error) => {
+                    self.diagnostics.push(import_diagnostic(
+                        via,
+                        format!(
+                            "failed to read imported source '{}': {error}",
+                            canonical.display()
+                        ),
+                    ));
+                    return;
+                }
             }
         };
         let source_id = SourceId::from_name(canonical.to_string_lossy().as_ref());

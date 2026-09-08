@@ -2919,6 +2919,81 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("\"id\":2,\"jsonrpc\":\"2.0\",\"result\":null"));
 }
 
+#[test]
+fn lsp_cli_serves_signature_navigation_references_and_safe_rename() {
+    let uri = "file:///tmp/flux-lsp-navigation.flux";
+    let initialize =
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    let open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"flux","version":1,"text":"fn add(left: i64, right: i64) -> i64 {{ left + right }}\nfn main() -> i64 {{ add(1, 2) }}\n"}}}}}}"#
+    );
+    let signature = format!(
+        r#"{{"jsonrpc":"2.0","id":8,"method":"textDocument/signatureHelp","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":25}}}}}}"#
+    );
+    let definition = format!(
+        r#"{{"jsonrpc":"2.0","id":9,"method":"textDocument/definition","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":19}}}}}}"#
+    );
+    let references = format!(
+        r#"{{"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":19}},"context":{{"includeDeclaration":true}}}}}}"#
+    );
+    let rename = format!(
+        r#"{{"jsonrpc":"2.0","id":11,"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":19}},"newName":"sum"}}}}"#
+    );
+    let invalid_rename = format!(
+        r#"{{"jsonrpc":"2.0","id":12,"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":19}},"newName":"while"}}}}"#
+    );
+    let shutdown = r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+    let input = [
+        initialize,
+        &open,
+        &signature,
+        &definition,
+        &references,
+        &rename,
+        &invalid_rename,
+        shutdown,
+        exit,
+    ]
+    .into_iter()
+    .map(lsp_frame)
+    .collect::<String>();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("fluxc lsp should start");
+    child
+        .stdin
+        .as_mut()
+        .expect("LSP stdin should be piped")
+        .write_all(input.as_bytes())
+        .expect("LSP input should be writable");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("LSP should exit cleanly");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
+    assert!(stdout.contains("\"id\":8"));
+    assert!(stdout.contains("fn add(left: i64, right: i64) -> i64"));
+    assert!(stdout.contains("\"activeParameter\":1"));
+    assert!(stdout.contains("\"id\":9"));
+    assert!(stdout.contains("\"character\":3,\"line\":0"));
+    assert!(stdout.contains("\"id\":10"));
+    assert!(
+        stdout
+            .matches("\"uri\":\"file:///tmp/flux-lsp-navigation.flux\"")
+            .count()
+            >= 4
+    );
+    assert!(stdout.contains("\"id\":11"));
+    assert_eq!(stdout.matches("\"newText\":\"sum\"").count(), 2);
+    assert!(stdout.contains("\"id\":12,\"jsonrpc\":\"2.0\",\"result\":null"));
+}
+
 fn lsp_frame(payload: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{payload}", payload.len())
 }
@@ -3150,6 +3225,36 @@ fn project_imports_compile_transitively_through_cli() {
     assert!(run.status.success());
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn project_analysis_uses_unsaved_source_overlays_across_imports() {
+    let root = std::env::temp_dir().join(format!("flux-project-overlays-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary overlay project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+    fluxc::project::check(&entry).expect("on-disk project should typecheck");
+
+    let dependency = fs::canonicalize(dependency).unwrap();
+    let overlays = std::collections::HashMap::from([(
+        dependency,
+        "pub fn value() -> str { \"unsaved\" }\n".to_string(),
+    )]);
+    let (diagnostics, sources) = fluxc::project::check_with_overlays(&entry, &overlays);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("expected i64, got str") })
+    );
+    assert!(sources.iter().any(|source| source.text.contains("unsaved")));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
