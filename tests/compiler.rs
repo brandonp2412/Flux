@@ -4173,6 +4173,83 @@ app Shadowed
 }
 
 #[test]
+fn native_elements_support_static_and_state_driven_transforms() {
+    let source = r#"
+view Transformed {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Transform"
+        translate_x: 12
+        translate_y: -4
+        rotate_degrees: 15
+        scale_percent: 125
+        scale_x_percent: 150
+        scale_y_percent: 80
+        skew_x_degrees: 5
+        skew_y_degrees: -3
+        transform_origin_x_percent: 0
+        transform_origin_y_percent: 100
+}
+app Transformed
+"#;
+    check_source(source).expect("transform properties should typecheck as common i64 properties");
+    let generated = compile_to_c(source).expect("transforms should lower through native GTK CSS");
+    assert!(generated.contains(
+        "transform: translate(12px, -4px) rotate(15deg) scale(1.50, 0.80) skewX(5deg) skewY(-3deg);"
+    ));
+    assert!(generated.contains("transform-origin: 0% 100%;"));
+
+    let dynamic_transform = r#"
+view Transformed {
+    state moved: bool = false
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Dynamic"
+        translate_x: 40 if moved else 0
+        rotate_degrees: 12 if moved else 0
+        scale_percent: 110 if moved else 100
+        scale_y_percent: 90 if moved else 100
+        skew_x_degrees: 4 if moved else 0
+        transform_origin_x_percent: 25 if moved else 50
+    Button toggle at 2,1
+        text: "Move"
+        on_press: moved => !moved
+}
+app Transformed
+"#;
+    check_source(dynamic_transform)
+        .expect("state-derived transforms should reuse typed primitive UI expressions");
+    let generated = compile_to_c(dynamic_transform)
+        .expect("state-derived transforms should lower to a refreshable native CSS provider");
+    assert!(generated.contains("static GtkCssProvider *flux__transform_style_title = NULL;"));
+    assert!(generated.contains("g_strdup_printf(\"#flux-ui-title { transform:"));
+    assert!(generated.contains("transform-origin: %lld%% %lld%%;"));
+    assert!(generated.contains("flux__ui_state_moved"));
+    assert!(generated.contains("gtk_css_provider_load_from_data(flux__transform_style_title"));
+
+    let oversized = r#"
+view Transformed {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Too far"
+        translate_x: 2147483648
+}
+app Transformed
+"#;
+    check_source(oversized).expect("transform dimensions are ordinary i64 properties");
+    let error = compile_to_c(oversized)
+        .expect_err("static native transform must fit GTK CSS integer range");
+    assert!(
+        error
+            .message
+            .contains("translate_x must fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
 fn native_elements_support_common_alignment_and_margins() {
     let source = r#"
 view Layout {

@@ -1107,9 +1107,28 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             "tooltip" | "accessibility_label" | "accessibility_description" => {
                 return Some(Type::Str);
             }
-            "min_width" | "min_height" | "margin" | "margin_top" | "margin_bottom"
-            | "margin_start" | "margin_end" | "border_width" | "radius" | "shadow_blur"
-            | "shadow_offset_x" | "shadow_offset_y" => {
+            "min_width"
+            | "min_height"
+            | "margin"
+            | "margin_top"
+            | "margin_bottom"
+            | "margin_start"
+            | "margin_end"
+            | "border_width"
+            | "radius"
+            | "shadow_blur"
+            | "shadow_offset_x"
+            | "shadow_offset_y"
+            | "translate_x"
+            | "translate_y"
+            | "rotate_degrees"
+            | "scale_percent"
+            | "scale_x_percent"
+            | "scale_y_percent"
+            | "skew_x_degrees"
+            | "skew_y_degrees"
+            | "transform_origin_x_percent"
+            | "transform_origin_y_percent" => {
                 return Some(Type::I64);
             }
             "align_x" | "align_y" | "background_color" | "border_color" | "shadow_color" => {
@@ -1221,6 +1240,16 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "shadow_blur",
     "shadow_offset_x",
     "shadow_offset_y",
+    "translate_x",
+    "translate_y",
+    "rotate_degrees",
+    "scale_percent",
+    "scale_x_percent",
+    "scale_y_percent",
+    "skew_x_degrees",
+    "skew_y_degrees",
+    "transform_origin_x_percent",
+    "transform_origin_y_percent",
     "min_width",
     "min_height",
 ];

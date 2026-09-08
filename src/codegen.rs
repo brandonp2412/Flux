@@ -171,6 +171,12 @@ fn emit_linux_gtk_application(
             "static GtkWidget *{} = NULL;\n",
             ui_widget_c_name(&element.name)
         ));
+        if element_has_dynamic_transform(element, signatures) {
+            out.push_str(&format!(
+                "static GtkCssProvider *{} = NULL;\n",
+                ui_transform_provider_c_name(&element.name)
+            ));
+        }
     }
     out.push('\n');
     emit_ui_refresh(out, view, signatures)?;
@@ -680,6 +686,7 @@ fn emit_linux_gtk_application(
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
+        emit_dynamic_transform_setup(out, element, &variable, signatures)?;
         if let Some(property) = view_property(element, "clip") {
             let clip = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
@@ -1063,6 +1070,7 @@ fn emit_ui_refresh(
                 "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
             ));
         }
+        emit_dynamic_transform_refresh(out, element, view, signatures)?;
         match element.kind.as_str() {
             "Text" => {
                 if let Some(property) = view_property(element, "text") {
@@ -1312,6 +1320,33 @@ fn emit_element_style(
             shadow_color.unwrap_or_else(|| "#00000080".to_string())
         ));
     }
+    let has_transform = element_has_transform(element);
+    if has_transform && !element_has_dynamic_transform(element, signatures) {
+        let translate_x = static_style_i64(element, "translate_x", signatures)?.unwrap_or(0);
+        let translate_y = static_style_i64(element, "translate_y", signatures)?.unwrap_or(0);
+        let rotate_degrees = static_style_i64(element, "rotate_degrees", signatures)?.unwrap_or(0);
+        let scale_percent = static_style_i64(element, "scale_percent", signatures)?.unwrap_or(100);
+        let scale_x_percent =
+            static_style_i64(element, "scale_x_percent", signatures)?.unwrap_or(scale_percent);
+        let scale_y_percent =
+            static_style_i64(element, "scale_y_percent", signatures)?.unwrap_or(scale_percent);
+        let skew_x_degrees = static_style_i64(element, "skew_x_degrees", signatures)?.unwrap_or(0);
+        let skew_y_degrees = static_style_i64(element, "skew_y_degrees", signatures)?.unwrap_or(0);
+        declarations.push(format!(
+            "transform: translate({translate_x}px, {translate_y}px) rotate({rotate_degrees}deg) scale({:.2}, {:.2}) skewX({skew_x_degrees}deg) skewY({skew_y_degrees}deg);",
+            scale_x_percent as f64 / 100.0,
+            scale_y_percent as f64 / 100.0,
+        ));
+        if view_property(element, "transform_origin_x_percent").is_some()
+            || view_property(element, "transform_origin_y_percent").is_some()
+        {
+            let origin_x =
+                static_style_i64(element, "transform_origin_x_percent", signatures)?.unwrap_or(50);
+            let origin_y =
+                static_style_i64(element, "transform_origin_y_percent", signatures)?.unwrap_or(50);
+            declarations.push(format!("transform-origin: {origin_x}% {origin_y}%;"));
+        }
+    }
     if declarations.is_empty() {
         return Ok(());
     }
@@ -1322,6 +1357,95 @@ fn emit_element_style(
         "    gtk_widget_set_name({variable}, {});\n    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n    g_object_unref({provider});\n",
         c_string(&widget_name),
         c_string(&css),
+    ));
+    Ok(())
+}
+
+const TRANSFORM_VIEW_PROPERTIES: &[&str] = &[
+    "translate_x",
+    "translate_y",
+    "rotate_degrees",
+    "scale_percent",
+    "scale_x_percent",
+    "scale_y_percent",
+    "skew_x_degrees",
+    "skew_y_degrees",
+    "transform_origin_x_percent",
+    "transform_origin_y_percent",
+];
+
+fn element_has_transform(element: &crate::ast::ViewElement) -> bool {
+    TRANSFORM_VIEW_PROPERTIES
+        .iter()
+        .any(|name| view_property(element, name).is_some())
+}
+
+fn element_has_dynamic_transform(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> bool {
+    TRANSFORM_VIEW_PROPERTIES
+        .iter()
+        .filter_map(|name| view_property(element, name))
+        .any(|property| static_expr_i64(&property.value, signatures).is_none())
+}
+
+fn ui_transform_provider_c_name(name: &str) -> String {
+    format!("flux__transform_style_{name}")
+}
+
+fn emit_dynamic_transform_setup(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    if !element_has_dynamic_transform(element, signatures) {
+        return Ok(());
+    }
+    let widget_name = format!("flux-ui-{}", element.name);
+    let provider = ui_transform_provider_c_name(&element.name);
+    out.push_str(&format!(
+        "    gtk_widget_set_name({variable}, {});\n    if ({provider} == NULL) {{\n        {provider} = gtk_css_provider_new();\n        gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n    }}\n",
+        c_string(&widget_name),
+    ));
+    Ok(())
+}
+
+fn emit_dynamic_transform_refresh(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    if !element_has_dynamic_transform(element, signatures) {
+        return Ok(());
+    }
+    let value = |property_name: &str, fallback: &str| -> Result<String, Diagnostic> {
+        view_property(element, property_name)
+            .map(|property| ui_expr_c(&property.value, view, signatures))
+            .unwrap_or_else(|| Ok(fallback.to_string()))
+    };
+    let translate_x = value("translate_x", "0")?;
+    let translate_y = value("translate_y", "0")?;
+    let rotate_degrees = value("rotate_degrees", "0")?;
+    let scale_percent = value("scale_percent", "100")?;
+    let scale_x_percent = view_property(element, "scale_x_percent")
+        .map(|property| ui_expr_c(&property.value, view, signatures))
+        .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+    let scale_y_percent = view_property(element, "scale_y_percent")
+        .map(|property| ui_expr_c(&property.value, view, signatures))
+        .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+    let skew_x_degrees = value("skew_x_degrees", "0")?;
+    let skew_y_degrees = value("skew_y_degrees", "0")?;
+    let origin_x = value("transform_origin_x_percent", "50")?;
+    let origin_y = value("transform_origin_y_percent", "50")?;
+    let provider = ui_transform_provider_c_name(&element.name);
+    let widget_name = format!("flux-ui-{}", element.name);
+    let css_var = format!("flux__transform_css_{}", element.name);
+    out.push_str(&format!(
+        "    if ({provider} != NULL) {{\n        gchar *{css_var} = g_strdup_printf(\"#{} {{ transform: translate(%lldpx, %lldpx) rotate(%llddeg) scale(%.2f, %.2f) skewX(%llddeg) skewY(%llddeg); transform-origin: %lld%% %lld%%; }}\", (long long)({translate_x}), (long long)({translate_y}), (long long)({rotate_degrees}), ((double)({scale_x_percent}) / 100.0), ((double)({scale_y_percent}) / 100.0), (long long)({skew_x_degrees}), (long long)({skew_y_degrees}), (long long)({origin_x}), (long long)({origin_y}));\n        gtk_css_provider_load_from_data({provider}, {css_var}, -1);\n        g_free({css_var});\n    }}\n",
+        widget_name,
     ));
     Ok(())
 }

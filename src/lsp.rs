@@ -4448,6 +4448,10 @@ mod tests {
         .to_json();
         assert!(text_properties.contains("\"label\":\"selectable\""));
         assert!(text_properties.contains("Text.selectable: bool"));
+        assert!(text_properties.contains("\"label\":\"translate_x\""));
+        assert!(text_properties.contains("Text.translate_x: i64"));
+        assert!(text_properties.contains("\"label\":\"scale_x_percent\""));
+        assert!(text_properties.contains("Text.scale_x_percent: i64"));
         assert!(!text_properties.contains("\"label\":\"text\",\"kind\":10"));
 
         let custom_properties = JsonValue::Array(completion_items_at_position(

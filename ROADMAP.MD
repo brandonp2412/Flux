@@ -507,7 +507,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap common native shadows use compile-time `shadow_color`, `shadow_blur`, `shadow_offset_x`, and `shadow_offset_y` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
 - [x] Clipping.
   - [x] Bootstrap common `clip: bool` is state-aware and lowers to the native GTK overflow mode on the existing element; changing the driving Flux state refreshes clipping in place without wrapper widgets. Shape/path clipping remains future rendering work.
-- [ ] Transforms.
+- [x] Transforms.
+  - [x] Common native transforms on every built-in element: typed `translate_x`, `translate_y`, `rotate_degrees`, uniform `scale_percent`, axis overrides (`scale_x_percent` / `scale_y_percent`), `skew_x_degrees` / `skew_y_degrees`, and percentage transform origins lower directly to GTK4's supported CSS transform surface on the existing control. Compile-time values fold into the static element stylesheet; state-derived primitive expressions reuse a persistent per-element CSS provider refreshed by the existing functional UI invalidation path, so button/hover/focus transitions can move/rotate/scale/skew controls without wrapper widgets. Animated transitions remain tracked separately under the animation/property-transition roadmap rather than making base transform semantics depend on an animation system.
 - [x] Light/dark themes.
   - [x] Bootstrap application-level `theme: "system" | "light" | "dark"` metadata is compile-time validated and lowers to the native GTK theme preference when explicitly light/dark; `system` leaves the platform preference untouched. Theme tokens, runtime theme switching, and per-view overrides remain future work.
 - [ ] Design tokens/variables.
