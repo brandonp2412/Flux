@@ -772,8 +772,10 @@ fn completion_items_at_cursor_cached(
     };
     if let Some(program) =
         completion_contract_program_cached(uri, source, documents, line_index, cache)
+        && !add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program)
+        && let Some(type_name) = visible_value_type_name(source, line_index, namespace)
     {
-        add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program);
+        add_struct_field_completions(&mut items, &mut seen, &type_name, &program);
     }
     items
 }
@@ -992,7 +994,7 @@ fn add_qualified_namespace_completions(
     seen: &mut HashSet<String>,
     namespace: &str,
     program: &crate::ast::Program,
-) {
+) -> bool {
     if let Some(definition) = program
         .enums
         .iter()
@@ -1013,7 +1015,7 @@ fn add_qualified_namespace_completions(
                 &format!("{namespace}.{}({payloads}) -> {namespace}", variant.name),
             );
         }
-        return;
+        return true;
     }
     if let Some(interface) = program
         .interfaces
@@ -1044,6 +1046,94 @@ fn add_qualified_namespace_completions(
                 ),
             );
         }
+        return true;
+    }
+    false
+}
+
+fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) -> Option<String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let cursor_line = lines.get(line_index)?;
+    let cursor_indent = leading_spaces(cursor_line);
+    for line in lines.iter().take(line_index + 1).rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = leading_spaces(line);
+        if let Some(rest) = trimmed
+            .strip_prefix("let ")
+            .or_else(|| trimmed.strip_prefix("var "))
+            && indent <= cursor_indent
+            && let Some((name, after_name)) = rest.split_once(':')
+            && name.trim() == value_name
+        {
+            let type_name = after_name
+                .split(['=', ','])
+                .next()
+                .map(str::trim)
+                .filter(|name| is_valid_identifier(name))?;
+            return Some(type_name.to_string());
+        }
+        if indent == 0 && (trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ")) {
+            let open = trimmed.find('(')?;
+            let close = trimmed[open + 1..].find(')')? + open + 1;
+            for parameter in trimmed[open + 1..close].split(',') {
+                let Some((name, ty)) = parameter.split_once(':') else {
+                    continue;
+                };
+                if name.trim() == value_name {
+                    let type_name = ty
+                        .split('=')
+                        .next()
+                        .map(str::trim)
+                        .filter(|name| is_valid_identifier(name))?;
+                    return Some(type_name.to_string());
+                }
+            }
+            break;
+        }
+    }
+    None
+}
+
+fn add_struct_field_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    type_name: &str,
+    program: &crate::ast::Program,
+) {
+    let mut concrete = type_name;
+    let mut visited = HashSet::new();
+    while visited.insert(concrete.to_string()) {
+        let Some(alias) = program.aliases.iter().find(|alias| alias.name == concrete) else {
+            break;
+        };
+        let crate::ast::Type::Named(target) = &alias.target else {
+            return;
+        };
+        concrete = target;
+    }
+    let Some(definition) = program
+        .structs
+        .iter()
+        .find(|definition| definition.name == concrete)
+    else {
+        return;
+    };
+    for field in &definition.fields {
+        push_completion_item(
+            items,
+            seen,
+            &field.name,
+            5,
+            &format!(
+                "field {}.{}: {}",
+                definition.name,
+                field.name,
+                field.ty.name()
+            ),
+        );
     }
 }
 
@@ -3902,6 +3992,31 @@ mod tests {
         assert!(interface_items.contains("\"label\":\"load\""));
         assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
         assert!(interface_items.contains("\"label\":\"save\""));
+    }
+
+    #[test]
+    fn struct_field_completion_uses_visible_typed_values_during_incomplete_edit() {
+        let uri = "file:///tmp/struct-field-completion.flux";
+        let source = "struct User {\n    name: str\n    age: i64\n}\ntype Person = User\nfn describe(user: User) -> i64 {\n    let person: Person = user\n    user.\n    person.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        for (line_index, value) in [(7usize, "user"), (8usize, "person")] {
+            let line = source.lines().nth(line_index).unwrap();
+            assert!(line.trim_start().starts_with(value));
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line_index),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(items.contains("\"label\":\"name\""));
+            assert!(items.contains("field User.name: str"));
+            assert!(items.contains("\"label\":\"age\""));
+            assert!(items.contains("field User.age: i64"));
+        }
     }
 
     #[test]
