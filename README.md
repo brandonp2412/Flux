@@ -82,7 +82,7 @@ Run in development mode with automatic save detection:
 ./tools/flux run examples/hello.flux
 ```
 
-The first native GUI dogfood example uses `app HelloApp` instead of `fn main` and lowers its existing flat `view` grid to GTK4 native controls on Linux:
+The first native GUI dogfood example uses `app HelloApp(...)` instead of `fn main` and lowers its existing flat `view` grid to GTK4 native controls on Linux. Bootstrap application metadata may set a compile-time `title: str`, `width: i64`, and `height: i64`; dimensions must be positive and may reference compile-time constants:
 
 ```sh
 ./tools/flux build examples/hello_app.flux -o hello-app --mode debug

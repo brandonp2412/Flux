@@ -1,10 +1,10 @@
 use crate::ast::{
-    ApplicationDef, BinOp, Binding, ConstantDef, EnumDef, EnumPayload, EnumVariant, Expr, ExprKind,
-    Function, GridLayout, GridTrack, ImportDef, InterfaceDef, InterfaceFunction, InterfaceImpl,
-    InterfaceImplMapping, InterfaceParent, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param,
-    PatternBinding, Program, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
-    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement,
-    ViewProperty, ViewState, ViewStateTransition,
+    ApplicationDef, ApplicationMetadataField, BinOp, Binding, ConstantDef, EnumDef, EnumPayload,
+    EnumVariant, Expr, ExprKind, Function, GridLayout, GridTrack, ImportDef, InterfaceDef,
+    InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, MatchArm,
+    MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
+    UnaryOp, ViewDef, ViewElement, ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -345,6 +345,10 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
         application.span = application.span.with_source(source_id);
         application.keyword_span = application.keyword_span.with_source(source_id);
         application.view_span = application.view_span.with_source(source_id);
+        for field in &mut application.metadata {
+            field.name_span = field.name_span.with_source(source_id);
+            attach_expr_source(&mut field.value, source_id);
+        }
     }
     for alias in &mut program.aliases {
         alias.span = alias.span.with_source(source_id);
@@ -863,16 +867,73 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
 }
 
 fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
-    let Some(raw_name) = line.text.strip_prefix("app ") else {
+    let Some(raw) = line.text.strip_prefix("app ") else {
         return Err(diag(line.number, "expected application declaration"));
     };
-    let name = raw_name.trim();
+    let raw = raw.trim();
+    let (name, metadata_source, metadata_column) = if let Some(open) = raw.find('(') {
+        let Some(inner) = raw.strip_suffix(')') else {
+            return Err(diag(line.number, "application metadata must end with ')'"));
+        };
+        let name = raw[..open].trim();
+        let metadata = &inner[open + 1..];
+        let column = line.text.find('(').unwrap_or(4) + 2;
+        (name, Some(metadata), column)
+    } else {
+        (raw, None, line.text.len() + 1)
+    };
     validate_identifier(name, line.number)?;
-    let leading = raw_name.len() - raw_name.trim_start().len();
+    let name_offset = line.text.find(name).unwrap_or(4);
+    let mut metadata = Vec::new();
+    if let Some(source) = metadata_source
+        && !source.trim().is_empty()
+    {
+        for (raw_field, offset) in split_top_level_commas_with_offsets(source) {
+            let Some(colon) = raw_field.find(':') else {
+                return Err(diag(
+                    line.number,
+                    "application metadata uses 'name: value' fields",
+                ));
+            };
+            let (field_name, name_column) =
+                trim_with_column(&raw_field[..colon], metadata_column + offset);
+            validate_identifier(field_name, line.number)?;
+            if !matches!(field_name, "title" | "width" | "height") {
+                return Err(diag(
+                    line.number,
+                    &format!("unknown application metadata field '{field_name}'"),
+                ));
+            }
+            if metadata
+                .iter()
+                .any(|field: &ApplicationMetadataField| field.name == field_name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!("duplicate application metadata field '{field_name}'"),
+                ));
+            }
+            let raw_value = &raw_field[colon + 1..];
+            let (value_source, value_column) =
+                trim_with_column(raw_value, metadata_column + offset + colon + 1);
+            if value_source.is_empty() {
+                return Err(diag(
+                    line.number,
+                    &format!("application metadata '{field_name}' requires a value"),
+                ));
+            }
+            metadata.push(ApplicationMetadataField {
+                name: field_name.to_string(),
+                name_span: SourceSpan::new(line.number, name_column, field_name.len()),
+                value: parse_expression_at(value_source, line.number, value_column)?,
+            });
+        }
+    }
     Ok(ApplicationDef {
         view_name: name.to_string(),
-        view_span: SourceSpan::new(line.number, 5 + leading, name.len()),
+        view_span: SourceSpan::new(line.number, name_offset + 1, name.len()),
         keyword_span: SourceSpan::new(line.number, 1, 3),
+        metadata,
         line: line.number,
         span: line.span(),
     })

@@ -14,7 +14,20 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
         formatted.insert(import.line, format!("import {:?}", import.path));
     }
     if let Some(application) = &program.application {
-        formatted.insert(application.line, format!("app {}", application.view_name));
+        let metadata = application
+            .metadata
+            .iter()
+            .map(|field| format!("{}: {}", field.name, format_expr(&field.value, 0)))
+            .collect::<Vec<_>>();
+        let suffix = if metadata.is_empty() {
+            String::new()
+        } else {
+            format!("({})", metadata.join(", "))
+        };
+        formatted.insert(
+            application.line,
+            format!("app {}{suffix}", application.view_name),
+        );
     }
     for alias in &program.aliases {
         let visibility = if alias.public { "pub " } else { "" };

@@ -960,6 +960,42 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 }
             }
         }
+        for field in &application.metadata {
+            match evaluate_default_expr(&field.value, &signatures) {
+                Ok(value) => match field.name.as_str() {
+                    "title" if value.ty() != Type::Str => diagnostics.push(diag(
+                        field.value.span,
+                        &format!("application title must be str, got {}", value.ty().name()),
+                    )),
+                    "width" | "height" if value.ty() != Type::I64 => diagnostics.push(diag(
+                        field.value.span,
+                        &format!(
+                            "application {} must be i64, got {}",
+                            field.name,
+                            value.ty().name()
+                        ),
+                    )),
+                    "width" | "height" => {
+                        if let ConstantValue::I64(value) = value
+                            && value <= 0
+                        {
+                            diagnostics.push(diag(
+                                field.value.span,
+                                &format!("application {} must be greater than zero", field.name),
+                            ));
+                        }
+                    }
+                    _ => {}
+                },
+                Err(mut diagnostic) => {
+                    diagnostic.message = format!(
+                        "application metadata '{}' must be compile-time: {}",
+                        field.name, diagnostic.message
+                    );
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
         if signatures.get("main").is_some() {
             diagnostics.push(Diagnostic::global(
                 DiagnosticStage::Type,

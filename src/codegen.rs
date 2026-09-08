@@ -204,11 +204,19 @@ fn emit_linux_gtk_application(
     out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
     out.push_str("    (void)data;\n");
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n");
+    let title = application_metadata_string(application, "title", signatures)
+        .unwrap_or_else(|| view.name.clone());
     out.push_str(&format!(
         "    gtk_window_set_title(GTK_WINDOW(window), {});\n",
-        c_string(&view.name)
+        c_string(&title)
     ));
-    let (window_width, window_height) = bootstrap_window_size(view);
+    let (default_width, default_height) = bootstrap_window_size(view);
+    let window_width = application_metadata_i64(application, "width", signatures)
+        .map(|value| value as u32)
+        .unwrap_or(default_width);
+    let window_height = application_metadata_i64(application, "height", signatures)
+        .map(|value| value as u32)
+        .unwrap_or(default_height);
     out.push_str(&format!(
         "    gtk_window_set_default_size(GTK_WINDOW(window), {window_width}, {window_height});\n"
     ));
@@ -351,6 +359,41 @@ fn emit_linux_gtk_application(
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
     out.push_str("int main(int argc, char **argv) {\n    GtkApplication *application = gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
     Ok(())
+}
+
+fn application_metadata_string(
+    application: &crate::ast::ApplicationDef,
+    name: &str,
+    signatures: &Signatures,
+) -> Option<String> {
+    let field = application
+        .metadata
+        .iter()
+        .find(|field| field.name == name)?;
+    match &field.value.kind {
+        ExprKind::Str(value) => Some(value.clone()),
+        ExprKind::Var(name) => {
+            signatures
+                .constant(name)
+                .and_then(|constant| match &constant.value {
+                    ConstantValue::Str(value) => Some(value.clone()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
+fn application_metadata_i64(
+    application: &crate::ast::ApplicationDef,
+    name: &str,
+    signatures: &Signatures,
+) -> Option<i64> {
+    let field = application
+        .metadata
+        .iter()
+        .find(|field| field.name == name)?;
+    static_expr_i64(&field.value, signatures)
 }
 
 fn view_property<'a>(

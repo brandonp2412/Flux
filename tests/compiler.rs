@@ -3784,6 +3784,56 @@ app Screen
 }
 
 #[test]
+fn application_metadata_types_formats_and_lowers_native_window_properties() {
+    let source = r#"
+const WINDOW_WIDTH: i64 = 420
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+}
+app Screen(title: "Flux App", width: WINDOW_WIDTH, height: 240)
+"#;
+    check_source(source).expect("typed compile-time app metadata should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("app metadata should format");
+    assert!(
+        formatted.contains("app Screen(title: \"Flux App\", width: WINDOW_WIDTH, height: 240)")
+    );
+    let generated = compile_to_c(source).expect("app metadata should lower natively");
+    assert!(generated.contains("gtk_window_set_title(GTK_WINDOW(window), \"Flux App\")"));
+    assert!(generated.contains("gtk_window_set_default_size(GTK_WINDOW(window), 420, 240)"));
+
+    let wrong_title = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(title: 42)
+"#;
+    let errors = check_source_all(wrong_title).expect_err("non-string app title should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("application title must be str"))
+    );
+
+    let invalid_size = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(width: 0)
+"#;
+    let errors = check_source_all(invalid_size).expect_err("non-positive window size should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application width must be greater than zero")
+    }));
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {

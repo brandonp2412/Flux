@@ -274,10 +274,18 @@ pub struct StructField {
 }
 
 #[derive(Debug, Clone)]
+pub struct ApplicationMetadataField {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
 pub struct ApplicationDef {
     pub view_name: String,
     pub view_span: SourceSpan,
     pub keyword_span: SourceSpan,
+    pub metadata: Vec<ApplicationMetadataField>,
     pub line: usize,
     pub span: SourceSpan,
 }

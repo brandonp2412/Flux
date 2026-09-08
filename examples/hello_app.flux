@@ -17,4 +17,4 @@ view HelloApp {
         on_press: clicked => !clicked
 }
 
-app HelloApp
+app HelloApp(title: "Flux Hello", width: 420, height: 220)
