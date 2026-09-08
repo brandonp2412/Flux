@@ -629,12 +629,17 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
   - [ ] Workspace/import-aware unsaved-buffer diagnostics. Until overlay analysis exists, buffers containing imports intentionally publish parse diagnostics only rather than type-checking without their module context.
 - [ ] Completion.
+  - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, and top-level declarations parsed from the current buffer, including typed signature/detail text. Scope-aware locals and imported/package symbols remain pending with workspace reference indexing.
 - [ ] Signature help.
+  - [x] Bootstrap `textDocument/signatureHelp` identifies the active ordinary function call, reports the canonical typed signature/parameter labels, and tracks the active positional argument across nested calls. Imported/interface/view call signatures remain pending with workspace-aware call resolution.
 - [ ] Hover/type information.
   - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves usage-site hover when a symbol name is unambiguous; scope-resolved usage hover across shadowing/imports remains pending with richer reference indexing.
 - [ ] Go to definition.
+  - [x] Bootstrap standalone-buffer `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous. Scope/import-aware resolution remains pending.
 - [ ] Find references.
+  - [x] Bootstrap standalone-buffer `textDocument/references` returns identifier occurrences only after the same unambiguous semantic target resolution used by hover/definition; strings/comments are excluded. Scope/import-aware reference indexing remains pending.
 - [ ] Rename.
+  - [x] Bootstrap standalone-buffer `textDocument/rename` emits workspace edits only for an unambiguous semantic target and a valid non-keyword Flux identifier; ambiguous/shadowed names are refused rather than edited unsafely. Scope/import-aware rename remains pending.
 - [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, comments, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.

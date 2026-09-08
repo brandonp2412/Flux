@@ -2833,6 +2833,9 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     let semantic_tokens = format!(
         r#"{{"jsonrpc":"2.0","id":6,"method":"textDocument/semanticTokens/full","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
     );
+    let completion = format!(
+        r#"{{"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":2}}}}}}"#
+    );
     let formatting = format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/formatting","params":{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}}}"#
     );
@@ -2854,6 +2857,7 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
         &change,
         &hover,
         &semantic_tokens,
+        &completion,
         &formatting,
         &broken_change,
         &code_action,
@@ -2885,8 +2889,13 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     let stdout = String::from_utf8(output.stdout).expect("LSP output should be UTF-8");
     assert!(stdout.contains("\"positionEncoding\":\"utf-8\""));
     assert!(stdout.contains("\"codeActionProvider\":true"));
+    assert!(stdout.contains("\"completionProvider\""));
     assert!(stdout.contains("\"documentFormattingProvider\":true"));
     assert!(stdout.contains("\"hoverProvider\":true"));
+    assert!(stdout.contains("\"definitionProvider\":true"));
+    assert!(stdout.contains("\"referencesProvider\":true"));
+    assert!(stdout.contains("\"renameProvider\":true"));
+    assert!(stdout.contains("\"signatureHelpProvider\""));
     assert!(stdout.contains("\"semanticTokensProvider\""));
     assert!(stdout.contains("\"tokenTypes\":[\"keyword\",\"string\",\"number\""));
     assert!(stdout.contains("textDocument/publishDiagnostics"));
@@ -2897,6 +2906,9 @@ fn lsp_cli_publishes_open_and_change_diagnostics_over_json_rpc() {
     assert!(stdout.contains("let count: i64"));
     assert!(stdout.contains("\"id\":6,\"jsonrpc\":\"2.0\",\"result\":{\"data\":["));
     assert!(!stdout.contains("\"id\":6,\"jsonrpc\":\"2.0\",\"result\":{\"data\":[]}"));
+    assert!(stdout.contains("\"id\":7"));
+    assert!(stdout.contains("\"label\":\"while\""));
+    assert!(stdout.contains("\"label\":\"main\""));
     assert!(stdout.contains("\"id\":3"));
     assert!(stdout.contains("fn main() -> i64"));
     assert!(stdout.contains("\\n    let count: i64 = 1\\n"));

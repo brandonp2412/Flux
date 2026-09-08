@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
@@ -253,6 +253,86 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                     )?;
                 }
             }
+            Some("textDocument/definition") => {
+                if let Some(id) = id {
+                    let result = request_position(message.get("params")).and_then(
+                        |(uri, line, character)| {
+                            documents.get(uri).and_then(|source| {
+                                definition_for_document(uri, source, line, character, encoding)
+                            })
+                        },
+                    );
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, result.unwrap_or(JsonValue::Null)).to_json(),
+                    )?;
+                }
+            }
+            Some("textDocument/references") => {
+                if let Some(id) = id {
+                    let result = request_position(message.get("params"))
+                        .and_then(|(uri, line, character)| {
+                            documents.get(uri).map(|source| {
+                                references_for_document(uri, source, line, character, encoding)
+                            })
+                        })
+                        .unwrap_or_default();
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, JsonValue::Array(result)).to_json(),
+                    )?;
+                }
+            }
+            Some("textDocument/rename") => {
+                if let Some(id) = id {
+                    let params = message.get("params");
+                    let new_name = params
+                        .and_then(|params| params.get("newName"))
+                        .and_then(JsonValue::as_str);
+                    let result = request_position(params).and_then(|(uri, line, character)| {
+                        let new_name = new_name?;
+                        documents.get(uri).and_then(|source| {
+                            rename_for_document(uri, source, line, character, new_name, encoding)
+                        })
+                    });
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, result.unwrap_or(JsonValue::Null)).to_json(),
+                    )?;
+                }
+            }
+            Some("textDocument/completion") => {
+                if let Some(id) = id {
+                    let uri = message
+                        .get("params")
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(JsonValue::as_str);
+                    let items = uri
+                        .and_then(|uri| documents.get(uri))
+                        .map(|source| completion_items(source))
+                        .unwrap_or_else(|| completion_items(""));
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, JsonValue::Array(items)).to_json(),
+                    )?;
+                }
+            }
+            Some("textDocument/signatureHelp") => {
+                if let Some(id) = id {
+                    let result = request_position(message.get("params")).and_then(
+                        |(uri, line, character)| {
+                            documents.get(uri).and_then(|source| {
+                                signature_help_for_document(source, line, character, encoding)
+                            })
+                        },
+                    );
+                    write_message(
+                        &mut writer,
+                        &jsonrpc_result(id, result.unwrap_or(JsonValue::Null)).to_json(),
+                    )?;
+                }
+            }
             Some(_) if id.is_some() => {
                 write_message(
                     &mut writer,
@@ -289,8 +369,34 @@ fn initialize_response(id: JsonValue, encoding: PositionEncoding) -> JsonValue {
                         JsonValue::String(position_encoding.to_string()),
                     ),
                     ("codeActionProvider", JsonValue::Bool(true)),
+                    (
+                        "completionProvider",
+                        object([
+                            ("resolveProvider", JsonValue::Bool(false)),
+                            (
+                                "triggerCharacters",
+                                JsonValue::Array(vec![
+                                    JsonValue::String(".".to_string()),
+                                    JsonValue::String(":".to_string()),
+                                ]),
+                            ),
+                        ]),
+                    ),
                     ("documentFormattingProvider", JsonValue::Bool(true)),
                     ("hoverProvider", JsonValue::Bool(true)),
+                    ("definitionProvider", JsonValue::Bool(true)),
+                    ("referencesProvider", JsonValue::Bool(true)),
+                    ("renameProvider", JsonValue::Bool(true)),
+                    (
+                        "signatureHelpProvider",
+                        object([(
+                            "triggerCharacters",
+                            JsonValue::Array(vec![
+                                JsonValue::String("(".to_string()),
+                                JsonValue::String(",".to_string()),
+                            ]),
+                        )]),
+                    ),
                     (
                         "semanticTokensProvider",
                         object([
@@ -393,6 +499,290 @@ fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
             ]),
         ),
     ])
+}
+
+const COMPLETION_KEYWORDS: &[&str] = &[
+    "fn",
+    "let",
+    "var",
+    "return",
+    "if",
+    "elif",
+    "else",
+    "for",
+    "while",
+    "in",
+    "break",
+    "continue",
+    "match",
+    "struct",
+    "enum",
+    "interface",
+    "impl",
+    "type",
+    "const",
+    "pub",
+    "import",
+    "view",
+    "true",
+    "false",
+    "nil",
+];
+
+fn completion_items(source: &str) -> Vec<JsonValue> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for keyword in COMPLETION_KEYWORDS {
+        push_completion_item(&mut items, &mut seen, keyword, 14, "Flux keyword");
+    }
+    for builtin in ["i64", "bool", "str", "error", "void"] {
+        push_completion_item(&mut items, &mut seen, builtin, 22, "built-in Flux type");
+    }
+    push_completion_item(&mut items, &mut seen, "print", 3, "fn print(value) -> void");
+
+    let Ok(program) = crate::parser::parse_all(source) else {
+        return items;
+    };
+    for alias in &program.aliases {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &alias.name,
+            18,
+            &format!("type {} = {}", alias.name, alias.target.name()),
+        );
+    }
+    for interface in &program.interfaces {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &interface.name,
+            8,
+            &format!("interface {}", interface.name),
+        );
+    }
+    for definition in &program.structs {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &definition.name,
+            22,
+            &format!("struct {}", definition.name),
+        );
+    }
+    for definition in &program.enums {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &definition.name,
+            13,
+            &format!("enum {}", definition.name),
+        );
+    }
+    for constant in &program.constants {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &constant.name,
+            21,
+            &format!("const {}: {}", constant.name, constant.ty.name()),
+        );
+    }
+    for view in &program.views {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &view.name,
+            22,
+            &format!("view {}", view.name),
+        );
+    }
+    for function in &program.functions {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            &function.name,
+            3,
+            &format_ast_function_signature(function),
+        );
+    }
+    items
+}
+
+fn signature_help_for_document(
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte_in_line = byte_offset_for_encoded_column(line, character, encoding);
+    let absolute = source
+        .lines()
+        .take(line_index)
+        .map(|line| line.len() + 1)
+        .sum::<usize>()
+        + byte_in_line;
+    let prefix = source.get(..absolute.min(source.len()))?;
+    let (name, active_parameter) = active_call(prefix)?;
+    let program = crate::parser::parse_all(source).ok()?;
+    let function = program
+        .functions
+        .iter()
+        .find(|function| function.name == name)?;
+    let label = format_ast_function_signature(function);
+    let parameters = function
+        .params
+        .iter()
+        .map(|param| {
+            object([(
+                "label",
+                JsonValue::String(format!("{}: {}", param.name, param.ty.name())),
+            )])
+        })
+        .collect::<Vec<_>>();
+    Some(object([
+        (
+            "signatures",
+            JsonValue::Array(vec![object([
+                ("label", JsonValue::String(label)),
+                ("parameters", JsonValue::Array(parameters)),
+            ])]),
+        ),
+        ("activeSignature", JsonValue::Number(0)),
+        (
+            "activeParameter",
+            JsonValue::Number(active_parameter.min(function.params.len().saturating_sub(1)) as i64),
+        ),
+    ]))
+}
+
+fn active_call(prefix: &str) -> Option<(&str, usize)> {
+    let bytes = prefix.as_bytes();
+    let mut stack = Vec::<usize>::new();
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_comment {
+            if byte == b'\n' {
+                in_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'#' => in_comment = true,
+            b'"' => in_string = true,
+            b'(' => stack.push(index),
+            b')' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let open = *stack.last()?;
+    let mut name_end = open;
+    while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+        name_end -= 1;
+    }
+    let mut name_start = name_end;
+    while name_start > 0 && is_identifier_byte(bytes[name_start - 1]) {
+        name_start -= 1;
+    }
+    if name_start == name_end {
+        return None;
+    }
+    let name = std::str::from_utf8(&bytes[name_start..name_end]).ok()?;
+    let mut depth = 0usize;
+    let mut commas = 0usize;
+    let mut index = open + 1;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+        index += 1;
+    }
+    Some((name, commas))
+}
+
+fn push_completion_item(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    label: &str,
+    kind: i64,
+    detail: &str,
+) {
+    if !seen.insert(label.to_string()) {
+        return;
+    }
+    items.push(object([
+        ("label", JsonValue::String(label.to_string())),
+        ("kind", JsonValue::Number(kind)),
+        ("detail", JsonValue::String(detail.to_string())),
+    ]));
+}
+
+fn format_ast_function_signature(function: &crate::ast::Function) -> String {
+    let mut params = Vec::new();
+    let mut emitted_named_marker = false;
+    for param in &function.params {
+        if param.named_only && !emitted_named_marker {
+            params.push("*".to_string());
+            emitted_named_marker = true;
+        }
+        let default = if param.default.is_some() {
+            " = …"
+        } else {
+            ""
+        };
+        params.push(format!("{}: {}{default}", param.name, param.ty.name()));
+    }
+    let returns = match function.returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => ty.name(),
+        values => format!(
+            "({})",
+            values
+                .iter()
+                .map(|ty| ty.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!("fn {}({}) -> {returns}", function.name, params.join(", "))
 }
 
 const SEMANTIC_TOKEN_TYPES: &[&str] = &[
@@ -712,6 +1102,164 @@ fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<JsonValue> {
     data
 }
 
+fn request_position(params: Option<&JsonValue>) -> Option<(&str, usize, usize)> {
+    let params = params?;
+    Some((
+        params.get("textDocument")?.get("uri")?.as_str()?,
+        params.get("position")?.get("line")?.as_usize()?,
+        params.get("position")?.get("character")?.as_usize()?,
+    ))
+}
+
+fn analyzed_document(uri: &str, source: &str) -> Option<crate::semantic::SemanticDatabase> {
+    let source_id = SourceId::from_name(uri);
+    let program = crate::parser::parse_all_with_source(source, source_id).ok()?;
+    if !program.imports.is_empty() {
+        return None;
+    }
+    let signatures = crate::typecheck::check_all(&program).ok()?;
+    Some(crate::semantic::SemanticDatabase::from_analyzed(
+        program, signatures,
+    ))
+}
+
+fn symbol_for_position<'a>(
+    database: &'a crate::semantic::SemanticDatabase,
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<&'a crate::semantic::SemanticSymbol> {
+    let source_id = SourceId::from_name(uri);
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte = byte_offset_for_encoded_column(line, character, encoding);
+    database
+        .symbol_at(source_id, line_index + 1, byte + 1)
+        .or_else(|| {
+            let name = identifier_at(line, byte)?;
+            let mut matches = database.symbols_named(name);
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        })
+}
+
+fn definition_for_document(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    let database = analyzed_document(uri, source)?;
+    let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+    Some(object([
+        ("uri", JsonValue::String(uri.to_string())),
+        ("range", lsp_range(symbol.span, source, encoding)),
+    ]))
+}
+
+fn references_for_document(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Vec<JsonValue> {
+    let Some(database) = analyzed_document(uri, source) else {
+        return Vec::new();
+    };
+    let Some(symbol) = symbol_for_position(&database, uri, source, line_index, character, encoding)
+    else {
+        return Vec::new();
+    };
+    identifier_occurrences(source, &symbol.name)
+        .into_iter()
+        .map(|span| {
+            object([
+                ("uri", JsonValue::String(uri.to_string())),
+                ("range", lsp_range(span, source, encoding)),
+            ])
+        })
+        .collect()
+}
+
+fn rename_for_document(
+    uri: &str,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    new_name: &str,
+    encoding: PositionEncoding,
+) -> Option<JsonValue> {
+    if !is_valid_identifier(new_name) || is_flux_keyword(new_name) {
+        return None;
+    }
+    let database = analyzed_document(uri, source)?;
+    let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+    let edits = identifier_occurrences(source, &symbol.name)
+        .into_iter()
+        .map(|span| {
+            object([
+                ("range", lsp_range(span, source, encoding)),
+                ("newText", JsonValue::String(new_name.to_string())),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let mut changes = BTreeMap::new();
+    changes.insert(uri.to_string(), JsonValue::Array(edits));
+    Some(object([("changes", JsonValue::Object(changes))]))
+}
+
+fn identifier_occurrences(source: &str, name: &str) -> Vec<SourceSpan> {
+    let mut occurrences = Vec::new();
+    for (line_index, line) in source.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'#' => break,
+                b'"' => {
+                    index += 1;
+                    let mut escaped = false;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        index += 1;
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if byte == b'"' {
+                            break;
+                        }
+                    }
+                }
+                byte if byte == b'_' || byte.is_ascii_alphabetic() => {
+                    let start = index;
+                    index += 1;
+                    while index < bytes.len() && is_identifier_byte(bytes[index]) {
+                        index += 1;
+                    }
+                    if &line[start..index] == name {
+                        occurrences.push(SourceSpan::new(line_index + 1, start + 1, name.len()));
+                    }
+                }
+                _ => index += 1,
+            }
+        }
+    }
+    occurrences
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first == b'_' || first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
 fn hover_for_document(
     uri: &str,
     source: &str,
@@ -719,24 +1267,8 @@ fn hover_for_document(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<JsonValue> {
-    let source_id = SourceId::from_name(uri);
-    let program = crate::parser::parse_all_with_source(source, source_id).ok()?;
-    if !program.imports.is_empty() {
-        return None;
-    }
-    let signatures = crate::typecheck::check_all(&program).ok()?;
-    let database = crate::semantic::SemanticDatabase::from_analyzed(program, signatures);
-    let line = source.lines().nth(line_index).unwrap_or("");
-    let byte = byte_offset_for_encoded_column(line, character, encoding);
-    let source_column = byte + 1;
-    let symbol = database
-        .symbol_at(source_id, line_index + 1, source_column)
-        .or_else(|| {
-            let name = identifier_at(line, byte)?;
-            let mut matches = database.symbols_named(name);
-            let first = matches.next()?;
-            matches.next().is_none().then_some(first)
-        })?;
+    let database = analyzed_document(uri, source)?;
+    let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
     let description = hover_description(symbol, &database);
     Some(object([
         (
@@ -1504,6 +2036,60 @@ mod tests {
         .expect("unambiguous function usage should hover")
         .to_json();
         assert!(usage.contains("fn double(value: i64) -> i64"));
+    }
+
+    #[test]
+    fn signature_help_tracks_the_active_argument() {
+        let source = "fn add(left: i64, right: i64) -> i64 { left + right }\nfn main() -> i64 { add(1, 2) }\n";
+        let help = signature_help_for_document(source, 1, 25, PositionEncoding::Utf8)
+            .expect("call should have signature help")
+            .to_json();
+        assert!(help.contains("fn add(left: i64, right: i64) -> i64"));
+        assert!(help.contains("\"activeParameter\":1"));
+        assert!(help.contains("\"label\":\"left: i64\""));
+    }
+
+    #[test]
+    fn navigation_and_rename_are_safe_for_unambiguous_symbols() {
+        let uri = "file:///tmp/navigation.flux";
+        let source =
+            "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
+        let definition = definition_for_document(uri, source, 1, 19, PositionEncoding::Utf8)
+            .expect("function usage should resolve")
+            .to_json();
+        assert!(definition.contains("\"line\":0"));
+        assert!(definition.contains("\"character\":3"));
+
+        let references = references_for_document(uri, source, 1, 19, PositionEncoding::Utf8);
+        assert_eq!(references.len(), 2);
+
+        let rename = rename_for_document(uri, source, 1, 19, "twice", PositionEncoding::Utf8)
+            .expect("safe rename should produce edits")
+            .to_json();
+        assert_eq!(rename.matches("newText").count(), 2);
+        assert!(rename.contains("twice"));
+        assert!(rename_for_document(uri, source, 1, 19, "fn", PositionEncoding::Utf8).is_none());
+    }
+
+    #[test]
+    fn navigation_refuses_ambiguous_shadowed_names() {
+        let uri = "file:///tmp/ambiguous.flux";
+        let source =
+            "fn first(value: i64) -> i64 { value }\nfn second(value: i64) -> i64 { value }\n";
+        assert!(definition_for_document(uri, source, 0, 31, PositionEncoding::Utf8).is_none());
+        assert!(references_for_document(uri, source, 0, 31, PositionEncoding::Utf8).is_empty());
+        assert!(rename_for_document(uri, source, 0, 31, "item", PositionEncoding::Utf8).is_none());
+    }
+
+    #[test]
+    fn completion_includes_keywords_builtins_and_buffer_declarations() {
+        let source = "type Count = i64\nfn main() -> i64 { 0 }\n";
+        let json = JsonValue::Array(completion_items(source)).to_json();
+        assert!(json.contains("\"label\":\"while\""));
+        assert!(json.contains("\"label\":\"i64\""));
+        assert!(json.contains("\"label\":\"Count\""));
+        assert!(json.contains("\"label\":\"main\""));
+        assert!(json.contains("fn main() -> i64"));
     }
 
     #[test]
