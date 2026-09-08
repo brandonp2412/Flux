@@ -761,6 +761,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Cross-compilation configuration.
 - [x] Bootstrap native build cache: generated C + build mode + compiler package version + host OS/architecture are content-addressed into a persistent native artifact cache (`$FLUX_CACHE_DIR`, XDG cache, or `~/.cache/flux`), transparently reused by build/run/test/package across output paths. Semantic/codegen incremental reuse remains tracked under the compiler/hot-reload caches; eviction, integrity metadata, toolchain/SDK fingerprints, and explicit cache-management commands remain follow-up work.
 - [ ] Reproducible builds.
+  - [x] Same-host/same-toolchain native reproducibility for current debug/profile/release modes: generated C is streamed to Clang over stdin so PID-specific temporary source paths cannot leak into DWARF, and cache-isolated builds of identical Flux source are regression-tested as byte-identical in every mode.
+  - [ ] Cross-machine/toolchain reproducibility contract with pinned compiler/SDK/runtime identities, normalized environment inputs, dependency lockfiles, and documented verification metadata.
 - [x] CI-friendly machine output through `fluxc check --json`, preserving a clean stdout JSON contract with no human diagnostic text on stderr.
 
 # Milestone 27 — Distribution

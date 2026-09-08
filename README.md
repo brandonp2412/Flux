@@ -54,7 +54,7 @@ Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with
 
 Create the first host-native distribution bundle with `./tools/flux package my-flux-app`. By default it writes `dist/<name>-<version>-<os>-<arch>/` containing the package-named native executable and the exact `flux.toml`; `-o <directory>` chooses another destination and `--mode` selects debug/profile/release. Existing bundle directories are not overwritten. This is intentionally a bootstrap host bundle, not yet a self-contained distro/store package: GTK and other native runtime dependencies remain host responsibilities.
 
-Native Clang outputs are content-addressed and reused across `flux build`, `flux run`, `flux test`, and `flux package` when the generated C, build mode, Flux compiler version, and host target are unchanged. The cache uses `$FLUX_CACHE_DIR/native` when configured, then the XDG cache directory or `~/.cache/flux/native`; this is a bootstrap artifact cache, not yet incremental semantic/codegen compilation or a managed remote cache.
+Native Clang outputs are content-addressed and reused across `flux build`, `flux run`, `flux test`, and `flux package` when the generated C, build mode, Flux compiler version, and host target are unchanged. The cache uses `$FLUX_CACHE_DIR/native` when configured, then the XDG cache directory or `~/.cache/flux/native`; this is a bootstrap artifact cache, not yet incremental semantic/codegen compilation or a managed remote cache. Generated C is streamed directly to Clang rather than compiled from PID-named temporary files, so identical debug/profile/release builds are byte-reproducible on the same host/toolchain; cross-machine reproducibility still requires pinned toolchain/runtime/dependency identities.
 
 ## Example
 

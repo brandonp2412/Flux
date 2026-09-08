@@ -2,7 +2,7 @@ use crate as fluxc;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
@@ -1171,10 +1171,6 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
         return Ok(());
     }
 
-    let temp = env::temp_dir().join(format!("fluxc-{}.c", std::process::id()));
-    fs::write(&temp, c_source)
-        .map_err(|error| format!("failed to write temporary C source: {error}"))?;
-
     let mut command = Command::new("clang");
     command
         .args(["-std=c17", "-fwrapv"])
@@ -1183,18 +1179,26 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
     if gtk {
         command.args(pkg_config_flags("--cflags", "gtk4")?);
     }
-    command.arg(&temp);
+    command.args(["-x", "c", "-"]);
     if gtk {
         command.args(pkg_config_flags("--libs", "gtk4")?);
     }
-    let result = command
-        .arg("-o")
-        .arg(output)
-        .output()
-        .map_err(|error| format!("failed to launch clang: {error}"));
-
-    let _ = fs::remove_file(&temp);
-    let output_result = result?;
+    command.arg("-o").arg(output);
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to launch clang: {error}"))?;
+    child
+        .stdin
+        .take()
+        .expect("clang stdin was configured as piped")
+        .write_all(c_source.as_bytes())
+        .map_err(|error| format!("failed to send generated C to clang: {error}"))?;
+    let output_result = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for clang: {error}"))?;
     if !output_result.status.success() {
         return Err(format!(
             "native backend failed:\n{}",

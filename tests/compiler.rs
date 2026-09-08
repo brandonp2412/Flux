@@ -3229,6 +3229,50 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
 }
 
 #[test]
+fn native_builds_are_byte_reproducible_with_isolated_caches() {
+    let root = std::env::temp_dir().join(format!("flux-reproducible-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("reproducibility fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn main() -> i64 {\n    print(42)\n    return 0\n}\n",
+    )
+    .expect("reproducibility source should be writable");
+
+    for mode in ["debug", "profile", "release"] {
+        let first = root.join(format!("{mode}-first"));
+        let second = root.join(format!("{mode}-second"));
+        for (output, cache) in [
+            (&first, root.join(format!("{mode}-cache-a"))),
+            (&second, root.join(format!("{mode}-cache-b"))),
+        ] {
+            let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+                .arg("build")
+                .arg(&source)
+                .arg("-o")
+                .arg(output)
+                .arg("--mode")
+                .arg(mode)
+                .env("FLUX_CACHE_DIR", cache)
+                .output()
+                .expect("reproducibility build should run");
+            assert!(
+                built.status.success(),
+                "{mode} reproducibility build failed: {}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+        }
+        assert_eq!(
+            fs::read(&first).expect("first reproducible build should be readable"),
+            fs::read(&second).expect("second reproducible build should be readable"),
+            "{mode} builds of identical Flux source should be byte-identical"
+        );
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_identical_codegen_across_output_paths() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
