@@ -4337,6 +4337,55 @@ fn formatter_and_semantic_database_preserve_enums() {
 }
 
 #[test]
+fn tree_shakes_unreachable_private_functions_but_keeps_conservative_roots() {
+    let source = r#"
+interface Operation {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn mappedApply(offset: Offset, value: i64) -> i64 {
+    return offset.amount + value
+}
+
+impl Operation for Offset {
+    apply: mappedApply
+}
+
+pub fn exported(value: i64) -> i64 {
+    return value + 10
+}
+
+fn leaf(value: i64) -> i64 {
+    return value + 1
+}
+
+fn helper(value: i64) -> i64 {
+    return leaf(value)
+}
+
+fn unreachable(value: i64) -> i64 {
+    return value + 1000
+}
+
+fn main() -> i64 {
+    return helper(41)
+}
+"#;
+
+    check_source(source).expect("tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("tree-shaking fixture should lower natively");
+    assert!(generated.contains("flux__fn_helper"));
+    assert!(generated.contains("flux__fn_leaf"));
+    assert!(generated.contains("flux__fn_exported"));
+    assert!(generated.contains("flux__fn_mappedApply"));
+    assert!(!generated.contains("flux__fn_unreachable"));
+}
+
+#[test]
 fn folds_compile_time_constants_and_inlines_them_natively() {
     let source = r#"
 type Count = i64

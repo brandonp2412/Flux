@@ -16,6 +16,7 @@ pub fn emit_c_with_source_paths(
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<String, Diagnostic> {
+    let reachable_functions = reachable_function_names(program);
     let mut out = String::new();
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
@@ -98,7 +99,7 @@ pub fn emit_c_with_source_paths(
     out.push_str(&struct_update_helpers(program, signatures));
 
     for function in &program.functions {
-        if function.returns.len() > 1 {
+        if reachable_functions.contains(&function.name) && function.returns.len() > 1 {
             let tag = multi_return_struct_name(&function.name);
             out.push_str(&format!("struct {tag} {{\n"));
             for (index, ty) in function.returns.iter().enumerate() {
@@ -110,17 +111,19 @@ pub fn emit_c_with_source_paths(
     if program
         .functions
         .iter()
-        .any(|function| function.returns.len() > 1)
+        .any(|function| reachable_functions.contains(&function.name) && function.returns.len() > 1)
     {
         out.push('\n');
     }
     emit_interface_multi_return_structs(&mut out, program, signatures);
 
     for function in &program.functions {
-        out.push_str(&function_prototype(function, signatures));
-        out.push_str(";\n");
+        if reachable_functions.contains(&function.name) {
+            out.push_str(&function_prototype(function, signatures));
+            out.push_str(";\n");
+        }
     }
-    let anonymous_functions = collect_anonymous_functions(program);
+    let anonymous_functions = collect_anonymous_functions(program, &reachable_functions);
     for function in &anonymous_functions {
         out.push_str(&anonymous_function_prototype(function, signatures)?);
         out.push_str(";\n");
@@ -134,14 +137,16 @@ pub fn emit_c_with_source_paths(
 
     let mut temp_counter = 0usize;
     for function in &program.functions {
-        emit_function(
-            &mut out,
-            function,
-            signatures,
-            &mut temp_counter,
-            source_paths,
-        )?;
-        out.push('\n');
+        if reachable_functions.contains(&function.name) {
+            emit_function(
+                &mut out,
+                function,
+                signatures,
+                &mut temp_counter,
+                source_paths,
+            )?;
+            out.push('\n');
+        }
     }
 
     if program.application.is_some() {
@@ -2159,10 +2164,333 @@ fn emit_anonymous_function(
     Ok(())
 }
 
-fn collect_anonymous_functions(program: &Program) -> Vec<&Expr> {
+fn reachable_function_names(program: &Program) -> HashSet<String> {
+    let known = program
+        .functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect::<HashSet<_>>();
+    let mut reachable = HashSet::new();
+    let mut pending = Vec::new();
+
+    for function in &program.functions {
+        if function.name == "main" || function.public {
+            enqueue_function(&function.name, &known, &mut reachable, &mut pending);
+        }
+    }
+    for implementation in &program.implementations {
+        for mapping in &implementation.mappings {
+            enqueue_function(&mapping.function, &known, &mut reachable, &mut pending);
+        }
+    }
+
+    let mut roots = HashSet::new();
+    for constant in &program.constants {
+        collect_named_function_refs_from_expr(&constant.value, &known, &mut roots);
+    }
+    if let Some(application) = &program.application {
+        for field in &application.metadata {
+            collect_named_function_refs_from_expr(&field.value, &known, &mut roots);
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            if let Some(default) = &param.default {
+                collect_named_function_refs_from_expr(default, &known, &mut roots);
+            }
+        }
+        for state in &view.states {
+            collect_named_function_refs_from_expr(&state.initial, &known, &mut roots);
+        }
+        for derived in &view.derived {
+            collect_named_function_refs_from_expr(&derived.value, &known, &mut roots);
+        }
+        for element in &view.elements {
+            for property in &element.properties {
+                collect_named_function_refs_from_expr(&property.value, &known, &mut roots);
+            }
+        }
+    }
+    for name in roots {
+        enqueue_function(&name, &known, &mut reachable, &mut pending);
+    }
+
+    while let Some(name) = pending.pop() {
+        let Some(function) = program
+            .functions
+            .iter()
+            .find(|function| function.name == name)
+        else {
+            continue;
+        };
+        let mut references = HashSet::new();
+        for param in &function.params {
+            if let Some(default) = &param.default {
+                collect_named_function_refs_from_expr(default, &known, &mut references);
+            }
+        }
+        collect_named_function_refs_from_block(&function.body, &known, &mut references);
+        for reference in references {
+            enqueue_function(&reference, &known, &mut reachable, &mut pending);
+        }
+    }
+
+    reachable
+}
+
+fn enqueue_function(
+    name: &str,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    if known.contains(name) && reachable.insert(name.to_string()) {
+        pending.push(name.to_string());
+    }
+}
+
+fn collect_named_function_refs_from_block(
+    body: &[Stmt],
+    known: &HashSet<String>,
+    references: &mut HashSet<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_named_function_refs_from_expr(expr, known, references);
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_named_function_refs_from_expr(value, known, references);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_named_function_refs_from_expr(expr, known, references);
+                if let Some(redirect) = redirect {
+                    collect_named_function_refs_from_expr(&redirect.path, known, references);
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_named_function_refs_from_expr(cond, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+                collect_named_function_refs_from_block(else_body, known, references);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_named_function_refs_from_expr(start, known, references);
+                collect_named_function_refs_from_expr(end, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_named_function_refs_from_expr(iterable, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::While { cond, body } => {
+                collect_named_function_refs_from_expr(cond, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_named_function_refs_from_expr(value, known, references);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_named_function_refs_from_expr(guard, known, references);
+                    }
+                    collect_named_function_refs_from_block(&arm.body, known, references);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_named_function_refs_from_expr(value, known, references);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_named_function_refs_from_expr(guard, known, references);
+                    }
+                    collect_named_function_refs_from_block(&arm.body, known, references);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_named_function_refs_from_expr(
+    expr: &Expr,
+    known: &HashSet<String>,
+    references: &mut HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Var(name) => {
+            if known.contains(name) {
+                references.insert(name.clone());
+            }
+        }
+        ExprKind::AnonymousFunction { body, .. } => {
+            collect_named_function_refs_from_expr(body, known, references);
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            if known.contains(name) {
+                references.insert(name.clone());
+            }
+            for arg in args {
+                collect_named_function_refs_from_expr(arg, known, references);
+            }
+            for arg in named_args {
+                collect_named_function_refs_from_expr(&arg.value, known, references);
+            }
+        }
+        ExprKind::ShellCall { name, args, .. } => {
+            if known.contains(name) {
+                references.insert(name.clone());
+            }
+            for arg in args {
+                collect_named_function_refs_from_expr(arg, known, references);
+            }
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            if known.contains(name) {
+                references.insert(name.clone());
+            }
+            collect_named_function_refs_from_expr(input, known, references);
+            for arg in args {
+                collect_named_function_refs_from_expr(arg, known, references);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_named_function_refs_from_expr(item, known, references);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_named_function_refs_from_expr(value, known, references);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_named_function_refs_from_expr(condition, known, references);
+            collect_named_function_refs_from_expr(value, known, references);
+            if let Some(else_value) = else_value {
+                collect_named_function_refs_from_expr(else_value, known, references);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_named_function_refs_from_expr(base, known, references);
+            collect_named_function_refs_from_expr(index, known, references);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_named_function_refs_from_expr(base, known, references);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_named_function_refs_from_expr(part, known, references);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_named_function_refs_from_expr(value, known, references);
+            collect_named_function_refs_from_expr(iterable, known, references);
+            if let Some(condition) = condition {
+                collect_named_function_refs_from_expr(condition, known, references);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_named_function_refs_from_expr(base, known, references);
+            }
+            for field in fields {
+                collect_named_function_refs_from_expr(&field.value, known, references);
+            }
+        }
+        ExprKind::QualifiedCall {
+            name,
+            args,
+            named_args,
+            ..
+        } => {
+            if known.contains(name) {
+                references.insert(name.clone());
+            }
+            for arg in args {
+                collect_named_function_refs_from_expr(arg, known, references);
+            }
+            for arg in named_args {
+                collect_named_function_refs_from_expr(&arg.value, known, references);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_named_function_refs_from_expr(base, known, references);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_named_function_refs_from_expr(value, known, references);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_named_function_refs_from_expr(guard, known, references);
+                }
+                collect_named_function_refs_from_expr(&arm.value, known, references);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_named_function_refs_from_expr(value, known, references);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_named_function_refs_from_expr(guard, known, references);
+                }
+                collect_named_function_refs_from_expr(&arm.value, known, references);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_named_function_refs_from_expr(then_expr, known, references);
+            collect_named_function_refs_from_expr(cond, known, references);
+            collect_named_function_refs_from_expr(else_expr, known, references);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_named_function_refs_from_expr(left, known, references);
+            collect_named_function_refs_from_expr(right, known, references);
+        }
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {}
+    }
+}
+
+fn collect_anonymous_functions<'a>(
+    program: &'a Program,
+    reachable_functions: &HashSet<String>,
+) -> Vec<&'a Expr> {
     let mut functions = Vec::new();
     for function in &program.functions {
-        collect_anonymous_functions_from_block(&function.body, &mut functions);
+        if reachable_functions.contains(&function.name) {
+            collect_anonymous_functions_from_block(&function.body, &mut functions);
+        }
     }
     functions
 }

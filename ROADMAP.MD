@@ -403,6 +403,8 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [x] LTO in native release builds through Clang `-flto`, covered by build-mode tests.
 - [x] Continuous bootstrap performance harness with optimized overflow-safe Flux-vs-Rust/C compute, collection-pipeline, and interface-dispatch baselines, output-equivalence checks, median runtime/code-size reporting, a configurable checked-Rust release threshold, C reference tracking, and a push/PR CI gate. Native-UI and broader workload coverage remains part of the target-aware optimization item above.
 - [ ] Tree shaking/dead symbol elimination.
+  - [x] Bootstrap whole-program function reachability keeps `main`, public exports, interface implementation mappings, application/view callback references, and their transitive private callees while omitting provably unreachable private function prototypes/bodies and anonymous functions from generated C.
+  - [ ] Extend reachability pruning to unused value types, interface/enum/update helpers, UI/view metadata, constants, and future backend symbols/resources.
 - [ ] Remove bootstrap C as the semantic backend after parity is proven.
 
 # Milestone 8 — Application model
