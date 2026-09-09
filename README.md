@@ -17,7 +17,7 @@
 | --- | --- |
 | 🐍 **Python-like syntax** | Readable, low-ceremony code with indentation-based control flow, comprehensions, slicing, pattern matching, and concise function-first APIs. |
 | ⚡ **Rust-class performance** | Native ahead-of-time compilation, no mandatory VM or garbage collector, aggressive optimization, zero-cost abstractions, and continuous comparison against optimized Rust/C baselines. |
-| 🌍 **Compile to any platform** | Flux source is designed to stay platform-independent while backends produce target-specific code. Linux native is the bootstrap target today; desktop, mobile, web, and server targets are part of the language architecture rather than separate app frameworks. |
+| 🌍 **Compile to any platform** | Portable Flux stays portable where useful, while target-specific Flux can call real OS capabilities directly. Backends produce native target code and compiler-owned interop instead of making apps maintain Flutter-style method channels or bridge layers. Linux native is the bootstrap target today; desktop, mobile, web, and server targets share the same language architecture. |
 | ✨ **Make beautiful apps** | A flat declarative UI model, native platform controls, grid-first layout, responsive state, typed events, and no giant widget/controller object tree. |
 | 🎯 **Dart-inspired language features** | Named/default parameters, collection spreads and `if` elements, comprehensions, exhaustive patterns, first-class functions, functional value updates, and other high-level ergonomics without Dart's class hierarchy. |
 
@@ -76,14 +76,14 @@ The C backend is a bootstrap implementation, not the final backend architecture.
 
 ## Create a project
 
-Scaffold a minimal native GUI package that is immediately ready for the P0 dogfood loop:
+Scaffold and run a minimal native GUI package:
 
 ```sh
 ./tools/flux new my-flux-app
-./tools/flux-nvim my-flux-app/src/main.flux
+./tools/flux run my-flux-app
 ```
 
-Inside Neovim, run `:FluxRun my-flux-app` to compile and launch the package with automatic save-triggered rebuilds. `flux new` also creates `tests/smoke.flux`, so the package can immediately exercise the bootstrap integration-test runner with `./tools/flux test my-flux-app`. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
+`flux run` compiles and launches the package with automatic save-triggered rebuilds. `flux new` also creates `tests/smoke.flux`, so the package can immediately exercise the bootstrap integration-test runner with `./tools/flux test my-flux-app`. `flux new` refuses to overwrite a non-empty directory. `./tools/flux` is a repo-local bootstrap launcher; after `cargo build`, the same CLI is available directly as `target/debug/flux`. The compatibility binary `fluxc` remains during bootstrap development.
 
 Create the first host-native distribution bundle with `./tools/flux package my-flux-app`. By default it writes `dist/<name>-<version>-<os>-<arch>/` containing the package-named native executable and the exact `flux.toml`; `-o <directory>` chooses another destination and `--mode` selects debug/profile/release. Existing bundle directories are not overwritten. This is intentionally a bootstrap host bundle, not yet a self-contained distro/store package: GTK and other native runtime dependencies remain host responsibilities.
 
@@ -91,18 +91,9 @@ Native Clang outputs are content-addressed and reused across `flux build`, `flux
 
 ## Example
 
-```flux
-fn square(value: i64) -> i64 {
-    return value * value
-}
+![Flux example with Flux-aware syntax highlighting](assets/readme/flux-hello.png)
 
-fn main() -> i64 {
-    for i in 0..5:
-        let squared: i64 = square(i)
-        print(squared)
-    return 0
-}
-```
+[View the copyable source](examples/hello.flux)
 
 Build it:
 
@@ -170,15 +161,7 @@ Format source deterministically, or verify canonical formatting in CI:
 ./tools/flux format examples/hello.flux --check
 ```
 
-For the first zero-install editor dogfood path on Linux, use the checked-in Neovim launcher:
-
-```sh
-./tools/flux-nvim examples/hello_app.flux
-```
-
-It uses the repository's Neovim runtime, gives `.flux` files immediate syntax colouring, starts the built `flux lsp`, and leaves the user's global Neovim configuration untouched. Inside the editor, `:FluxRun` opens a terminal split running the current Flux target with automatic save-triggered rebuild/restart. The complete manual acceptance sequence is documented in `docs/manual-e2e.md`.
-
-Editors can also launch the bootstrap language server directly over stdio:
+Editors can launch the bootstrap language server directly over stdio:
 
 ```sh
 ./tools/flux lsp
@@ -208,60 +191,17 @@ The package directory or manifest can then be passed directly to project-aware c
 ./tools/flux build examples/package -o package-example
 ```
 
-## Multi-value returns
+## Explicit errors and multi-value returns
 
-Flux keeps multi-values explicit and does not make general tuple values part of ordinary expressions. Functions may declare multiple return values and callers destructure them into explicitly typed bindings:
+Flux keeps multi-values explicit rather than turning general tuples into ordinary values. Functions can return several statically typed values, callers destructure them explicitly, and an exact multi-value result can be forwarded directly when the enclosing function has the same return shape.
 
-```flux
-fn divide(value: i64, by: i64) -> (i64, bool) {
-    if by == 0:
-        return 0, false
-    return value / by, true
-}
+Recoverable failures use the built-in `error` type: `nil` means no error and `error("message")` creates a recoverable failure. `error` is compiler-known rather than a generic result wrapper, and Flux does not use exceptions or stack unwinding for normal failures.
 
-fn main() -> i64 {
-    let result: i64, ok: bool = divide(84, 2)
-    return 0
-}
-```
+`else return` is a narrow propagation form for a destructuring call whose final value is `error`. The call is evaluated once; a non-`nil` error returns the exact result immediately, otherwise execution continues with the successful values. Arity and every return type are checked statically.
 
-This is the foundation for Flux's recoverable-error model. Flux now has a built-in `error` type: `nil` means no error, while `error("message")` constructs a recoverable failure. `error` is compiler-known rather than a generic result container, so the model stays explicit and compatible with Flux's no-generics constraint. Exceptions are not part of the design. Multi-value results can also be forwarded directly when the caller returns the exact same shape, so wrappers stay concise without hidden control flow:
+![Flux explicit-error example with Flux-aware syntax highlighting](assets/readme/flux-errors.png)
 
-```flux
-fn loadConfig(path: str) -> (str, error) {
-    return load(path)
-}
-```
-
-Forwarding is positional and strictly checked: both arity and every return type must match the enclosing function signature.
-
-When a function needs the successful values before returning, Flux provides a narrow explicit propagation form:
-
-```flux
-fn loadConfig(path: str) -> (str, error) {
-    let data: str, err: error = load(path) else return
-    print(data)
-    return data, nil
-}
-```
-
-`else return` is only valid on a multi-value destructuring binding when the final value is `error` and the called function's complete return shape exactly matches the enclosing function. It evaluates the call once, returns that exact result when the error is non-`nil`, and otherwise continues with the destructured bindings. It is ordinary control flow, not exception handling or stack unwinding.
-
-```flux
-fn load(path: str) -> (str, error) {
-    if path == "":
-        return "", error("path is required")
-    return "configuration loaded", nil
-}
-
-fn main() -> i64 {
-    let data: str, err: error = load("settings.flux")
-    if err != nil:
-        print(err)
-    print(data)
-    return 0
-}
-```
+[View the copyable source](examples/errors.flux)
 
 ## Roadmap
 
