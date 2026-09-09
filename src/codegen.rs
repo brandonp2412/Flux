@@ -16,72 +16,101 @@ pub fn emit_c_with_source_paths(
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<String, Diagnostic> {
-    let reachable_functions = reachable_function_names(program);
-    let mut out = String::new();
-    out.push_str("#include <stdbool.h>\n");
-    out.push_str("#include <stdint.h>\n");
-    out.push_str("#include <stddef.h>\n");
-    out.push_str("#include <stdio.h>\n");
-    out.push_str("#include <stdlib.h>\n");
-    out.push_str("#include <string.h>\n");
-    if program_uses_background(program) {
-        out.push_str("#include <errno.h>\n");
-        out.push_str("#include <sys/types.h>\n");
-        out.push_str("#include <sys/wait.h>\n");
-        out.push_str("#include <unistd.h>\n");
-    }
-    if program.application.is_some() {
-        out.push_str("#include <gtk/gtk.h>\n");
-    }
-    out.push('\n');
-    out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
-    out.push_str(
-        "static inline void flux_print_bool(bool value) { puts(value ? \"true\" : \"false\"); }\n",
+    let mut reachable_interfaces = HashSet::new();
+    let mut reachable_functions =
+        reachable_function_names(program, signatures, &reachable_interfaces);
+    let mut reachable_value_types = reachable_value_type_names(
+        program,
+        signatures,
+        &reachable_functions,
+        &reachable_interfaces,
     );
-    out.push_str("static inline void flux_print_str(const char *value) { puts(value); }\n");
-    out.push_str("static inline void flux_print_error(const char *value) { puts(value ? value : \"nil\"); }\n");
-    out.push_str("static inline FILE *flux_open_redirect(const char *path, bool append) { FILE *file = fopen(path, append ? \"a\" : \"w\"); if (file == NULL) { perror(path); abort(); } return file; }\n");
-    out.push_str("static inline void flux_redirect_i64(const char *path, bool append, int64_t value) { FILE *file = flux_open_redirect(path, append); fprintf(file, \"%lld\\n\", (long long)value); fclose(file); }\n");
-    out.push_str("static inline void flux_redirect_bool(const char *path, bool append, bool value) { FILE *file = flux_open_redirect(path, append); fputs(value ? \"true\\n\" : \"false\\n\", file); fclose(file); }\n");
-    out.push_str("static inline void flux_redirect_str(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value, file); fputc('\\n', file); fclose(file); }\n");
-    out.push_str("static inline void flux_redirect_error(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value ? value : \"nil\", file); fputc('\\n', file); fclose(file); }\n");
-    out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
-    out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
-    out.push_str("static inline ptrdiff_t flux_list_stride(struct flux__list list, size_t elem_size) { return list.stride == 0 ? (ptrdiff_t)elem_size : list.stride; }\n");
-    out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
-    out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { ptrdiff_t stride = flux_list_stride(list, elem_size); return (void *)((char *)list.data + (ptrdiff_t)flux_list_index(list.len, index) * stride); }\n");
-    out.push_str("static inline void *flux_list_single(struct flux__list list) { if (list.len != 1) { fputs(\"Flux runtime error: list.single requires exactly one element\\n\", stderr); abort(); } return list.data; }\n");
-    out.push_str("static inline size_t flux_list_count(size_t len, int64_t count) { if (count < 0) { fputs(\"Flux runtime error: list count must be non-negative\\n\", stderr); abort(); } uint64_t value = (uint64_t)count; return value > (uint64_t)len ? len : (size_t)value; }\n");
-    out.push_str("static inline struct flux__list flux_list_take(struct flux__list list, int64_t count) { list.len = flux_list_count(list.len, count); return list; }\n");
-    out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); ptrdiff_t stride = flux_list_stride(list, elem_size); list.data = (void *)((char *)list.data + (ptrdiff_t)skipped * stride); list.len -= skipped; list.stride = stride; return list; }\n");
-    out.push_str("static inline bool flux_list_any_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return true; } return false; }\n");
-    out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return false; } return true; }\n");
-    out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
-    out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
-    out.push_str("static inline int64_t flux_add_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_add_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer addition overflow\\n\", stderr); abort(); } return result; }\n");
-    out.push_str("static inline int64_t flux_sub_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_sub_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer subtraction overflow\\n\", stderr); abort(); } return result; }\n");
-    out.push_str("static inline int64_t flux_mul_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_mul_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer multiplication overflow\\n\", stderr); abort(); } return result; }\n");
-    out.push_str("static inline int64_t flux_neg_i64(int64_t value) { if (value == INT64_MIN) { fputs(\"Flux runtime error: integer negation overflow\\n\", stderr); abort(); } return -value; }\n");
-    out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
-    out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
-    out.push_str("    return a / b;\n");
-    out.push_str("}\n\n");
+    loop {
+        let next_interfaces = reachable_interface_names(
+            program,
+            signatures,
+            &reachable_functions,
+            &reachable_value_types,
+        );
+        let next_functions = reachable_function_names(program, signatures, &next_interfaces);
+        let next_value_types =
+            reachable_value_type_names(program, signatures, &next_functions, &next_interfaces);
+        if next_interfaces == reachable_interfaces
+            && next_functions == reachable_functions
+            && next_value_types == reachable_value_types
+        {
+            break;
+        }
+        reachable_interfaces = next_interfaces;
+        reachable_functions = next_functions;
+        reachable_value_types = next_value_types;
+    }
+    let reachable_enum_variants =
+        reachable_enum_variant_helpers(program, signatures, &reachable_functions);
+    let anonymous_functions = collect_anonymous_functions(program, &reachable_functions);
+    let mut generated_body = String::new();
+    for function in &anonymous_functions {
+        emit_anonymous_function(&mut generated_body, function, signatures, source_paths)?;
+        generated_body.push('\n');
+    }
+    let mut temp_counter = 0usize;
+    for function in &program.functions {
+        if reachable_functions.contains(&function.name) {
+            emit_function(
+                &mut generated_body,
+                function,
+                signatures,
+                &mut temp_counter,
+                source_paths,
+            )?;
+            generated_body.push('\n');
+        }
+    }
+    let mut application_body = String::new();
+    if program.application.is_some() {
+        emit_linux_gtk_application(&mut application_body, program, signatures)?;
+    }
+    let runtime_usage = format!("{generated_body}{application_body}");
+
+    let mut out = String::new();
+    emit_runtime_prelude(
+        &mut out,
+        &runtime_usage,
+        program_uses_background(program, &reachable_functions),
+        program.application.is_some(),
+    );
 
     for definition in &program.structs {
-        out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+        if reachable_value_types.contains(&definition.name) {
+            out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+        }
     }
     for definition in &program.enums {
-        out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+        if reachable_value_types.contains(&definition.name) {
+            out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
+        }
     }
     for definition in &program.interfaces {
-        out.push_str(&format!("struct {};\n", interface_c_name(&definition.name)));
+        if reachable_interfaces.contains(&definition.name) {
+            out.push_str(&format!("struct {};\n", interface_c_name(&definition.name)));
+        }
     }
-    if !program.structs.is_empty() || !program.enums.is_empty() || !program.interfaces.is_empty() {
+    if !reachable_value_types.is_empty() || !reachable_interfaces.is_empty() {
         out.push('\n');
     }
-    emit_function_type_typedefs(&mut out, program, signatures)?;
+    emit_function_type_typedefs(
+        &mut out,
+        program,
+        signatures,
+        &reachable_functions,
+        &reachable_value_types,
+        &reachable_interfaces,
+    )?;
 
     for definition in value_type_emit_order(program, signatures)? {
+        if !reachable_value_types.contains(definition.name()) {
+            continue;
+        }
         match definition {
             ValueDef::Struct(definition) => {
                 emit_struct_definition(&mut out, definition, signatures)
@@ -89,14 +118,28 @@ pub fn emit_c_with_source_paths(
             ValueDef::Enum(definition) => emit_enum_definition(&mut out, definition, signatures),
         }
     }
-    if !program.structs.is_empty() || !program.enums.is_empty() {
+    if !reachable_value_types.is_empty() {
         out.push('\n');
     }
 
-    emit_interface_value_definitions(&mut out, program, signatures);
-    out.push_str(&interface_pack_helpers(program, signatures));
-    out.push_str(&enum_variant_helpers(program, signatures));
-    out.push_str(&struct_update_helpers(program, signatures));
+    emit_interface_value_definitions(&mut out, program, signatures, &reachable_interfaces);
+    out.push_str(&interface_pack_helpers(
+        program,
+        signatures,
+        &reachable_interfaces,
+        &runtime_usage,
+    ));
+    out.push_str(&enum_variant_helpers(
+        program,
+        signatures,
+        &reachable_value_types,
+        &reachable_enum_variants,
+    ));
+    out.push_str(&struct_update_helpers(
+        program,
+        signatures,
+        &reachable_functions,
+    ));
 
     for function in &program.functions {
         if reachable_functions.contains(&function.name) && function.returns.len() > 1 {
@@ -115,7 +158,13 @@ pub fn emit_c_with_source_paths(
     {
         out.push('\n');
     }
-    emit_interface_multi_return_structs(&mut out, program, signatures);
+    emit_interface_multi_return_structs(
+        &mut out,
+        program,
+        signatures,
+        &reachable_interfaces,
+        &runtime_usage,
+    );
 
     for function in &program.functions {
         if reachable_functions.contains(&function.name) {
@@ -123,37 +172,168 @@ pub fn emit_c_with_source_paths(
             out.push_str(";\n");
         }
     }
-    let anonymous_functions = collect_anonymous_functions(program, &reachable_functions);
     for function in &anonymous_functions {
         out.push_str(&anonymous_function_prototype(function, signatures)?);
         out.push_str(";\n");
     }
     out.push('\n');
-    emit_interface_dispatch_helpers(&mut out, program, signatures)?;
-    for function in &anonymous_functions {
-        emit_anonymous_function(&mut out, function, signatures, source_paths)?;
-        out.push('\n');
-    }
-
-    let mut temp_counter = 0usize;
-    for function in &program.functions {
-        if reachable_functions.contains(&function.name) {
-            emit_function(
-                &mut out,
-                function,
-                signatures,
-                &mut temp_counter,
-                source_paths,
-            )?;
-            out.push('\n');
-        }
-    }
-
-    if program.application.is_some() {
-        emit_linux_gtk_application(&mut out, program, signatures)?;
-    }
+    emit_interface_dispatch_helpers(
+        &mut out,
+        program,
+        signatures,
+        &reachable_interfaces,
+        &runtime_usage,
+    )?;
+    out.push_str(&generated_body);
+    out.push_str(&application_body);
 
     Ok(out)
+}
+
+fn emit_runtime_prelude(
+    out: &mut String,
+    runtime_usage: &str,
+    uses_background: bool,
+    uses_gtk: bool,
+) {
+    out.push_str("#include <stdbool.h>\n");
+    out.push_str("#include <stdint.h>\n");
+    out.push_str("#include <stddef.h>\n");
+    out.push_str("#include <stdio.h>\n");
+    out.push_str("#include <stdlib.h>\n");
+    out.push_str("#include <string.h>\n");
+    if uses_background {
+        out.push_str("#include <errno.h>\n");
+        out.push_str("#include <sys/types.h>\n");
+        out.push_str("#include <sys/wait.h>\n");
+        out.push_str("#include <unistd.h>\n");
+    }
+    if uses_gtk {
+        out.push_str("#include <gtk/gtk.h>\n");
+    }
+    out.push('\n');
+
+    if runtime_usage.contains("flux_print_i64(") {
+        out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
+    }
+    if runtime_usage.contains("flux_print_bool(") {
+        out.push_str(
+            "static inline void flux_print_bool(bool value) { puts(value ? \"true\" : \"false\"); }\n",
+        );
+    }
+    if runtime_usage.contains("flux_print_str(") {
+        out.push_str("static inline void flux_print_str(const char *value) { puts(value); }\n");
+    }
+    if runtime_usage.contains("flux_print_error(") {
+        out.push_str("static inline void flux_print_error(const char *value) { puts(value ? value : \"nil\"); }\n");
+    }
+
+    let uses_redirect_i64 = runtime_usage.contains("flux_redirect_i64(");
+    let uses_redirect_bool = runtime_usage.contains("flux_redirect_bool(");
+    let uses_redirect_str = runtime_usage.contains("flux_redirect_str(");
+    let uses_redirect_error = runtime_usage.contains("flux_redirect_error(");
+    if uses_redirect_i64 || uses_redirect_bool || uses_redirect_str || uses_redirect_error {
+        out.push_str("static inline FILE *flux_open_redirect(const char *path, bool append) { FILE *file = fopen(path, append ? \"a\" : \"w\"); if (file == NULL) { perror(path); abort(); } return file; }\n");
+    }
+    if uses_redirect_i64 {
+        out.push_str("static inline void flux_redirect_i64(const char *path, bool append, int64_t value) { FILE *file = flux_open_redirect(path, append); fprintf(file, \"%lld\\n\", (long long)value); fclose(file); }\n");
+    }
+    if uses_redirect_bool {
+        out.push_str("static inline void flux_redirect_bool(const char *path, bool append, bool value) { FILE *file = flux_open_redirect(path, append); fputs(value ? \"true\\n\" : \"false\\n\", file); fclose(file); }\n");
+    }
+    if uses_redirect_str {
+        out.push_str("static inline void flux_redirect_str(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value, file); fputc('\\n', file); fclose(file); }\n");
+    }
+    if uses_redirect_error {
+        out.push_str("static inline void flux_redirect_error(const char *path, bool append, const char *value) { FILE *file = flux_open_redirect(path, append); fputs(value ? value : \"nil\", file); fputc('\\n', file); fclose(file); }\n");
+    }
+    if runtime_usage.contains("flux_error_eq(") {
+        out.push_str("static inline bool flux_error_eq(const char *a, const char *b) { return a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0; }\n");
+    }
+
+    let uses_list_at = runtime_usage.contains("flux_list_at(");
+    let uses_list_single = runtime_usage.contains("flux_list_single(");
+    let uses_list_take = runtime_usage.contains("flux_list_take(");
+    let uses_list_skip = runtime_usage.contains("flux_list_skip(");
+    let uses_list_any = runtime_usage.contains("flux_list_any_bool(");
+    let uses_list_every = runtime_usage.contains("flux_list_every_bool(");
+    let uses_list_slice = runtime_usage.contains("flux_list_slice(");
+    let uses_list_unchecked = runtime_usage.contains("flux_list_at_unchecked(")
+        || uses_list_at
+        || uses_list_any
+        || uses_list_every;
+    let uses_list_stride = runtime_usage.contains("flux_list_stride(")
+        || uses_list_unchecked
+        || uses_list_skip
+        || uses_list_slice;
+    let uses_list_count = uses_list_take || uses_list_skip;
+    let uses_list = runtime_usage.contains("struct flux__list")
+        || uses_list_at
+        || uses_list_single
+        || uses_list_take
+        || uses_list_skip
+        || uses_list_any
+        || uses_list_every
+        || uses_list_slice
+        || uses_list_unchecked
+        || uses_list_stride;
+    if uses_list {
+        out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    }
+    if uses_list_stride {
+        out.push_str("static inline ptrdiff_t flux_list_stride(struct flux__list list, size_t elem_size) { return list.stride == 0 ? (ptrdiff_t)elem_size : list.stride; }\n");
+    }
+    if uses_list_at {
+        out.push_str("static inline size_t flux_list_index(size_t len, int64_t index) { int64_t resolved = index; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0 || (uint64_t)resolved >= (uint64_t)len) { fputs(\"Flux runtime error: list index out of range\\n\", stderr); abort(); } return (size_t)resolved; }\n");
+    }
+    if uses_list_unchecked {
+        out.push_str("static inline void *flux_list_at_unchecked(struct flux__list list, size_t index, size_t elem_size) { ptrdiff_t stride = flux_list_stride(list, elem_size); return (void *)((char *)list.data + (ptrdiff_t)index * stride); }\n");
+    }
+    if uses_list_at {
+        out.push_str("static inline void *flux_list_at(struct flux__list list, int64_t index, size_t elem_size) { return flux_list_at_unchecked(list, flux_list_index(list.len, index), elem_size); }\n");
+    }
+    if uses_list_single {
+        out.push_str("static inline void *flux_list_single(struct flux__list list) { if (list.len != 1) { fputs(\"Flux runtime error: list.single requires exactly one element\\n\", stderr); abort(); } return list.data; }\n");
+    }
+    if uses_list_count {
+        out.push_str("static inline size_t flux_list_count(size_t len, int64_t count) { if (count < 0) { fputs(\"Flux runtime error: list count must be non-negative\\n\", stderr); abort(); } uint64_t value = (uint64_t)count; return value > (uint64_t)len ? len : (size_t)value; }\n");
+    }
+    if uses_list_take {
+        out.push_str("static inline struct flux__list flux_list_take(struct flux__list list, int64_t count) { list.len = flux_list_count(list.len, count); return list; }\n");
+    }
+    if uses_list_skip {
+        out.push_str("static inline struct flux__list flux_list_skip(struct flux__list list, int64_t count, size_t elem_size) { size_t skipped = flux_list_count(list.len, count); ptrdiff_t stride = flux_list_stride(list, elem_size); list.data = (void *)((char *)list.data + (ptrdiff_t)skipped * stride); list.len -= skipped; list.stride = stride; return list; }\n");
+    }
+    if uses_list_any {
+        out.push_str("static inline bool flux_list_any_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (*((bool *)flux_list_at_unchecked(list, i, sizeof(bool)))) return true; } return false; }\n");
+    }
+    if uses_list_every {
+        out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at_unchecked(list, i, sizeof(bool)))) return false; } return true; }\n");
+    }
+    if uses_list_slice {
+        out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
+        out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
+    }
+
+    if runtime_usage.contains("flux_add_i64(") {
+        out.push_str("static inline int64_t flux_add_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_add_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer addition overflow\\n\", stderr); abort(); } return result; }\n");
+    }
+    if runtime_usage.contains("flux_sub_i64(") {
+        out.push_str("static inline int64_t flux_sub_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_sub_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer subtraction overflow\\n\", stderr); abort(); } return result; }\n");
+    }
+    if runtime_usage.contains("flux_mul_i64(") {
+        out.push_str("static inline int64_t flux_mul_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_mul_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer multiplication overflow\\n\", stderr); abort(); } return result; }\n");
+    }
+    if runtime_usage.contains("flux_neg_i64(") {
+        out.push_str("static inline int64_t flux_neg_i64(int64_t value) { if (value == INT64_MIN) { fputs(\"Flux runtime error: integer negation overflow\\n\", stderr); abort(); } return -value; }\n");
+    }
+    if runtime_usage.contains("flux_div_i64(") {
+        out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
+        out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
+        out.push_str("    return a / b;\n");
+        out.push_str("}\n");
+    }
+    out.push('\n');
 }
 
 fn emit_linux_gtk_application(
@@ -2164,7 +2344,1325 @@ fn emit_anonymous_function(
     Ok(())
 }
 
-fn reachable_function_names(program: &Program) -> HashSet<String> {
+fn reachable_interface_names(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_functions: &HashSet<String>,
+    reachable_value_types: &HashSet<String>,
+) -> HashSet<String> {
+    let mut reachable = HashSet::new();
+    let mut pending = Vec::new();
+
+    for definition in &program.interfaces {
+        if definition.public {
+            enqueue_interface_name(&definition.name, signatures, &mut reachable, &mut pending);
+        }
+    }
+    for alias in &program.aliases {
+        if alias.public {
+            collect_interface_names_from_type(
+                &alias.target,
+                signatures,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+    }
+    for definition in &program.structs {
+        if !reachable_value_types.contains(&definition.name) {
+            continue;
+        }
+        for field in &definition.fields {
+            collect_interface_names_from_type(&field.ty, signatures, &mut reachable, &mut pending);
+        }
+    }
+    for definition in &program.enums {
+        if !reachable_value_types.contains(&definition.name) {
+            continue;
+        }
+        for variant in &definition.variants {
+            for payload in &variant.payloads {
+                collect_interface_names_from_type(
+                    &payload.ty,
+                    signatures,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+    }
+    for constant in &program.constants {
+        collect_interface_names_from_type(&constant.ty, signatures, &mut reachable, &mut pending);
+        collect_interface_names_from_expr(
+            &constant.value,
+            signatures,
+            &mut reachable,
+            &mut pending,
+        );
+    }
+    if let Some(application) = &program.application {
+        for field in &application.metadata {
+            collect_interface_names_from_expr(
+                &field.value,
+                signatures,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            collect_interface_names_from_type(&param.ty, signatures, &mut reachable, &mut pending);
+            if let Some(default) = &param.default {
+                collect_interface_names_from_expr(
+                    default,
+                    signatures,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+        for state in &view.states {
+            collect_interface_names_from_type(&state.ty, signatures, &mut reachable, &mut pending);
+            collect_interface_names_from_expr(
+                &state.initial,
+                signatures,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+        for derived in &view.derived {
+            collect_interface_names_from_type(
+                &derived.ty,
+                signatures,
+                &mut reachable,
+                &mut pending,
+            );
+            collect_interface_names_from_expr(
+                &derived.value,
+                signatures,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+        for element in &view.elements {
+            for property in &element.properties {
+                collect_interface_names_from_expr(
+                    &property.value,
+                    signatures,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+    }
+    for function in &program.functions {
+        if !reachable_functions.contains(&function.name) {
+            continue;
+        }
+        for param in &function.params {
+            collect_interface_names_from_type(&param.ty, signatures, &mut reachable, &mut pending);
+            if let Some(default) = &param.default {
+                collect_interface_names_from_expr(
+                    default,
+                    signatures,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+        for ty in &function.returns {
+            collect_interface_names_from_type(ty, signatures, &mut reachable, &mut pending);
+        }
+        collect_interface_names_from_block(
+            &function.body,
+            signatures,
+            &mut reachable,
+            &mut pending,
+        );
+    }
+
+    while let Some(name) = pending.pop() {
+        let Some(definition) = program
+            .interfaces
+            .iter()
+            .find(|definition| definition.name == name)
+        else {
+            continue;
+        };
+        for parent in &definition.parents {
+            enqueue_interface_name(&parent.name, signatures, &mut reachable, &mut pending);
+        }
+        for function in &definition.functions {
+            for param in &function.params {
+                collect_interface_names_from_type(
+                    &param.ty,
+                    signatures,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+            for ty in &function.returns {
+                collect_interface_names_from_type(ty, signatures, &mut reachable, &mut pending);
+            }
+        }
+    }
+
+    reachable
+}
+
+fn enqueue_interface_name(
+    name: &str,
+    signatures: &Signatures,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    if signatures.interface(name).is_some() && reachable.insert(name.to_string()) {
+        pending.push(name.to_string());
+    }
+}
+
+fn collect_interface_names_from_type(
+    ty: &Type,
+    signatures: &Signatures,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    match signatures.canonical_type(ty) {
+        Type::Named(name) => {
+            enqueue_interface_name(&name, signatures, reachable, pending);
+        }
+        Type::List(element) => {
+            collect_interface_names_from_type(&element, signatures, reachable, pending);
+        }
+        Type::Function { params, returns } => {
+            for ty in params.iter().chain(&returns) {
+                collect_interface_names_from_type(ty, signatures, reachable, pending);
+            }
+        }
+        Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void => {}
+    }
+}
+
+fn collect_interface_names_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
+                collect_interface_names_from_type(ty, signatures, reachable, pending);
+                collect_interface_names_from_expr(expr, signatures, reachable, pending);
+            }
+            StmtKind::LetDestructure { bindings, expr, .. } => {
+                for binding in bindings {
+                    collect_interface_names_from_type(&binding.ty, signatures, reachable, pending);
+                }
+                collect_interface_names_from_expr(expr, signatures, reachable, pending);
+            }
+            StmtKind::Assign { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_interface_names_from_expr(expr, signatures, reachable, pending);
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_interface_names_from_expr(value, signatures, reachable, pending);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_interface_names_from_expr(expr, signatures, reachable, pending);
+                if let Some(redirect) = redirect {
+                    collect_interface_names_from_expr(
+                        &redirect.path,
+                        signatures,
+                        reachable,
+                        pending,
+                    );
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_interface_names_from_expr(cond, signatures, reachable, pending);
+                collect_interface_names_from_block(body, signatures, reachable, pending);
+                collect_interface_names_from_block(else_body, signatures, reachable, pending);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_interface_names_from_expr(start, signatures, reachable, pending);
+                collect_interface_names_from_expr(end, signatures, reachable, pending);
+                collect_interface_names_from_block(body, signatures, reachable, pending);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_interface_names_from_expr(iterable, signatures, reachable, pending);
+                collect_interface_names_from_block(body, signatures, reachable, pending);
+            }
+            StmtKind::While { cond, body } => {
+                collect_interface_names_from_expr(cond, signatures, reachable, pending);
+                collect_interface_names_from_block(body, signatures, reachable, pending);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_interface_names_from_expr(value, signatures, reachable, pending);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_interface_names_from_expr(guard, signatures, reachable, pending);
+                    }
+                    collect_interface_names_from_block(&arm.body, signatures, reachable, pending);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_interface_names_from_expr(value, signatures, reachable, pending);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_interface_names_from_expr(guard, signatures, reachable, pending);
+                    }
+                    collect_interface_names_from_block(&arm.body, signatures, reachable, pending);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_interface_names_from_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    match &expr.kind {
+        ExprKind::AnonymousFunction {
+            params,
+            return_type,
+            body,
+        } => {
+            for param in params {
+                collect_interface_names_from_type(&param.ty, signatures, reachable, pending);
+            }
+            if let Some(return_type) = return_type {
+                collect_interface_names_from_type(return_type, signatures, reachable, pending);
+            }
+            collect_interface_names_from_expr(body, signatures, reachable, pending);
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } => {
+            enqueue_interface_name(name, signatures, reachable, pending);
+            for arg in args {
+                collect_interface_names_from_expr(arg, signatures, reachable, pending);
+            }
+            for arg in named_args {
+                collect_interface_names_from_expr(&arg.value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::QualifiedCall {
+            namespace,
+            args,
+            named_args,
+            ..
+        } => {
+            enqueue_interface_name(namespace, signatures, reachable, pending);
+            for arg in args {
+                collect_interface_names_from_expr(arg, signatures, reachable, pending);
+            }
+            for arg in named_args {
+                collect_interface_names_from_expr(&arg.value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_interface_names_from_expr(arg, signatures, reachable, pending);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_interface_names_from_expr(input, signatures, reachable, pending);
+            for arg in args {
+                collect_interface_names_from_expr(arg, signatures, reachable, pending);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_interface_names_from_expr(item, signatures, reachable, pending);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_interface_names_from_expr(value, signatures, reachable, pending);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_interface_names_from_expr(condition, signatures, reachable, pending);
+            collect_interface_names_from_expr(value, signatures, reachable, pending);
+            if let Some(else_value) = else_value {
+                collect_interface_names_from_expr(else_value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_interface_names_from_expr(base, signatures, reachable, pending);
+            collect_interface_names_from_expr(index, signatures, reachable, pending);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_interface_names_from_expr(base, signatures, reachable, pending);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_interface_names_from_expr(part, signatures, reachable, pending);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_interface_names_from_expr(value, signatures, reachable, pending);
+            collect_interface_names_from_expr(iterable, signatures, reachable, pending);
+            if let Some(condition) = condition {
+                collect_interface_names_from_expr(condition, signatures, reachable, pending);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_interface_names_from_expr(base, signatures, reachable, pending);
+            }
+            for field in fields {
+                collect_interface_names_from_expr(&field.value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_interface_names_from_expr(base, signatures, reachable, pending);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_interface_names_from_expr(value, signatures, reachable, pending);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_names_from_expr(guard, signatures, reachable, pending);
+                }
+                collect_interface_names_from_expr(&arm.value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_interface_names_from_expr(value, signatures, reachable, pending);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_names_from_expr(guard, signatures, reachable, pending);
+                }
+                collect_interface_names_from_expr(&arm.value, signatures, reachable, pending);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_interface_names_from_expr(then_expr, signatures, reachable, pending);
+            collect_interface_names_from_expr(cond, signatures, reachable, pending);
+            collect_interface_names_from_expr(else_expr, signatures, reachable, pending);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_interface_names_from_expr(left, signatures, reachable, pending);
+            collect_interface_names_from_expr(right, signatures, reachable, pending);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn reachable_enum_variant_helpers(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_functions: &HashSet<String>,
+) -> HashSet<(String, String)> {
+    let mut variants = HashSet::new();
+    for constant in &program.constants {
+        collect_enum_variant_refs_from_expr(&constant.value, signatures, &mut variants);
+    }
+    if let Some(application) = &program.application {
+        for field in &application.metadata {
+            collect_enum_variant_refs_from_expr(&field.value, signatures, &mut variants);
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            if let Some(default) = &param.default {
+                collect_enum_variant_refs_from_expr(default, signatures, &mut variants);
+            }
+        }
+        for state in &view.states {
+            collect_enum_variant_refs_from_expr(&state.initial, signatures, &mut variants);
+        }
+        for derived in &view.derived {
+            collect_enum_variant_refs_from_expr(&derived.value, signatures, &mut variants);
+        }
+        for element in &view.elements {
+            for property in &element.properties {
+                collect_enum_variant_refs_from_expr(&property.value, signatures, &mut variants);
+            }
+        }
+    }
+    for function in &program.functions {
+        if !reachable_functions.contains(&function.name) {
+            continue;
+        }
+        for param in &function.params {
+            if let Some(default) = &param.default {
+                collect_enum_variant_refs_from_expr(default, signatures, &mut variants);
+            }
+        }
+        collect_enum_variant_refs_from_block(&function.body, signatures, &mut variants);
+    }
+    variants
+}
+
+fn collect_enum_variant_refs_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    variants: &mut HashSet<(String, String)>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_enum_variant_refs_from_expr(expr, signatures, variants)
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_enum_variant_refs_from_expr(value, signatures, variants);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_enum_variant_refs_from_expr(expr, signatures, variants);
+                if let Some(redirect) = redirect {
+                    collect_enum_variant_refs_from_expr(&redirect.path, signatures, variants);
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_enum_variant_refs_from_expr(cond, signatures, variants);
+                collect_enum_variant_refs_from_block(body, signatures, variants);
+                collect_enum_variant_refs_from_block(else_body, signatures, variants);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_enum_variant_refs_from_expr(start, signatures, variants);
+                collect_enum_variant_refs_from_expr(end, signatures, variants);
+                collect_enum_variant_refs_from_block(body, signatures, variants);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_enum_variant_refs_from_expr(iterable, signatures, variants);
+                collect_enum_variant_refs_from_block(body, signatures, variants);
+            }
+            StmtKind::While { cond, body } => {
+                collect_enum_variant_refs_from_expr(cond, signatures, variants);
+                collect_enum_variant_refs_from_block(body, signatures, variants);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_enum_variant_refs_from_expr(value, signatures, variants);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_enum_variant_refs_from_expr(guard, signatures, variants);
+                    }
+                    collect_enum_variant_refs_from_block(&arm.body, signatures, variants);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_enum_variant_refs_from_expr(value, signatures, variants);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_enum_variant_refs_from_expr(guard, signatures, variants);
+                    }
+                    collect_enum_variant_refs_from_block(&arm.body, signatures, variants);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_enum_variant_refs_from_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+    variants: &mut HashSet<(String, String)>,
+) {
+    match &expr.kind {
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
+            args,
+            named_args,
+            ..
+        } => {
+            if signatures.enum_type(namespace).is_some() {
+                variants.insert((namespace.clone(), name.clone()));
+            }
+            for arg in args {
+                collect_enum_variant_refs_from_expr(arg, signatures, variants);
+            }
+            for arg in named_args {
+                collect_enum_variant_refs_from_expr(&arg.value, signatures, variants);
+            }
+        }
+        ExprKind::AnonymousFunction { body, .. } => {
+            collect_enum_variant_refs_from_expr(body, signatures, variants);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_enum_variant_refs_from_expr(arg, signatures, variants);
+            }
+            for arg in named_args {
+                collect_enum_variant_refs_from_expr(&arg.value, signatures, variants);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_enum_variant_refs_from_expr(arg, signatures, variants);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_enum_variant_refs_from_expr(input, signatures, variants);
+            for arg in args {
+                collect_enum_variant_refs_from_expr(arg, signatures, variants);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_enum_variant_refs_from_expr(item, signatures, variants);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_enum_variant_refs_from_expr(value, signatures, variants);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_enum_variant_refs_from_expr(condition, signatures, variants);
+            collect_enum_variant_refs_from_expr(value, signatures, variants);
+            if let Some(else_value) = else_value {
+                collect_enum_variant_refs_from_expr(else_value, signatures, variants);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_enum_variant_refs_from_expr(base, signatures, variants);
+            collect_enum_variant_refs_from_expr(index, signatures, variants);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_enum_variant_refs_from_expr(base, signatures, variants);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_enum_variant_refs_from_expr(part, signatures, variants);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_enum_variant_refs_from_expr(value, signatures, variants);
+            collect_enum_variant_refs_from_expr(iterable, signatures, variants);
+            if let Some(condition) = condition {
+                collect_enum_variant_refs_from_expr(condition, signatures, variants);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_enum_variant_refs_from_expr(base, signatures, variants);
+            }
+            for field in fields {
+                collect_enum_variant_refs_from_expr(&field.value, signatures, variants);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_enum_variant_refs_from_expr(base, signatures, variants);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_enum_variant_refs_from_expr(value, signatures, variants);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_enum_variant_refs_from_expr(guard, signatures, variants);
+                }
+                collect_enum_variant_refs_from_expr(&arm.value, signatures, variants);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_enum_variant_refs_from_expr(value, signatures, variants);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_enum_variant_refs_from_expr(guard, signatures, variants);
+                }
+                collect_enum_variant_refs_from_expr(&arm.value, signatures, variants);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_enum_variant_refs_from_expr(then_expr, signatures, variants);
+            collect_enum_variant_refs_from_expr(cond, signatures, variants);
+            collect_enum_variant_refs_from_expr(else_expr, signatures, variants);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_enum_variant_refs_from_expr(left, signatures, variants);
+            collect_enum_variant_refs_from_expr(right, signatures, variants);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn reachable_value_type_names(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_functions: &HashSet<String>,
+    reachable_interfaces: &HashSet<String>,
+) -> HashSet<String> {
+    let known = program
+        .structs
+        .iter()
+        .map(|definition| definition.name.clone())
+        .chain(
+            program
+                .enums
+                .iter()
+                .map(|definition| definition.name.clone()),
+        )
+        .collect::<HashSet<_>>();
+    let mut reachable = HashSet::new();
+    let mut pending = Vec::new();
+
+    for definition in &program.structs {
+        if definition.public {
+            enqueue_value_type_name(&definition.name, &known, &mut reachable, &mut pending);
+        }
+    }
+    for definition in &program.enums {
+        if definition.public {
+            enqueue_value_type_name(&definition.name, &known, &mut reachable, &mut pending);
+        }
+    }
+    for implementation in &program.implementations {
+        if reachable_interfaces.contains(&implementation.interface_name) {
+            enqueue_value_type_name(
+                &implementation.target_name,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+    }
+
+    for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
+        for function in &definition.functions {
+            for param in &function.params {
+                collect_value_type_names_from_type(
+                    &param.ty,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+            for ty in &function.returns {
+                collect_value_type_names_from_type(
+                    ty,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+    }
+
+    for constant in &program.constants {
+        collect_value_type_names_from_type(
+            &constant.ty,
+            signatures,
+            &known,
+            &mut reachable,
+            &mut pending,
+        );
+        collect_value_type_names_from_expr(
+            &constant.value,
+            signatures,
+            &known,
+            &mut reachable,
+            &mut pending,
+        );
+    }
+    if let Some(application) = &program.application {
+        for field in &application.metadata {
+            collect_value_type_names_from_expr(
+                &field.value,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            collect_value_type_names_from_type(
+                &param.ty,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+            if let Some(default) = &param.default {
+                collect_value_type_names_from_expr(
+                    default,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+        for state in &view.states {
+            collect_value_type_names_from_type(
+                &state.ty,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+            collect_value_type_names_from_expr(
+                &state.initial,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+        for derived in &view.derived {
+            collect_value_type_names_from_type(
+                &derived.ty,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+            collect_value_type_names_from_expr(
+                &derived.value,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+        for element in &view.elements {
+            for property in &element.properties {
+                collect_value_type_names_from_expr(
+                    &property.value,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+    }
+
+    for function in &program.functions {
+        if !reachable_functions.contains(&function.name) {
+            continue;
+        }
+        for param in &function.params {
+            collect_value_type_names_from_type(
+                &param.ty,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+            if let Some(default) = &param.default {
+                collect_value_type_names_from_expr(
+                    default,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+        }
+        for ty in &function.returns {
+            collect_value_type_names_from_type(
+                ty,
+                signatures,
+                &known,
+                &mut reachable,
+                &mut pending,
+            );
+        }
+        collect_value_type_names_from_block(
+            &function.body,
+            signatures,
+            &known,
+            &mut reachable,
+            &mut pending,
+        );
+    }
+
+    while let Some(name) = pending.pop() {
+        if let Some(definition) = program
+            .structs
+            .iter()
+            .find(|definition| definition.name == name)
+        {
+            for field in &definition.fields {
+                collect_value_type_names_from_type(
+                    &field.ty,
+                    signatures,
+                    &known,
+                    &mut reachable,
+                    &mut pending,
+                );
+            }
+            continue;
+        }
+        if let Some(definition) = program
+            .enums
+            .iter()
+            .find(|definition| definition.name == name)
+        {
+            for variant in &definition.variants {
+                for payload in &variant.payloads {
+                    collect_value_type_names_from_type(
+                        &payload.ty,
+                        signatures,
+                        &known,
+                        &mut reachable,
+                        &mut pending,
+                    );
+                }
+            }
+        }
+    }
+
+    reachable
+}
+
+fn enqueue_value_type_name(
+    name: &str,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    if known.contains(name) && reachable.insert(name.to_string()) {
+        pending.push(name.to_string());
+    }
+}
+
+fn collect_value_type_names_from_type(
+    ty: &Type,
+    signatures: &Signatures,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    match signatures.canonical_type(ty) {
+        Type::Named(name) => enqueue_value_type_name(&name, known, reachable, pending),
+        Type::List(element) => {
+            collect_value_type_names_from_type(&element, signatures, known, reachable, pending)
+        }
+        Type::Function { params, returns } => {
+            for ty in params.iter().chain(&returns) {
+                collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
+            }
+        }
+        Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void => {}
+    }
+}
+
+fn collect_value_type_names_from_struct_pattern(
+    pattern: &crate::ast::StructPattern,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    enqueue_value_type_name(&pattern.struct_name, known, reachable, pending);
+    for field in &pattern.fields {
+        if let Some(nested) = &field.nested {
+            collect_value_type_names_from_struct_pattern(nested, known, reachable, pending);
+        }
+    }
+}
+
+fn collect_value_type_names_from_match_pattern(
+    pattern: &MatchPattern,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    if let MatchPattern::Struct(pattern) = pattern {
+        collect_value_type_names_from_struct_pattern(pattern, known, reachable, pending);
+    }
+}
+
+fn collect_value_type_names_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
+                collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
+                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
+            }
+            StmtKind::Assign { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
+            }
+            StmtKind::LetDestructure { bindings, expr, .. } => {
+                for binding in bindings {
+                    collect_value_type_names_from_type(
+                        &binding.ty,
+                        signatures,
+                        known,
+                        reachable,
+                        pending,
+                    );
+                }
+                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
+            }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                ..
+            } => {
+                enqueue_value_type_name(struct_name, known, reachable, pending);
+                for field in fields {
+                    if let Some(nested) = &field.nested {
+                        collect_value_type_names_from_struct_pattern(
+                            nested, known, reachable, pending,
+                        );
+                    }
+                }
+                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_value_type_names_from_expr(
+                        value, signatures, known, reachable, pending,
+                    );
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
+                if let Some(redirect) = redirect {
+                    collect_value_type_names_from_expr(
+                        &redirect.path,
+                        signatures,
+                        known,
+                        reachable,
+                        pending,
+                    );
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_value_type_names_from_expr(cond, signatures, known, reachable, pending);
+                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
+                collect_value_type_names_from_block(
+                    else_body, signatures, known, reachable, pending,
+                );
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_value_type_names_from_expr(start, signatures, known, reachable, pending);
+                collect_value_type_names_from_expr(end, signatures, known, reachable, pending);
+                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_value_type_names_from_expr(iterable, signatures, known, reachable, pending);
+                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
+            }
+            StmtKind::While { cond, body } => {
+                collect_value_type_names_from_expr(cond, signatures, known, reachable, pending);
+                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+                for arm in arms {
+                    enqueue_value_type_name(&arm.enum_name, known, reachable, pending);
+                    for pattern in &arm.patterns {
+                        collect_value_type_names_from_match_pattern(
+                            pattern, known, reachable, pending,
+                        );
+                    }
+                    if let Some(guard) = &arm.guard {
+                        collect_value_type_names_from_expr(
+                            guard, signatures, known, reachable, pending,
+                        );
+                    }
+                    collect_value_type_names_from_block(
+                        &arm.body, signatures, known, reachable, pending,
+                    );
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_value_type_names_from_expr(
+                            guard, signatures, known, reachable, pending,
+                        );
+                    }
+                    collect_value_type_names_from_block(
+                        &arm.body, signatures, known, reachable, pending,
+                    );
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_value_type_names_from_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    match &expr.kind {
+        ExprKind::AnonymousFunction {
+            params,
+            return_type,
+            body,
+        } => {
+            for param in params {
+                collect_value_type_names_from_type(
+                    &param.ty, signatures, known, reachable, pending,
+                );
+            }
+            if let Some(return_type) = return_type {
+                collect_value_type_names_from_type(
+                    return_type,
+                    signatures,
+                    known,
+                    reachable,
+                    pending,
+                );
+            }
+            collect_value_type_names_from_expr(body, signatures, known, reachable, pending);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            if let ExprKind::QualifiedCall { namespace, .. } = &expr.kind {
+                enqueue_value_type_name(namespace, known, reachable, pending);
+            }
+            for arg in args {
+                collect_value_type_names_from_expr(arg, signatures, known, reachable, pending);
+            }
+            for arg in named_args {
+                collect_value_type_names_from_expr(
+                    &arg.value, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_value_type_names_from_expr(arg, signatures, known, reachable, pending);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_value_type_names_from_expr(input, signatures, known, reachable, pending);
+            for arg in args {
+                collect_value_type_names_from_expr(arg, signatures, known, reachable, pending);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_value_type_names_from_expr(item, signatures, known, reachable, pending);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_value_type_names_from_expr(condition, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+            if let Some(else_value) = else_value {
+                collect_value_type_names_from_expr(
+                    else_value, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(index, signatures, known, reachable, pending);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_value_type_names_from_expr(part, signatures, known, reachable, pending);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(iterable, signatures, known, reachable, pending);
+            if let Some(condition) = condition {
+                collect_value_type_names_from_expr(
+                    condition, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::StructLiteral {
+            name, base, fields, ..
+        } => {
+            enqueue_value_type_name(name, known, reachable, pending);
+            if let Some(base) = base {
+                collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
+            }
+            for field in fields {
+                collect_value_type_names_from_expr(
+                    &field.value,
+                    signatures,
+                    known,
+                    reachable,
+                    pending,
+                );
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+            for arm in arms {
+                enqueue_value_type_name(&arm.enum_name, known, reachable, pending);
+                for pattern in &arm.patterns {
+                    collect_value_type_names_from_match_pattern(pattern, known, reachable, pending);
+                }
+                if let Some(guard) = &arm.guard {
+                    collect_value_type_names_from_expr(
+                        guard, signatures, known, reachable, pending,
+                    );
+                }
+                collect_value_type_names_from_expr(
+                    &arm.value, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_value_type_names_from_expr(
+                        guard, signatures, known, reachable, pending,
+                    );
+                }
+                collect_value_type_names_from_expr(
+                    &arm.value, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_value_type_names_from_expr(then_expr, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(cond, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(else_expr, signatures, known, reachable, pending);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_value_type_names_from_expr(left, signatures, known, reachable, pending);
+            collect_value_type_names_from_expr(right, signatures, known, reachable, pending);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn reachable_function_names(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_interfaces: &HashSet<String>,
+) -> HashSet<String> {
     let known = program
         .functions
         .iter()
@@ -2178,42 +3676,75 @@ fn reachable_function_names(program: &Program) -> HashSet<String> {
             enqueue_function(&function.name, &known, &mut reachable, &mut pending);
         }
     }
-    for implementation in &program.implementations {
-        for mapping in &implementation.mappings {
-            enqueue_function(&mapping.function, &known, &mut reachable, &mut pending);
-        }
-    }
-
     let mut roots = HashSet::new();
+    let mut interface_capabilities = HashSet::new();
     for constant in &program.constants {
         collect_named_function_refs_from_expr(&constant.value, &known, &mut roots);
+        collect_interface_capability_refs_from_expr(
+            &constant.value,
+            signatures,
+            &mut interface_capabilities,
+        );
     }
     if let Some(application) = &program.application {
         for field in &application.metadata {
             collect_named_function_refs_from_expr(&field.value, &known, &mut roots);
+            collect_interface_capability_refs_from_expr(
+                &field.value,
+                signatures,
+                &mut interface_capabilities,
+            );
         }
     }
     for view in &program.views {
         for param in &view.params {
             if let Some(default) = &param.default {
                 collect_named_function_refs_from_expr(default, &known, &mut roots);
+                collect_interface_capability_refs_from_expr(
+                    default,
+                    signatures,
+                    &mut interface_capabilities,
+                );
             }
         }
         for state in &view.states {
             collect_named_function_refs_from_expr(&state.initial, &known, &mut roots);
+            collect_interface_capability_refs_from_expr(
+                &state.initial,
+                signatures,
+                &mut interface_capabilities,
+            );
         }
         for derived in &view.derived {
             collect_named_function_refs_from_expr(&derived.value, &known, &mut roots);
+            collect_interface_capability_refs_from_expr(
+                &derived.value,
+                signatures,
+                &mut interface_capabilities,
+            );
         }
         for element in &view.elements {
             for property in &element.properties {
                 collect_named_function_refs_from_expr(&property.value, &known, &mut roots);
+                collect_interface_capability_refs_from_expr(
+                    &property.value,
+                    signatures,
+                    &mut interface_capabilities,
+                );
             }
         }
     }
     for name in roots {
         enqueue_function(&name, &known, &mut reachable, &mut pending);
     }
+    enqueue_interface_capability_mappings(
+        program,
+        reachable_interfaces,
+        &interface_capabilities,
+        &known,
+        &mut reachable,
+        &mut pending,
+    );
 
     while let Some(name) = pending.pop() {
         let Some(function) = program
@@ -2224,18 +3755,56 @@ fn reachable_function_names(program: &Program) -> HashSet<String> {
             continue;
         };
         let mut references = HashSet::new();
+        let mut capabilities = HashSet::new();
         for param in &function.params {
             if let Some(default) = &param.default {
                 collect_named_function_refs_from_expr(default, &known, &mut references);
+                collect_interface_capability_refs_from_expr(default, signatures, &mut capabilities);
             }
         }
         collect_named_function_refs_from_block(&function.body, &known, &mut references);
+        collect_interface_capability_refs_from_block(&function.body, signatures, &mut capabilities);
         for reference in references {
             enqueue_function(&reference, &known, &mut reachable, &mut pending);
         }
+        enqueue_interface_capability_mappings(
+            program,
+            reachable_interfaces,
+            &capabilities,
+            &known,
+            &mut reachable,
+            &mut pending,
+        );
     }
 
     reachable
+}
+
+fn enqueue_interface_capability_mappings(
+    program: &Program,
+    reachable_interfaces: &HashSet<String>,
+    capabilities: &HashSet<(String, String)>,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    for (interface_name, capability_name) in capabilities {
+        if !reachable_interfaces.contains(interface_name) {
+            continue;
+        }
+        for implementation in &program.implementations {
+            if implementation.interface_name != *interface_name {
+                continue;
+            }
+            if let Some(mapping) = implementation
+                .mappings
+                .iter()
+                .find(|mapping| mapping.member == *capability_name)
+            {
+                enqueue_function(&mapping.function, known, reachable, pending);
+            }
+        }
+    }
 }
 
 fn enqueue_function(
@@ -2246,6 +3815,246 @@ fn enqueue_function(
 ) {
     if known.contains(name) && reachable.insert(name.to_string()) {
         pending.push(name.to_string());
+    }
+}
+
+fn collect_interface_capability_refs_from_block(
+    body: &[Stmt],
+    signatures: &Signatures,
+    capabilities: &mut HashSet<(String, String)>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_interface_capability_refs_from_expr(expr, signatures, capabilities);
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_interface_capability_refs_from_expr(expr, signatures, capabilities);
+                if let Some(redirect) = redirect {
+                    collect_interface_capability_refs_from_expr(
+                        &redirect.path,
+                        signatures,
+                        capabilities,
+                    );
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
+                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+                collect_interface_capability_refs_from_block(else_body, signatures, capabilities);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_interface_capability_refs_from_expr(start, signatures, capabilities);
+                collect_interface_capability_refs_from_expr(end, signatures, capabilities);
+                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_interface_capability_refs_from_expr(iterable, signatures, capabilities);
+                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+            }
+            StmtKind::While { cond, body } => {
+                collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
+                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_interface_capability_refs_from_expr(
+                            guard,
+                            signatures,
+                            capabilities,
+                        );
+                    }
+                    collect_interface_capability_refs_from_block(
+                        &arm.body,
+                        signatures,
+                        capabilities,
+                    );
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_interface_capability_refs_from_expr(
+                            guard,
+                            signatures,
+                            capabilities,
+                        );
+                    }
+                    collect_interface_capability_refs_from_block(
+                        &arm.body,
+                        signatures,
+                        capabilities,
+                    );
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_interface_capability_refs_from_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+    capabilities: &mut HashSet<(String, String)>,
+) {
+    match &expr.kind {
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
+            args,
+            named_args,
+            ..
+        } => {
+            if signatures.interface(namespace).is_some() {
+                capabilities.insert((namespace.clone(), name.clone()));
+            }
+            for arg in args {
+                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+            }
+            for arg in named_args {
+                collect_interface_capability_refs_from_expr(&arg.value, signatures, capabilities);
+            }
+        }
+        ExprKind::AnonymousFunction { body, .. } => {
+            collect_interface_capability_refs_from_expr(body, signatures, capabilities);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+            }
+            for arg in named_args {
+                collect_interface_capability_refs_from_expr(&arg.value, signatures, capabilities);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_interface_capability_refs_from_expr(input, signatures, capabilities);
+            for arg in args {
+                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_interface_capability_refs_from_expr(item, signatures, capabilities);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_interface_capability_refs_from_expr(condition, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            if let Some(else_value) = else_value {
+                collect_interface_capability_refs_from_expr(else_value, signatures, capabilities);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(index, signatures, capabilities);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_interface_capability_refs_from_expr(part, signatures, capabilities);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(iterable, signatures, capabilities);
+            if let Some(condition) = condition {
+                collect_interface_capability_refs_from_expr(condition, signatures, capabilities);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+            }
+            for field in fields {
+                collect_interface_capability_refs_from_expr(&field.value, signatures, capabilities);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_capability_refs_from_expr(guard, signatures, capabilities);
+                }
+                collect_interface_capability_refs_from_expr(&arm.value, signatures, capabilities);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_capability_refs_from_expr(guard, signatures, capabilities);
+                }
+                collect_interface_capability_refs_from_expr(&arm.value, signatures, capabilities);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_interface_capability_refs_from_expr(then_expr, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(else_expr, signatures, capabilities);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_interface_capability_refs_from_expr(left, signatures, capabilities);
+            collect_interface_capability_refs_from_expr(right, signatures, capabilities);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
     }
 }
 
@@ -3016,15 +4825,15 @@ fn emit_block(
                     }
                     let index_code = if let Some(rest) = rest {
                         if index < rest.index {
-                            format!("INT64_C({index})")
+                            index.to_string()
                         } else {
-                            format!("-INT64_C({})", bindings.len() - index)
+                            format!("{temp}.len - {}", bindings.len() - index)
                         }
                     } else {
-                        format!("INT64_C({index})")
+                        index.to_string()
                     };
                     out.push_str(&format!(
-                        "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, {index_code}, sizeof({element_c})));\n",
+                        "{pad}{element_c} {} = *(({element_c} *)flux_list_at_unchecked({temp}, {index_code}, sizeof({element_c})));\n",
                         local_c_name(&binding.name)
                     ));
                     env.insert(binding.name.clone(), (**element).clone());
@@ -3038,7 +4847,7 @@ fn emit_block(
                         bindings.len()
                     ));
                     out.push_str(&format!(
-                        "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at({temp}, INT64_C({}), sizeof({element_c})); }}\n",
+                        "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at_unchecked({temp}, {}, sizeof({element_c})); }}\n",
                         rest.index
                     ));
                     env.insert(
@@ -3363,7 +5172,7 @@ fn emit_block(
                     "{pad}for (int64_t {index_c} = 0; {index_c} < (int64_t){source_name}.len; ++{index_c}) {{\n"
                 ));
                 out.push_str(&format!(
-                    "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at({source_name}, {index_c}, sizeof({element_c})));\n"
+                    "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at_unchecked({source_name}, (size_t){index_c}, sizeof({element_c})));\n"
                 ));
                 let mut nested = env.clone();
                 if let Some(index_name) = index_name {
@@ -3627,15 +5436,15 @@ fn emit_list_match_pattern_bindings(
         }
         let index_code = if let Some(rest) = rest {
             if index < rest.index {
-                format!("INT64_C({index})")
+                index.to_string()
             } else {
-                format!("-INT64_C({})", bindings.len() - index)
+                format!("{temp}.len - {}", bindings.len() - index)
             }
         } else {
-            format!("INT64_C({index})")
+            index.to_string()
         };
         out.push_str(&format!(
-            "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, {index_code}, sizeof({element_c})));\n",
+            "{pad}{element_c} {} = *(({element_c} *)flux_list_at_unchecked({temp}, {index_code}, sizeof({element_c})));\n",
             local_c_name(&binding.name)
         ));
         env.insert(binding.name.clone(), element.clone());
@@ -3649,7 +5458,7 @@ fn emit_list_match_pattern_bindings(
             bindings.len()
         ));
         out.push_str(&format!(
-            "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at({temp}, INT64_C({}), sizeof({element_c})); }}\n",
+            "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at_unchecked({temp}, {}, sizeof({element_c})); }}\n",
             rest.index
         ));
         env.insert(
@@ -4243,7 +6052,7 @@ fn emit_sequence_sorted_value(
         "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
     ));
     out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
     ));
     out.push_str(&format!(
         "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {key_name} = {buffer_name}[{index_name}];\n{pad}    size_t {cursor_name} = {index_name};\n{pad}    while ({cursor_name} > 0 && {less}) {{ {buffer_name}[{cursor_name}] = {buffer_name}[{cursor_name} - 1]; --{cursor_name}; }}\n{pad}    {buffer_name}[{cursor_name}] = {key_name};\n{pad}}}\n"
@@ -4333,13 +6142,13 @@ fn emit_sequence_flatten_value(
         source.code
     ));
     out.push_str(&format!(
-        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{ struct flux__list {inner_name} = *((struct flux__list *)flux_list_at({source_name}, (int64_t){outer_index}, sizeof(struct flux__list))); if (SIZE_MAX - {capacity_name} < {inner_name}.len) {{ fputs(\"Flux runtime error: flattened list is too large\\n\", stderr); abort(); }} {capacity_name} += {inner_name}.len; }}\n"
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{ struct flux__list {inner_name} = *((struct flux__list *)flux_list_at_unchecked({source_name}, {outer_index}, sizeof(struct flux__list))); if (SIZE_MAX - {capacity_name} < {inner_name}.len) {{ fputs(\"Flux runtime error: flattened list is too large\\n\", stderr); abort(); }} {capacity_name} += {inner_name}.len; }}\n"
     ));
     out.push_str(&format!(
         "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
     ));
     out.push_str(&format!(
-        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{\n{pad}    struct flux__list {inner_name} = *((struct flux__list *)flux_list_at({source_name}, (int64_t){outer_index}, sizeof(struct flux__list)));\n{pad}    for (size_t {inner_index} = 0; {inner_index} < {inner_name}.len; ++{inner_index}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({inner_name}, (int64_t){inner_index}, sizeof({element_c}))); }}\n{pad}}}\n"
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{\n{pad}    struct flux__list {inner_name} = *((struct flux__list *)flux_list_at_unchecked({source_name}, {outer_index}, sizeof(struct flux__list)));\n{pad}    for (size_t {inner_index} = 0; {inner_index} < {inner_name}.len; ++{inner_index}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({inner_name}, {inner_index}, sizeof({element_c}))); }}\n{pad}}}\n"
     ));
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
@@ -4443,7 +6252,7 @@ fn emit_sequence_distinct_value(
         "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
     ));
     out.push_str(&format!(
-        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
+        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
     ));
     out.push_str(&format!(
         "{pad}    for (size_t {seen_name} = 0; {seen_name} < {count_name}; ++{seen_name}) {{ if ({equality}) {{ {duplicate_name} = true; break; }} }}\n"
@@ -4539,10 +6348,10 @@ fn emit_sequence_concat_value(
         "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n"
     ));
     out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {left_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at({left_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+        "{pad}for (size_t {index_name} = 0; {index_name} < {left_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({left_name}, {index_name}, sizeof({element_c}))); }}\n"
     ));
     out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {right_name}.len; ++{index_name}) {{ {buffer_name}[{left_name}.len + {index_name}] = *(({element_c} *)flux_list_at({right_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+        "{pad}for (size_t {index_name} = 0; {index_name} < {right_name}.len; ++{index_name}) {{ {buffer_name}[{left_name}.len + {index_name}] = *(({element_c} *)flux_list_at_unchecked({right_name}, {index_name}, sizeof({element_c}))); }}\n"
     ));
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {capacity_name}, .stride = sizeof({element_c}) }};\n"
@@ -4721,7 +6530,7 @@ fn emit_sequence_transform_value(
         "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
     ));
     out.push_str(&format!(
-        "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({input_c})));\n"
+        "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));\n"
     ));
     let body_pad = format!("{pad}    ");
     let (value_name, value_ty) = emit_sequence_transform_stages(
@@ -4885,7 +6694,7 @@ fn emit_sequence_reduction_binding(
         "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
     ));
     out.push_str(&format!(
-        "{pad}    {source_element_c} {item_name} = *(({source_element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({source_element_c})));\n"
+        "{pad}    {source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c})));\n"
     ));
     let body_pad = format!("{pad}    ");
     let (value_name, value_ty) = if stages.is_empty() {
@@ -5056,7 +6865,7 @@ fn emit_list_builder_binding(
             }
             BufferedListItem::Spread(source_name) => {
                 out.push_str(&format!(
-                    "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+                    "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
                 ));
             }
             BufferedListItem::Conditional {
@@ -5137,7 +6946,7 @@ fn emit_list_comprehension_binding(
     let mut nested = env.clone();
     let binding_c = local_c_name(binding);
     out.push_str(&format!(
-        "{pad}    {} {binding_c} = *(({} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({})));\n",
+        "{pad}    {} {binding_c} = *(({} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({})));\n",
         c_type(&input_element, signatures),
         c_type(&input_element, signatures),
         c_type(&input_element, signatures)
@@ -5323,15 +7132,24 @@ fn emit_expr(
             ));
         }
         ExprKind::Index { base, index } => {
+            let static_index = resolved_static_list_index(base, index, env, signatures)?;
             let base = emit_expr(base, env, signatures)?;
             let index = emit_expr(index, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
             let element_c = c_type(&result_ty, signatures);
-            EmittedExpr {
-                code: format!(
+            let code = if let Some(static_index) = static_index {
+                format!(
+                    "(*(({element_c} *)flux_list_at_unchecked({}, {static_index}, sizeof({element_c}))))",
+                    base.code
+                )
+            } else {
+                format!(
                     "(*(({element_c} *)flux_list_at({}, {}, sizeof({element_c}))))",
                     base.code, index.code
-                ),
+                )
+            };
+            EmittedExpr {
+                code,
                 ty: result_ty,
             }
         }
@@ -5672,6 +7490,7 @@ fn emit_expr(
             }
         }
         ExprKind::Field { base, name, .. } => {
+            let static_len = static_list_length(base);
             let base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
             let code = if let Type::List(element) = &base.ty {
@@ -5680,6 +7499,19 @@ fn emit_expr(
                     "length" => format!("({}).len", base.code),
                     "isEmpty" => format!("(({}).len == 0)", base.code),
                     "isNotEmpty" => format!("(({}).len != 0)", base.code),
+                    "first" if static_len.is_some_and(|len| len > 0) => format!(
+                        "(*(({element_c} *)flux_list_at_unchecked({}, 0, sizeof({element_c}))))",
+                        base.code
+                    ),
+                    "last" if static_len.is_some_and(|len| len > 0) => format!(
+                        "(*(({element_c} *)flux_list_at_unchecked({}, {}, sizeof({element_c}))))",
+                        base.code,
+                        static_len.expect("non-empty static list length") - 1
+                    ),
+                    "single" if static_len == Some(1) => format!(
+                        "(*(({element_c} *)flux_list_at_unchecked({}, 0, sizeof({element_c}))))",
+                        base.code
+                    ),
                     "first" => format!(
                         "(*(({element_c} *)flux_list_at({}, INT64_C(0), sizeof({element_c}))))",
                         base.code
@@ -6002,8 +7834,16 @@ fn interface_targets(
     targets
 }
 
-fn emit_interface_value_definitions(out: &mut String, program: &Program, signatures: &Signatures) {
+fn emit_interface_value_definitions(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+    reachable_interfaces: &HashSet<String>,
+) {
     for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
         let targets = interface_targets(program, &definition.name, signatures);
         if !targets.is_empty() {
             out.push_str("enum {\n");
@@ -6036,14 +7876,25 @@ fn emit_interface_value_definitions(out: &mut String, program: &Program, signatu
     }
 }
 
-fn interface_pack_helpers(program: &Program, signatures: &Signatures) -> String {
+fn interface_pack_helpers(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_interfaces: &HashSet<String>,
+    runtime_usage: &str,
+) -> String {
     let mut out = String::new();
     for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
         for target in interface_targets(program, &definition.name, signatures) {
+            let helper = interface_pack_helper_name(&definition.name, &target);
+            if !runtime_usage.contains(&format!("{helper}(")) {
+                continue;
+            }
             out.push_str(&format!(
-                "static inline struct {} {}(struct {} value) {{\n",
+                "static inline struct {} {helper}(struct {} value) {{\n",
                 interface_c_name(&definition.name),
-                interface_pack_helper_name(&definition.name, &target),
                 struct_c_name(&target)
             ));
             out.push_str(&format!(
@@ -6071,15 +7922,24 @@ fn emit_interface_multi_return_structs(
     out: &mut String,
     program: &Program,
     signatures: &Signatures,
+    reachable_interfaces: &HashSet<String>,
+    runtime_usage: &str,
 ) {
     let mut emitted = false;
     for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
         let Some(interface) = signatures.interface(&definition.name) else {
             continue;
         };
         let mut member_names = interface.functions.keys().collect::<Vec<_>>();
         member_names.sort();
         for member_name in member_names {
+            let helper = interface_dispatch_helper_name(&definition.name, member_name);
+            if !runtime_usage.contains(&format!("{helper}(")) {
+                continue;
+            }
             let signature = &interface.functions[member_name];
             if signature.returns.len() < 2 {
                 continue;
@@ -6104,9 +7964,14 @@ fn emit_interface_dispatch_helpers(
     out: &mut String,
     program: &Program,
     signatures: &Signatures,
+    reachable_interfaces: &HashSet<String>,
+    runtime_usage: &str,
 ) -> Result<(), Diagnostic> {
     let mut emitted = false;
     for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
         let Some(interface) = signatures.interface(&definition.name) else {
             continue;
         };
@@ -6114,6 +7979,10 @@ fn emit_interface_dispatch_helpers(
         let mut member_names = interface.functions.keys().collect::<Vec<_>>();
         member_names.sort();
         for member_name in member_names {
+            let helper = interface_dispatch_helper_name(&definition.name, member_name);
+            if !runtime_usage.contains(&format!("{helper}(")) {
+                continue;
+            }
             let member = &interface.functions[member_name];
             emitted = true;
             let return_type = match member.returns.as_slice() {
@@ -6125,8 +7994,7 @@ fn emit_interface_dispatch_helpers(
                 ),
             };
             out.push_str(&format!(
-                "static inline {return_type} {}(struct {} receiver",
-                interface_dispatch_helper_name(&definition.name, member_name),
+                "static inline {return_type} {helper}(struct {} receiver",
                 interface_c_name(&definition.name)
             ));
             for (index, param) in member.param_details.iter().enumerate() {
@@ -6280,24 +8148,57 @@ fn emit_function_type_typedefs(
     out: &mut String,
     program: &Program,
     signatures: &Signatures,
+    reachable_functions: &HashSet<String>,
+    reachable_value_types: &HashSet<String>,
+    reachable_interfaces: &HashSet<String>,
 ) -> Result<(), Diagnostic> {
     let mut types = HashSet::new();
-    for alias in &program.aliases {
-        collect_function_type(&alias.target, signatures, &mut types);
-    }
     for definition in &program.structs {
+        if !reachable_value_types.contains(&definition.name) {
+            continue;
+        }
         for field in &definition.fields {
             collect_function_type(&field.ty, signatures, &mut types);
         }
     }
     for definition in &program.enums {
+        if !reachable_value_types.contains(&definition.name) {
+            continue;
+        }
         for variant in &definition.variants {
             for payload in &variant.payloads {
                 collect_function_type(&payload.ty, signatures, &mut types);
             }
         }
     }
+    for definition in &program.interfaces {
+        if !reachable_interfaces.contains(&definition.name) {
+            continue;
+        }
+        for function in &definition.functions {
+            for param in &function.params {
+                collect_function_type(&param.ty, signatures, &mut types);
+            }
+            for ty in &function.returns {
+                collect_function_type(ty, signatures, &mut types);
+            }
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            collect_function_type(&param.ty, signatures, &mut types);
+        }
+        for state in &view.states {
+            collect_function_type(&state.ty, signatures, &mut types);
+        }
+        for derived in &view.derived {
+            collect_function_type(&derived.ty, signatures, &mut types);
+        }
+    }
     for function in &program.functions {
+        if !reachable_functions.contains(&function.name) {
+            continue;
+        }
         for param in &function.params {
             collect_function_type(&param.ty, signatures, &mut types);
         }
@@ -6357,11 +8258,10 @@ fn collect_function_type(ty: &Type, signatures: &Signatures, types: &mut HashSet
     }
 }
 
-fn program_uses_background(program: &Program) -> bool {
-    program
-        .functions
-        .iter()
-        .any(|function| block_uses_background(&function.body))
+fn program_uses_background(program: &Program, reachable_functions: &HashSet<String>) -> bool {
+    program.functions.iter().any(|function| {
+        reachable_functions.contains(&function.name) && block_uses_background(&function.body)
+    })
 }
 
 fn block_uses_background(body: &[Stmt]) -> bool {
@@ -6462,11 +8362,22 @@ fn field_c_name(name: &str) -> String {
     format!("flux__field_{name}")
 }
 
-fn struct_update_helpers(program: &Program, signatures: &Signatures) -> String {
+fn struct_update_helpers(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_functions: &HashSet<String>,
+) -> String {
     let mut helpers = String::new();
     let mut emitted = HashSet::new();
     for function in &program.functions {
-        collect_update_helpers_from_block(&function.body, signatures, &mut emitted, &mut helpers);
+        if reachable_functions.contains(&function.name) {
+            collect_update_helpers_from_block(
+                &function.body,
+                signatures,
+                &mut emitted,
+                &mut helpers,
+            );
+        }
     }
     if !helpers.is_empty() {
         helpers.push('\n');
@@ -6793,10 +8704,21 @@ fn emit_enum_definition(out: &mut String, definition: &EnumDef, signatures: &Sig
     out.push_str("};\n");
 }
 
-fn enum_variant_helpers(program: &Program, signatures: &Signatures) -> String {
+fn enum_variant_helpers(
+    program: &Program,
+    signatures: &Signatures,
+    reachable_value_types: &HashSet<String>,
+    reachable_enum_variants: &HashSet<(String, String)>,
+) -> String {
     let mut out = String::new();
     for definition in &program.enums {
+        if !reachable_value_types.contains(&definition.name) {
+            continue;
+        }
         for variant in &definition.variants {
+            if !reachable_enum_variants.contains(&(definition.name.clone(), variant.name.clone())) {
+                continue;
+            }
             let helper = enum_variant_helper_name(&definition.name, &variant.name);
             out.push_str(&format!(
                 "static inline struct {} {helper}(",
@@ -6971,6 +8893,54 @@ fn visit_value_type<'a>(
     emitted.insert(name.to_string());
     order.push(definition);
     Ok(())
+}
+
+fn static_list_length(expr: &Expr) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::List(items)
+            if items.iter().all(|item| {
+                !matches!(
+                    item.kind,
+                    ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+                )
+            }) =>
+        {
+            Some(items.len())
+        }
+        _ => None,
+    }
+}
+
+fn resolved_static_list_index(
+    base: &Expr,
+    index: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<usize>, Diagnostic> {
+    let Some(len) = static_list_length(base) else {
+        return Ok(None);
+    };
+    let Some(ConstantValue::I64(index)) = fold_primitive_expr(index, env, signatures)? else {
+        return Ok(None);
+    };
+    let resolved = if index < 0 {
+        let Ok(len_i64) = i64::try_from(len) else {
+            return Ok(None);
+        };
+        index.checked_add(len_i64)
+    } else {
+        Some(index)
+    };
+    let Some(resolved) = resolved else {
+        return Ok(None);
+    };
+    if resolved < 0 {
+        return Ok(None);
+    }
+    let Ok(resolved) = usize::try_from(resolved) else {
+        return Ok(None);
+    };
+    Ok((resolved < len).then_some(resolved))
 }
 
 fn fold_primitive_expr(

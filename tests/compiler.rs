@@ -437,7 +437,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("composed interface should compile");
     assert!(generated.contains("switch (receiver.tag)"));
     assert!(generated.contains("flux__fn_memory_load"));
-    assert!(generated.contains("flux__fn_memory_save"));
+    assert!(!generated.contains("flux__fn_memory_save"));
     assert!(generated.contains("flux__fn_memory_label"));
 
     let formatted = fluxc::formatter::format_source(source).expect("composition should format");
@@ -535,8 +535,10 @@ fn main() -> i64 {
 
     check_source(source).expect("interface implementation should typecheck");
     let generated = compile_to_c(source).expect("interface implementation should compile");
-    assert!(generated.contains("flux__fn_file_load"));
-    assert!(generated.contains("flux__fn_file_save"));
+    assert!(!generated.contains("flux__fn_file_load"));
+    assert!(!generated.contains("flux__fn_file_save"));
+    assert!(!generated.contains("flux__interface_Storage"));
+    assert!(!generated.contains("flux__type_FileStorage"));
     assert!(!generated.contains("vtable"));
 
     let formatted = fluxc::formatter::format_source(source).expect("implementation should format");
@@ -690,6 +692,10 @@ fn main() -> i64 {
     assert!(generated.contains("flux__iface_pack_Storage_FileStorage"));
     assert!(generated.contains("flux__iface_pack_Storage_MemoryStorage"));
     assert!(generated.contains("flux__iface_call_Storage_load"));
+    assert!(generated.contains("flux__fn_file_load"));
+    assert!(generated.contains("flux__fn_memory_load"));
+    assert!(generated.contains("flux__fn_file_label"));
+    assert!(generated.contains("flux__fn_memory_label"));
     assert!(generated.contains("switch (receiver.tag)"));
     assert!(generated.contains("case flux__iface_tag_Storage_FileStorage"));
     assert!(generated.contains("case flux__iface_tag_Storage_MemoryStorage"));
@@ -1254,7 +1260,9 @@ fn main() -> i64 {
     check_source(source).expect("list syntax should typecheck");
     let generated = compile_to_c(source).expect("list syntax should lower natively");
     assert!(generated.contains("struct flux__list"));
-    assert!(generated.contains("flux_list_at"));
+    assert!(generated.contains("flux_list_at(flux__local_middle, INT64_C(0), sizeof(int64_t))"));
+    assert!(generated.contains("flux_list_at(flux__local_values, INT64_C(-1), sizeof(int64_t))"));
+    assert!(generated.contains("flux_list_at_unchecked"));
     assert!(generated.contains("flux_list_slice"));
     assert!(generated.contains("ptrdiff_t stride"));
     assert!(generated.contains("list slice step cannot be zero"));
@@ -1380,8 +1388,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__list_pattern_"));
     assert!(generated.contains(".len != 3"));
     assert!(generated.contains("Flux runtime error: list pattern requires exactly 3 elements"));
-    assert!(generated.contains("INT64_C(0), sizeof(int64_t)"));
-    assert!(generated.contains("INT64_C(2), sizeof(int64_t)"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__list_pattern_"));
+    assert!(generated.contains(", 0, sizeof(int64_t)"));
+    assert!(generated.contains(", 2, sizeof(int64_t)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list pattern should format");
     assert!(formatted.contains("let [first, _, last] = reversed"));
@@ -1421,7 +1430,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("list rest destructuring should lower natively");
     assert!(generated.contains(".len < 2"));
     assert!(generated.contains("Flux runtime error: list pattern requires at least 2 elements"));
-    assert!(generated.contains("-INT64_C(1)"));
+    assert!(generated.contains(".len - 1, sizeof(int64_t)"));
     assert!(generated.contains(".len = flux__list_pattern_"));
     assert!(generated.contains("flux_list_stride(flux__list_pattern_"));
 
@@ -1659,7 +1668,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__fn_greaterThanTwo(flux__transform_item_"));
     assert!(generated.matches("flux__transform_result_").count() >= 4);
     assert!(generated.contains("flux__fn_add(flux__local_mappedTotal"));
-    assert!(generated.contains("flux_list_at(flux__transform_source_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__transform_source_"));
     assert!(generated.contains(".stride = sizeof(int64_t)"));
 
     let formatted =
@@ -1707,8 +1716,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__concat_right_"));
     assert!(generated.contains("flux__concat_buffer_"));
     assert!(generated.contains("Flux runtime error: concatenated list is too large"));
-    assert!(generated.contains("flux_list_at(flux__concat_left_"));
-    assert!(generated.contains("flux_list_at(flux__concat_right_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__concat_left_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__concat_right_"));
     assert!(generated.contains("flux__fn_double(flux__transform_item_"));
     assert!(generated.contains("flux__fn_add(flux__local_total"));
 
@@ -1792,7 +1801,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__distinct_buffer_"));
     assert!(generated.contains("flux__distinct_duplicate_"));
     assert!(generated.contains("strcmp(flux__distinct_buffer_"));
-    assert!(generated.contains("flux_list_at(flux__distinct_source_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__distinct_source_"));
     assert!(generated.contains("flux__fn_double(flux__transform_item_"));
     assert!(generated.contains("flux__fn_add(flux__local_total"));
 
@@ -1868,7 +1877,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__flatten_buffer_"));
     assert!(generated.contains("Flux runtime error: flattened list is too large"));
     assert!(generated.contains("sizeof(struct flux__list)"));
-    assert!(generated.contains("flux_list_at(flux__flatten_inner_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__flatten_inner_"));
     assert!(generated.contains("flux__fn_double(flux__transform_item_"));
     assert!(generated.contains("flux__fn_add(flux__local_total"));
 
@@ -1954,7 +1963,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__sorted_buffer_"));
     assert!(generated.contains("flux__sorted_key_"));
     assert!(generated.contains("strcmp(flux__sorted_key_"));
-    assert!(generated.contains("flux_list_at(flux__sorted_source_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__sorted_source_"));
     assert!(generated.contains("flux__fn_double(flux__transform_item_"));
     assert!(generated.contains("flux__fn_add(flux__local_total"));
 
@@ -2237,7 +2246,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_reducer(flux__local_boundTotal"));
     assert!(generated.contains("flux__fn_add(flux__local_directTotal"));
     assert!(generated.contains("flux__fn_allPositive(flux__local_positive"));
-    assert!(generated.contains("flux_list_at(flux__reduce_source_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__reduce_source_"));
 
     let formatted =
         fluxc::formatter::format_source(source).expect("fold/reduce source should format");
@@ -2334,9 +2343,9 @@ fn main() -> i64 {
     check_source(source).expect("list iteration should typecheck");
     let generated = compile_to_c(source).expect("list iteration should lower natively");
     assert!(generated.contains("struct flux__list flux__iter_source_"));
-    assert!(generated.contains("flux_list_at(flux__iter_source_"));
+    assert!(generated.contains("flux_list_at_unchecked(flux__iter_source_"));
     assert!(generated.contains("int64_t flux__local_index = 0"));
-    assert!(generated.contains("int64_t flux__local_value = *((int64_t *)flux_list_at"));
+    assert!(generated.contains("int64_t flux__local_value = *((int64_t *)flux_list_at_unchecked"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list iteration should format");
     assert!(formatted.contains("for value in values:"));
@@ -3828,7 +3837,7 @@ fn main() -> i64 {
     assert!(generated.contains(".len == 0"));
     assert!(generated.contains(".len == 1"));
     assert!(generated.contains(".len >= 2"));
-    assert!(generated.contains("-INT64_C(1)"));
+    assert!(generated.contains(".len - 1, sizeof(int64_t)"));
     assert!(generated.contains("flux_list_stride(flux__list_match_"));
 
     let formatted = fluxc::formatter::format_source(source).expect("list match should format");
@@ -4337,7 +4346,7 @@ fn formatter_and_semantic_database_preserve_enums() {
 }
 
 #[test]
-fn tree_shakes_unreachable_private_functions_but_keeps_conservative_roots() {
+fn tree_shakes_unreachable_private_functions_but_keeps_public_and_transitive_roots() {
     let source = r#"
 interface Operation {
     fn apply(value: i64) -> i64
@@ -4381,8 +4390,163 @@ fn main() -> i64 {
     assert!(generated.contains("flux__fn_helper"));
     assert!(generated.contains("flux__fn_leaf"));
     assert!(generated.contains("flux__fn_exported"));
-    assert!(generated.contains("flux__fn_mappedApply"));
+    assert!(!generated.contains("flux__fn_mappedApply"));
+    assert!(!generated.contains("flux__interface_Operation"));
+    assert!(!generated.contains("flux__type_Offset"));
     assert!(!generated.contains("flux__fn_unreachable"));
+}
+
+#[test]
+fn tree_shakes_unreachable_value_types_helpers_typedefs_and_background_runtime() {
+    let source = r#"
+type DeadCallback = fn(i64) -> i64
+
+struct DeadRecord {
+    value: i64
+}
+
+enum DeadChoice {
+    Only(DeadRecord)
+}
+
+fn unreachable(seed: i64) -> i64 {
+    let base: DeadRecord = DeadRecord { value: seed }
+    let updated: DeadRecord = DeadRecord { ..base, value: seed + 1 }
+    let choice: DeadChoice = DeadChoice.Only(updated)
+    match choice:
+        DeadChoice.Only(item):
+            print item.value &
+    return updated.value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    check_source(source).expect("dead tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("dead tree-shaking fixture should lower natively");
+    assert!(!generated.contains("flux__fn_unreachable"));
+    assert!(!generated.contains("flux__type_DeadRecord"));
+    assert!(!generated.contains("flux__type_DeadChoice"));
+    assert!(!generated.contains("flux__variant_DeadChoice_Only"));
+    assert!(!generated.contains("flux__update_DeadRecord__value"));
+    assert!(!generated.contains("typedef "));
+    assert!(!generated.contains("#include <unistd.h>"));
+    assert!(!generated.contains("flux_print_"));
+    assert!(!generated.contains("flux_redirect_"));
+    assert!(!generated.contains("flux_error_eq("));
+    assert!(!generated.contains("flux_list_at"));
+    assert!(!generated.contains("flux_add_i64("));
+    assert!(!generated.contains("flux_sub_i64("));
+    assert!(!generated.contains("flux_mul_i64("));
+    assert!(!generated.contains("flux_neg_i64("));
+    assert!(!generated.contains("flux_div_i64("));
+}
+
+#[test]
+fn tree_shakes_unused_interface_pack_and_dispatch_helpers() {
+    let source = r#"
+interface Tool {
+    fn used(value: i64) -> (i64, error)
+    fn unused(value: i64) -> (i64, error)
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn usedImpl(offset: Offset, value: i64) -> (i64, error) {
+    return offset.amount + value, nil
+}
+
+fn unusedImpl(_offset: Offset, value: i64) -> (i64, error) {
+    return value, nil
+}
+
+impl Tool for Offset {
+    used: usedImpl
+    unused: unusedImpl
+}
+
+fn run(tool: Tool, value: i64) -> (i64, error) {
+    return Tool.used(tool, value)
+}
+
+fn main() -> i64 {
+    let offset: Offset = Offset { amount: 2 }
+    let tool: Tool = Tool(offset)
+    let value: i64, err: error = run(tool, 40)
+    if err != nil:
+        return 1
+    return value
+}
+"#;
+
+    check_source(source).expect("interface helper tree-shaking fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("interface helper tree-shaking fixture should lower");
+    assert!(generated.contains("flux__iface_pack_Tool_Offset"));
+    assert!(generated.contains("flux__iface_call_Tool_used"));
+    assert!(generated.contains("struct flux__iface_ret_Tool_used"));
+    assert!(!generated.contains("flux__iface_call_Tool_unused"));
+    assert!(!generated.contains("struct flux__iface_ret_Tool_unused"));
+    assert!(!generated.contains("flux__fn_unusedImpl"));
+}
+
+#[test]
+fn tree_shakes_unused_enum_constructor_helpers_per_variant() {
+    let source = r#"
+enum Choice {
+    Used(i64)
+    Unused(i64)
+}
+
+fn main() -> i64 {
+    let value: Choice = Choice.Used(7)
+    match value:
+        Choice.Used(item):
+            return item
+        Choice.Unused(item):
+            return item
+}
+"#;
+
+    check_source(source).expect("enum helper tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("enum helper tree-shaking fixture should lower");
+    assert!(generated.contains("flux__tag_Choice_Used"));
+    assert!(generated.contains("flux__tag_Choice_Unused"));
+    assert!(generated.contains("flux__variant_Choice_Used"));
+    assert!(!generated.contains("flux__variant_Choice_Unused"));
+}
+
+#[test]
+fn removes_proven_list_bounds_checks_but_keeps_unproven_checks() {
+    let proven = r#"
+fn main() -> i64 {
+    let first: i64 = [10, 20, 30][0]
+    let last: i64 = [10, 20, 30][-1]
+    let firstProperty: i64 = [4, 5].first
+    let lastProperty: i64 = [4, 5].last
+    let single: i64 = [7].single
+    return first + last + firstProperty + lastProperty + single
+}
+"#;
+    check_source(proven).expect("proven list indexing should typecheck");
+    let generated = compile_to_c(proven).expect("proven list indexing should lower");
+    assert!(generated.contains("flux_list_at_unchecked"));
+    assert!(!generated.contains("flux_list_index("));
+    assert!(!generated.contains("static inline void *flux_list_at("));
+
+    let unproven = r#"
+fn main() -> i64 {
+    return [10, 20, 30][3]
+}
+"#;
+    check_source(unproven).expect("runtime-checked list indexing should typecheck");
+    let generated = compile_to_c(unproven).expect("runtime-checked list indexing should lower");
+    assert!(generated.contains("flux_list_index("));
+    assert!(generated.contains("static inline void *flux_list_at("));
 }
 
 #[test]
