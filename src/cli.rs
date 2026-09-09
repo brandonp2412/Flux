@@ -385,7 +385,7 @@ fn create_project(target: &Path) -> Result<(), CliError> {
     let manifest = format!(
         "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n"
     );
-    let main = "view App {\n    grid columns: 1fr\n    grid rows: auto auto\n    grid gap: 12\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello, Flux!\"\n        visible: !clicked\n\n    Button action at 2,1\n        text: \"Toggle\"\n        on_press: clicked => !clicked\n}\n\napp App\n";
+    let main = "view App {\n    grid columns: 1fr\n    grid rows: auto auto\n    grid gap: 12\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello, Flux!\"\n        visible: !clicked\n\n    Button action at 2,1\n        text: \"Toggle\"\n        onPress: clicked => !clicked\n}\n\napp App\n";
     fs::write(target.join("flux.toml"), manifest)
         .map_err(|error| format!("failed to write project manifest: {error}"))?;
     fs::write(src.join("main.flux"), main)

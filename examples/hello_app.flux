@@ -1,8 +1,8 @@
-fn app_started() -> void {
+fn appStarted() -> void {
     print("Flux app started")
 }
 
-fn app_exiting() -> void {
+fn appExiting() -> void {
     print("Flux app exiting")
 }
 
@@ -28,7 +28,7 @@ view HelloApp {
         text: "Toggle"
         primary: true
         shortcut: "Ctrl+Enter"
-        on_press: clicked => !clicked
+        onPress: clicked => !clicked
 }
 
-app HelloApp(id: "app.flux.hello", title: "Flux Hello", width: 420, height: 260, resizable: true, on_start: app_started, on_exit: app_exiting)
+app HelloApp(id: "app.flux.hello", title: "Flux Hello", width: 420, height: 260, resizable: true, onStart: appStarted, onExit: appExiting)

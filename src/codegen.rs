@@ -598,11 +598,11 @@ fn emit_linux_gtk_application(
                     let wrap_mode = match value.as_str() {
                         "word" => "PANGO_WRAP_WORD",
                         "char" => "PANGO_WRAP_CHAR",
-                        "word_char" => "PANGO_WRAP_WORD_CHAR",
+                        "wordChar" | "word_char" => "PANGO_WRAP_WORD_CHAR",
                         _ => {
                             return Err(diag(
                                 property.value.span,
-                                "Text.wrap_mode must be one of 'word', 'char', or 'word_char'",
+                                "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
                             ));
                         }
                     };
@@ -763,11 +763,11 @@ fn emit_linux_gtk_application(
                         "fill" => "GTK_CONTENT_FIT_FILL",
                         "contain" => "GTK_CONTENT_FIT_CONTAIN",
                         "cover" => "GTK_CONTENT_FIT_COVER",
-                        "scale_down" => "GTK_CONTENT_FIT_SCALE_DOWN",
+                        "scaleDown" | "scale_down" => "GTK_CONTENT_FIT_SCALE_DOWN",
                         _ => {
                             return Err(diag(
                                 property.value.span,
-                                "Image.fit must be one of 'fill', 'contain', 'cover', or 'scale_down'",
+                                "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
                             ));
                         }
                     };
@@ -994,14 +994,31 @@ fn emit_linux_gtk_application(
     Ok(())
 }
 
+fn internal_name_to_source(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut uppercase_next = false;
+    for ch in name.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            out.push(ch.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn application_metadata_function<'a>(
     application: &'a crate::ast::ApplicationDef,
     name: &str,
 ) -> Option<&'a str> {
+    let source_name = internal_name_to_source(name);
     let field = application
         .metadata
         .iter()
-        .find(|field| field.name == name)?;
+        .find(|field| field.name == source_name || field.name == name)?;
     match &field.value.kind {
         ExprKind::Var(function) => Some(function.as_str()),
         _ => None,
@@ -1013,10 +1030,11 @@ fn application_metadata_string(
     name: &str,
     signatures: &Signatures,
 ) -> Option<String> {
+    let source_name = internal_name_to_source(name);
     let field = application
         .metadata
         .iter()
-        .find(|field| field.name == name)?;
+        .find(|field| field.name == source_name || field.name == name)?;
     match &field.value.kind {
         ExprKind::Str(value) => Some(value.clone()),
         ExprKind::Var(name) => {
@@ -1036,10 +1054,11 @@ fn application_metadata_bool(
     name: &str,
     signatures: &Signatures,
 ) -> Option<bool> {
+    let source_name = internal_name_to_source(name);
     let field = application
         .metadata
         .iter()
-        .find(|field| field.name == name)?;
+        .find(|field| field.name == source_name || field.name == name)?;
     static_expr_bool(&field.value, signatures)
 }
 
@@ -1048,10 +1067,11 @@ fn application_metadata_i64(
     name: &str,
     signatures: &Signatures,
 ) -> Option<i64> {
+    let source_name = internal_name_to_source(name);
     let field = application
         .metadata
         .iter()
-        .find(|field| field.name == name)?;
+        .find(|field| field.name == source_name || field.name == name)?;
     static_expr_i64(&field.value, signatures)
 }
 
@@ -1059,10 +1079,11 @@ fn view_property<'a>(
     element: &'a crate::ast::ViewElement,
     name: &str,
 ) -> Option<&'a crate::ast::ViewProperty> {
+    let source_name = internal_name_to_source(name);
     element
         .properties
         .iter()
-        .find(|property| property.name == name)
+        .find(|property| property.name == source_name || property.name == name)
 }
 
 fn ui_zero_arg_event_body(
@@ -1216,11 +1237,15 @@ fn ui_expr_c(
         ExprKind::Str(value) => Ok(c_string(value)),
         ExprKind::Var(name) => {
             let environment = match name.as_str() {
-                "window_width" => Some("flux__ui_window_width"),
-                "window_height" => Some("flux__ui_window_height"),
-                "window_is_landscape" => Some("(flux__ui_window_width > flux__ui_window_height)"),
-                "window_is_portrait" => Some("(flux__ui_window_height >= flux__ui_window_width)"),
-                "display_scale" => Some("flux__ui_display_scale"),
+                "windowWidth" | "window_width" => Some("flux__ui_window_width"),
+                "windowHeight" | "window_height" => Some("flux__ui_window_height"),
+                "windowIsLandscape" | "window_is_landscape" => {
+                    Some("(flux__ui_window_width > flux__ui_window_height)")
+                }
+                "windowIsPortrait" | "window_is_portrait" => {
+                    Some("(flux__ui_window_height >= flux__ui_window_width)")
+                }
+                "displayScale" | "display_scale" => Some("flux__ui_display_scale"),
                 _ => None,
             };
             if let Some(environment) = environment {
@@ -1652,13 +1677,13 @@ fn emit_element_style(
             let css_value = match value.as_str() {
                 "linear" => "linear",
                 "ease" => "ease",
-                "ease_in" => "ease-in",
-                "ease_out" => "ease-out",
-                "ease_in_out" => "ease-in-out",
+                "easeIn" | "ease_in" => "ease-in",
+                "easeOut" | "ease_out" => "ease-out",
+                "easeInOut" | "ease_in_out" => "ease-in-out",
                 _ => {
                     return Err(diag(
                         property.value.span,
-                        "transition_easing must be one of 'linear', 'ease', 'ease_in', 'ease_out', or 'ease_in_out'",
+                        "transitionEasing must be one of 'linear', 'ease', 'easeIn', 'easeOut', or 'easeInOut'",
                     ));
                 }
             };
@@ -2034,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_transform(expr).is_some() => {
+                emit_sequence_transform_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
                 if sequence_reduction(expr).is_some() =>
             {
@@ -2631,6 +2667,168 @@ fn emit_struct_pattern_bindings(
     Ok(())
 }
 
+enum SequenceTransform<'a> {
+    Map { list: &'a Expr, callback: &'a Expr },
+    Filter { list: &'a Expr, callback: &'a Expr },
+}
+
+fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "map" && args.len() == 2 => {
+            Some(SequenceTransform::Map {
+                list: &args[0],
+                callback: &args[1],
+            })
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && (name == "filter" || name == "where") && args.len() == 2 => {
+            Some(SequenceTransform::Filter {
+                list: &args[0],
+                callback: &args[1],
+            })
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "map" && args.len() == 1 => Some(SequenceTransform::Map {
+            list: input,
+            callback: &args[0],
+        }),
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if (name == "filter" || name == "where") && args.len() == 1 => {
+            Some(SequenceTransform::Filter {
+                list: input,
+                callback: &args[0],
+            })
+        }
+        _ => None,
+    }
+}
+
+fn emit_sequence_transform_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "sequence transform binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_transform_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let transform = sequence_transform(expr).ok_or_else(|| {
+        diag(
+            expr.span,
+            "invalid sequence transform reached code generation",
+        )
+    })?;
+    let (list_expr, callback_expr, filter) = match transform {
+        SequenceTransform::Map { list, callback } => (list, callback, false),
+        SequenceTransform::Filter { list, callback } => (list, callback, true),
+    };
+    let source = if sequence_transform(list_expr).is_some() {
+        emit_sequence_transform_value(out, pad, list_expr, env, signatures, temp_counter)?
+    } else {
+        emit_expr(list_expr, env, signatures)?
+    };
+    let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
+        return Err(diag(expr.span, "sequence transform requires a list source"));
+    };
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let Type::List(output_element) = &result_ty else {
+        return Err(diag(
+            expr.span,
+            "sequence transform result must have a list type",
+        ));
+    };
+    let callback = emit_expr(callback_expr, env, signatures)?;
+    let Type::Function { .. } = callback.ty else {
+        return Err(diag(
+            expr.span,
+            "sequence transform requires a function callback",
+        ));
+    };
+    let source_name = format!("flux__transform_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__transform_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__transform_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__transform_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__transform_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__transform_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let input_c = c_type(&input_element, signatures);
+    let output_c = c_type(output_element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{output_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+    ));
+    out.push_str(&format!("{pad}size_t {count_name} = 0;\n"));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({input_c})));\n"
+    ));
+    if filter {
+        out.push_str(&format!(
+            "{pad}    if ({}({item_name})) {buffer_name}[{count_name}++] = {item_name};\n",
+            callback.code
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}    {buffer_name}[{count_name}++] = {}({item_name});\n",
+            callback.code
+        ));
+    }
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({output_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
 enum SequenceReduction<'a> {
     Fold {
         list: &'a Expr,
@@ -2707,7 +2905,11 @@ fn emit_sequence_reduction_binding(
         } => (list, Some(initial), reducer, false),
         SequenceReduction::Reduce { list, reducer } => (list, None, reducer, true),
     };
-    let list = emit_expr(list_expr, env, signatures)?;
+    let list = if sequence_transform(list_expr).is_some() {
+        emit_sequence_transform_value(out, pad, list_expr, env, signatures, temp_counter)?
+    } else {
+        emit_expr(list_expr, env, signatures)?
+    };
     let Type::List(element) = signatures.canonical_type(&list.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
     };
@@ -3028,6 +3230,12 @@ fn emit_expr(
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
             ));
         }
+        ExprKind::Call { name, .. } if name == "map" || name == "filter" || name == "where" => {
+            return Err(diag(
+                expr.span,
+                "map/filter/where currently lower only when bound directly to an immutable local value",
+            ));
+        }
         ExprKind::Call { name, .. } if name == "fold" || name == "reduce" => {
             return Err(diag(
                 expr.span,
@@ -3066,7 +3274,7 @@ fn emit_expr(
             name,
             args,
             named_args,
-        } if name == "first_or" || name == "last_or" => {
+        } if matches!(name.as_str(), "firstOrDefault" | "lastOrDefault") => {
             if !named_args.is_empty() || args.len() != 2 {
                 return Err(diag(
                     expr.span,
@@ -3079,7 +3287,7 @@ fn emit_expr(
                 return Err(diag(expr.span, "safe list access requires a list value"));
             };
             let element_c = c_type(element, signatures);
-            let index = if name == "first_or" {
+            let index = if name == "firstOrDefault" {
                 "INT64_C(0)"
             } else {
                 "INT64_C(-1)"
@@ -3325,8 +3533,8 @@ fn emit_expr(
                 let element_c = c_type(element, signatures);
                 match name.as_str() {
                     "length" => format!("({}).len", base.code),
-                    "is_empty" => format!("(({}).len == 0)", base.code),
-                    "is_not_empty" => format!("(({}).len != 0)", base.code),
+                    "isEmpty" => format!("(({}).len == 0)", base.code),
+                    "isNotEmpty" => format!("(({}).len != 0)", base.code),
                     "first" => format!(
                         "(*(({element_c} *)flux_list_at({}, INT64_C(0), sizeof({element_c}))))",
                         base.code

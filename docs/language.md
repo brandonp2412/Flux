@@ -46,7 +46,7 @@ Tabs are not valid indentation. Blocks must use consistent indentation at each n
 
 Flux has no lint-warning tier: an unused parameter or binding is a compile error unless its name begins with `_` to mark it intentionally ignored.
 
-Variable-style names use lower camelCase in canonical Flux code: local bindings, mutable bindings, parameters, loop bindings, and destructured value bindings should look like `safeFirst`, `requestCount`, or `windowHeight`. snake_case identifiers remain syntactically valid for compatibility, but they are non-canonical style and the compiler does not warn about naming style.
+Flux source naming is lower camelCase for values, functions, constants, built-ins, properties, events, and environment bindings: `safeFirst`, `requestCount`, `firstOrDefault`, `onPress`, and `windowHeight`. Type-like names remain PascalCase. Tooling emits camelCase only; ordinary user-defined identifiers may still parse in legacy snake_case for compatibility, but language-owned names use the camelCase spelling.
 
 Bindings are explicitly typed and immutable by default:
 
@@ -59,7 +59,7 @@ let label: str = "Flux"
 Local mutation must be declared explicitly with `var`. Reassignment preserves the declared static type, and immutable `let` bindings, parameters, destructured bindings, and `for` loop variables cannot be assigned to:
 
 ```flux
-fn count_to(limit: i64) -> i64 {
+fn countTo(limit: i64) -> i64 {
     var count: i64 = 0
     while count < limit:
         count = count + 1
@@ -161,7 +161,7 @@ Struct values lower to native value structs in the bootstrap C backend. Function
 Structs can also be destructured into inferred, statically typed field bindings:
 
 ```flux
-let User { name, age: years } = load_user()
+let User { name, age: years } = loadUser()
 ```
 
 Shorthand fields bind to the same local name; `field: local` renames the binding and `field: _` ignores a field. The pattern may select only the fields it needs. The source expression is evaluated exactly once, aliases of the struct type are accepted, unknown fields and wrong source types are compile-time errors, and pattern bindings may not silently shadow an existing local.
@@ -188,17 +188,17 @@ struct FileStorage {
     root: str
 }
 
-fn file_load(storage: FileStorage, path: str) -> (str, error) {
+fn fileLoad(storage: FileStorage, path: str) -> (str, error) {
     return path, nil
 }
 
-fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
+fn fileSave(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
     return nil
 }
 
 impl Storage for FileStorage {
-    load: file_load
-    save: file_save
+    load: fileLoad
+    save: fileSave
 }
 ```
 
@@ -221,7 +221,7 @@ let saveErr: error = Storage.save(
 When runtime polymorphism is needed, a concrete value can be packed explicitly into an interface value:
 
 ```flux
-let storage: Storage = Storage(file_storage)
+let storage: Storage = Storage(fileStorage)
 let data: str, err: error = Storage.load(storage, "settings.flux")
 ```
 
@@ -250,9 +250,9 @@ Composition flattens compatible parent capabilities into the composed contract. 
 Flux keeps ordinary positional parameters simple while supporting explicit named-only APIs. A `*` in the parameter list marks every following parameter as named-only:
 
 ```flux
-const DEFAULT_COUNT: i64 = 3
+const defaultCount: i64 = 3
 
-fn describe(prefix: str, suffix: str = "!", *, count: i64 = DEFAULT_COUNT, label: str) -> i64 {
+fn describe(prefix: str, suffix: str = "!", *, count: i64 = defaultCount, label: str) -> i64 {
     return count
 }
 
@@ -316,7 +316,7 @@ A function may directly forward another function's multi-value result with `retu
 When successful values are needed before the enclosing function returns, a destructuring binding may use `else return`:
 
 ```flux
-fn load_config(path: str) -> (str, error) {
+fn loadConfig(path: str) -> (str, error) {
     let data: str, err: error = load(path) else return
     print(data)
     return data, nil
@@ -474,14 +474,14 @@ let evens: i64[] = values[::2]
 let reversed: i64[] = values[::-1]
 let reverseMiddle: i64[] = values[3:0:-2]
 let count: i64 = values.length
-let empty: bool = values.is_empty
-let present: bool = values.is_not_empty
+let empty: bool = values.isEmpty
+let present: bool = values.isNotEmpty
 let first: i64 = values.first
 let last: i64 = values.last
 let one: i64 = values[2:3].single
 let window: i64[] = values | skip 1 | take 3
-let safeFirst: i64 = values[:0] | first_or 99
-let safeLast: i64 = values[:0] | last_or 88
+let safeFirst: i64 = values[:0] | firstOrDefault 99
+let safeLast: i64 = values[:0] | lastOrDefault 88
 let checks: bool[] = [value > 2 for value in values]
 let hasLarge: bool = checks | any
 let allLarge: bool = checks | every
@@ -496,15 +496,17 @@ for index, value in values:
     print(index + value)
 ```
 
-Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices follow Python-style exclusive-end semantics with `[start:end]` and `[start:end:step]`: bounds may be omitted or negative, bounds clip to the list extent, positive steps move forward, negative steps move backward, and `[::-1]` reverses a list view. A literal zero step is rejected at compile time and a dynamically computed zero step raises an explicit Flux runtime error. Slices remain zero-copy even when stepped or reversed: the native list descriptor carries a byte stride, and slicing an already-strided view composes the strides instead of copying elements. Compiler-known list values also expose `length: i64`, `is_empty: bool`, and `is_not_empty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
+Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices follow Python-style exclusive-end semantics with `[start:end]` and `[start:end:step]`: bounds may be omitted or negative, bounds clip to the list extent, positive steps move forward, negative steps move backward, and `[::-1]` reverses a list view. A literal zero step is rejected at compile time and a dynamically computed zero step raises an explicit Flux runtime error. Slices remain zero-copy even when stepped or reversed: the native list descriptor carries a byte stride, and slicing an already-strided view composes the strides instead of copying elements. Compiler-known list values also expose `length: i64`, `isEmpty: bool`, and `isNotEmpty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
 
 Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
 
 `take(list, count)` and `skip(list, count)` are compiler-known typed sequence functions. They preserve the concrete list element type, require an `i64` count, clamp oversized counts to the available length, and reject negative counts with an explicit Flux runtime error. Both lower to zero-copy list views, so pipelines such as `values | skip 1 | take 3` do not allocate or copy list elements.
 
-`first_or(list, fallback)` and `last_or(list, fallback)` are non-throwing accessors for possibly empty lists. The fallback must have exactly the list element type. On an empty list the fallback is returned; otherwise the corresponding edge element is returned. They compose with the same typed pipeline syntax, for example `values[:0] | first_or 99`.
+`firstOrDefault(list, fallback)` and `lastOrDefault(list, fallback)` are non-throwing accessors for possibly empty lists. The fallback must have exactly the list element type. On an empty list the fallback is returned; otherwise the corresponding edge element is returned. They compose with the same typed pipeline syntax, for example `values[:0] | firstOrDefault 99`.
 
 `any(list)` and `every(list)` currently accept `bool[]`. `any` returns true when at least one element is true and returns false for an empty list. `every` returns true only when every element is true and uses the standard vacuous-truth identity of true for an empty list. Predicate-style queries remain explicit and allocation-free in source by composing a boolean comprehension with the pipeline, for example `[value > 2 for value in values] | any`.
+
+`map(list, callback)`, `filter(list, predicate)`, and its readable alias `where(list, predicate)` are compiler-known collection transforms. `map` requires a concrete `fn(T) -> U` callback and produces `U[]`; `filter`/`where` require `fn(T) -> bool` and preserve `T[]`. The source is evaluated once, strided views are consumed directly, and the result is stored in a stack-backed buffer sized to the source list, so there is no hidden heap allocation. During the bootstrap these collection-producing transforms must be bound directly to an immutable local value, matching list comprehensions.
 
 `fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a named function or function binding with an exact concrete type: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly without materializing them, and compose through pipelines such as `values[::-1] | reduce add`. During the bootstrap they lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
 
@@ -649,13 +651,13 @@ view HelloApp {
 
     Button action at 2,1
         text: "Reset" if clicked else "Click me"
-        on_press: clicked => !clicked
+        onPress: clicked => !clicked
 }
 
 app HelloApp
 ```
 
-The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text`, `Button`, `TextInput`, `Image`, `Toggle`, and `Radio` become native GTK controls. View-local state is explicit `bool` or `i64` data initialized from compile-time values, and events may apply typed functional transitions such as `on_press: state => next_expression`. State-dependent properties use ordinary Flux expressions and lower to a small native refresh function that updates existing controls rather than reconstructing the window/grid. Root views also receive compiler-owned read-only environment bindings `window_width`, `window_height`, `window_is_landscape`, `window_is_portrait`, and `display_scale`; ordinary native window resizes/scale changes update those values and reuse the same refresh path, so responsive property expressions need no window/controller object. Common transforms participate in the same model: translation, rotation, uniform/per-axis scale, skew, and percentage transform origins are typed flat-element properties. Static values fold into the element stylesheet, while state-derived primitive expressions refresh a persistent native CSS provider. Named callbacks remain supported as a separate event form. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. Exact maximized/fullscreen content geometry, responsive grid definitions, owned/string/aggregate state, animation timelines, and a lower-level long-term Wayland renderer remain later work.
+The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text`, `Button`, `TextInput`, `Image`, `Toggle`, and `Radio` become native GTK controls. View-local state is explicit `bool` or `i64` data initialized from compile-time values, and events may apply typed functional transitions such as `onPress: state => nextExpression`. State-dependent properties use ordinary Flux expressions and lower to a small native refresh function that updates existing controls rather than reconstructing the window/grid. Root views also receive compiler-owned read-only environment bindings `windowWidth`, `windowHeight`, `windowIsLandscape`, `windowIsPortrait`, and `displayScale`; ordinary native window resizes/scale changes update those values and reuse the same refresh path, so responsive property expressions need no window/controller object. Common transforms participate in the same model: translation, rotation, uniform/per-axis scale, skew, and percentage transform origins are typed flat-element properties. Static values fold into the element stylesheet, while state-derived primitive expressions refresh a persistent native CSS provider. Named callbacks remain supported as a separate event form. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. Exact maximized/fullscreen content geometry, responsive grid definitions, owned/string/aggregate state, animation timelines, and a lower-level long-term Wayland renderer remain later work.
 
 ## UI direction
 

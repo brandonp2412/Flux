@@ -9,26 +9,26 @@ view TransformDemo {
         text: "Native Flux transform"
         size: 24
         bold: true
-        align_x: "center"
-        background_color: "#2563EB"
-        border_color: "#1E40AF"
-        border_width: 2
+        alignX: "center"
+        backgroundColor: "#2563EB"
+        borderColor: "#1E40AF"
+        borderWidth: 2
         radius: 12
         margin: 16
-        translate_x: offset
-        rotate_degrees: offset
-        scale_percent: 100 + offset
-        scale_y_percent: 100 - offset
-        skew_x_degrees: offset
-        transform_origin_x_percent: 50 + offset
-        transition_ms: 180
-        transition_easing: "ease_out"
+        translateX: offset
+        rotateDegrees: offset
+        scalePercent: 100 + offset
+        scaleYPercent: 100 - offset
+        skewXDegrees: offset
+        transformOriginXPercent: 50 + offset
+        transitionMs: 180
+        transitionEasing: "easeOut"
 
     Button move at 2,1
         text: "Move"
         primary: true
-        align_x: "center"
-        on_press: offset => offset + 4
+        alignX: "center"
+        onPress: offset => offset + 4
 }
 
 app TransformDemo(title: "Flux transforms", width: 640, height: 360)

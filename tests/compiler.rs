@@ -1178,8 +1178,8 @@ fn main() -> i64 {
     print reverse_window.first
     print reverse_window.last
     print values.length
-    print middle.is_empty
-    print middle.is_not_empty
+    print middle.isEmpty
+    print middle.isNotEmpty
     print values.first
     print values.last
     let one: i64[] = values[2:3]
@@ -1194,8 +1194,8 @@ fn main() -> i64 {
     print window.first
     print window.last
     let empty: i64[] = values[:0]
-    let safe_first: i64 = empty | first_or 99
-    let safe_last: i64 = empty | last_or 88
+    let safe_first: i64 = empty | firstOrDefault 99
+    let safe_last: i64 = empty | lastOrDefault 88
     print safe_first
     print safe_last
     let checks: bool[] = [value > 2 for value in values]
@@ -1248,8 +1248,8 @@ fn main() -> i64 {
     assert!(formatted.contains("let reverse_window: i64[] = values[::-1] | skip 1 | take 2"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
-    assert!(formatted.contains("let safe_first: i64 = empty | first_or 99"));
-    assert!(formatted.contains("let safe_last: i64 = empty | last_or 88"));
+    assert!(formatted.contains("let safe_first: i64 = empty | firstOrDefault 99"));
+    assert!(formatted.contains("let safe_last: i64 = empty | lastOrDefault 88"));
     assert!(formatted.contains("let has_large: bool = checks | any"));
     assert!(formatted.contains("let all_large: bool = checks | every"));
     let formatted_again =
@@ -1314,22 +1314,22 @@ fn main() -> i64 {
 fn rejects_invalid_safe_list_access_calls() {
     let non_list = r#"
 fn main() -> i64 {
-    let value: i64 = first_or(7, 1)
+    let value: i64 = firstOrDefault(7, 1)
     print value
     return 0
 }
 "#;
-    let error = check_source(non_list).expect_err("first_or should require a list");
+    let error = check_source(non_list).expect_err("firstOrDefault should require a list");
     assert!(
         error
             .message
-            .contains("first_or expects a list as its first argument")
+            .contains("firstOrDefault expects a list as its first argument")
     );
 
     let bad_fallback = r#"
 fn main() -> i64 {
     let values: i64[] = [1, 2]
-    let value: i64 = last_or(values, false)
+    let value: i64 = lastOrDefault(values, false)
     print value
     return 0
 }
@@ -1338,8 +1338,176 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("last_or fallback: expected i64, got bool")
+            .contains("lastOrDefault fallback: expected i64, got bool")
     );
+
+    let old_function_name = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let value: i64 = first_or(values, 0)
+    print value
+    return 0
+}
+"#;
+    let error =
+        check_source(old_function_name).expect_err("old fallback spelling should be rejected");
+    assert!(
+        error
+            .message
+            .contains("unknown function or callable 'first_or'")
+    );
+
+    let old_property_name = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    print values.is_empty
+    return 0
+}
+"#;
+    let error =
+        check_source(old_property_name).expect_err("old property spelling should be rejected");
+    assert!(
+        error
+            .message
+            .contains("list type 'i64[]' has no property 'is_empty'")
+    );
+}
+
+#[test]
+fn map_filter_and_where_are_typed_and_native() {
+    let source = r#"
+type Mapper = fn(i64) -> i64
+
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn greaterThanTwo(value: i64) -> bool {
+    return value > 2
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3, 4, 5]
+    let reversed: i64[] = values[::-1]
+    let mapper: Mapper = double
+    let mapped: i64[] = reversed | map mapper
+    let filtered: i64[] = values | filter greaterThanTwo
+    let selected: i64[] = where(values, greaterThanTwo)
+    let chained: i64[] = values | map double | filter greaterThanTwo
+    let mappedTotal: i64 = values | map double | reduce add
+    let empty: i64[] = values[:0]
+    let emptyMapped: i64[] = empty | map double
+    let emptyFiltered: i64[] = empty | filter greaterThanTwo
+    print mapped.first
+    print mapped.last
+    print filtered.length
+    print filtered.first
+    print filtered.last
+    print selected.length
+    print chained.length
+    print chained.first
+    print chained.last
+    print mappedTotal
+    print emptyMapped.length
+    print emptyFiltered.length
+    return 0
+}
+"#;
+
+    check_source(source).expect("map/filter/where should typecheck");
+    let generated = compile_to_c(source).expect("map/filter/where should lower natively");
+    assert!(generated.contains("flux__transform_source_"));
+    assert!(generated.contains("flux__transform_buffer_"));
+    assert!(generated.contains("flux__transform_count_"));
+    assert!(generated.contains("flux__local_mapper(flux__transform_item_"));
+    assert!(generated.contains("flux__fn_greaterThanTwo(flux__transform_item_"));
+    assert!(generated.matches("flux__transform_result_").count() >= 4);
+    assert!(generated.contains("flux__fn_add(flux__local_mappedTotal"));
+    assert!(generated.contains("flux_list_at(flux__transform_source_"));
+    assert!(generated.contains(".stride = sizeof(int64_t)"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("map/filter/where source should format");
+    assert!(formatted.contains("let mapped: i64[] = reversed | map mapper"));
+    assert!(formatted.contains("let filtered: i64[] = values | filter greaterThanTwo"));
+    assert!(formatted.contains("let selected: i64[] = where(values, greaterThanTwo)"));
+    assert!(formatted.contains("let chained: i64[] = values | map double | filter greaterThanTwo"));
+    assert!(formatted.contains("let mappedTotal: i64 = values | map double | reduce add"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted map/filter/where source should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_map_filter_and_where_calls() {
+    let non_list = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+fn main() -> i64 {
+    let mapped: i64[] = map(7, double)
+    print mapped.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("map should require a list");
+    assert!(
+        error
+            .message
+            .contains("map expects a list as its first argument")
+    );
+
+    let wrong_map_input = r#"
+fn textLength(_value: str) -> i64 {
+    return 1
+}
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = values | map textLength
+    print mapped.length
+    return 0
+}
+"#;
+    let error = check_source(wrong_map_input).expect_err("map callback input should match");
+    assert!(
+        error
+            .message
+            .contains("map callback must have type fn(i64) -> U")
+    );
+
+    let wrong_filter = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let filtered: i64[] = values | filter double
+    print filtered.length
+    return 0
+}
+"#;
+    let error = check_source(wrong_filter).expect_err("filter callback should return bool");
+    assert!(error.message.contains("filter callback"));
+    assert!(error.message.contains("expected fn(i64) -> bool"));
+
+    let wrong_where = r#"
+fn predicate(value: bool) -> bool {
+    return value
+}
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let filtered: i64[] = values | where predicate
+    print filtered.length
+    return 0
+}
+"#;
+    let error = check_source(wrong_where).expect_err("where callback input should match");
+    assert!(error.message.contains("where callback"));
+    assert!(error.message.contains("expected fn(i64) -> bool"));
 }
 
 #[test]
@@ -3746,7 +3914,7 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
         .expect("new project should contain an entry source");
     assert!(source.contains("view App {"));
     assert!(source.contains("state clicked: bool = false"));
-    assert!(source.contains("on_press: clicked => !clicked"));
+    assert!(source.contains("onPress: clicked => !clicked"));
     assert!(source.contains("app App"));
     let smoke = fs::read_to_string(root.join("tests/smoke.flux"))
         .expect("new project should contain a starter integration test");
@@ -5330,7 +5498,7 @@ app Shortcuts
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("Button.shortcut requires Button.on_press")
+            .contains("Button.shortcut requires Button.onPress")
     }));
 
     let invalid = r#"

@@ -1054,6 +1054,8 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "height"
                     | "resizable"
                     | "theme"
+                    | "onStart"
+                    | "onExit"
                     | "on_start"
                     | "on_exit"
             ) {
@@ -1753,7 +1755,14 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             }
             let (transition, expression_source, expression_column) = if matches!(
                 property_name,
-                "on_press"
+                "onPress"
+                    | "onChange"
+                    | "onSelect"
+                    | "onHover"
+                    | "onLeave"
+                    | "onFocus"
+                    | "onBlur"
+                    | "on_press"
                     | "on_change"
                     | "on_select"
                     | "on_hover"

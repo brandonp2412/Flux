@@ -9,8 +9,8 @@ fn main() -> i64 {
     if ok:
         print(result)
 
-    let failed: i64, failed_ok: bool = divide(1, 0)
-    if !failed_ok:
+    let failed: i64, failedOk: bool = divide(1, 0)
+    if !failedOk:
         print("recoverable error")
     return failed
 }

@@ -14,26 +14,26 @@ struct MemoryStorage {
     label: str
 }
 
-fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
+fn memoryLoad(storage: MemoryStorage, path: str) -> (str, error) {
     print(storage.label)
     return path, nil
 }
 
-fn memory_save(storage: MemoryStorage, path: str, data: str, *, durable: bool) -> error {
+fn memorySave(_storage: MemoryStorage, path: str, data: str, *, durable: bool) -> error {
     print(path)
     print(data)
     print(durable)
     return nil
 }
 
-fn memory_label(storage: MemoryStorage) -> str {
+fn memoryLabel(storage: MemoryStorage) -> str {
     return storage.label
 }
 
 impl Storage for MemoryStorage {
-    load: memory_load
-    save: memory_save
-    label: memory_label
+    load: memoryLoad
+    save: memorySave
+    label: memoryLabel
 }
 
 fn main() -> i64 {

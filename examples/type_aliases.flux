@@ -6,13 +6,13 @@ struct User {
     name: str
 }
 
-fn id_of(user: Person) -> UserId {
+fn idOf(user: Person) -> UserId {
     return user.id
 }
 
 fn main() -> i64 {
     let user: Person = User { id: 7, name: "Ada" }
     print(user.name)
-    print(id_of(user))
+    print(idOf(user))
     return 0
 }

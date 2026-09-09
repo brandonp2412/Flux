@@ -608,12 +608,15 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "error"
                 | "take"
                 | "skip"
-                | "first_or"
-                | "last_or"
+                | "firstOrDefault"
+                | "lastOrDefault"
                 | "any"
                 | "every"
                 | "fold"
                 | "reduce"
+                | "map"
+                | "filter"
+                | "where"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -986,7 +989,10 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
         }
         for field in &application.metadata {
-            if matches!(field.name.as_str(), "on_start" | "on_exit") {
+            if matches!(
+                field.name.as_str(),
+                "onStart" | "onExit" | "on_start" | "on_exit"
+            ) {
                 if !matches!(field.value.kind, ExprKind::Var(_)) {
                     diagnostics.push(diag(
                         field.value.span,
@@ -1126,21 +1132,24 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
 }
 
 pub const VIEW_ENVIRONMENT_BINDINGS: &[(&str, Type)] = &[
-    ("window_width", Type::I64),
-    ("window_height", Type::I64),
-    ("window_is_landscape", Type::Bool),
-    ("window_is_portrait", Type::Bool),
-    ("display_scale", Type::I64),
+    ("windowWidth", Type::I64),
+    ("windowHeight", Type::I64),
+    ("windowIsLandscape", Type::Bool),
+    ("windowIsPortrait", Type::Bool),
+    ("displayScale", Type::I64),
 ];
 
 pub fn view_environment_type(name: &str) -> Option<Type> {
+    let source_name = internal_name_to_source(name);
     VIEW_ENVIRONMENT_BINDINGS
         .iter()
-        .find(|(candidate, _)| *candidate == name)
+        .find(|(candidate, _)| *candidate == name || *candidate == source_name)
         .map(|(_, ty)| ty.clone())
 }
 
 pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
+    let internal_property = source_name_to_internal(property);
+    let property = internal_property.as_str();
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
             "visible" | "clip" => return Some(Type::Bool),
@@ -1248,6 +1257,35 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     }
 }
 
+fn source_name_to_internal(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() {
+            out.push('_');
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn internal_name_to_source(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut uppercase_next = false;
+    for ch in name.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            out.push(ch.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 pub fn view_element_property_type(
     program: &Program,
     signatures: &Signatures,
@@ -1338,7 +1376,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "min_height",
 ];
 
-pub fn view_property_names(kind: &str) -> Vec<&'static str> {
+pub fn view_property_names(kind: &str) -> Vec<String> {
     let specific: &[&str] = match kind {
         "Text" => &[
             "text",
@@ -1381,6 +1419,7 @@ pub fn view_property_names(kind: &str) -> Vec<&'static str> {
         .iter()
         .copied()
         .chain(COMMON_VIEW_PROPERTIES.iter().copied())
+        .map(internal_name_to_source)
         .collect()
 }
 
@@ -1506,6 +1545,9 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             .iter()
             .map(|(name, ty)| ((*name).to_string(), ty.clone()))
             .collect::<HashMap<_, _>>();
+        for (name, ty) in VIEW_ENVIRONMENT_BINDINGS {
+            property_env.insert(source_name_to_internal(name), ty.clone());
+        }
         property_env.extend(
             view.params
                 .iter()
@@ -1541,8 +1583,9 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
 
             for property in &element.properties {
                 if let Some(transition) = &property.transition {
+                    let internal_property = source_name_to_internal(&property.name);
                     let transition_property = matches!(
-                        (element.kind.as_str(), property.name.as_str()),
+                        (element.kind.as_str(), internal_property.as_str()),
                         ("Button", "on_press")
                             | ("Toggle", "on_change")
                             | ("Radio", "on_select")
@@ -1554,7 +1597,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.on_press, Toggle.on_change, Radio.on_select, on_hover/on_leave, or on_focus/on_blur",
+                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onHover/onLeave, or onFocus/onBlur",
                         ));
                         continue;
                     }
@@ -1641,11 +1684,11 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 && !element
                     .properties
                     .iter()
-                    .any(|property| property.name == "on_press")
+                    .any(|property| source_name_to_internal(&property.name) == "on_press")
             {
                 diagnostics.push(diag(
                     element.span,
-                    "Button.shortcut requires Button.on_press so the shortcut has a typed Flux action",
+                    "Button.shortcut requires Button.onPress so the shortcut has a typed Flux action",
                 ));
             }
 
@@ -2968,6 +3011,69 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "map" || name == "filter" || name == "where" => {
+            if !named_args.is_empty() {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} does not accept named arguments"),
+                ));
+            }
+            if args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    &format!("{name} expects exactly two arguments: a list and a callback"),
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(element) = list_ty else {
+                return Err(diag(
+                    args[0].span,
+                    &format!("{name} expects a list as its first argument"),
+                ));
+            };
+            if !matches!(args[1].kind, ExprKind::Var(_)) {
+                return Err(diag(
+                    args[1].span,
+                    &format!("{name} callback must be a named function or function binding"),
+                ));
+            }
+            let callback_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            if name == "map" {
+                let Type::Function { params, returns } = callback_ty else {
+                    return Err(diag(args[1].span, "map callback must be a function"));
+                };
+                if params != vec![(*element).clone()] || returns.len() != 1 {
+                    return Err(diag(
+                        args[1].span,
+                        &format!("map callback must have type fn({}) -> U", element.name()),
+                    ));
+                }
+                let output = signatures.canonical_type(&returns[0]);
+                if matches!(output, Type::Void | Type::Function { .. }) {
+                    return Err(diag(
+                        args[1].span,
+                        &format!("map cannot produce {} list elements", output.name()),
+                    ));
+                }
+                Ok(Type::List(Box::new(output)))
+            } else {
+                let expected = Type::Function {
+                    params: vec![(*element).clone()],
+                    returns: vec![Type::Bool],
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback_ty,
+                    &format!("{name} callback"),
+                )?;
+                Ok(Type::List(element))
+            }
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "fold" || name == "reduce" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3054,7 +3160,7 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
-        } if name == "first_or" || name == "last_or" => {
+        } if matches!(name.as_str(), "firstOrDefault" | "lastOrDefault") => {
             if !named_args.is_empty() {
                 return Err(diag(
                     expr.span,
@@ -3486,7 +3592,7 @@ pub fn type_of_expr(
             if let Type::List(element) = &base_ty {
                 return match name.as_str() {
                     "length" => Ok(Type::I64),
-                    "is_empty" | "is_not_empty" => Ok(Type::Bool),
+                    "isEmpty" | "isNotEmpty" => Ok(Type::Bool),
                     "first" | "last" | "single" => Ok((**element).clone()),
                     _ => Err(diag(
                         *name_span,
@@ -3606,7 +3712,17 @@ fn value_types_of_expr(
             if signatures.interface(name).is_some()
                 || matches!(
                     name.as_str(),
-                    "take" | "skip" | "first_or" | "last_or" | "any" | "every" | "fold" | "reduce"
+                    "take"
+                        | "skip"
+                        | "firstOrDefault"
+                        | "lastOrDefault"
+                        | "any"
+                        | "every"
+                        | "fold"
+                        | "reduce"
+                        | "map"
+                        | "filter"
+                        | "where"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

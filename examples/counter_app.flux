@@ -14,7 +14,7 @@ view CounterApp {
     Button increment at 2,1
         text: "Increment"
         enabled: count >= 0
-        on_press: count => count + 1
+        onPress: count => count + 1
 }
 
 app CounterApp

@@ -12,42 +12,42 @@ struct MemoryStorage {
 }
 
 impl Storage for FileStorage {
-    load: file_load
-    label: file_label
+    load: fileLoad
+    label: fileLabel
 }
 
 impl Storage for MemoryStorage {
-    load: memory_load
-    label: memory_label
+    load: memoryLoad
+    label: memoryLabel
 }
 
-fn file_load(storage: FileStorage, path: str) -> (str, error) {
+fn fileLoad(storage: FileStorage, path: str) -> (str, error) {
     print(storage.root)
     return path, nil
 }
 
-fn file_label(storage: FileStorage) -> str {
+fn fileLabel(storage: FileStorage) -> str {
     return storage.root
 }
 
-fn memory_load(storage: MemoryStorage, path: str) -> (str, error) {
+fn memoryLoad(storage: MemoryStorage, path: str) -> (str, error) {
     print(storage.name)
     return path, nil
 }
 
-fn memory_label(storage: MemoryStorage) -> str {
+fn memoryLabel(storage: MemoryStorage) -> str {
     return storage.name
 }
 
-fn load_any(storage: Storage, path: str) -> (str, error) {
+fn loadAny(storage: Storage, path: str) -> (str, error) {
     return Storage.load(storage, path)
 }
 
-fn label_any(storage: Storage) -> str {
+fn labelAny(storage: Storage) -> str {
     return Storage.label(storage)
 }
 
-fn select_storage(memory: bool) -> Storage {
+fn selectStorage(memory: bool) -> Storage {
     if memory:
         let ram: MemoryStorage = MemoryStorage { name: "ram" }
         return Storage(ram)
@@ -56,9 +56,9 @@ fn select_storage(memory: bool) -> Storage {
 }
 
 fn main() -> i64 {
-    let storage: Storage = select_storage(true)
-    print(label_any(storage))
-    let data: str, err: error = load_any(storage, "settings.flux")
+    let storage: Storage = selectStorage(true)
+    print(labelAny(storage))
+    let data: str, err: error = loadAny(storage, "settings.flux")
     if err != nil:
         print(err)
     print(data)

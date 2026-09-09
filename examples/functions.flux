@@ -12,8 +12,8 @@ fn apply(transform: Mapper, value: i64) -> i64 {
     return transform(value)
 }
 
-fn choose(double_it: bool) -> Mapper {
-    if double_it:
+fn choose(doubleIt: bool) -> Mapper {
+    if doubleIt:
         return double
     return increment
 }

@@ -17,7 +17,7 @@ view App {
         name: "Flux"
     Button action at 1,2
         text: "Continue"
-        on_press: pressed
+        onPress: pressed
 }
 
 fn main() -> i64 { 42 }

@@ -1,6 +1,6 @@
-const DEFAULT_COUNT: i64 = 3
+const defaultCount: i64 = 3
 
-fn describe(prefix: str, suffix: str = "!", *, count: i64 = DEFAULT_COUNT, label: str) -> i64 {
+fn describe(prefix: str, suffix: str = "!", *, count: i64 = defaultCount, label: str) -> i64 {
     print(prefix)
     print(suffix)
     print(label)

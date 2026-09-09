@@ -31,8 +31,8 @@ The minimum acceptance path is deliberately small: one Linux desktop target firs
   - [x] Minimal application entry/runtime that opens a real native Linux window from a Flux program: bootstrap `app ViewName` selects a zero-parameter root view and replaces `fn main`; the Linux bootstrap lowers it to a GTK4 application/window while keeping GTK objects out of Flux source.
   - [x] Bootstrap native lowering/render path for the existing flat grid: explicit rows/columns/spans/gap lower to `GtkGrid`, fixed tracks feed native size requests, and `fr` tracks expand in the corresponding axis. A future lower-level renderer may replace GTK without changing Flux grid source.
   - [x] Render usable `Text` and `Button` primitives with native GTK4 controls, typed literal/constant/state-derived properties, spacing/margins, and a checked-in `examples/hello_app.flux` dogfood app.
-  - [x] Pointer/click dispatch from the native Wayland window to a typed Flux `Button.on_press` callback: the development-host dogfood launch produced the Flux callback output from real button activations.
-  - [x] Minimal functional local UI state and invalidation/repaint: explicit `state clicked: bool = false` belongs to the view instance, `on_press: clicked => !clicked` is a typed state transformation, state-dependent Text/Button properties lower to a native refresh function, and the Wayland dogfood test toggled the app render and then restored it pixel-identically on the second activation (apart from unrelated desktop-panel changes).
+  - [x] Pointer/click dispatch from the native Wayland window to a typed Flux `Button.onPress` callback: the development-host dogfood launch produced the Flux callback output from real button activations.
+  - [x] Minimal functional local UI state and invalidation/repaint: explicit `state clicked: bool = false` belongs to the view instance, `onPress: clicked => !clicked` is a typed state transformation, state-dependent Text/Button properties lower to a native refresh function, and the Wayland dogfood test toggled the app render and then restored it pixel-identically on the second activation (apart from unrelated desktop-panel changes).
   - [x] Editor integration/setup for the first dogfood editor: checked-in dependency-free Neovim runtime detects `.flux`, supplies immediate syntax colouring, launches `flux lsp` for semantic highlighting/full editor services, and exposes `:FluxRun`; `tools/flux-nvim` starts this experience without modifying global editor configuration.
   - [x] Checked-in `examples/hello_app.flux` manual acceptance app plus `docs/manual-e2e.md` documents the editor → compile/run → native window → click/state update → save-triggered rebuild/restart path, including failure/recovery expectations and non-interactive preflight checks.
 
@@ -143,7 +143,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 - [x] `interface` declarations consisting of statically validated function signatures/capabilities, with named-only parameter metadata, formatter/semantic support, namespace diagnostics, and zero-runtime lowering until implementation/dispatch semantics are introduced.
 - [x] Explicit implementation of interfaces by concrete data types without inheritance, using exhaustive capability-to-free-function mappings with concrete first-parameter receiver validation, exact named-parameter/return contracts, formatter/semantic support, and zero-runtime conformance metadata. Module implementations remain naturally downstream of modules/packages.
 - [x] Static interface dispatch where the concrete receiver type is known, using `Interface.capability(receiver, ...)` syntax and compile-time lowering directly to the mapped free function, including named arguments and multi-value returns with no vtable/dynamic lookup.
-- [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interface_value, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
+- [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interfaceValue, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
 - [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, statement-level conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
 - [x] Interface composition without class inheritance using `interface Child: ParentA, ParentB { ... }`; compatible capabilities flatten into one contract for implementation/static/dynamic dispatch, while unknown parents, cycles, duplicate parents, and conflicting inherited signatures are rejected.
 - [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Blocked on modules/imports plus the first real platform backend; do not invent placeholder platform APIs before those exist.
@@ -204,11 +204,12 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [ ] Optional indexing (`value?[index]` or Flux-equivalent) for optional receivers.
 - [x] Checked `first` and `last` conveniences for compiler-known lists; empty access fails with an explicit Flux bounds diagnostic.
 - [x] Checked `single` / exactly-one validation for compiler-known lists; any length other than one fails explicitly at runtime.
-- [x] `length` and `is_empty` / `is_not_empty` conveniences for compiler-known lists, exposed as zero-cost properties rather than methods.
-- [x] Safe `first_or(list, fallback)` / `last_or(list, fallback)` forms for possibly empty lists; the fallback must match the element type and composes through typed pipelines.
+- [x] `length` and `isEmpty` / `isNotEmpty` conveniences for compiler-known lists, exposed as zero-cost properties rather than methods.
+- [x] Safe `firstOrDefault(list, fallback)` / `lastOrDefault(list, fallback)` forms for possibly empty lists; the fallback must match the element type and composes through typed pipelines.
 - [x] Full Python-style list slices/ranges: `[start:end]` and `[start:end:step]`, omitted/negative bounds, positive or negative steps, `[::-1]` reversal, clipping, and explicit zero-step rejection. Native slices remain zero-copy through strided list views.
 - [x] Typed list iteration with `for value in list:` and indexed `for index, value in list:` forms; the source is evaluated once and the index is `i64`.
-- [ ] `map`, `filter`/`where`, and related collection-producing functional sequence operations.
+- [x] Typed `map(list, callback)`, `filter(list, predicate)`, and `where` alias with exact concrete callback signatures, strided-source support, pipeline composition, and stack-backed bootstrap results.
+- [ ] Related collection-producing functional sequence operations beyond map/filter/where.
 - [x] Typed `fold(list, initial, reducer)` and `reduce(list, reducer)` scalar reductions with concrete callback signatures, strided-view support, pipeline composition, and explicit empty-list rejection for `reduce`.
 - [x] `any(bool[])` / `every(bool[])` boolean aggregation with Python/Dart-style empty-sequence identities (`false` / `true`), designed to combine with boolean comprehensions and typed pipelines.
 - [x] Zero-copy `take(list, count)` / `skip(list, count)` sequence views, designed to compose naturally through typed pipelines such as `values | skip 1 | take 3`; counts are `i64`, oversized counts clamp, and negative counts fail explicitly at runtime.
@@ -377,7 +378,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Environment/configuration.
 - [ ] Platform permissions.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
-  - [x] Bootstrap `app` metadata accepts named typed `on_start: fn() -> void` and `on_exit: fn() -> void` callbacks; Linux invokes start during native activation and exit through the native application shutdown signal with no application/controller object exposed to Flux source.
+  - [x] Bootstrap `app` metadata accepts named typed `onStart: fn() -> void` and `onExit: fn() -> void` callbacks; Linux invokes start during native activation and exit through the native application shutdown signal with no application/controller object exposed to Flux source.
   - [ ] Foreground/background, window lifecycle, suspension/restoration, and capability-rich lifecycle context.
 - [ ] Background/foreground transitions.
 - [ ] Multiple windows where the target supports them.
@@ -405,22 +406,22 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Flex/flow layout where grid is not appropriate.
 - [ ] Absolute/overlay positioning when explicitly requested.
 - [ ] Constraints, min/max sizing, intrinsic sizing.
-  - [x] Bootstrap common `min_width: i64` / `min_height: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
+  - [x] Bootstrap common `minWidth: i64` / `minHeight: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
   - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.
 - [ ] Responsive breakpoints/container queries.
 - [ ] Text.
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, `bold: bool`, font family/slant/decoration, letter spacing, line height, and hexadecimal foreground color, including grid placement and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.
 - [ ] Images/vector images.
-  - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `can_shrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scale_down`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
+  - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `canShrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scaleDown`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
 - [ ] Buttons.
-  - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `on_press` dispatch.
+  - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `onPress` dispatch.
 - [ ] Text inputs.
-  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `max_length: i64`, `on_change: fn(str) -> void`, and `on_submit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
   - [ ] Editable Flux-owned text state, selection/caret APIs, richer validation, multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
-  - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `on_change` event; Linux lowers to `GtkCheckButton`, while `on_change: state => next_expression` reuses the same functional transition/state refresh model as buttons.
-  - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `on_select`; sibling radios are grouped natively and `on_select` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
+  - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `onChange` event; Linux lowers to `GtkCheckButton`, while `onChange: state => nextExpression` reuses the same functional transition/state refresh model as buttons.
+  - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `onSelect`; sibling radios are grouped natively and `onSelect` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
 - [ ] Lists/grids with virtualization.
 - [x] Scrolling.
   - [x] Flat root grids may declare `grid scroll: true`; Linux lowers the existing grid into a native `GtkScrolledWindow` with automatic scrollbars while Flux source remains a flat sibling element set with no scroll-wrapper widget hierarchy.
@@ -433,9 +434,9 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 # Milestone 10 — Functional UI state and rendering
 
 - [ ] Local view state without `StatefulWidget`-style objects.
-  - [x] Bootstrap explicit primitive view state (`state name: type = compile_time_value`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
+  - [x] Bootstrap explicit primitive view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
 - [ ] Immutable state updates by default.
-  - [x] Bootstrap UI events use a functional transition form (`on_press: state => next_expression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer division, and conditionals.
+  - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer division, and conditionals.
 - [ ] Derived/computed state.
   - [x] Bootstrap native Text/Button properties can derive values from bool/i64 local state through statically typed primitive expressions and conditionals, enabling counter/toggle-style UI without a view-model object.
 - [ ] Explicit effects.
@@ -476,15 +477,15 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Pointer/mouse input.
 - [ ] Touch input.
 - [ ] Keyboard input.
-  - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `on_change` receives the current borrowed text and Enter dispatches `on_submit`. Portable key events and explicit keyboard handling remain pending.
+  - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Portable key events and explicit keyboard handling remain pending.
 - [ ] Focus model.
-  - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Common `on_focus` / `on_blur` events on native controls accept named `fn() -> void` callbacks or typed functional state transitions through native focus controllers. Programmatic focus movement, focus scopes, and restoration remain pending.
+  - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Common `onFocus` / `onBlur` events on native controls accept named `fn() -> void` callbacks or typed functional state transitions through native focus controllers. Programmatic focus movement, focus scopes, and restoration remain pending.
 - [x] Hover.
-  - [x] Common `on_hover` / `on_leave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
+  - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
-  - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `on_press` logic.
+  - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `onPress` logic.
   - [ ] Broader shortcut scopes, non-button actions, conflict diagnostics across composed views/windows, and platform-specific shortcut presentation.
 - [ ] Context menus.
 - [ ] Clipboard.
@@ -507,38 +508,38 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 - [ ] Colors.
   - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes.
-  - [x] Every built-in native element accepts compile-time `background_color` / `border_color` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
+  - [x] Every built-in native element accepts compile-time `backgroundColor` / `borderColor` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
 - [x] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
-  - [x] Native text family/slant/decoration/spacing controls: compile-time `font_family`, `italic`, `underline`, `strikethrough`, `letter_spacing`, and `line_height_percent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.
-  - [x] Native text layout/overflow controls: `text_align` (`left`/`center`/`right`/`fill`), state-aware `wrap`, compile-time `wrap_mode` (`word`/`char`/`word_char`), `ellipsize` (`none`/`start`/`middle`/`end`), and positive `max_lines` lower directly to `GtkLabel`/Pango layout controls. Variable font axes, richer weight/style enums, and responsive typography remain future typography work.
+  - [x] Native text family/slant/decoration/spacing controls: compile-time `fontFamily`, `italic`, `underline`, `strikethrough`, `letterSpacing`, and `lineHeightPercent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.
+  - [x] Native text layout/overflow controls: `textAlign` (`left`/`center`/`right`/`fill`), state-aware `wrap`, compile-time `wrapMode` (`word`/`char`/`wordChar`), `ellipsize` (`none`/`start`/`middle`/`end`), and positive `maxLines` lower directly to `GtkLabel`/Pango layout controls. Variable font axes, richer weight/style enums, and responsive typography remain future typography work.
 - [x] Spacing.
   - [x] Flat-grid `grid padding: N` is source-level layout data and lowers to native root-grid margins; `grid gap` already lowers to native row/column spacing.
-  - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `margin_top`/`margin_bottom`/`margin_start`/`margin_end`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `align_x` / `align_y` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
-  - [x] Every built-in element also has compile-time non-negative inner `padding` with `padding_top`/`padding_bottom`/`padding_start`/`padding_end` overrides, lowered into the existing native element stylesheet without introducing wrapper controls.
+  - [x] Every built-in element has compile-time non-negative `margin` plus per-edge `marginTop`/`marginBottom`/`marginStart`/`marginEnd`, with per-edge values overriding the common margin and lowering directly onto the existing native control. Common `alignX` / `alignY` (`start`/`center`/`end`/`fill`) provide explicit cell alignment without layout-wrapper elements.
+  - [x] Every built-in element also has compile-time non-negative inner `padding` with `paddingTop`/`paddingBottom`/`paddingStart`/`paddingEnd` overrides, lowered into the existing native element stylesheet without introducing wrapper controls.
 - [x] Borders/radii.
-  - [x] Bootstrap common `border_width: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `border_color` shares the validated hexadecimal color contract.
-  - [x] Per-edge border widths (`border_top_width` / `border_bottom_width` / `border_start_width` / `border_end_width`), per-corner radii, and explicit `border_style` (`none`/`solid`/`dashed`/`dotted`/`double`) lower through GTK's standard CSS border surface. A positive width still defaults to `solid` when no style is supplied.
+  - [x] Bootstrap common `borderWidth: i64` and `radius: i64` are non-negative compile-time dimensions and lower to native border width/style and border radius on the existing element; `borderColor` shares the validated hexadecimal color contract.
+  - [x] Per-edge border widths (`borderTopWidth` / `borderBottomWidth` / `borderStartWidth` / `borderEndWidth`), per-corner radii, and explicit `borderStyle` (`none`/`solid`/`dashed`/`dotted`/`double`) lower through GTK's standard CSS border surface. A positive width still defaults to `solid` when no style is supplied.
 - [x] Shadows.
-  - [x] Bootstrap common native shadows use compile-time `shadow_color`, `shadow_blur`, `shadow_offset_x`, and `shadow_offset_y` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
+  - [x] Bootstrap common native shadows use compile-time `shadowColor`, `shadowBlur`, `shadowOffsetX`, and `shadowOffsetY` properties on existing flat elements; Linux lowers them directly to GTK CSS `box-shadow` without wrapper controls, with validated hexadecimal color and non-negative blur. More advanced spread/inset/elevation/theme semantics remain future styling work.
 - [x] Clipping.
   - [x] Bootstrap common `clip: bool` is state-aware and lowers to the native GTK overflow mode on the existing element; changing the driving Flux state refreshes clipping in place without wrapper widgets. Shape/path clipping remains future rendering work.
 - [x] Transforms.
-  - [x] Common native transforms on every built-in element: typed `translate_x`, `translate_y`, `rotate_degrees`, uniform `scale_percent`, axis overrides (`scale_x_percent` / `scale_y_percent`), `skew_x_degrees` / `skew_y_degrees`, and percentage transform origins lower directly to GTK4's supported CSS transform surface on the existing control. Compile-time values fold into the static element stylesheet; state-derived primitive expressions reuse a persistent per-element CSS provider refreshed by the existing functional UI invalidation path, so button/hover/focus transitions can move/rotate/scale/skew controls without wrapper widgets. Animated transitions remain tracked separately under the animation/property-transition roadmap rather than making base transform semantics depend on an animation system.
+  - [x] Common native transforms on every built-in element: typed `translateX`, `translateY`, `rotateDegrees`, uniform `scalePercent`, axis overrides (`scaleXPercent` / `scaleYPercent`), `skewXDegrees` / `skewYDegrees`, and percentage transform origins lower directly to GTK4's supported CSS transform surface on the existing control. Compile-time values fold into the static element stylesheet; state-derived primitive expressions reuse a persistent per-element CSS provider refreshed by the existing functional UI invalidation path, so button/hover/focus transitions can move/rotate/scale/skew controls without wrapper widgets. Animated transitions remain tracked separately under the animation/property-transition roadmap rather than making base transform semantics depend on an animation system.
 - [x] Light/dark themes.
   - [x] Bootstrap application-level `theme: "system" | "light" | "dark"` metadata is compile-time validated and lowers to the native GTK theme preference when explicitly light/dark; `system` leaves the platform preference untouched. Theme tokens, runtime theme switching, and per-view overrides remain future work.
 - [ ] Design tokens/variables.
 - [ ] System theme integration.
 - [ ] Device/window/orientation queries.
-  - [x] Bootstrap root-view environment exposes read-only typed `window_width: i64`, `window_height: i64`, `window_is_landscape: bool`, `window_is_portrait: bool`, and `display_scale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and mobile orientation semantics remain pending.
+  - [x] Bootstrap root-view environment exposes read-only typed `windowWidth: i64`, `windowHeight: i64`, `windowIsLandscape: bool`, `windowIsPortrait: bool`, and `displayScale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and mobile orientation semantics remain pending.
 - [ ] Adaptive components where platform differences are valuable.
   - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
   - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to the native GTK `suggested-action` style class without exposing platform widget APIs in Flux source.
 - [ ] Animation timelines.
 - [ ] Easing/springs.
-  - [x] Bootstrap property transitions accept compile-time `transition_easing` values `linear`, `ease`, `ease_in`, `ease_out`, and `ease_in_out`, mapped to native GTK CSS timing functions. Spring curves remain pending.
+  - [x] Bootstrap property transitions accept compile-time `transitionEasing` values `linear`, `ease`, `easeIn`, `easeOut`, and `easeInOut`, mapped to native GTK CSS timing functions. Spring curves remain pending.
 - [x] Property transitions.
-  - [x] Every built-in element accepts non-negative compile-time `transition_ms` plus optional `transition_delay_ms` / `transition_easing`. Linux lowers these to standard GTK CSS transitions on `all` animatable properties; this already animates state-driven transform changes without an animation object model. Reduced-motion policy and selective transition-property syntax remain separate follow-up work.
+  - [x] Every built-in element accepts non-negative compile-time `transitionMs` plus optional `transitionDelayMs` / `transitionEasing`. Linux lowers these to standard GTK CSS transitions on `all` animatable properties; this already animates state-driven transform changes without an animation object model. Reduced-motion policy and selective transition-property syntax remain separate follow-up work.
 - [ ] Layout transitions.
 - [ ] Gesture-driven animation.
 - [ ] Frame synchronization.
@@ -653,7 +654,7 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 20 — Accessibility and internationalization
 
 - [ ] Semantic roles.
-- [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibility_label: str` and `accessibility_description: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, refreshes state-derived accessible text alongside the visible UI, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
+- [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibilityLabel: str` and `accessibilityDescription: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, refreshes state-derived accessible text alongside the visible UI, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
 - [ ] Actions.
 - [ ] Focus ordering.
 - [ ] Screen-reader bridges.

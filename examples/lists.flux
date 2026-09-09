@@ -6,6 +6,14 @@ fn allPositive(current: bool, value: i64) -> bool {
     return current && value > 0
 }
 
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn greaterThanTwo(value: i64) -> bool {
+    return value > 2
+}
+
 fn main() -> i64 {
     let values: i64[] = [1, 2, 3, 4, 5]
     let middle: i64[] = values[1:4]
@@ -25,8 +33,8 @@ fn main() -> i64 {
     print reverseWindow.first
     print reverseWindow.last
     print values.length
-    print middle.is_empty
-    print middle.is_not_empty
+    print middle.isEmpty
+    print middle.isNotEmpty
     print values.first
     print values.last
     let one: i64[] = values[2:3]
@@ -41,8 +49,8 @@ fn main() -> i64 {
     print window.first
     print window.last
     let empty: i64[] = values[:0]
-    let safeFirst: i64 = empty | first_or 99
-    let safeLast: i64 = empty | last_or 88
+    let safeFirst: i64 = empty | firstOrDefault 99
+    let safeLast: i64 = empty | lastOrDefault 88
     print safeFirst
     print safeLast
     let checks: bool[] = [value > 2 for value in values]
@@ -61,6 +69,21 @@ fn main() -> i64 {
     print total
     print positive
     print emptyTotal
+    let mapped: i64[] = reversed | map double
+    let filtered: i64[] = values | filter greaterThanTwo
+    let selected: i64[] = values | where greaterThanTwo
+    let mappedFiltered: i64[] = values | map double | filter greaterThanTwo
+    let mappedTotal: i64 = values | map double | reduce add
+    print mapped.first
+    print mapped.last
+    print filtered.length
+    print filtered.first
+    print filtered.last
+    print selected.length
+    print mappedFiltered.length
+    print mappedFiltered.first
+    print mappedFiltered.last
+    print mappedTotal
     for value in middle:
         print value
     for index, value in middle:

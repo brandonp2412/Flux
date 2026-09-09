@@ -8,17 +8,17 @@ struct FileStorage {
 }
 
 impl Storage for FileStorage {
-    load: file_load
-    save: file_save
+    load: fileLoad
+    save: fileSave
 }
 
-fn file_load(storage: FileStorage, path: str) -> (str, error) {
+fn fileLoad(storage: FileStorage, path: str) -> (str, error) {
     print(storage.root)
     print(path)
     return "loaded", nil
 }
 
-fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
+fn fileSave(storage: FileStorage, path: str, data: str, *, durable: bool) -> error {
     print(storage.root)
     print(path)
     print(data)

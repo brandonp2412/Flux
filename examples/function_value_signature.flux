@@ -4,7 +4,7 @@ fn apply(transform: Mapper) -> bool {
     return transform(42, "Flux")
 }
 
-fn accepts(value: i64, label: str) -> bool {
+fn accepts(_value: i64, _label: str) -> bool {
     return true
 }
 

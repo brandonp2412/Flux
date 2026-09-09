@@ -4,20 +4,20 @@ fn load(path: str) -> (str, error) {
     return "configuration loaded", nil
 }
 
-fn load_config(path: str) -> (str, error) {
+fn loadConfig(path: str) -> (str, error) {
     let data: str, err: error = load(path) else return
     return data, nil
 }
 
 fn main() -> i64 {
-    let data: str, err: error = load_config("settings.flux")
+    let data: str, err: error = loadConfig("settings.flux")
     if err != nil:
         print(err)
     print(data)
 
-    let missing: str, missing_err: error = load_config("")
-    if missing_err != nil:
-        print(missing_err)
+    let missing: str, missingErr: error = loadConfig("")
+    if missingErr != nil:
+        print(missingErr)
     print(missing)
     return 0
 }
