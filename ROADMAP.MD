@@ -56,6 +56,8 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [x] No widget/controller/view-model object hierarchies in UI code.
 - [x] Immutable values by default; local mutation is explicit and locally visible through typed `var` bindings and assignment; ordinary `let` bindings, parameters, destructured bindings, and loop variables remain immutable.
 - [ ] Rust-class memory-safety goals without requiring Rust-level annotation density in normal application code.
+- [ ] Rust-class native performance is a non-negotiable release-build target: generated programs should remain in the C/C++/Rust performance class without a mandatory VM, garbage collector, interpreter, or framework runtime tax.
+- [ ] Zero-cost abstractions by default: high-level language/library/UI constructs must compile away when their semantics require no runtime work, and redundant bounds/safety/dynamic-dispatch checks should be eliminated when statically proven unnecessary.
 - [ ] Native AOT output for application and server targets.
 - [ ] Portable source should lower to real platform implementations rather than a browser/VM/widget-emulation wrapper.
 - [ ] The LSP, debugger, profiler, formatter, test runner, package tooling, and hot reload are first-class parts of the language product.
@@ -371,6 +373,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 # Milestone 7 — Typed Flux IR and optimizing native backend
 
+Performance acceptance for this milestone is semantic as well as benchmarked: abstractions that can disappear must disappear, required safety checks must remain correct, and representative optimized Flux programs must be continuously compared against equivalent optimized Rust/C baselines so regressions are visible before release.
+
 - [ ] Typed Flux IR with source spans.
   - [x] Bootstrap per-function semantic CFG nodes retain original source spans, function parameter/return types, and explicit typed local-binding metadata while expressions remain in the checked AST.
 - [ ] Ownership facts represented in IR.
@@ -387,9 +391,11 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Escape analysis.
 - [ ] Bounds-check elimination where proven safe.
 - [ ] Devirtualization/interface specialization.
-- [ ] Target-aware optimization pipeline.
+- [ ] Target-aware optimization pipeline benchmarked against equivalent optimized Rust/C implementations for representative compute, collection, dispatch, and native-UI workloads; performance regressions become release blockers rather than accepted framework overhead.
 - [ ] Native object generation through an LLVM-class backend initially.
+- [ ] Prove and eliminate redundant safety checks (including bounds checks) and abstraction overhead through CFG/SSA analysis while preserving checks whose safety preconditions cannot be established statically.
 - [ ] LTO.
+- [ ] Continuous performance harness with optimized Flux-vs-Rust/C benchmark baselines, code-size tracking, and release thresholds for representative workloads.
 - [ ] Tree shaking/dead symbol elimination.
 - [ ] Remove bootstrap C as the semantic backend after parity is proven.
 

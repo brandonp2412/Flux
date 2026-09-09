@@ -1,6 +1,6 @@
 # Flux
 
-Flux is an experimental compiled language for building native applications and services from one codebase without a widget-emulation runtime. The long-term target is maximally optimized platform-native binaries for desktop, server, and other supported targets.
+Flux is an experimental compiled language for building native applications and services from one codebase without a widget-emulation runtime. The long-term target is maximally optimized platform-native binaries for desktop, server, and other supported targets, with Rust-class safety and Rust-class native performance as non-negotiable release goals.
 
 ## Language direction
 
@@ -13,8 +13,9 @@ Flux is an experimental compiled language for building native applications and s
 - Function-first architecture built from data, functions, and interfaces rather than classes, inheritance, mixins, or widget/controller object hierarchies.
 - No generics in the Flux language.
 - No exception / try-catch model. Recoverable failures are represented explicitly in return values.
-- Rust-like memory-safety goals: ownership, borrowing, lifetime validation, and no unchecked dangling references in safe Flux.
-- Native ahead-of-time compilation.
+- Rust-class memory-safety goals: ownership, borrowing, lifetime validation, and no unchecked dangling references in safe Flux.
+- Rust-class native performance is a language contract: release builds should stay in the C/C++/Rust performance class without a mandatory VM, garbage collector, interpreter, or framework runtime tax.
+- Native ahead-of-time compilation, with zero-cost abstractions as the default: high-level Flux constructs should compile away when their semantics do not require runtime work, and provably redundant safety checks should be eliminated.
 - A flat, HTML-like declarative UI surface with grid-first layout rather than deeply nested widget trees; the bootstrap parser now supports top-level `view` declarations with sibling grid placement syntax.
 - Tooling is part of the language product: LSP, debugger, and profiler are first-class deliverables.
 
@@ -44,7 +45,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - the first ownership slice: one alias-aware structural `Copy` classification shared by semantic validation, direct local transfers that move non-copy values with use-after-move rejection and conservative branch merging, plus non-consuming immutable list/view reads and parameters; loop moves and general call/return/field borrow semantics remain pending typed-CFG ownership analysis;
 - compiler tests and runnable native examples, including typed shell-style call flow, local immutable lists/indexing/slicing/comprehensions, nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, named/capture-free anonymous higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, parameterized view composition, and native GTK4/Wayland Text/Button/TextInput/Image/Toggle/Radio controls with typed callback dispatch, live text-change/submit callbacks, hover/leave/focus events, button keyboard shortcuts, autofocus, password masking, maximum input length, file-backed images, tooltips, accessible labels/descriptions, Pango-backed family/slant/decoration/spacing typography, static or state-driven transforms, and read-only window/orientation/display-scale bindings for responsive property expressions.
 
-The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering.
+The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering. Flux's performance target is safe Rust-class native code: the compiler should not preserve abstraction overhead that can be proven unnecessary, while retaining required safety semantics when they cannot be optimized away.
 
 ## Create a project
 

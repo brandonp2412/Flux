@@ -721,7 +721,17 @@ work 42 | report &
 
 Parenthesized calls remain valid and are required for named arguments. These shell-inspired forms are typed function syntax, not a subprocess command language.
 
+## Performance and safety contract
+
+Flux targets safe Rust-class native performance. Release builds are expected to stay in the C/C++/Rust performance class while preserving Flux's memory-safety guarantees. The language therefore has no mandatory VM, garbage collector, interpreter, or cross-platform widget-emulation runtime.
+
+High-level abstractions are zero-cost by default: if the compiler can prove that an abstraction, bounds check, dynamic dispatch, ownership check, or other safety machinery is unnecessary at runtime, it must be eliminated. When a safety precondition cannot be proven statically, Flux keeps the minimum runtime work required by the language semantics rather than silently weakening safety.
+
+Portable Flux code should lower to real target-native implementations. Cross-platform convenience is not permission to insert a framework tax into every program; target backends are expected to exploit platform APIs, target-specific lowering, inlining, specialization, escape analysis, bounds-check elimination, dead-code elimination, and link-time optimization where applicable.
+
 ## Native compilation architecture
+
+This bootstrap C path is an implementation stage, not a relaxation of the performance contract. The intended optimizing backend will lower typed Flux IR directly through an LLVM-class native backend once parity is established.
 
 Bootstrap pipeline:
 
