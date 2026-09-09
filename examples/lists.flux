@@ -83,6 +83,9 @@ fn main() -> i64 {
     let nested: i64[][] = [evens, reversed[:2]]
     let flattened: i64[] = nested | flatten
     let flattenedTotal: i64 = nested | flatten | reduce add
+    let sortable: i64[] = [4, 1, 3, 2, 3]
+    let ordered: i64[] = sortable[::-1] | sorted
+    let orderedDoubled: i64[] = sortable[::-1] | sorted | map double
     print mapped.first
     print mapped.last
     print filtered.length
@@ -108,6 +111,12 @@ fn main() -> i64 {
     print flattened.first
     print flattened.last
     print flattenedTotal
+    print sortable.first
+    print sortable.last
+    print ordered.first
+    print ordered.last
+    print orderedDoubled.first
+    print orderedDoubled.last
     for value in middle:
         print value
     for index, value in middle:

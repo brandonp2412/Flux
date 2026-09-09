@@ -2059,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_sorted(expr).is_some() => {
+                emit_sequence_sorted_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_flatten(expr).is_some() => {
                 emit_sequence_flatten_binding(
                     out,
@@ -2745,6 +2756,20 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
     }
 }
 
+fn sequence_sorted(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "sorted" && args.len() == 1 => Some(&args[0]),
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "sorted" && args.is_empty() => Some(input),
+        _ => None,
+    }
+}
+
 fn sequence_flatten(expr: &Expr) -> Option<&Expr> {
     match &expr.kind {
         ExprKind::Call {
@@ -2805,9 +2830,110 @@ fn emit_sequence_list_value(
         emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_flatten(expr).is_some() {
         emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)
+    } else if sequence_sorted(expr).is_some() {
+        emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)
     } else {
         emit_expr(expr, env, signatures)
     }
+}
+
+fn sorted_less(left: &str, right: &str, ty: &Type) -> Option<String> {
+    match ty {
+        Type::I64 | Type::Bool => Some(format!("({left} < {right})")),
+        Type::Str => Some(format!("(strcmp({left}, {right}) < 0)")),
+        _ => None,
+    }
+}
+
+fn emit_sequence_sorted_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "sorted binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_sorted_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_sorted(expr)
+        .ok_or_else(|| diag(expr.span, "invalid sorted call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let Type::List(element) = &result_ty else {
+        return Err(diag(expr.span, "sorted result must have a list type"));
+    };
+    if signatures.canonical_type(&source.ty) != result_ty {
+        return Err(diag(
+            expr.span,
+            "sorted input type mismatch reached code generation",
+        ));
+    }
+    let element_ty = signatures.canonical_type(element);
+    let source_name = format!("flux__sorted_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__sorted_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__sorted_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let key_name = format!("flux__sorted_key_{}", *temp_counter);
+    *temp_counter += 1;
+    let cursor_name = format!("flux__sorted_cursor_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__sorted_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    let less = sorted_less(
+        &key_name,
+        &format!("{buffer_name}[{cursor_name} - 1]"),
+        &element_ty,
+    )
+    .ok_or_else(|| diag(expr.span, "sorted requires ordered scalar elements"))?;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {key_name} = {buffer_name}[{index_name}];\n{pad}    size_t {cursor_name} = {index_name};\n{pad}    while ({cursor_name} > 0 && {less}) {{ {buffer_name}[{cursor_name}] = {buffer_name}[{cursor_name} - 1]; --{cursor_name}; }}\n{pad}    {buffer_name}[{cursor_name}] = {key_name};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {source_name}.len, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
 }
 
 fn emit_sequence_flatten_binding(
@@ -3739,6 +3865,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "sorted" => {
+            return Err(diag(
+                expr.span,
+                "sorted currently lowers only when bound directly to an immutable local value",
             ));
         }
         ExprKind::Call { name, .. } if name == "flatten" => {

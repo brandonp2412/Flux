@@ -620,6 +620,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "concat"
                 | "distinct"
                 | "flatten"
+                | "sorted"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -3014,6 +3015,33 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "sorted" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "sorted does not accept named arguments"));
+            }
+            if args.len() != 1 {
+                return Err(diag(expr.span, "sorted expects exactly one list argument"));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(element) = &list_ty else {
+                return Err(diag(args[0].span, "sorted expects a list argument"));
+            };
+            let element_ty = signatures.canonical_type(element);
+            if !matches!(element_ty, Type::I64 | Type::Bool | Type::Str) {
+                return Err(diag(
+                    args[0].span,
+                    &format!(
+                        "sorted requires ordered scalar list elements, got {}",
+                        element_ty.name()
+                    ),
+                ));
+            }
+            Ok(list_ty)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "flatten" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "flatten does not accept named arguments"));
@@ -3808,6 +3836,7 @@ fn value_types_of_expr(
                         | "concat"
                         | "distinct"
                         | "flatten"
+                        | "sorted"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

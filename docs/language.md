@@ -493,6 +493,7 @@ let joinedDoubled: i64[] = values[::2] | concat values[::-1][:2] | map double
 let unique: i64[] = values | concat values[::-1] | distinct
 let nested: i64[][] = [values[::2], values[::-1][:2]]
 let flat: i64[] = nested | flatten
+let ordered: i64[] = [4, 1, 3, 2] | sorted
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -520,6 +521,8 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 `distinct(list)` removes duplicate scalar values while preserving the first occurrence of each value. It currently supports `i64[]`, `bool[]`, `str[]`, and `error[]`, whose equality rules are already defined by Flux; aggregate, nested-list, and function elements are rejected rather than receiving implicit deep equality. Strided inputs are consumed in logical order and the result is a stack-backed local list that can feed later pipeline stages.
 
 `flatten(nested)` removes exactly one list layer, converting `T[][]` to `T[]`. Both the outer nested list and each inner list may be strided views; flattening walks their logical order, checks total output length overflow before allocating the result buffer, and then writes one contiguous stack-backed local list. It does not recursively flatten arbitrary depth.
+
+`sorted(list)` returns a new ascending list without mutating its source. The bootstrap supports `i64[]`, `bool[]`, and `str[]`; booleans order `false` before `true`, strings use lexical ordering, and other element types are rejected until Flux has an explicit ordering contract. Strided inputs are read in logical order, the stable result is stack-backed, and pipelines such as `values[::-1] | sorted | map double` compose normally.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 
