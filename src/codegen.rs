@@ -2059,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_distinct(expr).is_some() => {
+                emit_sequence_distinct_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_concat(expr).is_some() => {
                 emit_sequence_concat_binding(
                     out,
@@ -2723,6 +2734,20 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
     }
 }
 
+fn sequence_distinct(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "distinct" && args.len() == 1 => Some(&args[0]),
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "distinct" && args.is_empty() => Some(input),
+        _ => None,
+    }
+}
+
 fn sequence_concat(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match &expr.kind {
         ExprKind::Call {
@@ -2751,9 +2776,121 @@ fn emit_sequence_list_value(
         emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_concat(expr).is_some() {
         emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)
+    } else if sequence_distinct(expr).is_some() {
+        emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
     } else {
         emit_expr(expr, env, signatures)
     }
+}
+
+fn distinct_equality(left: &str, right: &str, ty: &Type) -> Option<String> {
+    match ty {
+        Type::I64 | Type::Bool => Some(format!("({left} == {right})")),
+        Type::Str => Some(format!("(strcmp({left}, {right}) == 0)")),
+        Type::Error => Some(format!("flux_error_eq({left}, {right})")),
+        _ => None,
+    }
+}
+
+fn emit_sequence_distinct_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "distinct binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_distinct_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_distinct(expr)
+        .ok_or_else(|| diag(expr.span, "invalid distinct call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let Type::List(element) = &result_ty else {
+        return Err(diag(expr.span, "distinct result must have a list type"));
+    };
+    if signatures.canonical_type(&source.ty) != result_ty {
+        return Err(diag(
+            expr.span,
+            "distinct input type mismatch reached code generation",
+        ));
+    }
+    let element_ty = signatures.canonical_type(element);
+    let source_name = format!("flux__distinct_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__distinct_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__distinct_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__distinct_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let seen_name = format!("flux__distinct_seen_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__distinct_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let duplicate_name = format!("flux__distinct_duplicate_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__distinct_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    let equality = distinct_equality(
+        &format!("{buffer_name}[{seen_name}]"),
+        &item_name,
+        &element_ty,
+    )
+    .ok_or_else(|| diag(expr.span, "distinct requires scalar equality"))?;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    for (size_t {seen_name} = 0; {seen_name} < {count_name}; ++{seen_name}) {{ if ({equality}) {{ {duplicate_name} = true; break; }} }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    if (!{duplicate_name}) {buffer_name}[{count_name}++] = {item_name};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
 }
 
 fn emit_sequence_concat_binding(
@@ -3482,6 +3619,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "distinct" => {
+            return Err(diag(
+                expr.span,
+                "distinct currently lowers only when bound directly to an immutable local value",
             ));
         }
         ExprKind::Call { name, .. } if name == "concat" => {

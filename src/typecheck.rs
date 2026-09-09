@@ -618,6 +618,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "filter"
                 | "where"
                 | "concat"
+                | "distinct"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -3012,6 +3013,36 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "distinct" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "distinct does not accept named arguments"));
+            }
+            if args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    "distinct expects exactly one list argument",
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(element) = &list_ty else {
+                return Err(diag(args[0].span, "distinct expects a list argument"));
+            };
+            let element_ty = signatures.canonical_type(element);
+            if !matches!(element_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
+                return Err(diag(
+                    args[0].span,
+                    &format!(
+                        "distinct requires list elements with scalar equality, got {}",
+                        element_ty.name()
+                    ),
+                ));
+            }
+            Ok(list_ty)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "concat" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "concat does not accept named arguments"));
@@ -3747,6 +3778,7 @@ fn value_types_of_expr(
                         | "filter"
                         | "where"
                         | "concat"
+                        | "distinct"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

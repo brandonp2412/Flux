@@ -1524,6 +1524,84 @@ fn main() -> i64 {
 }
 
 #[test]
+fn distinct_is_stable_scalar_and_composable() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 1, 3, 2, 1, 2][::-1]
+    let unique: i64[] = values | distinct
+    let doubled: i64[] = values | distinct | map double
+    let total: i64 = values | distinct | reduce add
+    let words: str[] = ["flux", "native", "flux", "fast", "native"]
+    let uniqueWords: str[] = words | distinct
+    print unique.length
+    print unique.first
+    print unique.last
+    print doubled.first
+    print doubled.last
+    print total
+    print uniqueWords.length
+    print uniqueWords.first
+    print uniqueWords.last
+    return 0
+}
+"#;
+
+    check_source(source).expect("distinct should typecheck for scalar lists");
+    let generated = compile_to_c(source).expect("distinct should lower natively");
+    assert!(generated.contains("flux__distinct_source_"));
+    assert!(generated.contains("flux__distinct_buffer_"));
+    assert!(generated.contains("flux__distinct_duplicate_"));
+    assert!(generated.contains("strcmp(flux__distinct_buffer_"));
+    assert!(generated.contains("flux_list_at(flux__distinct_source_"));
+    assert!(generated.contains("flux__fn_double(flux__transform_item_"));
+    assert!(generated.contains("flux__fn_add(flux__local_total"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("distinct source should format");
+    assert!(formatted.contains("let unique: i64[] = values | distinct"));
+    assert!(formatted.contains("let doubled: i64[] = values | distinct | map double"));
+    assert!(formatted.contains("let total: i64 = values | distinct | reduce add"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted distinct should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_distinct_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let value: i64 = distinct(7)
+    print value
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("distinct should require a list");
+    assert!(error.message.contains("distinct expects a list argument"));
+
+    let nested = r#"
+fn main() -> i64 {
+    let nested: i64[][] = [[1], [1]]
+    let unique: i64[][] = nested | distinct
+    print unique.length
+    return 0
+}
+"#;
+    let error = check_source(nested).expect_err("distinct should reject aggregate equality");
+    assert!(
+        error
+            .message
+            .contains("distinct requires list elements with scalar equality, got i64[]")
+    );
+}
+
+#[test]
 fn fuses_map_filter_pipelines_and_terminal_reductions() {
     let source = r#"
 fn double(value: i64) -> i64 {
