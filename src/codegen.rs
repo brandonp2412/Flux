@@ -4,10 +4,18 @@ use crate::ast::{
     BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg, Program,
     ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
+use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
+    emit_c_with_source_paths(program, signatures, &HashMap::new())
+}
+
+pub fn emit_c_with_source_paths(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+) -> Result<String, Diagnostic> {
     let mut out = String::new();
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
@@ -120,13 +128,19 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push('\n');
     emit_interface_dispatch_helpers(&mut out, program, signatures)?;
     for function in &anonymous_functions {
-        emit_anonymous_function(&mut out, function, signatures)?;
+        emit_anonymous_function(&mut out, function, signatures, source_paths)?;
         out.push('\n');
     }
 
     let mut temp_counter = 0usize;
     for function in &program.functions {
-        emit_function(&mut out, function, signatures, &mut temp_counter)?;
+        emit_function(
+            &mut out,
+            function,
+            signatures,
+            &mut temp_counter,
+            source_paths,
+        )?;
         out.push('\n');
     }
 
@@ -2113,6 +2127,7 @@ fn emit_anonymous_function(
     out: &mut String,
     expr: &Expr,
     signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
     let ExprKind::AnonymousFunction { params, body, .. } = &expr.kind else {
         return Err(diag(
@@ -2127,6 +2142,7 @@ fn emit_anonymous_function(
             "anonymous function did not produce a function type",
         ));
     };
+    emit_source_line(out, expr.span, source_paths);
     out.push_str(&anonymous_function_prototype(expr, signatures)?);
     out.push_str(" {\n");
     let mut env = HashMap::new();
@@ -2348,12 +2364,40 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
     }
 }
 
+fn source_span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
+    (span.source_id.value(), span.line, span.column, span.length)
+}
+
+fn emit_source_line(out: &mut String, span: SourceSpan, source_paths: &HashMap<SourceId, String>) {
+    let path = source_paths
+        .get(&span.source_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            if span.source_id == SourceId::UNKNOWN {
+                "flux.flux".to_string()
+            } else {
+                format!("flux-source-{}.flux", span.source_id.value())
+            }
+        });
+    let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+    out.push_str(&format!("#line {} \"{}\"\n", span.line.max(1), escaped));
+}
+
 fn emit_function(
     out: &mut String,
     function: &Function,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
+    let cfg = crate::ir::ControlFlowGraph::from_function(function, signatures);
+    let reachable_spans = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .map(|node| source_span_key(node.span))
+        .collect::<HashSet<_>>();
+    emit_source_line(out, function.span, source_paths);
     out.push_str(&function_prototype(function, signatures));
     out.push_str(" {\n");
     let mut env = HashMap::new();
@@ -2367,10 +2411,21 @@ fn emit_function(
         &mut env,
         signatures,
         temp_counter,
-        function,
+        BlockEmitContext {
+            current_function: function,
+            source_paths,
+            reachable_spans: &reachable_spans,
+        },
     )?;
     out.push_str("}\n");
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct BlockEmitContext<'a> {
+    current_function: &'a Function,
+    source_paths: &'a HashMap<SourceId, String>,
+    reachable_spans: &'a HashSet<(u32, usize, usize, usize)>,
 }
 
 fn emit_block(
@@ -2380,9 +2435,16 @@ fn emit_block(
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
     temp_counter: &mut usize,
-    current_function: &Function,
+    context: BlockEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
     for stmt in body {
+        if !context
+            .reachable_spans
+            .contains(&source_span_key(stmt.span))
+        {
+            continue;
+        }
+        emit_source_line(out, stmt.span, context.source_paths);
         let pad = "    ".repeat(depth);
         match &stmt.kind {
             StmtKind::Let { name, ty, expr, .. } if sequence_chunked(expr).is_some() => {
@@ -2524,7 +2586,7 @@ fn emit_block(
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
                 if *else_return {
                     let error_index = bindings.len() - 1;
-                    let return_tag = multi_return_struct_name(&current_function.name);
+                    let return_tag = multi_return_struct_name(&context.current_function.name);
                     let return_temp = format!("flux__return_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
@@ -2557,7 +2619,7 @@ fn emit_block(
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
                 if *else_return {
                     let error_index = bindings.len() - 1;
-                    let return_tag = multi_return_struct_name(&current_function.name);
+                    let return_tag = multi_return_struct_name(&context.current_function.name);
                     let return_temp = format!("flux__return_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
@@ -2691,18 +2753,20 @@ fn emit_block(
             StmtKind::Return(values) if values.is_empty() => {
                 out.push_str(&format!("{pad}return;\n"));
             }
-            StmtKind::Return(values) if values.len() == 1 && current_function.returns.len() > 1 => {
+            StmtKind::Return(values)
+                if values.len() == 1 && context.current_function.returns.len() > 1 =>
+            {
                 let (value, source_tag, _) = emit_multi_expr(&values[0], env, signatures)?;
                 let source_temp = format!("flux__forward_{}", *temp_counter);
                 *temp_counter += 1;
-                let return_tag = multi_return_struct_name(&current_function.name);
+                let return_tag = multi_return_struct_name(&context.current_function.name);
                 let return_temp = format!("flux__return_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}struct {source_tag} {source_temp} = {value};\n"
                 ));
                 out.push_str(&format!("{pad}struct {return_tag} {return_temp};\n"));
-                for index in 0..current_function.returns.len() {
+                for index in 0..context.current_function.returns.len() {
                     out.push_str(&format!(
                         "{pad}{return_temp}.v{index} = {source_temp}.v{index};\n"
                     ));
@@ -2739,7 +2803,7 @@ fn emit_block(
                 out.push_str(&format!("{pad}return {};\n", value.code));
             }
             StmtKind::Return(values) => {
-                let tag = multi_return_struct_name(&current_function.name);
+                let tag = multi_return_struct_name(&context.current_function.name);
                 let temp = format!("flux__return_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp};\n"));
@@ -2820,36 +2884,58 @@ fn emit_block(
                 else_body,
                 ..
             } => {
-                let cond = emit_expr(cond, env, signatures)?;
-                out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
-                let mut then_env = env.clone();
-                emit_block(
-                    out,
-                    body,
-                    depth + 1,
-                    &mut then_env,
-                    signatures,
-                    temp_counter,
-                    current_function,
-                )?;
-                if else_body.is_empty() {
-                    out.push_str(&format!("{pad}}}\n"));
-                } else {
-                    out.push_str(&format!("{pad}}} else {{\n"));
-                    let mut else_env = env.clone();
+                if let Some(ConstantValue::Bool(condition)) =
+                    fold_primitive_expr(cond, env, signatures)?
+                {
+                    let selected = if condition { body } else { else_body };
+                    let mut nested = env.clone();
                     emit_block(
                         out,
-                        else_body,
-                        depth + 1,
-                        &mut else_env,
+                        selected,
+                        depth,
+                        &mut nested,
                         signatures,
                         temp_counter,
-                        current_function,
+                        context,
                     )?;
-                    out.push_str(&format!("{pad}}}\n"));
+                } else {
+                    let cond = emit_expr(cond, env, signatures)?;
+                    out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
+                    let mut then_env = env.clone();
+                    emit_block(
+                        out,
+                        body,
+                        depth + 1,
+                        &mut then_env,
+                        signatures,
+                        temp_counter,
+                        context,
+                    )?;
+                    if else_body.is_empty() {
+                        out.push_str(&format!("{pad}}}\n"));
+                    } else {
+                        out.push_str(&format!("{pad}}} else {{\n"));
+                        let mut else_env = env.clone();
+                        emit_block(
+                            out,
+                            else_body,
+                            depth + 1,
+                            &mut else_env,
+                            signatures,
+                            temp_counter,
+                            context,
+                        )?;
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
                 }
             }
             StmtKind::While { cond, body } => {
+                if matches!(
+                    fold_primitive_expr(cond, env, signatures)?,
+                    Some(ConstantValue::Bool(false))
+                ) {
+                    continue;
+                }
                 let cond = emit_expr(cond, env, signatures)?;
                 out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond.code)));
                 let mut nested = env.clone();
@@ -2860,7 +2946,7 @@ fn emit_block(
                     &mut nested,
                     signatures,
                     temp_counter,
-                    current_function,
+                    context,
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -2872,6 +2958,18 @@ fn emit_block(
                 body,
                 ..
             } => {
+                let folded_start = fold_primitive_expr(start, env, signatures)?;
+                let folded_end = fold_primitive_expr(end, env, signatures)?;
+                if let (Some(ConstantValue::I64(start_value)), Some(ConstantValue::I64(end_value))) =
+                    (&folded_start, &folded_end)
+                    && if *inclusive {
+                        start_value > end_value
+                    } else {
+                        start_value >= end_value
+                    }
+                {
+                    continue;
+                }
                 let start = emit_expr(start, env, signatures)?;
                 let end = emit_expr(end, env, signatures)?;
                 let temp = format!("flux__end_{}", *temp_counter);
@@ -2899,7 +2997,7 @@ fn emit_block(
                     &mut nested,
                     signatures,
                     temp_counter,
-                    current_function,
+                    context,
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -2951,7 +3049,7 @@ fn emit_block(
                     &mut nested,
                     signatures,
                     temp_counter,
-                    current_function,
+                    context,
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -3042,7 +3140,7 @@ fn emit_block(
                                 &mut nested,
                                 signatures,
                                 temp_counter,
-                                current_function,
+                                context,
                             )?;
                             out.push_str(&format!("{pad}                break;\n"));
                             out.push_str(&format!("{pad}            }}\n"));
@@ -3054,7 +3152,7 @@ fn emit_block(
                                 &mut nested,
                                 signatures,
                                 temp_counter,
-                                current_function,
+                                context,
                             )?;
                             out.push_str(&format!("{pad}            break;\n"));
                         }
@@ -3105,7 +3203,7 @@ fn emit_block(
                             &mut nested,
                             signatures,
                             temp_counter,
-                            current_function,
+                            context,
                         )?;
                         out.push_str(&format!("{pad}}}\n"));
                     }
@@ -3140,7 +3238,7 @@ fn emit_block(
                                 &mut nested,
                                 signatures,
                                 temp_counter,
-                                current_function,
+                                context,
                             )?;
                             out.push_str(&format!("{pad}    }}\n"));
                         } else {
@@ -3152,7 +3250,7 @@ fn emit_block(
                                 &mut nested,
                                 signatures,
                                 temp_counter,
-                                current_function,
+                                context,
                             )?;
                         }
                         out.push_str(&format!("{pad}}}\n"));

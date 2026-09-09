@@ -21,6 +21,17 @@ pub struct ProjectAnalysis {
     pub sources: Vec<ProjectSource>,
 }
 
+impl ProjectAnalysis {
+    pub fn emit_c(&self) -> Result<String, Diagnostic> {
+        let source_paths = self
+            .sources
+            .iter()
+            .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
+            .collect::<HashMap<_, _>>();
+        codegen::emit_c_with_source_paths(&self.program, &self.signatures, &source_paths)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProjectAnalysisCacheStats {
     pub hits: usize,
@@ -317,7 +328,7 @@ pub fn check_with_overlays(
 
 pub fn compile_to_c(entry: &Path) -> Result<String, Diagnostic> {
     let analysis = analyze(entry).map_err(first_diagnostic)?;
-    codegen::emit_c(&analysis.program, &analysis.signatures)
+    analysis.emit_c()
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {

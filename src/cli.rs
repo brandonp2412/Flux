@@ -451,7 +451,7 @@ fn run_tests(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 test.display()
             )));
         }
-        let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
+        let generated = match analysis.emit_c() {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 eprintln!("test {} ... FAILED", test.display());
@@ -631,7 +631,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             }
         };
         let sources = analysis.sources.clone();
-        let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
+        let generated = match analysis.emit_c() {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 report_diagnostics(target, &[diagnostic], &sources);
@@ -749,7 +749,7 @@ fn start_development_build(
         }
     };
     let sources = analysis.sources.clone();
-    let generated = match fluxc::codegen::emit_c(&analysis.program, &analysis.signatures) {
+    let generated = match analysis.emit_c() {
         Ok(generated) => generated,
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);

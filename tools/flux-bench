@@ -71,14 +71,21 @@ def output_of(path):
     return run([path], capture=True).stdout.strip()
 
 
-def timed_run(path):
+def timed_run(path, repetitions):
     start = time.perf_counter_ns()
-    result = run([path], capture=True)
+    output = None
+    for _ in range(repetitions):
+        result = run([path], capture=True)
+        current = result.stdout.strip()
+        if output is None:
+            output = current
+        elif current != output:
+            raise RuntimeError(f"{path.name}: output changed within one timed batch")
     elapsed = time.perf_counter_ns() - start
-    return elapsed / 1_000_000_000, result.stdout.strip()
+    return elapsed / 1_000_000_000 / repetitions, output
 
 
-def benchmark(name, paths, runs):
+def benchmark(name, paths, runs, batch):
     expected = output_of(paths["c"])
     outputs = {language: output_of(path) for language, path in paths.items()}
     if any(value != expected for value in outputs.values()):
@@ -93,7 +100,7 @@ def benchmark(name, paths, runs):
         shift = iteration % len(languages)
         order = languages[shift:] + languages[:shift]
         for language in order:
-            elapsed, output = timed_run(paths[language])
+            elapsed, output = timed_run(paths[language], batch)
             if output != expected:
                 raise RuntimeError(f"{name}: {language} output changed during timed run")
             samples[language].append(elapsed)
@@ -113,7 +120,18 @@ def benchmark(name, paths, runs):
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark optimized Flux against safe C and Rust baselines")
-    parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=7,
+        help="number of rotated timing rounds (default: 7)",
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=3,
+        help="executions averaged inside each timing sample to reduce scheduler noise (default: 3)",
+    )
     parser.add_argument(
         "--max-ratio",
         type=float,
@@ -125,6 +143,8 @@ def main():
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be at least 1")
+    if args.batch < 1:
+        parser.error("--batch must be at least 1")
     if args.max_ratio <= 0:
         parser.error("--max-ratio must be positive")
 
@@ -136,13 +156,14 @@ def main():
     failures = []
     for name in WORKLOADS:
         paths = compile_workload(name, flux)
-        result = benchmark(name, paths, args.runs)
+        result = benchmark(name, paths, args.runs, args.batch)
         results[name] = result
         if result["flux_vs_rust"] > args.max_ratio:
             failures.append(name)
 
     report = {
         "runs": args.runs,
+        "batch": args.batch,
         "max_ratio": args.max_ratio,
         "workloads": results,
         "passed": not failures,
@@ -151,7 +172,10 @@ def main():
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print(f"Flux performance gate: {args.runs} runs, max checked-Rust ratio {args.max_ratio:.2f}x")
+        print(
+            f"Flux performance gate: {args.runs} rounds x {args.batch} executions, "
+            f"max checked-Rust ratio {args.max_ratio:.2f}x"
+        )
         for name, result in results.items():
             seconds = result["seconds"]
             sizes = result["binary_bytes"]

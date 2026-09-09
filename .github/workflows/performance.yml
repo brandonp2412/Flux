@@ -21,4 +21,4 @@ jobs:
       - name: Validate compiler
         run: cargo test --all-targets
       - name: Enforce native performance gate
-        run: ./tools/flux-bench --runs 7
+        run: ./tools/flux-bench --runs 7 --batch 3

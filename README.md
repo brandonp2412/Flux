@@ -84,13 +84,13 @@ Build it:
 ./hello
 ```
 
-Build modes are explicit and predictable: `flux build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `flux run` defaults to `debug` for development but accepts the same `--mode` override.
+Build modes are explicit and predictable: `flux build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `flux run` defaults to `debug` for development but accepts the same `--mode` override. Debug/profile builds preserve Flux source paths and statement lines through generated C `#line` metadata, so native DWARF line tables point back to the original `.flux` files rather than stdin-generated C.
 
-Optimized native performance is continuously compared with overflow-safe C and Rust baselines. `./tools/flux-bench` builds the compiler and the compute, collection-pipeline, and interface-dispatch workloads in `benchmarks/perf`, validates identical output, reports median runtime plus binary size against both baselines, and fails when Flux exceeds the configured checked-Rust ratio (1.25× by default; override with `--max-ratio` or `FLUX_PERF_MAX_RATIO`). C remains reported as the lower-level optimization reference. The same gate runs on pushes to `main` and pull requests.
+Optimized native performance is continuously compared with overflow-safe C and Rust baselines. `./tools/flux-bench` builds the compiler and the compute, collection-pipeline, and interface-dispatch workloads in `benchmarks/perf`, validates identical output, reports median runtime plus binary size against both baselines, and fails when Flux exceeds the configured checked-Rust ratio (1.25× by default; override with `--max-ratio` or `FLUX_PERF_MAX_RATIO`). Each timing round averages three executions by default before the cross-round median is taken, reducing scheduler/process jitter without choosing a best-case sample; `--batch` controls that averaging. C remains reported as the lower-level optimization reference. The same 7-round × 3-execution gate runs on pushes to `main` and pull requests.
 
 ```sh
-./tools/flux-bench --runs 7
-./tools/flux-bench --runs 7 --json
+./tools/flux-bench --runs 7 --batch 3
+./tools/flux-bench --runs 7 --batch 3 --json
 ```
 
 Run in development mode with automatic save detection:

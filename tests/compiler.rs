@@ -4363,6 +4363,63 @@ fn main() -> i64 {
 }
 
 #[test]
+fn eliminates_cfg_unreachable_statements_before_native_codegen() {
+    let source = r#"
+fn main() -> i64 {
+    for i in 0..2:
+        if i == 0:
+            continue
+            print("dead-after-continue")
+        break
+        print("dead-after-break")
+    return 0
+    print("dead-after-return")
+}
+"#;
+
+    check_source(source).expect("structurally unreachable statements should remain type-correct");
+    let generated = compile_to_c(source).expect("CFG-unreachable statements should be eliminated");
+    assert!(!generated.contains("dead-after-continue"));
+    assert!(!generated.contains("dead-after-break"));
+    assert!(!generated.contains("dead-after-return"));
+}
+
+#[test]
+fn eliminates_compile_time_dead_control_flow_before_native_codegen() {
+    let source = r#"
+const ENABLED: bool = 2 + 2 == 4
+
+fn main() -> i64 {
+    if ENABLED:
+        print("live-if")
+    else:
+        print("dead-else")
+    if false:
+        print("dead-if")
+    else:
+        print("live-else")
+    while false:
+        print("dead-while")
+    for i in 3..3:
+        print(i)
+    for j in 5..=4:
+        print(j)
+    return 0
+}
+"#;
+
+    check_source(source).expect("constant control flow should typecheck");
+    let generated = compile_to_c(source).expect("constant control flow should optimize");
+    assert!(generated.contains("flux_print_str(\"live-if\")"));
+    assert!(generated.contains("flux_print_str(\"live-else\")"));
+    assert!(!generated.contains("dead-else"));
+    assert!(!generated.contains("dead-if"));
+    assert!(!generated.contains("dead-while"));
+    assert!(!generated.contains("flux__local_i"));
+    assert!(!generated.contains("flux__local_j"));
+}
+
+#[test]
 fn rejects_invalid_compile_time_constants() {
     let cycle = r#"
 const A: i64 = B
@@ -5891,6 +5948,33 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
         .expect("second fluxc new should run");
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("directory is not empty"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn project_codegen_preserves_flux_source_paths_and_statement_lines() {
+    let root = std::env::temp_dir().join(format!("flux-debug-lines-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("debug-line fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn main() -> i64 {\n    let answer: i64 = 40 + 2\n    print(answer)\n    return answer\n}\n",
+    )
+    .expect("debug-line source should be writable");
+
+    let generated = fluxc::project::compile_to_c(&source)
+        .expect("project source should lower with debug line metadata");
+    let canonical = fs::canonicalize(&source).expect("source path should canonicalize");
+    let escaped = canonical
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    assert!(generated.contains(&format!("#line 1 \"{escaped}\"\nint main(void)")));
+    assert!(generated.contains(&format!("#line 2 \"{escaped}\"\n")));
+    assert!(generated.contains(&format!("#line 3 \"{escaped}\"\n")));
+    assert!(generated.contains(&format!("#line 4 \"{escaped}\"\n")));
 
     let _ = fs::remove_dir_all(&root);
 }

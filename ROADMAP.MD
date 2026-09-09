@@ -388,9 +388,11 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
   - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly.
   - [ ] Normalize nested expression evaluation/value production into typed IR values so later optimization no longer depends on checked-AST expression trees.
 - [ ] SSA or equivalent optimization-friendly value representation.
-- [ ] Preserve debug locations through lowering.
+- [x] Preserve debug locations through lowering: generated C emits source-aware `#line` directives for named/anonymous functions and every Flux statement, project builds retain canonical module paths, and Clang debug/profile DWARF line tables resolve native instructions back to the original `.flux` files and lines.
 - [ ] Constant folding.
+  - [x] Bootstrap primitive constant folding handles literals/constants, checked i64 arithmetic/comparisons, bool logic/short-circuiting, string equality, unary operations, and value-producing primitive conditionals before C lowering.
 - [ ] Dead-code elimination.
+  - [x] Bootstrap native lowering removes semantic-CFG-unreachable statements after terminating control flow (`return`, `break`, `continue`), compile-time-selected `if` branches, `while false` bodies, and statically empty integer ranges before emitting C; general SSA value-liveness and cross-block optimization remain pending.
 - [ ] Inlining.
 - [ ] Escape analysis.
 - [ ] Bounds-check elimination where proven safe.
