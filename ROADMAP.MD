@@ -435,8 +435,8 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Environment/configuration.
 - [ ] Platform permissions.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
-  - [x] Bootstrap `app` metadata accepts named typed `onStart: fn() -> void` and `onExit: fn() -> void` callbacks; Linux invokes start during native activation and exit through the native application shutdown signal with no application/controller object exposed to Flux source.
-  - [ ] Foreground/background, window lifecycle, suspension/restoration, and capability-rich lifecycle context.
+  - [x] Bootstrap `app` metadata accepts named typed `onStart`, `onResume`, `onPause`, `onStop`, and `onExit` `fn() -> void` callbacks. Linux maps start/stop/exit to native application activation/shutdown and resume/pause to native window active-state changes; Android maps the same callbacks directly onto `ANativeActivityCallbacks`, with no application/controller object exposed to Flux source.
+  - [ ] Suspension/restoration, saved-state/configuration lifecycle, multiple-window lifecycle, and capability-rich lifecycle context.
 - [ ] Background/foreground transitions.
 - [ ] Multiple windows where the target supports them.
 - [ ] Platform capability discovery.
@@ -628,7 +628,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Signing configuration.
   - [x] Bootstrap developer signing is compiler-owned: Flux creates/reuses its own debug keystore, signs aligned APKs with `apksigner`, and verifies the result. User/release keystores, credential handling, Play App Signing, and CI-safe release configuration remain pending.
 - [ ] Android lifecycle integration.
-  - [x] Bootstrap `NativeActivity` creation calls the existing typed Flux `app on_start` callback directly and installs a native `onDestroy` callback that invokes `on_exit`, with no JVM bridge. Pause/resume/start/stop/save-state/configuration callbacks remain pending.
+  - [x] Bootstrap `NativeActivity` creation wires typed Flux `app` `on_start`, `on_resume`, `on_pause`, `on_stop`, and `on_exit` callbacks directly through `ANativeActivityCallbacks`, with no JVM bridge; destruction also clears the compiler-owned activity handle. Saved-state and configuration callbacks remain pending.
 - [x] Activity/window integration hidden behind Flux application APIs.
   - [x] The generated manifest and native entry use framework `android.app.NativeActivity`; Flux source continues to declare only `app ViewName(...)`, with no Activity subclass or JNI bootstrap in application code. Native Android view rendering/input on that window remains the separate rendering-backend item below.
 - [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.

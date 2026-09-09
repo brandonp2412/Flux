@@ -1266,8 +1266,14 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "resizable"
                     | "theme"
                     | "onStart"
+                    | "onResume"
+                    | "onPause"
+                    | "onStop"
                     | "onExit"
                     | "on_start"
+                    | "on_resume"
+                    | "on_pause"
+                    | "on_stop"
                     | "on_exit"
             ) {
                 return Err(diag(

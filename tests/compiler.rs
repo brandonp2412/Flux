@@ -9701,6 +9701,15 @@ fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
 fn started() -> void {
     print("started")
 }
+fn resumed() -> void {
+    print("resumed")
+}
+fn paused() -> void {
+    print("paused")
+}
+fn stopped() -> void {
+    print("stopped")
+}
 fn exiting() -> void {
     print("exiting")
 }
@@ -9708,13 +9717,18 @@ view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: started, on_exit: exiting)
+app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting)
 "#;
     check_source(source)
         .expect("lifecycle callbacks should typecheck as named fn() -> void values");
     let generated = compile_to_c(source).expect("lifecycle callbacks should lower natively");
     assert!(generated.contains("flux__fn_started();"));
+    assert!(generated.contains("static void flux__ui_active_changed"));
+    assert!(generated.contains("flux__fn_resumed();"));
+    assert!(generated.contains("flux__fn_paused();"));
+    assert!(generated.contains("\"notify::is-active\", G_CALLBACK(flux__ui_active_changed)"));
     assert!(generated.contains("static void flux__ui_shutdown"));
+    assert!(generated.contains("flux__fn_stopped();"));
     assert!(generated.contains("flux__fn_exiting();"));
     assert!(generated.contains("\"shutdown\", G_CALLBACK(flux__ui_shutdown)"));
 
@@ -9751,6 +9765,15 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.open_url("https://example.com")
     print("started")
 }
+fn resumed() -> void {
+    print("resumed")
+}
+fn paused() -> void {
+    print("paused")
+}
+fn stopped() -> void {
+    print("stopped")
+}
 fn exiting() -> void {
     print("exiting")
 }
@@ -9758,7 +9781,7 @@ view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: started, on_exit: exiting)
+app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting)
 "#,
     )
     .expect("Android codegen source should be writable");
@@ -9769,8 +9792,15 @@ app Screen(on_start: started, on_exit: exiting)
         .expect("Android app should lower to target C");
     assert!(generated.contains("#include <android/native_activity.h>"));
     assert!(generated.contains("ANativeActivity_onCreate"));
+    assert!(generated.contains("activity->callbacks->onStart = flux__android_on_start"));
+    assert!(generated.contains("activity->callbacks->onResume = flux__android_on_resume"));
+    assert!(generated.contains("activity->callbacks->onPause = flux__android_on_pause"));
+    assert!(generated.contains("activity->callbacks->onStop = flux__android_on_stop"));
     assert!(generated.contains("activity->callbacks->onDestroy = flux__android_on_destroy"));
     assert!(generated.contains("flux__fn_started();"));
+    assert!(generated.contains("flux__fn_resumed();"));
+    assert!(generated.contains("flux__fn_paused();"));
+    assert!(generated.contains("flux__fn_stopped();"));
     assert!(generated.contains("static void flux__android_vibrate(int64_t duration_ms)"));
     assert!(generated.contains("getSystemService"));
     assert!(generated.contains("\"vibrate\", \"(J)V\""));

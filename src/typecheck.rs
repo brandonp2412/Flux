@@ -1035,7 +1035,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
         for field in &application.metadata {
             if matches!(
                 field.name.as_str(),
-                "onStart" | "onExit" | "on_start" | "on_exit"
+                "onStart"
+                    | "onResume"
+                    | "onPause"
+                    | "onStop"
+                    | "onExit"
+                    | "on_start"
+                    | "on_resume"
+                    | "on_pause"
+                    | "on_stop"
+                    | "on_exit"
             ) {
                 if !matches!(field.value.kind, ExprKind::Var(_)) {
                     diagnostics.push(diag(

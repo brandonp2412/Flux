@@ -573,18 +573,41 @@ fn emit_android_native_application(
         ));
     }
 
+    for (metadata, callback) in [
+        ("on_start", "start"),
+        ("on_resume", "resume"),
+        ("on_pause", "pause"),
+        ("on_stop", "stop"),
+    ] {
+        if let Some(function) = application_metadata_function(application, metadata) {
+            out.push_str(&format!(
+                "static void flux__android_on_{callback}(ANativeActivity *activity) {{ (void)activity; {}(); }}\n",
+                function_c_name(function),
+            ));
+        }
+    }
     if let Some(function) = application_metadata_function(application, "on_exit") {
         out.push_str(&format!(
-            "static void flux__android_on_destroy(ANativeActivity *activity) {{ (void)activity; {}(); }}\n\n",
+            "static void flux__android_on_destroy(ANativeActivity *activity) {{ (void)activity; {}(); flux__android_activity = NULL; }}\n",
             function_c_name(function),
         ));
+    } else {
+        out.push_str("static void flux__android_on_destroy(ANativeActivity *activity) { (void)activity; flux__android_activity = NULL; }\n");
     }
+    out.push('\n');
     out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    (void)saved_state;\n    (void)saved_state_size;\n    flux__android_activity = activity;\n");
-    if application_metadata_function(application, "on_exit").is_some() {
-        out.push_str("    activity->callbacks->onDestroy = flux__android_on_destroy;\n");
-    }
-    if let Some(function) = application_metadata_function(application, "on_start") {
-        out.push_str(&format!("    {}();\n", function_c_name(function)));
+    out.push_str("    activity->callbacks->onDestroy = flux__android_on_destroy;\n");
+    for (metadata, callback, field) in [
+        ("on_start", "start", "onStart"),
+        ("on_resume", "resume", "onResume"),
+        ("on_pause", "pause", "onPause"),
+        ("on_stop", "stop", "onStop"),
+    ] {
+        if application_metadata_function(application, metadata).is_some() {
+            out.push_str(&format!(
+                "    activity->callbacks->{field} = flux__android_on_{callback};\n"
+            ));
+        }
     }
     out.push_str("}\n");
     Ok(())
@@ -802,11 +825,35 @@ fn emit_linux_gtk_application(
         }
     }
     out.push('\n');
-    if let Some(function) = application_metadata_function(application, "on_exit") {
-        out.push_str(&format!(
-            "static void flux__ui_shutdown(GtkApplication *application, gpointer data) {{ (void)application; (void)data; {}(); }}\n\n",
-            function_c_name(function),
-        ));
+    let on_stop = application_metadata_function(application, "on_stop");
+    let on_exit = application_metadata_function(application, "on_exit");
+    if on_stop.is_some() || on_exit.is_some() {
+        out.push_str("static void flux__ui_shutdown(GtkApplication *application, gpointer data) { (void)application; (void)data;\n");
+        if let Some(function) = on_stop {
+            out.push_str(&format!("    {}();\n", function_c_name(function)));
+        }
+        if let Some(function) = on_exit {
+            out.push_str(&format!("    {}();\n", function_c_name(function)));
+        }
+        out.push_str("}\n\n");
+    }
+    let on_resume = application_metadata_function(application, "on_resume");
+    let on_pause = application_metadata_function(application, "on_pause");
+    if on_resume.is_some() || on_pause.is_some() {
+        out.push_str("static void flux__ui_active_changed(GObject *object, GParamSpec *pspec, gpointer data) {\n    (void)pspec;\n    (void)data;\n    bool active = gtk_window_is_active(GTK_WINDOW(object));\n");
+        if let Some(function) = on_resume {
+            out.push_str(&format!(
+                "    if (active) {}();\n",
+                function_c_name(function)
+            ));
+        }
+        if let Some(function) = on_pause {
+            out.push_str(&format!(
+                "    if (!active) {}();\n",
+                function_c_name(function)
+            ));
+        }
+        out.push_str("}\n\n");
     }
     out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
     out.push_str("    (void)data;\n");
@@ -832,6 +879,9 @@ fn emit_linux_gtk_application(
         "    gtk_window_set_default_size(GTK_WINDOW(window), {initial_window_width}, {initial_window_height});\n"
     ));
     out.push_str("    g_signal_connect(window, \"notify::default-width\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n    g_signal_connect(window, \"notify::default-height\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n    g_signal_connect(window, \"notify::scale-factor\", G_CALLBACK(flux__ui_window_environment_changed), NULL);\n");
+    if on_resume.is_some() || on_pause.is_some() {
+        out.push_str("    g_signal_connect(window, \"notify::is-active\", G_CALLBACK(flux__ui_active_changed), NULL);\n");
+    }
     if let Some(resizable) = application_metadata_bool(application, "resizable", signatures) {
         out.push_str(&format!(
             "    gtk_window_set_resizable(GTK_WINDOW(window), {});\n",
@@ -1471,7 +1521,7 @@ fn emit_linux_gtk_application(
         "int main(int argc, char **argv) {{\n    GtkApplication *application = gtk_application_new({}, G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
         c_string(&application_id)
     ));
-    if application_metadata_function(application, "on_exit").is_some() {
+    if on_stop.is_some() || on_exit.is_some() {
         out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
     }
     out.push_str("    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
