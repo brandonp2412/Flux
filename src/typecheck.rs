@@ -4657,6 +4657,15 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "sdk_int" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("android.sdk_int expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
             "vibrate" => {
                 if args.len() != 1 {
                     return Err(diag(

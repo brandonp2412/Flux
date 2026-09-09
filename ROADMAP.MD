@@ -440,6 +440,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Background/foreground transitions.
 - [ ] Multiple windows where the target supports them.
 - [ ] Platform capability discovery.
+  - [x] Android bootstrap exposes `android.sdk_int() -> i64` as a direct NDK-backed runtime capability query, allowing ordinary typed Flux control flow to gate target-specific behavior by the device API level without JNI/reflection or a platform object. Broader feature/capability discovery remains pending.
 
 # Milestone 9 — UI language and flat layout
 
@@ -635,7 +636,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.
   - [x] Framework-bound intrinsics share one compiler-emitted JNI attachment boundary: `android.vibrate(duration_ms)` calls the vibrator service, `android.open_url(url)` constructs/launches an Android `ACTION_VIEW` intent, and `android.share(text)` constructs a native `ACTION_SEND` chooser, including compiler-owned UTF-8→Java string conversion. No application JNI/Kotlin/Java bridge source or serialized method-channel protocol is generated. Non-Android native builds reject reachable `android.*` calls during code generation while unreachable platform-only functions can be tree-shaken safely.
 - [ ] First-class target-specific `android.*` Flux modules generated/maintained from stable platform bindings where practical, with compile-time API-level/target checks and no reflection-based runtime dispatch requirement.
-  - [x] Bootstrap `android` platform namespace participates in ordinary static checking plus LSP qualified completion/signature help; current members are `android.vibrate(i64) -> void`, `android.open_url(str) -> void`, and `android.share(str) -> void`. Broader module generation, API-level availability metadata, and nested platform namespaces remain pending.
+  - [x] Bootstrap `android` platform namespace participates in ordinary static checking plus LSP qualified completion/signature help; current members are `android.sdk_int() -> i64`, `android.vibrate(i64) -> void`, `android.open_url(str) -> void`, and `android.share(str) -> void`. `sdk_int` lowers directly through the NDK rather than JNI, giving target-specific code a typed runtime API-level gate. Broader generated bindings, compile-time availability metadata, and nested platform namespaces remain pending.
 - [ ] Native rendering/input backend.
 - [ ] Accessibility/semantics bridge.
 - [ ] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.

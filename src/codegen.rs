@@ -289,9 +289,13 @@ fn emit_runtime_prelude(
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
+        if runtime_usage.contains("flux__android_sdk_int(") {
+            out.push_str("#include <android/api-level.h>\n");
+        }
     }
     out.push('\n');
 
+    let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
@@ -299,6 +303,9 @@ fn emit_runtime_prelude(
         uses_android_vibrate || uses_android_open_url || uses_android_share;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
+    }
+    if uses_android_sdk_int {
+        out.push_str("static inline int64_t flux__android_sdk_int(void) { return (int64_t)android_get_device_api_level(); }\n");
     }
     if uses_android_platform_api {
         out.push_str("static JNIEnv *flux__android_get_env(bool *detach) {\n");
@@ -8322,7 +8329,22 @@ fn emit_qualified_call(
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
     if namespace == "android" {
-        if args.len() != 1 || !named_args.is_empty() {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid android platform call reached code generation",
+            ));
+        }
+        if name == "sdk_int" {
+            if !args.is_empty() {
+                return Err(diag(
+                    span,
+                    "invalid android platform call reached code generation",
+                ));
+            }
+            return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
+        }
+        if args.len() != 1 {
             return Err(diag(
                 span,
                 "invalid android platform call reached code generation",

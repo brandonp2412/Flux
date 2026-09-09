@@ -1138,6 +1138,7 @@ fn add_qualified_namespace_completions(
     program: &crate::ast::Program,
 ) -> bool {
     if namespace == "android" {
+        push_completion_item(items, seen, "sdk_int", 3, "fn android.sdk_int() -> i64");
         push_completion_item(
             items,
             seen,
@@ -1965,6 +1966,14 @@ fn signature_help_for_document_cached(
     if let Some((namespace, member)) = call_name.split_once('.') {
         if namespace == "android" {
             match member {
+                "sdk_int" => {
+                    return Some(signature_help_for_builtin(
+                        "android.sdk_int",
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
                 "vibrate" => {
                     return Some(signature_help_for_builtin(
                         "android.vibrate",
@@ -4799,6 +4808,7 @@ mod tests {
         ))
         .to_json();
         assert!(android_items.contains("\"label\":\"vibrate\""));
+        assert!(android_items.contains("fn android.sdk_int() -> i64"));
         assert!(android_items.contains("fn android.vibrate(duration_ms: i64) -> void"));
         assert!(android_items.contains("\"label\":\"open_url\""));
         assert!(android_items.contains("fn android.open_url(url: str) -> void"));
@@ -5251,9 +5261,10 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
+            ("android.sdk_int(", "fn android.sdk_int() -> i64"),
             (
                 "android.vibrate(",
                 "fn android.vibrate(duration_ms: i64) -> void",

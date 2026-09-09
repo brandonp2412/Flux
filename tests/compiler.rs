@@ -9779,6 +9779,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     fs::write(
         root.join("src/main.flux"),
         r#"fn started() -> void {
+    print(android.sdk_int())
     android.vibrate(25)
     android.open_url("https://example.com")
     android.share("hello from Flux")
@@ -9820,6 +9821,9 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("flux__fn_resumed();"));
     assert!(generated.contains("flux__fn_paused();"));
     assert!(generated.contains("flux__fn_stopped();"));
+    assert!(generated.contains("#include <android/api-level.h>"));
+    assert!(generated.contains("static inline int64_t flux__android_sdk_int(void)"));
+    assert!(generated.contains("android_get_device_api_level()"));
     assert!(generated.contains("static void flux__android_vibrate(int64_t duration_ms)"));
     assert!(generated.contains("getSystemService"));
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
@@ -9863,6 +9867,7 @@ fn main() -> i64 {
 
     let invalid = r#"
 fn main() -> i64 {
+    android.sdk_int(1)
     android.vibrate("long")
     android.open_url(42)
     android.share(42)
@@ -9870,6 +9875,11 @@ fn main() -> i64 {
 }
 "#;
     let errors = check_source_all(invalid).expect_err("Android intrinsics require typed arguments");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.sdk_int expects 0 arguments, got 1")
+    }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate duration_ms")
             && error.message.contains("expected i64")
