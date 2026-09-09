@@ -379,6 +379,8 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 
 - [ ] Typed Flux IR with source spans.
   - [x] Bootstrap per-function semantic CFG nodes retain original source spans, function parameter/return types, and explicit typed local-binding metadata while expressions remain in the checked AST.
+  - [x] Every normalized statement-level expression evaluation now carries its exact canonical static value shape in CFG/IR, including multi-value calls, loop/match guards, pattern-scoped expressions, redirects, and destructuring sources.
+  - [x] Common nested expression structure now lowers into deterministic typed IR values with dependency IDs for literals/names, unary/binary operations, calls/pipelines, lists/spreads/conditional items, indexing/slicing, struct construction/fields, conditionals, and outer match/comprehension inputs. Control-dependent match/comprehension arm bodies and backend lowering still need to leave the checked AST before typed IR is complete.
 - [ ] Ownership facts represented in IR.
   - [x] Bootstrap CFG action/evaluation nodes carry deterministic binding-read sets plus explicit source/destination/span facts for direct non-copy local moves.
   - [x] Direct-local move path-state and reachability are computed to a fixed point on CFG edges and exposed per node; bootstrap use-after-move checking consumes these IR facts.
@@ -386,13 +388,16 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Explicit control-flow graph.
   - [x] The semantic database exposes deterministic per-function structural CFGs for sequential statements, `if`, loops/back-edges, `break`, `continue`, `return`, match-arm dispatch, and `else return` success/error exits.
   - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly, while compile-time primitive conditions and statically empty integer ranges omit impossible branch/body edges.
-  - [ ] Normalize nested expression evaluation/value production into typed IR values so later optimization no longer depends on checked-AST expression trees.
+  - [ ] Normalize all nested expression evaluation/value production into typed IR values so later optimization no longer depends on checked-AST expression trees; common eager expression dependencies are normalized, while control-dependent match/comprehension subgraphs and backend consumption remain pending.
 - [ ] SSA or equivalent optimization-friendly value representation.
+  - [x] Normalized evaluation sites produce deterministic typed value IDs for every single- or multi-value result, with producer node, result index, source span, canonical type, and common nested operand dependencies.
+  - [x] CFG nodes now carry explicit typed local-definition facts for ordinary bindings/assignments, multi-value/list/struct destructuring, range/collection loop variables, and statement-match pattern bindings. Backward liveness consumes those normalized definitions rather than special-casing only mutable locals. Definition-to-use value identities, phi-equivalents, and control-dependent expression subgraphs still need to move fully onto the typed value graph.
 - [x] Preserve debug locations through lowering: generated C emits source-aware `#line` directives for named/anonymous functions and every Flux statement, project builds retain canonical module paths, and Clang debug/profile DWARF line tables resolve native instructions back to the original `.flux` files and lines.
 - [ ] Constant folding.
   - [x] Bootstrap primitive constant folding handles literals/constants, checked i64 arithmetic/comparisons, bool logic/short-circuiting, string equality, unary operations, and value-producing primitive conditionals before C lowering.
 - [ ] Dead-code elimination.
   - [x] Bootstrap native lowering removes semantic-CFG-unreachable statements after terminating control flow (`return`, `break`, `continue`), compile-time-selected `if` branches, `while false` bodies, and statically empty integer ranges before emitting C; general SSA value-liveness and cross-block optimization remain pending.
+  - [x] The CFG now computes deterministic backward live-before/live-after facts for parameters and every normalized local definition. Native lowering removes dead mutable-local assignments, omits dead mutable initializers when safe, prunes dead multi-value/list/struct destructuring extractions and statement-match pattern materialization, substitutes internal loop counters for dead source-level loop indexes, and avoids dead foreach element loads while retaining required RHS effects and list-pattern cardinality checks. Full SSA-value DCE remains pending.
 - [ ] Inlining.
 - [ ] Escape analysis.
 - [ ] Bounds-check elimination where proven safe.

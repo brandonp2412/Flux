@@ -1,14 +1,104 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
-use crate::ast::{Expr, ExprKind, Function, Stmt, StmtKind, Type};
+use crate::ast::{BinOp, Expr, ExprKind, Function, Stmt, StmtKind, Type, UnaryOp};
 use crate::diagnostic::SourceSpan;
-use crate::typecheck::{self, Signatures};
+use crate::typecheck::{self, ConstantValue, Signatures};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ControlFlowNodeId(pub usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ControlFlowValueId(pub usize);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlFlowValueKind {
+    Literal,
+    NameRead(String),
+    AnonymousFunction,
+    Call {
+        callee: String,
+        arguments: Vec<ControlFlowValueId>,
+    },
+    List {
+        items: Vec<ControlFlowValueId>,
+    },
+    ListSpread {
+        value: ControlFlowValueId,
+    },
+    ListIf {
+        condition: ControlFlowValueId,
+        value: ControlFlowValueId,
+        else_value: Option<ControlFlowValueId>,
+    },
+    Index {
+        base: ControlFlowValueId,
+        index: ControlFlowValueId,
+    },
+    Slice {
+        base: ControlFlowValueId,
+        start: Option<ControlFlowValueId>,
+        end: Option<ControlFlowValueId>,
+        step: Option<ControlFlowValueId>,
+    },
+    ListComprehension {
+        iterable: ControlFlowValueId,
+    },
+    StructLiteral {
+        base: Option<ControlFlowValueId>,
+        fields: Vec<ControlFlowValueId>,
+    },
+    QualifiedCall {
+        namespace: String,
+        name: String,
+        arguments: Vec<ControlFlowValueId>,
+    },
+    Field {
+        base: ControlFlowValueId,
+        name: String,
+    },
+    Match {
+        value: ControlFlowValueId,
+    },
+    ListMatch {
+        value: ControlFlowValueId,
+    },
+    Conditional {
+        condition: ControlFlowValueId,
+        then_value: ControlFlowValueId,
+        else_value: ControlFlowValueId,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: ControlFlowValueId,
+    },
+    Binary {
+        op: BinOp,
+        left: ControlFlowValueId,
+        right: ControlFlowValueId,
+    },
+    Opaque,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowValue {
+    pub id: ControlFlowValueId,
+    pub producer: ControlFlowNodeId,
+    pub result_index: Option<usize>,
+    pub ty: Type,
+    pub span: SourceSpan,
+    pub kind: ControlFlowValueKind,
+    pub constant: Option<ConstantValue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowParameter {
+    pub name: String,
+    pub ty: Type,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowDefinition {
     pub name: String,
     pub ty: Type,
     pub span: SourceSpan,
@@ -47,6 +137,7 @@ pub enum ControlFlowNodeKind {
     Destructure {
         propagates_error: bool,
     },
+    PatternBindings,
     Statement,
     Conditional,
     Loop,
@@ -102,11 +193,29 @@ impl ControlFlowMoveState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControlFlowLiveState {
+    live: Vec<String>,
+}
+
+impl ControlFlowLiveState {
+    pub fn live(&self) -> &[String] {
+        &self.live
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.live.iter().any(|binding| binding == name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowNode {
     pub id: ControlFlowNodeId,
     pub kind: ControlFlowNodeKind,
     pub span: SourceSpan,
+    pub value_types: Vec<Type>,
+    pub values: Vec<ControlFlowValueId>,
+    pub definitions: Vec<ControlFlowDefinition>,
     pub ownership: ControlFlowOwnership,
 }
 
@@ -141,7 +250,10 @@ pub struct ControlFlowGraph {
     exit: ControlFlowNodeId,
     nodes: Vec<ControlFlowNode>,
     edges: Vec<ControlFlowEdge>,
+    values: Vec<ControlFlowValue>,
     move_states_before: Vec<ControlFlowMoveState>,
+    live_before: Vec<ControlFlowLiveState>,
+    live_after: Vec<ControlFlowLiveState>,
 }
 
 impl ControlFlowGraph {
@@ -180,6 +292,14 @@ impl ControlFlowGraph {
         &self.edges
     }
 
+    pub fn values(&self) -> &[ControlFlowValue] {
+        &self.values
+    }
+
+    pub fn value(&self, id: ControlFlowValueId) -> Option<&ControlFlowValue> {
+        self.values.get(id.0)
+    }
+
     pub fn node(&self, id: ControlFlowNodeId) -> Option<&ControlFlowNode> {
         self.nodes.get(id.0)
     }
@@ -194,6 +314,14 @@ impl ControlFlowGraph {
 
     pub fn move_state_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowMoveState> {
         self.move_states_before.get(id.0)
+    }
+
+    pub fn live_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowLiveState> {
+        self.live_before.get(id.0)
+    }
+
+    pub fn live_after(&self, id: ControlFlowNodeId) -> Option<&ControlFlowLiveState> {
+        self.live_after.get(id.0)
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -217,6 +345,8 @@ struct ControlFlowBuilder<'a> {
     exit: ControlFlowNodeId,
     nodes: Vec<ControlFlowNode>,
     edges: Vec<ControlFlowEdge>,
+    values: Vec<ControlFlowValue>,
+    evaluation_types: Vec<(SourceSpan, Vec<Type>)>,
 }
 
 impl<'a> ControlFlowBuilder<'a> {
@@ -238,6 +368,8 @@ impl<'a> ControlFlowBuilder<'a> {
             exit: ControlFlowNodeId(0),
             nodes: Vec::new(),
             edges: Vec::new(),
+            values: Vec::new(),
+            evaluation_types: collect_evaluation_types(function, signatures),
         };
         builder.entry = builder.node(ControlFlowNodeKind::Entry, function.keyword_span);
         builder.exit = builder.node(ControlFlowNodeKind::Exit, function.return_span);
@@ -246,6 +378,8 @@ impl<'a> ControlFlowBuilder<'a> {
 
     fn finish(self) -> ControlFlowGraph {
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
+        let (live_before, live_after) =
+            compute_liveness(&self.nodes, &self.edges, &self.parameters);
         ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
@@ -254,7 +388,10 @@ impl<'a> ControlFlowBuilder<'a> {
             exit: self.exit,
             nodes: self.nodes,
             edges: self.edges,
+            values: self.values,
             move_states_before,
+            live_before,
+            live_after,
         }
     }
 
@@ -273,9 +410,16 @@ impl<'a> ControlFlowBuilder<'a> {
             id,
             kind,
             span,
+            value_types: Vec::new(),
+            values: Vec::new(),
+            definitions: Vec::new(),
             ownership,
         });
         id
+    }
+
+    fn set_definitions(&mut self, id: ControlFlowNodeId, definitions: Vec<ControlFlowDefinition>) {
+        self.nodes[id.0].definitions = definitions;
     }
 
     fn edge(&mut self, from: ControlFlowNodeId, to: ControlFlowNodeId, kind: ControlFlowEdgeKind) {
@@ -302,7 +446,13 @@ impl<'a> ControlFlowBuilder<'a> {
         loop_targets: Option<LoopTargets>,
     ) -> ControlFlowNodeId {
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } => {
+            StmtKind::Let {
+                name,
+                name_span,
+                ty,
+                expr,
+                ..
+            } => {
                 let binding = self.linear_node(
                     ControlFlowNodeKind::Binding {
                         name: name.clone(),
@@ -313,9 +463,16 @@ impl<'a> ControlFlowBuilder<'a> {
                     successor,
                     self.binding_move_ownership(name, ty, expr),
                 );
+                self.set_definitions(binding, vec![self.definition(name, ty, *name_span)]);
                 self.evaluation_node(ControlFlowEvaluationKind::BindingInitializer, expr, binding)
             }
-            StmtKind::Var { name, ty, expr, .. } => {
+            StmtKind::Var {
+                name,
+                name_span,
+                ty,
+                expr,
+                ..
+            } => {
                 let binding = self.linear_node(
                     ControlFlowNodeKind::Binding {
                         name: name.clone(),
@@ -326,28 +483,51 @@ impl<'a> ControlFlowBuilder<'a> {
                     successor,
                     ControlFlowOwnership::default(),
                 );
+                self.set_definitions(binding, vec![self.definition(name, ty, *name_span)]);
                 self.evaluation_node(ControlFlowEvaluationKind::BindingInitializer, expr, binding)
             }
-            StmtKind::Assign { name, expr, .. } => {
+            StmtKind::Assign {
+                name,
+                name_span,
+                expr,
+            } => {
                 let assignment = self.linear_node(
                     ControlFlowNodeKind::Assignment { name: name.clone() },
                     stmt.span,
                     successor,
                     ControlFlowOwnership::default(),
                 );
+                if let Some(ty) = self.scalar_expression_type(expr) {
+                    self.set_definitions(
+                        assignment,
+                        vec![ControlFlowDefinition {
+                            name: name.clone(),
+                            ty,
+                            span: *name_span,
+                        }],
+                    );
+                }
                 self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, assignment)
             }
             StmtKind::LetDestructure {
-                expr, else_return, ..
-            }
-            | StmtKind::LetMultiDestructure {
-                expr, else_return, ..
+                bindings,
+                expr,
+                else_return,
             } => {
                 let node = self.node(
                     ControlFlowNodeKind::Destructure {
                         propagates_error: *else_return,
                     },
                     stmt.span,
+                );
+                self.set_definitions(
+                    node,
+                    bindings
+                        .iter()
+                        .map(|binding| {
+                            self.definition(&binding.name, &binding.ty, binding.name_span)
+                        })
+                        .collect(),
                 );
                 if *else_return {
                     self.edge(node, successor, ControlFlowEdgeKind::Success);
@@ -357,14 +537,73 @@ impl<'a> ControlFlowBuilder<'a> {
                 }
                 self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
             }
-            StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. } => {
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                let node = self.node(
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: *else_return,
+                    },
+                    stmt.span,
+                );
+                let types = self.expression_types(expr);
+                self.set_definitions(
+                    node,
+                    bindings
+                        .iter()
+                        .zip(types)
+                        .filter(|(binding, _)| binding.name != "_")
+                        .map(|(binding, ty)| ControlFlowDefinition {
+                            name: binding.name.clone(),
+                            ty,
+                            span: binding.span,
+                        })
+                        .collect(),
+                );
+                if *else_return {
+                    self.edge(node, successor, ControlFlowEdgeKind::Success);
+                    self.edge(node, self.exit, ControlFlowEdgeKind::Error);
+                } else {
+                    self.edge(node, successor, ControlFlowEdgeKind::Next);
+                }
+                self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
+            }
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
                 let node = self.linear_node(
-                    ControlFlowNodeKind::Statement,
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: false,
+                    },
                     stmt.span,
                     successor,
                     ControlFlowOwnership::default(),
                 );
+                self.set_definitions(
+                    node,
+                    self.list_destructure_definitions(bindings, rest.as_ref(), expr),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
+            }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                ..
+            } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: false,
+                    },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.set_definitions(node, self.struct_pattern_definitions(fields, struct_name));
                 self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
             }
             StmtKind::Return(values) => {
@@ -420,13 +659,22 @@ impl<'a> ControlFlowBuilder<'a> {
                 self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node)
             }
             StmtKind::ForRange {
+                name,
+                name_span,
                 start,
                 end,
                 inclusive,
                 body,
-                ..
             } => {
                 let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
+                self.set_definitions(
+                    node,
+                    vec![ControlFlowDefinition {
+                        name: name.clone(),
+                        ty: Type::I64,
+                        span: *name_span,
+                    }],
+                );
                 let body_entry = self.build_block(
                     body,
                     node,
@@ -459,8 +707,31 @@ impl<'a> ControlFlowBuilder<'a> {
                     self.evaluation_node(ControlFlowEvaluationKind::RangeEnd, end, node);
                 self.evaluation_node(ControlFlowEvaluationKind::RangeStart, start, end_entry)
             }
-            StmtKind::ForEach { iterable, body, .. } => {
+            StmtKind::ForEach {
+                index_name,
+                index_span,
+                name,
+                name_span,
+                iterable,
+                body,
+            } => {
                 let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
+                let mut definitions = Vec::new();
+                if let Some(index_name) = index_name {
+                    definitions.push(ControlFlowDefinition {
+                        name: index_name.clone(),
+                        ty: Type::I64,
+                        span: index_span.unwrap_or(stmt.span),
+                    });
+                }
+                if let Some(Type::List(element)) = self.scalar_expression_type(iterable) {
+                    definitions.push(ControlFlowDefinition {
+                        name: name.clone(),
+                        ty: *element,
+                        span: *name_span,
+                    });
+                }
+                self.set_definitions(node, definitions);
                 let body_entry = self.build_block(
                     body,
                     node,
@@ -475,11 +746,8 @@ impl<'a> ControlFlowBuilder<'a> {
             }
             StmtKind::While { cond, body } => {
                 let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
-                let condition = self.node_with_ownership(
-                    ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::Condition),
-                    cond.span,
-                    self.ownership_for_expr(cond),
-                );
+                let condition =
+                    self.raw_evaluation_node(ControlFlowEvaluationKind::Condition, cond);
                 self.edge(condition, node, ControlFlowEdgeKind::Next);
                 let body_entry = self.build_block(
                     body,
@@ -507,13 +775,10 @@ impl<'a> ControlFlowBuilder<'a> {
                 let node = self.node(ControlFlowNodeKind::Match, stmt.span);
                 for (index, arm) in arms.iter().enumerate() {
                     let arm_entry = self.build_block(&arm.body, successor, loop_targets);
-                    let dispatch_target = if let Some(guard) = &arm.guard {
-                        let guard_node = self.node_with_ownership(
-                            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchGuard(
-                                index,
-                            )),
-                            guard.span,
-                            self.ownership_for_expr(guard),
+                    let guard_entry = if let Some(guard) = &arm.guard {
+                        let guard_node = self.raw_evaluation_node(
+                            ControlFlowEvaluationKind::MatchGuard(index),
+                            guard,
                         );
                         self.edge(guard_node, arm_entry, ControlFlowEdgeKind::GuardTrue);
                         self.edge(guard_node, successor, ControlFlowEdgeKind::GuardFalse);
@@ -521,7 +786,10 @@ impl<'a> ControlFlowBuilder<'a> {
                     } else {
                         arm_entry
                     };
-                    self.edge(node, dispatch_target, ControlFlowEdgeKind::MatchArm(index));
+                    let bindings = self.node(ControlFlowNodeKind::PatternBindings, arm.span);
+                    self.set_definitions(bindings, self.enum_match_definitions(value, arm));
+                    self.edge(bindings, guard_entry, ControlFlowEdgeKind::Next);
+                    self.edge(node, bindings, ControlFlowEdgeKind::MatchArm(index));
                 }
                 self.evaluation_node(ControlFlowEvaluationKind::MatchValue, value, node)
             }
@@ -529,13 +797,10 @@ impl<'a> ControlFlowBuilder<'a> {
                 let node = self.node(ControlFlowNodeKind::Match, stmt.span);
                 for (index, arm) in arms.iter().enumerate() {
                     let arm_entry = self.build_block(&arm.body, successor, loop_targets);
-                    let dispatch_target = if let Some(guard) = &arm.guard {
-                        let guard_node = self.node_with_ownership(
-                            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchGuard(
-                                index,
-                            )),
-                            guard.span,
-                            self.ownership_for_expr(guard),
+                    let guard_entry = if let Some(guard) = &arm.guard {
+                        let guard_node = self.raw_evaluation_node(
+                            ControlFlowEvaluationKind::MatchGuard(index),
+                            guard,
                         );
                         self.edge(guard_node, arm_entry, ControlFlowEdgeKind::GuardTrue);
                         self.edge(guard_node, successor, ControlFlowEdgeKind::GuardFalse);
@@ -543,7 +808,13 @@ impl<'a> ControlFlowBuilder<'a> {
                     } else {
                         arm_entry
                     };
-                    self.edge(node, dispatch_target, ControlFlowEdgeKind::MatchArm(index));
+                    let bindings = self.node(ControlFlowNodeKind::PatternBindings, arm.span);
+                    self.set_definitions(
+                        bindings,
+                        self.list_match_definitions(value, &arm.pattern),
+                    );
+                    self.edge(bindings, guard_entry, ControlFlowEdgeKind::Next);
+                    self.edge(node, bindings, ControlFlowEdgeKind::MatchArm(index));
                 }
                 self.evaluation_node(ControlFlowEvaluationKind::MatchValue, value, node)
             }
@@ -593,13 +864,451 @@ impl<'a> ControlFlowBuilder<'a> {
         expr: &Expr,
         successor: ControlFlowNodeId,
     ) -> ControlFlowNodeId {
-        let node = self.node_with_ownership(
-            ControlFlowNodeKind::Evaluation(kind),
-            expr.span,
-            self.ownership_for_expr(expr),
-        );
+        let node = self.raw_evaluation_node(kind, expr);
         self.edge(node, successor, ControlFlowEdgeKind::Next);
         node
+    }
+
+    fn raw_evaluation_node(
+        &mut self,
+        kind: ControlFlowEvaluationKind,
+        expr: &Expr,
+    ) -> ControlFlowNodeId {
+        let id = ControlFlowNodeId(self.nodes.len());
+        let values = self.lower_expr_values(id, expr, true);
+        let value_types = values
+            .iter()
+            .filter_map(|value| self.values.get(value.0))
+            .map(|value| value.ty.clone())
+            .collect();
+        self.nodes.push(ControlFlowNode {
+            id,
+            kind: ControlFlowNodeKind::Evaluation(kind),
+            span: expr.span,
+            value_types,
+            values,
+            definitions: Vec::new(),
+            ownership: self.ownership_for_expr(expr),
+        });
+        id
+    }
+
+    fn lower_expr_values(
+        &mut self,
+        producer: ControlFlowNodeId,
+        expr: &Expr,
+        is_result: bool,
+    ) -> Vec<ControlFlowValueId> {
+        let kind = match &expr.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {
+                ControlFlowValueKind::Literal
+            }
+            ExprKind::Var(name) => ControlFlowValueKind::NameRead(name.clone()),
+            ExprKind::AnonymousFunction { .. } => ControlFlowValueKind::AnonymousFunction,
+            ExprKind::Call {
+                name,
+                args,
+                named_args,
+            } => ControlFlowValueKind::Call {
+                callee: name.clone(),
+                arguments: self.lower_call_arguments(producer, args, named_args),
+            },
+            ExprKind::ShellCall { name, args, .. } => ControlFlowValueKind::Call {
+                callee: name.clone(),
+                arguments: self.lower_expr_arguments(producer, args),
+            },
+            ExprKind::Pipe {
+                input, name, args, ..
+            } => {
+                let mut arguments = self.lower_expr_values(producer, input, false);
+                arguments.extend(self.lower_expr_arguments(producer, args));
+                ControlFlowValueKind::Call {
+                    callee: name.clone(),
+                    arguments,
+                }
+            }
+            ExprKind::List(items) => ControlFlowValueKind::List {
+                items: self.lower_expr_arguments(producer, items),
+            },
+            ExprKind::ListSpread { value, .. } => self
+                .lower_scalar_expr(producer, value)
+                .map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::ListSpread { value }
+                }),
+            ExprKind::ListIf {
+                condition,
+                value,
+                else_value,
+                ..
+            } => {
+                let condition = self.lower_scalar_expr(producer, condition);
+                let value = self.lower_scalar_expr(producer, value);
+                let else_value = else_value
+                    .as_deref()
+                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                match (condition, value) {
+                    (Some(condition), Some(value)) => ControlFlowValueKind::ListIf {
+                        condition,
+                        value,
+                        else_value,
+                    },
+                    _ => ControlFlowValueKind::Opaque,
+                }
+            }
+            ExprKind::Index { base, index } => {
+                let base = self.lower_scalar_expr(producer, base);
+                let index = self.lower_scalar_expr(producer, index);
+                match (base, index) {
+                    (Some(base), Some(index)) => ControlFlowValueKind::Index { base, index },
+                    _ => ControlFlowValueKind::Opaque,
+                }
+            }
+            ExprKind::Slice {
+                base,
+                start,
+                end,
+                step,
+            } => {
+                let base = self.lower_scalar_expr(producer, base);
+                let start = start
+                    .as_deref()
+                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                let end = end
+                    .as_deref()
+                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                let step = step
+                    .as_deref()
+                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                base.map_or(ControlFlowValueKind::Opaque, |base| {
+                    ControlFlowValueKind::Slice {
+                        base,
+                        start,
+                        end,
+                        step,
+                    }
+                })
+            }
+            ExprKind::ListComprehension { iterable, .. } => self
+                .lower_scalar_expr(producer, iterable)
+                .map_or(ControlFlowValueKind::Opaque, |iterable| {
+                    ControlFlowValueKind::ListComprehension { iterable }
+                }),
+            ExprKind::StructLiteral { base, fields, .. } => {
+                let base = base
+                    .as_deref()
+                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                let fields = fields
+                    .iter()
+                    .filter_map(|field| self.lower_scalar_expr(producer, &field.value))
+                    .collect();
+                ControlFlowValueKind::StructLiteral { base, fields }
+            }
+            ExprKind::QualifiedCall {
+                namespace,
+                name,
+                args,
+                named_args,
+                ..
+            } => ControlFlowValueKind::QualifiedCall {
+                namespace: namespace.clone(),
+                name: name.clone(),
+                arguments: self.lower_call_arguments(producer, args, named_args),
+            },
+            ExprKind::Field { base, name, .. } => self.lower_scalar_expr(producer, base).map_or(
+                ControlFlowValueKind::Opaque,
+                |base| ControlFlowValueKind::Field {
+                    base,
+                    name: name.clone(),
+                },
+            ),
+            ExprKind::Match { value, .. } => self
+                .lower_scalar_expr(producer, value)
+                .map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::Match { value }
+                }),
+            ExprKind::ListMatch { value, .. } => self
+                .lower_scalar_expr(producer, value)
+                .map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::ListMatch { value }
+                }),
+            ExprKind::Conditional {
+                then_expr,
+                cond,
+                else_expr,
+            } => {
+                let condition = self.lower_scalar_expr(producer, cond);
+                let then_value = self.lower_scalar_expr(producer, then_expr);
+                let else_value = self.lower_scalar_expr(producer, else_expr);
+                match (condition, then_value, else_value) {
+                    (Some(condition), Some(then_value), Some(else_value)) => {
+                        ControlFlowValueKind::Conditional {
+                            condition,
+                            then_value,
+                            else_value,
+                        }
+                    }
+                    _ => ControlFlowValueKind::Opaque,
+                }
+            }
+            ExprKind::Unary { op, expr: inner } => self
+                .lower_scalar_expr(producer, inner)
+                .map_or(ControlFlowValueKind::Opaque, |operand| {
+                    ControlFlowValueKind::Unary { op: *op, operand }
+                }),
+            ExprKind::Binary { left, op, right } => {
+                let left = self.lower_scalar_expr(producer, left);
+                let right = self.lower_scalar_expr(producer, right);
+                match (left, right) {
+                    (Some(left), Some(right)) => ControlFlowValueKind::Binary {
+                        op: *op,
+                        left,
+                        right,
+                    },
+                    _ => ControlFlowValueKind::Opaque,
+                }
+            }
+        };
+        let constant = typecheck::constant_primitive_value(expr, self.signatures);
+        self.push_typed_values(producer, expr.span, kind, constant, is_result)
+    }
+
+    fn lower_call_arguments(
+        &mut self,
+        producer: ControlFlowNodeId,
+        args: &[Expr],
+        named_args: &[crate::ast::NamedArg],
+    ) -> Vec<ControlFlowValueId> {
+        let mut values = self.lower_expr_arguments(producer, args);
+        values.extend(
+            named_args
+                .iter()
+                .filter_map(|arg| self.lower_scalar_expr(producer, &arg.value)),
+        );
+        values
+    }
+
+    fn lower_expr_arguments(
+        &mut self,
+        producer: ControlFlowNodeId,
+        expressions: &[Expr],
+    ) -> Vec<ControlFlowValueId> {
+        expressions
+            .iter()
+            .filter_map(|expr| self.lower_scalar_expr(producer, expr))
+            .collect()
+    }
+
+    fn lower_scalar_expr(
+        &mut self,
+        producer: ControlFlowNodeId,
+        expr: &Expr,
+    ) -> Option<ControlFlowValueId> {
+        self.lower_expr_values(producer, expr, false)
+            .into_iter()
+            .next()
+    }
+
+    fn push_typed_values(
+        &mut self,
+        producer: ControlFlowNodeId,
+        span: SourceSpan,
+        kind: ControlFlowValueKind,
+        constant: Option<ConstantValue>,
+        is_result: bool,
+    ) -> Vec<ControlFlowValueId> {
+        let types = self
+            .evaluation_types
+            .iter()
+            .find(|(candidate, _)| *candidate == span)
+            .map(|(_, types)| types.clone())
+            .unwrap_or_default();
+        let scalar = types.len() == 1;
+        types
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                let id = ControlFlowValueId(self.values.len());
+                self.values.push(ControlFlowValue {
+                    id,
+                    producer,
+                    result_index: is_result.then_some(index),
+                    ty,
+                    span,
+                    kind: kind.clone(),
+                    constant: scalar.then(|| constant.clone()).flatten(),
+                });
+                id
+            })
+            .collect()
+    }
+
+    fn expression_types(&self, expr: &Expr) -> Vec<Type> {
+        self.evaluation_types
+            .iter()
+            .find(|(span, _)| *span == expr.span)
+            .map(|(_, types)| {
+                types
+                    .iter()
+                    .map(|ty| self.signatures.canonical_type(ty))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn scalar_expression_type(&self, expr: &Expr) -> Option<Type> {
+        let types = self.expression_types(expr);
+        (types.len() == 1).then(|| types[0].clone())
+    }
+
+    fn definition(&self, name: &str, ty: &Type, span: SourceSpan) -> ControlFlowDefinition {
+        ControlFlowDefinition {
+            name: name.to_string(),
+            ty: self.signatures.canonical_type(ty),
+            span,
+        }
+    }
+
+    fn list_destructure_definitions(
+        &self,
+        bindings: &[crate::ast::PatternBinding],
+        rest: Option<&crate::ast::ListRestPattern>,
+        expr: &Expr,
+    ) -> Vec<ControlFlowDefinition> {
+        let Some(Type::List(element)) = self.scalar_expression_type(expr) else {
+            return Vec::new();
+        };
+        let mut definitions = bindings
+            .iter()
+            .filter(|binding| binding.name != "_")
+            .map(|binding| ControlFlowDefinition {
+                name: binding.name.clone(),
+                ty: (*element).clone(),
+                span: binding.span,
+            })
+            .collect::<Vec<_>>();
+        if let Some(rest) = rest
+            && rest.binding.name != "_"
+        {
+            definitions.push(ControlFlowDefinition {
+                name: rest.binding.name.clone(),
+                ty: Type::List(element),
+                span: rest.binding.span,
+            });
+        }
+        definitions
+    }
+
+    fn struct_pattern_definitions(
+        &self,
+        fields: &[crate::ast::StructPatternField],
+        struct_name: &str,
+    ) -> Vec<ControlFlowDefinition> {
+        let mut definitions = Vec::new();
+        self.collect_struct_pattern_definitions(fields, struct_name, &mut definitions);
+        definitions
+    }
+
+    fn collect_struct_pattern_definitions(
+        &self,
+        fields: &[crate::ast::StructPatternField],
+        struct_name: &str,
+        definitions: &mut Vec<ControlFlowDefinition>,
+    ) {
+        let Type::Named(concrete_name) = self
+            .signatures
+            .canonical_type(&Type::Named(struct_name.to_string()))
+        else {
+            return;
+        };
+        let Some(definition) = self.signatures.struct_type(&concrete_name) else {
+            return;
+        };
+        for field in fields {
+            let Some(field_signature) = definition.field(&field.field) else {
+                continue;
+            };
+            if let Some(nested) = &field.nested {
+                let Type::Named(nested_name) = self.signatures.canonical_type(&field_signature.ty)
+                else {
+                    continue;
+                };
+                self.collect_struct_pattern_definitions(&nested.fields, &nested_name, definitions);
+            } else if field.binding.name != "_" {
+                definitions.push(ControlFlowDefinition {
+                    name: field.binding.name.clone(),
+                    ty: self.signatures.canonical_type(&field_signature.ty),
+                    span: field.binding.span,
+                });
+            }
+        }
+    }
+
+    fn enum_match_definitions(
+        &self,
+        value: &Expr,
+        arm: &crate::ast::MatchArm,
+    ) -> Vec<ControlFlowDefinition> {
+        let Some(Type::Named(enum_name)) = self.scalar_expression_type(value) else {
+            return Vec::new();
+        };
+        let Some(definition) = self.signatures.enum_type(&enum_name) else {
+            return Vec::new();
+        };
+        let Some(variant) = definition.variant(&arm.variant) else {
+            return Vec::new();
+        };
+        let mut definitions = Vec::new();
+        for (pattern, payload) in arm.patterns.iter().zip(&variant.payloads) {
+            match pattern {
+                crate::ast::MatchPattern::Binding(binding) if binding.name != "_" => {
+                    definitions.push(ControlFlowDefinition {
+                        name: binding.name.clone(),
+                        ty: self.signatures.canonical_type(payload),
+                        span: binding.span,
+                    });
+                }
+                crate::ast::MatchPattern::Struct(pattern) => self
+                    .collect_struct_pattern_definitions(
+                        &pattern.fields,
+                        &pattern.struct_name,
+                        &mut definitions,
+                    ),
+                crate::ast::MatchPattern::Binding(_) => {}
+            }
+        }
+        definitions
+    }
+
+    fn list_match_definitions(
+        &self,
+        value: &Expr,
+        pattern: &crate::ast::ListMatchPattern,
+    ) -> Vec<ControlFlowDefinition> {
+        let Some(Type::List(element)) = self.scalar_expression_type(value) else {
+            return Vec::new();
+        };
+        let crate::ast::ListMatchPattern::List { bindings, rest, .. } = pattern else {
+            return Vec::new();
+        };
+        let mut definitions = bindings
+            .iter()
+            .filter(|binding| binding.name != "_")
+            .map(|binding| ControlFlowDefinition {
+                name: binding.name.clone(),
+                ty: (*element).clone(),
+                span: binding.span,
+            })
+            .collect::<Vec<_>>();
+        if let Some(rest) = rest
+            && rest.binding.name != "_"
+        {
+            definitions.push(ControlFlowDefinition {
+                name: rest.binding.name.clone(),
+                ty: Type::List(element),
+                span: rest.binding.span,
+            });
+        }
+        definitions
     }
 
     fn ownership_for_expr(&self, expr: &Expr) -> ControlFlowOwnership {
@@ -630,6 +1339,507 @@ impl<'a> ControlFlowBuilder<'a> {
             moves,
         }
     }
+}
+
+fn collect_evaluation_types(
+    function: &Function,
+    signatures: &Signatures,
+) -> Vec<(SourceSpan, Vec<Type>)> {
+    let mut env = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+        .collect::<HashMap<_, _>>();
+    let mut evaluations = Vec::new();
+    collect_block_evaluation_types(&function.body, &mut env, signatures, &mut evaluations);
+    evaluations
+}
+
+fn collect_block_evaluation_types(
+    body: &[Stmt],
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                env.insert(name.clone(), signatures.canonical_type(ty));
+            }
+            StmtKind::Assign { expr, .. } | StmtKind::Expr(expr) => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+            }
+            StmtKind::LetDestructure { bindings, expr, .. } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                for binding in bindings {
+                    env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
+                }
+            }
+            StmtKind::LetMultiDestructure { bindings, expr, .. } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                if let Ok(types) = typecheck::value_types_of_expr(expr, env, signatures) {
+                    for (binding, ty) in bindings.iter().zip(types) {
+                        if binding.name != "_" {
+                            env.insert(binding.name.clone(), signatures.canonical_type(&ty));
+                        }
+                    }
+                }
+            }
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                if let Ok(ty) = typecheck::type_of_expr(expr, env, signatures)
+                    && let Type::List(element) = signatures.canonical_type(&ty)
+                {
+                    for binding in bindings {
+                        if binding.name != "_" {
+                            env.insert(binding.name.clone(), (*element).clone());
+                        }
+                    }
+                    if let Some(rest) = rest
+                        && rest.binding.name != "_"
+                    {
+                        env.insert(rest.binding.name.clone(), Type::List(element));
+                    }
+                }
+            }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                ..
+            } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                bind_struct_pattern_fields(fields, struct_name, env, signatures);
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    record_evaluation_type(value, env, signatures, evaluations);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Shell { expr, redirect, .. } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                if let Some(redirect) = redirect {
+                    record_evaluation_type(&redirect.path, env, signatures, evaluations);
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                record_evaluation_type(cond, env, signatures, evaluations);
+                let mut then_env = env.clone();
+                collect_block_evaluation_types(body, &mut then_env, signatures, evaluations);
+                let mut else_env = env.clone();
+                collect_block_evaluation_types(else_body, &mut else_env, signatures, evaluations);
+            }
+            StmtKind::ForRange {
+                name,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                record_evaluation_type(start, env, signatures, evaluations);
+                record_evaluation_type(end, env, signatures, evaluations);
+                let mut nested = env.clone();
+                nested.insert(name.clone(), Type::I64);
+                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+            }
+            StmtKind::ForEach {
+                index_name,
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                record_evaluation_type(iterable, env, signatures, evaluations);
+                let mut nested = env.clone();
+                if let Some(index_name) = index_name {
+                    nested.insert(index_name.clone(), Type::I64);
+                }
+                if let Ok(ty) = typecheck::type_of_expr(iterable, env, signatures)
+                    && let Type::List(element) = signatures.canonical_type(&ty)
+                {
+                    nested.insert(name.clone(), *element);
+                }
+                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+            }
+            StmtKind::While { cond, body } => {
+                record_evaluation_type(cond, env, signatures, evaluations);
+                let mut nested = env.clone();
+                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+            }
+            StmtKind::Match { value, arms } => {
+                record_evaluation_type(value, env, signatures, evaluations);
+                let matched_ty = typecheck::type_of_expr(value, env, signatures)
+                    .ok()
+                    .map(|ty| signatures.canonical_type(&ty));
+                for arm in arms {
+                    let mut nested = env.clone();
+                    if let Some(Type::Named(enum_name)) = matched_ty.as_ref()
+                        && let Some(definition) = signatures.enum_type(enum_name)
+                        && let Some(variant) = definition.variant(&arm.variant)
+                    {
+                        for (pattern, payload) in arm.patterns.iter().zip(&variant.payloads) {
+                            bind_match_pattern(pattern, payload, &mut nested, signatures);
+                        }
+                    }
+                    if let Some(guard) = &arm.guard {
+                        record_evaluation_type(guard, &nested, signatures, evaluations);
+                    }
+                    collect_block_evaluation_types(&arm.body, &mut nested, signatures, evaluations);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                record_evaluation_type(value, env, signatures, evaluations);
+                let element_ty = typecheck::type_of_expr(value, env, signatures)
+                    .ok()
+                    .and_then(|ty| match signatures.canonical_type(&ty) {
+                        Type::List(element) => Some(*element),
+                        _ => None,
+                    });
+                for arm in arms {
+                    let mut nested = env.clone();
+                    if let Some(element_ty) = element_ty.as_ref() {
+                        bind_list_match_pattern(&arm.pattern, element_ty, &mut nested);
+                    }
+                    if let Some(guard) = &arm.guard {
+                        record_evaluation_type(guard, &nested, signatures, evaluations);
+                    }
+                    collect_block_evaluation_types(&arm.body, &mut nested, signatures, evaluations);
+                }
+            }
+        }
+    }
+}
+
+fn record_evaluation_type(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    record_expr_types(expr, env, signatures, evaluations);
+}
+
+fn record_expr_types(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    match &expr.kind {
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            let mut nested = env.clone();
+            for param in params {
+                nested.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+            }
+            record_expr_types(body, &nested, signatures, evaluations);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                record_expr_types(arg, env, signatures, evaluations);
+            }
+            for arg in named_args {
+                record_expr_types(&arg.value, env, signatures, evaluations);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                record_expr_types(arg, env, signatures, evaluations);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            record_expr_types(input, env, signatures, evaluations);
+            for arg in args {
+                record_expr_types(arg, env, signatures, evaluations);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                record_expr_types(item, env, signatures, evaluations);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            record_expr_types(value, env, signatures, evaluations);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            record_expr_types(condition, env, signatures, evaluations);
+            record_expr_types(value, env, signatures, evaluations);
+            if let Some(else_value) = else_value {
+                record_expr_types(else_value, env, signatures, evaluations);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            record_expr_types(base, env, signatures, evaluations);
+            record_expr_types(index, env, signatures, evaluations);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            record_expr_types(base, env, signatures, evaluations);
+            for bound in [start.as_deref(), end.as_deref(), step.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                record_expr_types(bound, env, signatures, evaluations);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding,
+            iterable,
+            condition,
+            ..
+        } => {
+            record_expr_types(iterable, env, signatures, evaluations);
+            let mut nested = env.clone();
+            if let Ok(ty) = typecheck::type_of_expr(iterable, env, signatures)
+                && let Type::List(element) = signatures.canonical_type(&ty)
+            {
+                nested.insert(binding.clone(), *element);
+            }
+            record_expr_types(value, &nested, signatures, evaluations);
+            if let Some(condition) = condition {
+                record_expr_types(condition, &nested, signatures, evaluations);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                record_expr_types(base, env, signatures, evaluations);
+            }
+            for field in fields {
+                record_expr_types(&field.value, env, signatures, evaluations);
+            }
+        }
+        ExprKind::Field { base, .. } => {
+            record_expr_types(base, env, signatures, evaluations);
+        }
+        ExprKind::Match { value, arms } => {
+            record_expr_types(value, env, signatures, evaluations);
+            let matched_ty = typecheck::type_of_expr(value, env, signatures)
+                .ok()
+                .map(|ty| signatures.canonical_type(&ty));
+            for arm in arms {
+                let mut nested = env.clone();
+                if let Some(Type::Named(enum_name)) = matched_ty.as_ref()
+                    && let Some(definition) = signatures.enum_type(enum_name)
+                    && let Some(variant) = definition.variant(&arm.variant)
+                {
+                    for (pattern, payload) in arm.patterns.iter().zip(&variant.payloads) {
+                        bind_match_pattern(pattern, payload, &mut nested, signatures);
+                    }
+                }
+                if let Some(guard) = &arm.guard {
+                    record_expr_types(guard, &nested, signatures, evaluations);
+                }
+                record_expr_types(&arm.value, &nested, signatures, evaluations);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            record_expr_types(value, env, signatures, evaluations);
+            let element_ty = typecheck::type_of_expr(value, env, signatures)
+                .ok()
+                .and_then(|ty| match signatures.canonical_type(&ty) {
+                    Type::List(element) => Some(*element),
+                    _ => None,
+                });
+            for arm in arms {
+                let mut nested = env.clone();
+                if let Some(element_ty) = element_ty.as_ref() {
+                    bind_list_match_pattern(&arm.pattern, element_ty, &mut nested);
+                }
+                if let Some(guard) = &arm.guard {
+                    record_expr_types(guard, &nested, signatures, evaluations);
+                }
+                record_expr_types(&arm.value, &nested, signatures, evaluations);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            record_expr_types(cond, env, signatures, evaluations);
+            record_expr_types(then_expr, env, signatures, evaluations);
+            record_expr_types(else_expr, env, signatures, evaluations);
+        }
+        ExprKind::Unary { expr, .. } => {
+            record_expr_types(expr, env, signatures, evaluations);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            record_expr_types(left, env, signatures, evaluations);
+            record_expr_types(right, env, signatures, evaluations);
+        }
+    }
+
+    if let Ok(types) = typecheck::value_types_of_expr(expr, env, signatures) {
+        evaluations.push((
+            expr.span,
+            types
+                .into_iter()
+                .map(|ty| signatures.canonical_type(&ty))
+                .collect(),
+        ));
+    }
+}
+
+fn bind_match_pattern(
+    pattern: &crate::ast::MatchPattern,
+    ty: &Type,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+) {
+    match pattern {
+        crate::ast::MatchPattern::Binding(binding) => {
+            if binding.name != "_" {
+                env.insert(binding.name.clone(), signatures.canonical_type(ty));
+            }
+        }
+        crate::ast::MatchPattern::Struct(pattern) => {
+            bind_struct_pattern_fields(&pattern.fields, &pattern.struct_name, env, signatures);
+        }
+    }
+}
+
+fn bind_struct_pattern_fields(
+    fields: &[crate::ast::StructPatternField],
+    struct_name: &str,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+) {
+    let Type::Named(concrete_name) =
+        signatures.canonical_type(&Type::Named(struct_name.to_string()))
+    else {
+        return;
+    };
+    let Some(definition) = signatures.struct_type(&concrete_name) else {
+        return;
+    };
+    for field in fields {
+        let Some(field_signature) = definition.field(&field.field) else {
+            continue;
+        };
+        if let Some(nested) = &field.nested {
+            bind_struct_pattern_fields(&nested.fields, &nested.struct_name, env, signatures);
+        } else if field.binding.name != "_" {
+            env.insert(
+                field.binding.name.clone(),
+                signatures.canonical_type(&field_signature.ty),
+            );
+        }
+    }
+}
+
+fn bind_list_match_pattern(
+    pattern: &crate::ast::ListMatchPattern,
+    element_ty: &Type,
+    env: &mut HashMap<String, Type>,
+) {
+    let crate::ast::ListMatchPattern::List { bindings, rest, .. } = pattern else {
+        return;
+    };
+    for binding in bindings {
+        if binding.name != "_" {
+            env.insert(binding.name.clone(), element_ty.clone());
+        }
+    }
+    if let Some(rest) = rest
+        && rest.binding.name != "_"
+    {
+        env.insert(
+            rest.binding.name.clone(),
+            Type::List(Box::new(element_ty.clone())),
+        );
+    }
+}
+
+fn compute_liveness(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+    parameters: &[ControlFlowParameter],
+) -> (Vec<ControlFlowLiveState>, Vec<ControlFlowLiveState>) {
+    let mut tracked = parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect::<BTreeSet<_>>();
+    for node in nodes {
+        tracked.extend(
+            node.definitions
+                .iter()
+                .map(|definition| definition.name.clone()),
+        );
+    }
+
+    let mut before = vec![BTreeSet::<String>::new(); nodes.len()];
+    let mut after = vec![BTreeSet::<String>::new(); nodes.len()];
+    loop {
+        let mut changed = false;
+        for node in nodes.iter().rev() {
+            let mut next_after = BTreeSet::new();
+            for edge in edges.iter().filter(|edge| edge.from == node.id) {
+                next_after.extend(before[edge.to.0].iter().cloned());
+            }
+
+            let mut next_before = next_after.clone();
+            for definition in &node.definitions {
+                next_before.remove(&definition.name);
+            }
+            next_before.extend(
+                node.ownership
+                    .reads
+                    .iter()
+                    .filter(|name| tracked.contains(*name))
+                    .cloned(),
+            );
+
+            if next_after != after[node.id.0] {
+                after[node.id.0] = next_after;
+                changed = true;
+            }
+            if next_before != before[node.id.0] {
+                before[node.id.0] = next_before;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let into_state = |bindings: BTreeSet<String>| ControlFlowLiveState {
+        live: bindings.into_iter().collect(),
+    };
+    (
+        before.into_iter().map(into_state).collect(),
+        after.into_iter().map(into_state).collect(),
+    )
 }
 
 fn compute_move_states(

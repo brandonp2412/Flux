@@ -4,7 +4,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fluxc::ir::{ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind};
+use fluxc::ir::{
+    ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind, ControlFlowValueKind,
+};
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
     compile_to_c, diagnostics_to_json,
@@ -4801,6 +4803,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn eliminates_dead_local_assignments_without_dropping_rhs_effects() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn main() -> i64 {
+    var value: i64 = 1
+    value = 10 + 20
+    value = 2
+    value = observe(4)
+    value = 3
+    return value
+}
+"#;
+
+    check_source(source).expect("dead-store example should typecheck");
+    let generated = compile_to_c(source).expect("dead stores should optimize safely");
+    assert!(generated.contains("int64_t flux__local_value;"));
+    assert!(!generated.contains("int64_t flux__local_value = INT64_C(1);"));
+    assert!(!generated.contains("flux__local_value = INT64_C(30);"));
+    assert!(!generated.contains("flux__local_value = INT64_C(2);"));
+    assert!(generated.contains("flux__local_value = flux__fn_observe(INT64_C(4));"));
+    assert!(generated.contains("flux__local_value = INT64_C(3);"));
+}
+
+#[test]
 fn rejects_invalid_compile_time_constants() {
     let cycle = r#"
 const A: i64 = B
@@ -5417,6 +5447,24 @@ fn main() -> i64 {
             )
         })
         .expect("else-return destructuring should be explicit in the graph");
+    let destructure_evaluation = propagation_graph
+        .incoming(destructure.id)
+        .find_map(|edge| propagation_graph.node(edge.from))
+        .expect("destructure source evaluation should precede propagation");
+    assert_eq!(
+        destructure_evaluation.value_types,
+        vec![fluxc::ast::Type::Str, fluxc::ast::Type::Error]
+    );
+    assert_eq!(destructure_evaluation.values.len(), 2);
+    for (index, value_id) in destructure_evaluation.values.iter().enumerate() {
+        let value = propagation_graph
+            .value(*value_id)
+            .expect("typed CFG value should be indexed by its deterministic id");
+        assert_eq!(value.producer, destructure_evaluation.id);
+        assert_eq!(value.result_index, Some(index));
+        assert_eq!(value.ty, destructure_evaluation.value_types[index]);
+        assert_eq!(value.span, destructure_evaluation.span);
+    }
     let outgoing = propagation_graph
         .outgoing(destructure.id)
         .map(|edge| edge.kind)
@@ -5470,6 +5518,17 @@ fn main() -> i64 {
         source_evaluation.kind,
         ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::BindingInitializer)
     ));
+    assert_eq!(
+        source_evaluation.value_types,
+        vec![fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64))]
+    );
+    assert_eq!(source_evaluation.values.len(), 1);
+    let source_value = ownership_graph
+        .value(source_evaluation.values[0])
+        .expect("initializer should produce one typed CFG value");
+    assert_eq!(source_value.producer, source_evaluation.id);
+    assert_eq!(source_value.result_index, Some(0));
+    assert_eq!(source_value.ty, source_evaluation.value_types[0]);
     assert_eq!(source_evaluation.ownership.reads, vec!["source"]);
     assert!(source_evaluation.ownership.moves.is_empty());
 
@@ -5492,6 +5551,304 @@ fn main() -> i64 {
         moved_before_read.origin("source"),
         Some(ownership_move.span)
     );
+}
+
+#[test]
+fn semantic_cfg_normalizes_nested_expression_values() {
+    let source = r#"
+fn scale(input: i64) -> i64 {
+    let result: i64 = (input + 2) * 3
+    return result
+}
+
+fn main() -> i64 {
+    return scale(4)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1310))
+        .expect("nested primitive expression should analyze");
+    let graph = database
+        .control_flow_graph("scale")
+        .expect("scale should have a control-flow graph");
+    let evaluation = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                node.kind,
+                ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::BindingInitializer)
+            )
+        })
+        .expect("binding initializer should be explicit");
+    assert_eq!(evaluation.values.len(), 1);
+    let root = graph
+        .value(evaluation.values[0])
+        .expect("initializer should have a typed result value");
+    assert_eq!(root.result_index, Some(0));
+    let ControlFlowValueKind::Binary {
+        op: fluxc::ast::BinOp::Mul,
+        left,
+        right,
+    } = root.kind
+    else {
+        panic!("initializer root should be the multiplication value");
+    };
+    let multiply_right = graph.value(right).expect("multiply RHS should be typed");
+    assert_eq!(multiply_right.result_index, None);
+    assert!(matches!(multiply_right.kind, ControlFlowValueKind::Literal));
+    assert!(matches!(
+        multiply_right.constant,
+        Some(fluxc::typecheck::ConstantValue::I64(3))
+    ));
+
+    let addition = graph.value(left).expect("multiply LHS should be typed");
+    let ControlFlowValueKind::Binary {
+        op: fluxc::ast::BinOp::Add,
+        left: add_left,
+        right: add_right,
+    } = addition.kind
+    else {
+        panic!("multiply LHS should retain the nested addition");
+    };
+    assert_eq!(addition.result_index, None);
+    let input = graph
+        .value(add_left)
+        .expect("addition input should be typed");
+    assert!(matches!(
+        &input.kind,
+        ControlFlowValueKind::NameRead(name) if name == "input"
+    ));
+    assert_eq!(input.constant, None);
+    assert_eq!(addition.constant, None);
+    assert_eq!(root.constant, None);
+    assert!(matches!(
+        graph.value(add_right).map(|value| &value.kind),
+        Some(ControlFlowValueKind::Literal)
+    ));
+    assert!(
+        [root.id, left, right, add_left, add_right]
+            .into_iter()
+            .all(|id| graph
+                .value(id)
+                .is_some_and(|value| value.producer == evaluation.id))
+    );
+}
+
+#[test]
+fn semantic_cfg_computes_local_liveness_for_dead_store_analysis() {
+    let source = r#"
+fn main() -> i64 {
+    var value: i64 = 1
+    value = 2
+    value = 3
+    return value
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1309))
+        .expect("mutable local flow should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let mut assignments = graph
+        .nodes()
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.kind,
+                ControlFlowNodeKind::Assignment { name } if name == "value"
+            )
+        })
+        .collect::<Vec<_>>();
+    assignments.sort_by_key(|node| node.span.line);
+    assert_eq!(assignments.len(), 2);
+    assert!(
+        !graph
+            .live_after(assignments[0].id)
+            .expect("assignment should have liveness facts")
+            .contains("value"),
+        "the first overwritten store should be dead"
+    );
+    assert!(
+        graph
+            .live_after(assignments[1].id)
+            .expect("assignment should have liveness facts")
+            .contains("value"),
+        "the final store should stay live because return reads it"
+    );
+    assert_eq!(
+        graph
+            .live_after(assignments[0].id)
+            .expect("liveness should be deterministic")
+            .live(),
+        &[] as &[String]
+    );
+}
+
+#[test]
+fn semantic_cfg_tracks_destructure_loop_and_match_definitions() {
+    let source = r#"
+struct Point {
+    x: i64
+    y: i64
+}
+
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+fn pair() -> (i64, bool) {
+    return 41, true
+}
+
+fn main() -> i64 {
+    let (multiValue, multiOk) = pair()
+    let [head, ...middle, tail] = [1, 2, 3]
+    let Point { x, y } = Point { x: 4, y: 5 }
+    if false:
+        print(multiValue)
+        print(multiOk)
+        print(head)
+        print(middle.length)
+        print(tail)
+        print(x)
+        print(y)
+    for index, item in [1, 2]:
+        if false:
+            print(index)
+            print(item)
+    match Choice.Value(9):
+        Choice.Value(payload):
+            if false:
+                print(payload)
+        Choice.Empty():
+            print(0)
+    return 0
+}
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1311))
+        .expect("definition-rich control flow should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+
+    let definitions = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| {
+            node.definitions
+                .iter()
+                .map(move |definition| (node, definition))
+        })
+        .collect::<Vec<_>>();
+    for (name, expected_type) in [
+        ("multiValue", fluxc::ast::Type::I64),
+        ("multiOk", fluxc::ast::Type::Bool),
+        ("head", fluxc::ast::Type::I64),
+        (
+            "middle",
+            fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64)),
+        ),
+        ("tail", fluxc::ast::Type::I64),
+        ("x", fluxc::ast::Type::I64),
+        ("y", fluxc::ast::Type::I64),
+        ("index", fluxc::ast::Type::I64),
+        ("item", fluxc::ast::Type::I64),
+        ("payload", fluxc::ast::Type::I64),
+    ] {
+        let (node, definition) = definitions
+            .iter()
+            .find(|(_, definition)| definition.name == name)
+            .copied()
+            .unwrap_or_else(|| panic!("missing CFG definition for {name}"));
+        assert_eq!(definition.ty, expected_type, "wrong type for {name}");
+        assert_eq!(definition.span.source_id, SourceId::new(1311));
+        assert!(
+            !graph
+                .live_after(node.id)
+                .expect("definition node should have liveness")
+                .contains(name),
+            "compile-time-dead uses should leave {name} dead after its definition"
+        );
+    }
+    assert!(graph.nodes().iter().any(|node| {
+        matches!(node.kind, ControlFlowNodeKind::PatternBindings)
+            && node
+                .definitions
+                .iter()
+                .any(|definition| definition.name == "payload")
+    }));
+}
+
+#[test]
+fn eliminates_dead_destructure_loop_and_match_extractions() {
+    let source = r#"
+struct Point {
+    x: i64
+    y: i64
+}
+
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+fn pair() -> (i64, bool) {
+    return 41, true
+}
+
+fn main() -> i64 {
+    let (multiValue, multiOk) = pair()
+    let [head, ...middle, tail] = [1, 2, 3]
+    let Point { x, y } = Point { x: 4, y: 5 }
+    if false:
+        print(multiValue)
+        print(multiOk)
+        print(head)
+        print(middle.length)
+        print(tail)
+        print(x)
+        print(y)
+    for index, item in [1, 2]:
+        if false:
+            print(index)
+            print(item)
+    match Choice.Value(9):
+        Choice.Value(payload):
+            if false:
+                print(payload)
+        Choice.Empty():
+            print(0)
+    return 0
+}
+"#;
+
+    check_source(source).expect("dead-definition fixture should typecheck");
+    let generated = compile_to_c(source).expect("dead definitions should lower natively");
+    assert!(generated.contains("flux__fn_pair()"));
+    assert!(generated.contains("Flux runtime error: list pattern requires at least 2 elements"));
+    assert!(generated.contains("flux__multi_pattern_"));
+    assert!(generated.contains("flux__list_pattern_"));
+    assert!(generated.contains("flux__destructure_"));
+    assert!(generated.contains("flux__range_index_") || generated.contains("flux__iter_index_"));
+    for dead_name in [
+        "multiValue",
+        "multiOk",
+        "head",
+        "middle",
+        "tail",
+        "x",
+        "y",
+        "index",
+        "item",
+        "payload",
+    ] {
+        assert!(
+            !generated.contains(&format!("flux__local_{dead_name}")),
+            "dead definition {dead_name} should not materialize in native code"
+        );
+    }
 }
 
 #[test]
@@ -5546,6 +5903,7 @@ fn main() -> i64 {
             )
         })
         .expect("guard evaluation should be explicit");
+    assert_eq!(guard.value_types, vec![fluxc::ast::Type::Bool]);
     assert_eq!(guard.ownership.reads, vec!["allow"]);
     assert!(
         graph

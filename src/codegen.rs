@@ -5,7 +5,7 @@ use crate::ast::{
     ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
-use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
+use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     emit_c_with_source_paths(program, signatures, &HashMap::new())
@@ -4864,6 +4864,55 @@ fn emit_function(
         .filter(|node| cfg.is_reachable(node.id))
         .map(|node| source_span_key(node.span))
         .collect::<HashSet<_>>();
+    let dead_assignment_spans = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .filter_map(|node| match &node.kind {
+            crate::ir::ControlFlowNodeKind::Assignment { name }
+                if cfg
+                    .live_after(node.id)
+                    .is_some_and(|state| !state.contains(name)) =>
+            {
+                Some(source_span_key(node.span))
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let dead_var_initializer_spans = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .filter_map(|node| match &node.kind {
+            crate::ir::ControlFlowNodeKind::Binding {
+                name,
+                mutable: true,
+                ..
+            } if cfg
+                .live_after(node.id)
+                .is_some_and(|state| !state.contains(name)) =>
+            {
+                Some(source_span_key(node.span))
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let dead_definition_names = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .filter(|node| !node.definitions.is_empty())
+        .filter_map(|node| {
+            let live_after = cfg.live_after(node.id)?;
+            let dead = node
+                .definitions
+                .iter()
+                .filter(|definition| !live_after.contains(&definition.name))
+                .map(|definition| definition.name.clone())
+                .collect::<HashSet<_>>();
+            (!dead.is_empty()).then_some((source_span_key(node.span), dead))
+        })
+        .collect::<HashMap<_, _>>();
     emit_source_line(out, function.span, source_paths);
     out.push_str(&function_prototype(function, signatures));
     out.push_str(" {\n");
@@ -4882,6 +4931,9 @@ fn emit_function(
             current_function: function,
             source_paths,
             reachable_spans: &reachable_spans,
+            dead_assignment_spans: &dead_assignment_spans,
+            dead_var_initializer_spans: &dead_var_initializer_spans,
+            dead_definition_names: &dead_definition_names,
         },
     )?;
     out.push_str("}\n");
@@ -4893,6 +4945,14 @@ struct BlockEmitContext<'a> {
     current_function: &'a Function,
     source_paths: &'a HashMap<SourceId, String>,
     reachable_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_assignment_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_var_initializer_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
+}
+
+fn dead_store_rhs_is_discardable(expr: &Expr, signatures: &Signatures) -> bool {
+    typecheck::constant_primitive_value(expr, signatures).is_some()
+        || matches!(expr.kind, ExprKind::Nil | ExprKind::Var(_))
 }
 
 fn emit_block(
@@ -4911,9 +4971,33 @@ fn emit_block(
         {
             continue;
         }
+        if let StmtKind::Assign { expr, .. } = &stmt.kind
+            && context
+                .dead_assignment_spans
+                .contains(&source_span_key(stmt.span))
+            && dead_store_rhs_is_discardable(expr, signatures)
+        {
+            continue;
+        }
         emit_source_line(out, stmt.span, context.source_paths);
         let pad = "    ".repeat(depth);
+        let dead_definitions = context
+            .dead_definition_names
+            .get(&source_span_key(stmt.span));
         match &stmt.kind {
+            StmtKind::Var { name, ty, expr, .. }
+                if context
+                    .dead_var_initializer_spans
+                    .contains(&source_span_key(stmt.span))
+                    && dead_store_rhs_is_discardable(expr, signatures) =>
+            {
+                out.push_str(&format!(
+                    "{pad}{} {};\n",
+                    c_type(ty, signatures),
+                    local_c_name(name)
+                ));
+                env.insert(name.clone(), signatures.canonical_type(ty));
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_chunked(expr).is_some() => {
                 emit_sequence_chunked_binding(
                     out,
@@ -5067,6 +5151,9 @@ fn emit_block(
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 for (index, binding) in bindings.iter().enumerate() {
+                    if dead_definitions.is_some_and(|dead| dead.contains(&binding.name)) {
+                        continue;
+                    }
                     out.push_str(&format!(
                         "{pad}{} {} = {temp}.v{index};\n",
                         c_type(&binding.ty, signatures),
@@ -5100,7 +5187,9 @@ fn emit_block(
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 for (index, binding) in bindings.iter().enumerate() {
-                    if binding.name == "_" {
+                    if binding.name == "_"
+                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                    {
                         continue;
                     }
                     let ty = actuals.get(index).ok_or_else(|| {
@@ -5150,7 +5239,9 @@ fn emit_block(
                     ));
                 }
                 for (index, binding) in bindings.iter().enumerate() {
-                    if binding.name == "_" {
+                    if binding.name == "_"
+                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                    {
                         continue;
                     }
                     let index_code = if let Some(rest) = rest {
@@ -5170,6 +5261,7 @@ fn emit_block(
                 }
                 if let Some(rest) = rest
                     && rest.binding.name != "_"
+                    && !dead_definitions.is_some_and(|dead| dead.contains(&rest.binding.name))
                 {
                     let rest_name = local_c_name(&rest.binding.name);
                     out.push_str(&format!(
@@ -5215,6 +5307,7 @@ fn emit_block(
                     &temp,
                     env,
                     signatures,
+                    dead_definitions,
                 )?;
             }
             StmtKind::Return(values) if values.is_empty() => {
@@ -5441,7 +5534,14 @@ fn emit_block(
                 let end = emit_expr(end, env, signatures)?;
                 let temp = format!("flux__end_{}", *temp_counter);
                 *temp_counter += 1;
-                let c_name = local_c_name(name);
+                let name_is_live = !dead_definitions.is_some_and(|dead| dead.contains(name));
+                let c_name = if name_is_live {
+                    local_c_name(name)
+                } else {
+                    let generated = format!("flux__range_index_{}", *temp_counter);
+                    *temp_counter += 1;
+                    generated
+                };
                 if *inclusive {
                     let done = format!("flux__range_done_{}", *temp_counter);
                     *temp_counter += 1;
@@ -5456,7 +5556,9 @@ fn emit_block(
                     ));
                 }
                 let mut nested = env.clone();
-                nested.insert(name.clone(), Type::I64);
+                if name_is_live {
+                    nested.insert(name.clone(), Type::I64);
+                }
                 emit_block(
                     out,
                     body,
@@ -5484,14 +5586,17 @@ fn emit_block(
                 };
                 let source_name = format!("flux__iter_source_{}", *temp_counter);
                 *temp_counter += 1;
-                let index_c = index_name
-                    .as_ref()
-                    .map(|index| local_c_name(index))
-                    .unwrap_or_else(|| {
-                        let generated = format!("flux__iter_index_{}", *temp_counter);
-                        *temp_counter += 1;
-                        generated
-                    });
+                let index_is_live = index_name.as_ref().is_some_and(|index| {
+                    !dead_definitions.is_some_and(|dead| dead.contains(index))
+                });
+                let index_c = if index_is_live {
+                    local_c_name(index_name.as_ref().expect("live index must be named"))
+                } else {
+                    let generated = format!("flux__iter_index_{}", *temp_counter);
+                    *temp_counter += 1;
+                    generated
+                };
+                let item_is_live = !dead_definitions.is_some_and(|dead| dead.contains(name));
                 let item_c = local_c_name(name);
                 let element_c = c_type(&element, signatures);
                 out.push_str(&format!(
@@ -5501,14 +5606,18 @@ fn emit_block(
                 out.push_str(&format!(
                     "{pad}for (int64_t {index_c} = 0; {index_c} < (int64_t){source_name}.len; ++{index_c}) {{\n"
                 ));
-                out.push_str(&format!(
-                    "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at_unchecked({source_name}, (size_t){index_c}, sizeof({element_c})));\n"
-                ));
+                if item_is_live {
+                    out.push_str(&format!(
+                        "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at_unchecked({source_name}, (size_t){index_c}, sizeof({element_c})));\n"
+                    ));
+                }
                 let mut nested = env.clone();
-                if let Some(index_name) = index_name {
+                if index_is_live && let Some(index_name) = index_name {
                     nested.insert(index_name.clone(), Type::I64);
                 }
-                nested.insert(name.clone(), *element);
+                if item_is_live {
+                    nested.insert(name.clone(), *element);
+                }
                 emit_block(
                     out,
                     body,
@@ -5554,6 +5663,9 @@ fn emit_block(
                     for arm in variant_arms {
                         out.push_str(&format!("{pad}        {{\n"));
                         let mut nested = env.clone();
+                        let dead_arm_definitions = context
+                            .dead_definition_names
+                            .get(&source_span_key(arm.span));
                         for (index, (pattern, payload_ty)) in
                             arm.patterns.iter().zip(&variant.payloads).enumerate()
                         {
@@ -5563,7 +5675,10 @@ fn emit_block(
                             );
                             match pattern {
                                 MatchPattern::Binding(binding) => {
-                                    if binding.name == "_" {
+                                    if binding.name == "_"
+                                        || dead_arm_definitions
+                                            .is_some_and(|dead| dead.contains(&binding.name))
+                                    {
                                         continue;
                                     }
                                     out.push_str(&format!(
@@ -5590,6 +5705,7 @@ fn emit_block(
                                         &payload_access,
                                         &mut nested,
                                         signatures,
+                                        dead_arm_definitions,
                                     )?;
                                 }
                             }
@@ -5654,6 +5770,9 @@ fn emit_block(
                             out.push_str(&format!("{pad}else if ({condition}) {{\n"));
                         }
                         let mut nested = env.clone();
+                        let dead_arm_definitions = context
+                            .dead_definition_names
+                            .get(&source_span_key(arm.span));
                         emit_list_match_pattern_bindings(
                             out,
                             &format!("{pad}    "),
@@ -5662,6 +5781,7 @@ fn emit_block(
                             element,
                             &mut nested,
                             signatures,
+                            dead_arm_definitions,
                         )?;
                         emit_block(
                             out,
@@ -5682,6 +5802,9 @@ fn emit_block(
                         let condition = list_match_condition(&arm.pattern, &temp);
                         out.push_str(&format!("{pad}if (!{matched} && ({condition})) {{\n"));
                         let mut nested = env.clone();
+                        let dead_arm_definitions = context
+                            .dead_definition_names
+                            .get(&source_span_key(arm.span));
                         emit_list_match_pattern_bindings(
                             out,
                             &format!("{pad}    "),
@@ -5690,6 +5813,7 @@ fn emit_block(
                             element,
                             &mut nested,
                             signatures,
+                            dead_arm_definitions,
                         )?;
                         if let Some(guard) = &arm.guard {
                             let guard = emit_expr(guard, &nested, signatures)?;
@@ -5755,13 +5879,15 @@ fn emit_list_match_pattern_bindings(
     element: &Type,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    dead_definitions: Option<&HashSet<String>>,
 ) -> Result<(), Diagnostic> {
     let ListMatchPattern::List { bindings, rest, .. } = pattern else {
         return Ok(());
     };
     let element_c = c_type(element, signatures);
     for (index, binding) in bindings.iter().enumerate() {
-        if binding.name == "_" {
+        if binding.name == "_" || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+        {
             continue;
         }
         let index_code = if let Some(rest) = rest {
@@ -5781,6 +5907,7 @@ fn emit_list_match_pattern_bindings(
     }
     if let Some(rest) = rest
         && rest.binding.name != "_"
+        && !dead_definitions.is_some_and(|dead| dead.contains(&rest.binding.name))
     {
         let rest_name = local_c_name(&rest.binding.name);
         out.push_str(&format!(
@@ -5888,6 +6015,7 @@ fn emit_match_expr_into(
                             &payload_access,
                             &mut nested,
                             signatures,
+                            None,
                         )?;
                     }
                 }
@@ -5969,6 +6097,7 @@ fn emit_list_match_expr_into(
                 element,
                 &mut nested,
                 signatures,
+                None,
             )?;
             let arm_value = emit_expr(&arm.value, &nested, signatures)?;
             out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
@@ -5990,6 +6119,7 @@ fn emit_list_match_expr_into(
                 element,
                 &mut nested,
                 signatures,
+                None,
             )?;
             if let Some(guard) = &arm.guard {
                 let guard = emit_expr(guard, &nested, signatures)?;
@@ -6017,6 +6147,7 @@ fn emit_struct_pattern_bindings(
     base: &str,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    dead_definitions: Option<&HashSet<String>>,
 ) -> Result<(), Diagnostic> {
     let definition = signatures
         .struct_type(struct_name)
@@ -6041,10 +6172,13 @@ fn emit_struct_pattern_bindings(
                 &access,
                 env,
                 signatures,
+                dead_definitions,
             )?;
             continue;
         }
-        if field.binding.name == "_" {
+        if field.binding.name == "_"
+            || dead_definitions.is_some_and(|dead| dead.contains(&field.binding.name))
+        {
             continue;
         }
         out.push_str(&format!(
