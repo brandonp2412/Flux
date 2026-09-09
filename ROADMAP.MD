@@ -277,7 +277,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [x] Concise inclusive integer ranges with `start..=end` alongside exclusive `start..end`, including single-evaluation bounds and overflow-safe native iteration.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
 - [ ] Assignment expressions only where they remain readable and analyzable. Ordinary assignment is now a statement restricted to explicitly mutable `var` bindings; do not conflate that with value-producing assignment expressions.
-- [ ] Strong constant folding for literal/expression-heavy syntax.
+- [x] Strong primitive constant folding for literal/constant expression trees in ordinary code and compile-time UI/application metadata, with checked integer semantics, comparisons/equality, and boolean short-circuiting; runtime-dependent expressions remain dynamic.
 
 ## Async/generator ergonomics
 

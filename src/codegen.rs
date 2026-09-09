@@ -1123,35 +1123,21 @@ fn ui_widget_c_name(name: &str) -> String {
 }
 
 fn static_expr_i64(expr: &Expr, signatures: &Signatures) -> Option<i64> {
-    match &expr.kind {
-        ExprKind::Int(value) => Some(*value),
-        ExprKind::Var(name) => {
-            signatures
-                .constant(name)
-                .and_then(|constant| match constant.value {
-                    ConstantValue::I64(value) => Some(value),
-                    _ => None,
-                })
-        }
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr,
-        } => static_expr_i64(expr, signatures)?.checked_neg(),
+    match fold_primitive_expr(expr, &HashMap::new(), signatures)
+        .ok()
+        .flatten()?
+    {
+        ConstantValue::I64(value) => Some(value),
         _ => None,
     }
 }
 
 fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Str(value) => Some(value.clone()),
-        ExprKind::Var(name) => {
-            signatures
-                .constant(name)
-                .and_then(|constant| match &constant.value {
-                    ConstantValue::Str(value) => Some(value.clone()),
-                    _ => None,
-                })
-        }
+    match fold_primitive_expr(expr, &HashMap::new(), signatures)
+        .ok()
+        .flatten()?
+    {
+        ConstantValue::Str(value) => Some(value),
         _ => None,
     }
 }
@@ -1216,16 +1202,11 @@ fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
 }
 
 fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
-    match &expr.kind {
-        ExprKind::Bool(value) => Some(*value),
-        ExprKind::Var(name) => {
-            signatures
-                .constant(name)
-                .and_then(|constant| match constant.value {
-                    ConstantValue::Bool(value) => Some(value),
-                    _ => None,
-                })
-        }
+    match fold_primitive_expr(expr, &HashMap::new(), signatures)
+        .ok()
+        .flatten()?
+    {
+        ConstantValue::Bool(value) => Some(value),
         _ => None,
     }
 }
@@ -1235,6 +1216,9 @@ fn ui_expr_c(
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
+    if let Some(value) = fold_primitive_expr(expr, &HashMap::new(), signatures)? {
+        return Ok(constant_c_value(&value));
+    }
     match &expr.kind {
         ExprKind::Bool(value) => Ok(if *value { "true" } else { "false" }.to_string()),
         ExprKind::Int(value) => Ok(format!("INT64_C({value})")),
@@ -3962,6 +3946,12 @@ fn emit_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<EmittedExpr, Diagnostic> {
+    if let Some(value) = fold_primitive_expr(expr, env, signatures)? {
+        return Ok(EmittedExpr {
+            ty: value.ty(),
+            code: constant_c_value(&value),
+        });
+    }
     let emitted = match &expr.kind {
         ExprKind::Int(value) => EmittedExpr {
             code: format!("INT64_C({value})"),
@@ -5640,6 +5630,131 @@ fn visit_value_type<'a>(
     emitted.insert(name.to_string());
     order.push(definition);
     Ok(())
+}
+
+fn fold_primitive_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<ConstantValue>, Diagnostic> {
+    let value = match &expr.kind {
+        ExprKind::Int(value) => Some(ConstantValue::I64(*value)),
+        ExprKind::Bool(value) => Some(ConstantValue::Bool(*value)),
+        ExprKind::Str(value) => Some(ConstantValue::Str(value.clone())),
+        ExprKind::Var(name) => {
+            if env.contains_key(name) {
+                None
+            } else {
+                signatures
+                    .constant(name)
+                    .map(|constant| constant.value.clone())
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let Some(inner) = fold_primitive_expr(inner, env, signatures)? else {
+                return Ok(None);
+            };
+            Some(match (op, inner) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    ConstantValue::I64(value.checked_neg().ok_or_else(|| {
+                        diag(expr.span, "constant integer negation overflows i64")
+                    })?)
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => ConstantValue::Bool(!value),
+                _ => return Ok(None),
+            })
+        }
+        ExprKind::Binary { left, op, right } => {
+            let Some(left) = fold_primitive_expr(left, env, signatures)? else {
+                return Ok(None);
+            };
+            if matches!(op, BinOp::And) && left == ConstantValue::Bool(false) {
+                return Ok(Some(ConstantValue::Bool(false)));
+            }
+            if matches!(op, BinOp::Or) && left == ConstantValue::Bool(true) {
+                return Ok(Some(ConstantValue::Bool(true)));
+            }
+            let Some(right) = fold_primitive_expr(right, env, signatures)? else {
+                return Ok(None);
+            };
+            Some(fold_primitive_binary(expr.span, *op, left, right)?)
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let Some(condition) = fold_primitive_expr(cond, env, signatures)? else {
+                return Ok(None);
+            };
+            match condition {
+                ConstantValue::Bool(true) => fold_primitive_expr(then_expr, env, signatures)?,
+                ConstantValue::Bool(false) => fold_primitive_expr(else_expr, env, signatures)?,
+                _ => return Ok(None),
+            }
+        }
+        _ => None,
+    };
+    Ok(value)
+}
+
+fn fold_primitive_binary(
+    span: SourceSpan,
+    op: BinOp,
+    left: ConstantValue,
+    right: ConstantValue,
+) -> Result<ConstantValue, Diagnostic> {
+    match (op, left, right) {
+        (BinOp::Add, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_add(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer addition overflows i64")),
+        (BinOp::Sub, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_sub(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer subtraction overflows i64")),
+        (BinOp::Mul, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_mul(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer multiplication overflows i64")),
+        (BinOp::Div, ConstantValue::I64(_), ConstantValue::I64(0)) => {
+            Err(diag(span, "constant integer division by zero is invalid"))
+        }
+        (BinOp::Div, ConstantValue::I64(i64::MIN), ConstantValue::I64(-1)) => {
+            Err(diag(span, "constant integer division overflows i64"))
+        }
+        (BinOp::Div, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::I64(left / right))
+        }
+        (BinOp::Lt, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left < right))
+        }
+        (BinOp::Le, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left <= right))
+        }
+        (BinOp::Gt, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left > right))
+        }
+        (BinOp::Ge, ConstantValue::I64(left), ConstantValue::I64(right)) => {
+            Ok(ConstantValue::Bool(left >= right))
+        }
+        (BinOp::Eq, left, right) if left.ty() == right.ty() => {
+            Ok(ConstantValue::Bool(left == right))
+        }
+        (BinOp::Ne, left, right) if left.ty() == right.ty() => {
+            Ok(ConstantValue::Bool(left != right))
+        }
+        (BinOp::And, ConstantValue::Bool(left), ConstantValue::Bool(right)) => {
+            Ok(ConstantValue::Bool(left && right))
+        }
+        (BinOp::Or, ConstantValue::Bool(left), ConstantValue::Bool(right)) => {
+            Ok(ConstantValue::Bool(left || right))
+        }
+        _ => Err(diag(
+            span,
+            "invalid primitive constant expression reached code generation",
+        )),
+    }
 }
 
 fn c_condition(code: &str) -> String {

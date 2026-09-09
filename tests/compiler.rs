@@ -3366,6 +3366,49 @@ fn main() -> i64 {
 }
 
 #[test]
+fn folds_pure_primitive_expressions_before_native_codegen() {
+    let source = r#"
+fn main() -> i64 {
+    let answer: i64 = 2 * 20 + 2
+    let enabled: bool = 10 > 3 && !false
+    let same: bool = "Flux" == "Flux"
+    let shortCircuit: bool = false && (1 / 0 == 0)
+    let input: i64 = 5
+    let dynamic: i64 = input + 2
+    print(answer)
+    print(enabled)
+    print(same)
+    print(shortCircuit)
+    print(dynamic)
+    return 0
+}
+"#;
+
+    check_source(source).expect("pure primitive expressions should typecheck");
+    let generated = compile_to_c(source).expect("pure primitive expressions should fold");
+    assert!(generated.contains("flux__local_answer = INT64_C(42);"));
+    assert!(generated.contains("flux__local_enabled = true;"));
+    assert!(generated.contains("flux__local_same = true;"));
+    assert!(generated.contains("flux__local_shortCircuit = false;"));
+    assert!(
+        generated.contains("flux__local_dynamic = flux_add_i64(flux__local_input, INT64_C(2));")
+    );
+    assert!(!generated.contains("flux_mul_i64(INT64_C(2), INT64_C(20))"));
+
+    let static_failure = r#"
+fn main() -> i64 {
+    let bad: i64 = 1 / 0
+    print(bad)
+    return 0
+}
+"#;
+    check_source(static_failure).expect("static division remains type-correct");
+    let error = compile_to_c(static_failure)
+        .expect_err("static division by zero should fail before native execution");
+    assert!(error.message.contains("constant integer division by zero"));
+}
+
+#[test]
 fn rejects_invalid_compile_time_constants() {
     let cycle = r#"
 const A: i64 = B
@@ -6327,23 +6370,27 @@ app Screen
 #[test]
 fn application_metadata_types_formats_and_lowers_native_window_properties() {
     let source = r#"
-const WINDOW_WIDTH: i64 = 420
+const WINDOW_WIDTH: i64 = 400 + 20
 view Screen {
     grid columns: 1fr
     grid rows: auto
     Text title at 1,1
         text: "Flux"
+        size: 7 * 4
+        visible: 10 > 3 && true
 }
-app Screen(title: "Flux App", width: WINDOW_WIDTH, height: 240)
+app Screen(title: "Flux App", width: WINDOW_WIDTH, height: 120 * 2)
 "#;
     check_source(source).expect("typed compile-time app metadata should typecheck");
     let formatted = fluxc::formatter::format_source(source).expect("app metadata should format");
     assert!(
-        formatted.contains("app Screen(title: \"Flux App\", width: WINDOW_WIDTH, height: 240)")
+        formatted.contains("app Screen(title: \"Flux App\", width: WINDOW_WIDTH, height: 120 * 2)")
     );
     let generated = compile_to_c(source).expect("app metadata should lower natively");
     assert!(generated.contains("gtk_window_set_title(GTK_WINDOW(window), \"Flux App\")"));
     assert!(generated.contains("gtk_window_set_default_size(GTK_WINDOW(window), 420, 240)"));
+    assert!(generated.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_title, true)"));
 
     let wrong_title = r#"
 view Screen {
