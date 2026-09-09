@@ -491,6 +491,8 @@ let emptyTotal: i64 = values[:0] | fold 7 add
 let joined: i64[] = values[::2] | concat values[::-1][:2]
 let joinedDoubled: i64[] = values[::2] | concat values[::-1][:2] | map double
 let unique: i64[] = values | concat values[::-1] | distinct
+let nested: i64[][] = [values[::2], values[::-1][:2]]
+let flat: i64[] = nested | flatten
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -516,6 +518,8 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 `concat(left, right)` joins two lists with exactly the same concrete element type. It accepts strided inputs, preserves logical element order, checks length overflow explicitly, and produces one contiguous stack-backed local list. It composes through pipelines, for example `left | concat right | map double`. Like other collection-producing bootstrap operations, the concatenated result must remain within the supported local lifetime.
 
 `distinct(list)` removes duplicate scalar values while preserving the first occurrence of each value. It currently supports `i64[]`, `bool[]`, `str[]`, and `error[]`, whose equality rules are already defined by Flux; aggregate, nested-list, and function elements are rejected rather than receiving implicit deep equality. Strided inputs are consumed in logical order and the result is a stack-backed local list that can feed later pipeline stages.
+
+`flatten(nested)` removes exactly one list layer, converting `T[][]` to `T[]`. Both the outer nested list and each inner list may be strided views; flattening walks their logical order, checks total output length overflow before allocating the result buffer, and then writes one contiguous stack-backed local list. It does not recursively flatten arbitrary depth.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

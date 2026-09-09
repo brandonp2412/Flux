@@ -80,6 +80,9 @@ fn main() -> i64 {
     let duplicated: i64[] = values | concat values[::-1]
     let uniqueValues: i64[] = duplicated | distinct
     let uniqueDoubled: i64[] = duplicated | distinct | map double
+    let nested: i64[][] = [evens, reversed[:2]]
+    let flattened: i64[] = nested | flatten
+    let flattenedTotal: i64 = nested | flatten | reduce add
     print mapped.first
     print mapped.last
     print filtered.length
@@ -101,6 +104,10 @@ fn main() -> i64 {
     print uniqueValues.last
     print uniqueDoubled.first
     print uniqueDoubled.last
+    print flattened.length
+    print flattened.first
+    print flattened.last
+    print flattenedTotal
     for value in middle:
         print value
     for index, value in middle:

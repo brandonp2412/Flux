@@ -212,6 +212,7 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [ ] Related collection-producing functional sequence operations beyond map/filter/where.
   - [x] Typed `concat(left, right)` with exact element-type matching, strided-input support, pipeline composition, overflow checking, and a stack-backed local result.
   - [x] Stable `distinct(list)` for scalar-equality lists (`i64`, `bool`, `str`, `error`), preserving first-occurrence order across strided inputs and composing through typed pipelines.
+  - [x] One-level `flatten(nested)` for concrete nested lists, preserving logical order across strided outer/inner lists, checking total length overflow, and producing a stack-backed local result.
 - [x] Typed `fold(list, initial, reducer)` and `reduce(list, reducer)` scalar reductions with concrete callback signatures, strided-view support, pipeline composition, and explicit empty-list rejection for `reduce`.
 - [x] `any(bool[])` / `every(bool[])` boolean aggregation with Python/Dart-style empty-sequence identities (`false` / `true`), designed to combine with boolean comprehensions and typed pipelines.
 - [x] Zero-copy `take(list, count)` / `skip(list, count)` sequence views, designed to compose naturally through typed pipelines such as `values | skip 1 | take 3`; counts are `i64`, oversized counts clamp, and negative counts fail explicitly at runtime.

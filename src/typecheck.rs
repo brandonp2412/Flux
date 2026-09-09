@@ -619,6 +619,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "where"
                 | "concat"
                 | "distinct"
+                | "flatten"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -3013,6 +3014,33 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "flatten" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "flatten does not accept named arguments"));
+            }
+            if args.len() != 1 {
+                return Err(diag(
+                    expr.span,
+                    "flatten expects exactly one nested-list argument",
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(outer_element) = list_ty else {
+                return Err(diag(args[0].span, "flatten expects a nested list argument"));
+            };
+            let outer_element = signatures.canonical_type(&outer_element);
+            let Type::List(inner_element) = outer_element else {
+                return Err(diag(
+                    args[0].span,
+                    "flatten expects a list whose elements are lists",
+                ));
+            };
+            Ok(Type::List(inner_element))
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "distinct" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "distinct does not accept named arguments"));
@@ -3779,6 +3807,7 @@ fn value_types_of_expr(
                         | "where"
                         | "concat"
                         | "distinct"
+                        | "flatten"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

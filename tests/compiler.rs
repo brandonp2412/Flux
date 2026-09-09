@@ -1602,6 +1602,86 @@ fn main() -> i64 {
 }
 
 #[test]
+fn flatten_is_typed_strided_and_composable() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let left: i64[] = [1, 2, 3][::2]
+    let right: i64[] = [4, 5, 6][::-1]
+    let nested: i64[][] = [left, right]
+    let flat: i64[] = nested[::-1] | flatten
+    let doubled: i64[] = nested[::-1] | flatten | map double
+    let total: i64 = nested[::-1] | flatten | reduce add
+    print flat.length
+    print flat.first
+    print flat.last
+    print doubled.first
+    print doubled.last
+    print total
+    return 0
+}
+"#;
+
+    check_source(source).expect("flatten should typecheck for nested lists");
+    let generated = compile_to_c(source).expect("flatten should lower natively");
+    assert!(generated.contains("flux__flatten_source_"));
+    assert!(generated.contains("flux__flatten_capacity_"));
+    assert!(generated.contains("flux__flatten_buffer_"));
+    assert!(generated.contains("Flux runtime error: flattened list is too large"));
+    assert!(generated.contains("sizeof(struct flux__list)"));
+    assert!(generated.contains("flux_list_at(flux__flatten_inner_"));
+    assert!(generated.contains("flux__fn_double(flux__transform_item_"));
+    assert!(generated.contains("flux__fn_add(flux__local_total"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("flatten source should format");
+    assert!(formatted.contains("let flat: i64[] = nested[::-1] | flatten"));
+    assert!(formatted.contains("let doubled: i64[] = nested[::-1] | flatten | map double"));
+    assert!(formatted.contains("let total: i64 = nested[::-1] | flatten | reduce add"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted flatten should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_flatten_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let value: i64[] = flatten(7)
+    print value.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("flatten should require a list");
+    assert!(
+        error
+            .message
+            .contains("flatten expects a nested list argument")
+    );
+
+    let flat_list = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let flattened: i64[] = values | flatten
+    print flattened.length
+    return 0
+}
+"#;
+    let error = check_source(flat_list).expect_err("flatten should require nested list elements");
+    assert!(
+        error
+            .message
+            .contains("flatten expects a list whose elements are lists")
+    );
+}
+
+#[test]
 fn fuses_map_filter_pipelines_and_terminal_reductions() {
     let source = r#"
 fn double(value: i64) -> i64 {

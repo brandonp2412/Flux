@@ -2059,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_flatten(expr).is_some() => {
+                emit_sequence_flatten_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_distinct(expr).is_some() => {
                 emit_sequence_distinct_binding(
                     out,
@@ -2734,6 +2745,20 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
     }
 }
 
+fn sequence_flatten(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "flatten" && args.len() == 1 => Some(&args[0]),
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "flatten" && args.is_empty() => Some(input),
+        _ => None,
+    }
+}
+
 fn sequence_distinct(expr: &Expr) -> Option<&Expr> {
     match &expr.kind {
         ExprKind::Call {
@@ -2778,9 +2803,104 @@ fn emit_sequence_list_value(
         emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_distinct(expr).is_some() {
         emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
+    } else if sequence_flatten(expr).is_some() {
+        emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)
     } else {
         emit_expr(expr, env, signatures)
     }
+}
+
+fn emit_sequence_flatten_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "flatten binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_flatten(expr)
+        .ok_or_else(|| diag(expr.span, "invalid flatten call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let source_ty = signatures.canonical_type(&source.ty);
+    let Type::List(outer_element) = source_ty else {
+        return Err(diag(expr.span, "flatten source must be a nested list"));
+    };
+    let outer_element = signatures.canonical_type(&outer_element);
+    let Type::List(inner_element) = outer_element else {
+        return Err(diag(expr.span, "flatten source elements must be lists"));
+    };
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    if result_ty != Type::List(inner_element.clone()) {
+        return Err(diag(
+            expr.span,
+            "flatten result type mismatch reached code generation",
+        ));
+    }
+    let source_name = format!("flux__flatten_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let capacity_name = format!("flux__flatten_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let outer_index = format!("flux__flatten_outer_{}", *temp_counter);
+    *temp_counter += 1;
+    let inner_name = format!("flux__flatten_inner_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__flatten_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__flatten_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let inner_index = format!("flux__flatten_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__flatten_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(&inner_element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n{pad}size_t {capacity_name} = 0;\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{ struct flux__list {inner_name} = *((struct flux__list *)flux_list_at({source_name}, (int64_t){outer_index}, sizeof(struct flux__list))); if (SIZE_MAX - {capacity_name} < {inner_name}.len) {{ fputs(\"Flux runtime error: flattened list is too large\\n\", stderr); abort(); }} {capacity_name} += {inner_name}.len; }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{\n{pad}    struct flux__list {inner_name} = *((struct flux__list *)flux_list_at({source_name}, (int64_t){outer_index}, sizeof(struct flux__list)));\n{pad}    for (size_t {inner_index} = 0; {inner_index} < {inner_name}.len; ++{inner_index}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({inner_name}, (int64_t){inner_index}, sizeof({element_c}))); }}\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
 }
 
 fn distinct_equality(left: &str, right: &str, ty: &Type) -> Option<String> {
@@ -3619,6 +3739,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "flatten" => {
+            return Err(diag(
+                expr.span,
+                "flatten currently lowers only when bound directly to an immutable local value",
             ));
         }
         ExprKind::Call { name, .. } if name == "distinct" => {
