@@ -1559,6 +1559,52 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
         for state in &view.states {
             property_env.insert(state.name.clone(), signatures.canonical_type(&state.ty));
         }
+        for derived in &view.derived {
+            if view_environment_type(&derived.name).is_some() {
+                diagnostics.push(diag(
+                    derived.name_span,
+                    &format!(
+                        "derived view value '{}' conflicts with a read-only view environment binding",
+                        derived.name
+                    ),
+                ));
+            }
+            let expected = match require_known_type(derived.type_span, &derived.ty, signatures) {
+                Ok(()) => signatures.canonical_type(&derived.ty),
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    continue;
+                }
+            };
+            if !matches!(expected, Type::I64 | Type::Bool | Type::Str) {
+                diagnostics.push(diag(
+                    derived.type_span,
+                    "derived view values currently support i64, bool, and str",
+                ));
+                property_env.insert(derived.name.clone(), expected);
+                continue;
+            }
+            match type_of_expr(&derived.value, &property_env, signatures) {
+                Ok(actual) => {
+                    if let Err(diagnostic) = require_type(
+                        derived.value.span,
+                        &expected,
+                        &actual,
+                        &format!("derived view value '{}'", derived.name),
+                    ) {
+                        diagnostics.push(diagnostic);
+                    }
+                }
+                Err(mut diagnostic) => {
+                    diagnostic.message = format!(
+                        "derived view value '{}': {}",
+                        derived.name, diagnostic.message
+                    );
+                    diagnostics.push(diagnostic);
+                }
+            }
+            property_env.insert(derived.name.clone(), expected);
+        }
 
         for (index, element) in view.elements.iter().enumerate() {
             let custom_view = view_defs.get(element.kind.as_str()).copied();

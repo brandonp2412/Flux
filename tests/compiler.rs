@@ -6353,6 +6353,124 @@ app Counter
 }
 
 #[test]
+fn derived_view_values_typecheck_format_index_and_lower_natively() {
+    let source = r#"
+const LABEL: str = "Ready"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto auto
+    state count: i64 = 1
+    derived doubled: i64 = count * 2
+    derived wide: bool = windowWidth >= 600
+    derived ready: bool = doubled >= 2 && wide
+    derived label: str = LABEL
+    Text title at 1,1
+        text: label
+        visible: ready
+    Button action at 2,1
+        text: "Add"
+        enabled: doubled < 10
+        on_press: count => count + 1
+}
+app Counter(width: 640)
+"#;
+
+    check_source(source).expect("derived view values should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("derived values should format");
+    assert!(formatted.contains("derived doubled: i64 = count * 2"));
+    assert!(formatted.contains("derived wide: bool = windowWidth >= 600"));
+    assert!(formatted.contains("derived ready: bool = doubled >= 2 && wide"));
+    assert!(formatted.contains("derived label: str = LABEL"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(740))
+        .expect("derived values should be indexed semantically");
+    let doubled = database
+        .symbols_named("doubled")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::ViewDerived)
+        .expect("derived value should have a semantic symbol");
+    assert_eq!(doubled.ty, Some(fluxc::ast::Type::I64));
+
+    let generated = compile_to_c(source).expect("derived values should lower natively");
+    assert!(generated.contains("static int64_t flux__ui_derived_doubled = INT64_C(0);"));
+    assert!(generated.contains("static bool flux__ui_derived_wide = false;"));
+    assert!(generated.contains("static bool flux__ui_derived_ready = false;"));
+    assert!(generated.contains("static const char * flux__ui_derived_label = NULL;"));
+    assert!(
+        generated
+            .contains("flux__ui_derived_doubled = flux_mul_i64(flux__ui_state_count, INT64_C(2));")
+    );
+    assert!(generated.contains("flux__ui_derived_wide = (flux__ui_window_width >= INT64_C(600));"));
+    assert!(generated.contains("flux__ui_derived_doubled >= INT64_C(2)"));
+    assert!(generated.contains("flux__ui_derived_label = \"Ready\";"));
+    assert!(
+        generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_title), flux__ui_derived_label)")
+    );
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_title, flux__ui_derived_ready)"));
+    assert!(generated.contains("flux__ui_derived_doubled < INT64_C(10)"));
+}
+
+#[test]
+fn rejects_invalid_derived_view_values() {
+    let forward_reference = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    derived first: i64 = second + 1
+    derived second: i64 = 2
+    Text title at 1,1
+        text: "Flux"
+}
+app Screen
+"#;
+    let errors = check_source_all(forward_reference)
+        .expect_err("derived values should depend only on earlier derived values");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("derived view value 'first'")
+            && error
+                .message
+                .contains("unknown binding, constant, or function 'second'")
+    }));
+
+    let unsupported_type = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    derived problem: error = nil
+    Text title at 1,1
+        text: "Flux"
+}
+app Screen
+"#;
+    let errors = check_source_all(unsupported_type)
+        .expect_err("derived values should remain primitive during bootstrap");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("derived view values currently support i64, bool, and str")
+    }));
+
+    let transition_target = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    derived doubled: i64 = count * 2
+    Button action at 1,1
+        text: "Bad"
+        on_press: doubled => doubled + 1
+}
+app Screen
+"#;
+    let errors = check_source_all(transition_target)
+        .expect_err("derived values must not be mutable transition targets");
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error.message.contains("unknown view state 'doubled'") })
+    );
+}
+
+#[test]
 fn rejects_invalid_view_state_transitions() {
     let unknown = r#"
 view Screen {

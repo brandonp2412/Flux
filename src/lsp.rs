@@ -649,6 +649,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "view",
     "app",
     "state",
+    "derived",
     "true",
     "false",
     "nil",
@@ -1464,6 +1465,8 @@ fn add_builtin_ui_context_completions(
         for grid in ["grid columns:", "grid rows:", "grid gap:"] {
             push_completion_item(items, seen, grid, 14, "flat-grid layout declaration");
         }
+        push_completion_item(items, seen, "state", 14, "mutable primitive view state");
+        push_completion_item(items, seen, "derived", 14, "read-only derived view value");
     }
 }
 
@@ -2709,6 +2712,7 @@ fn semantic_symbol_kind(kind: crate::semantic::SymbolKind) -> SemanticTokenKind 
         | SymbolKind::PatternBinding
         | SymbolKind::LoopVariable
         | SymbolKind::ViewState
+        | SymbolKind::ViewDerived
         | SymbolKind::ViewElement => SemanticTokenKind::Variable,
         SymbolKind::Enum => SemanticTokenKind::Enum,
         SymbolKind::EnumVariant => SemanticTokenKind::EnumMember,
@@ -2745,6 +2749,7 @@ fn is_flux_keyword(word: &str) -> bool {
             | "view"
             | "app"
             | "state"
+            | "derived"
             | "grid"
             | "at"
             | "span"
@@ -3709,6 +3714,7 @@ fn hover_description(
         SymbolKind::StructField => typed_symbol("field", symbol),
         SymbolKind::ViewProperty => typed_symbol("property", symbol),
         SymbolKind::ViewState => typed_symbol("state", symbol),
+        SymbolKind::ViewDerived => typed_symbol("derived", symbol),
         SymbolKind::InterfaceFunction | SymbolKind::InterfaceImplementationMapping => {
             typed_symbol("fn", symbol)
         }
@@ -4986,6 +4992,8 @@ mod tests {
         .to_json();
         assert!(layout.contains("\"label\":\"Button\""));
         assert!(layout.contains("\"label\":\"grid columns:\""));
+        assert!(layout.contains("\"label\":\"state\""));
+        assert!(layout.contains("\"label\":\"derived\""));
     }
 
     #[test]

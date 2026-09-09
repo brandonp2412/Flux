@@ -258,11 +258,18 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
             .states
             .first()
             .map(|state| state.line.saturating_sub(1))
-            .or_else(|| {
+            .into_iter()
+            .chain(
+                view.derived
+                    .first()
+                    .map(|derived| derived.line.saturating_sub(1)),
+            )
+            .chain(
                 view.elements
                     .first()
-                    .map(|element| element.line.saturating_sub(1))
-            })
+                    .map(|element| element.line.saturating_sub(1)),
+            )
+            .min()
             .unwrap_or(view.line + 3);
         lines.insert(gap_line, format!("    grid gap: {gap}"));
     }
@@ -280,6 +287,17 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
                 state.name,
                 state.ty.name(),
                 format_expr(&state.initial, 0)
+            ),
+        );
+    }
+    for derived in &view.derived {
+        lines.insert(
+            derived.line,
+            format!(
+                "    derived {}: {} = {}",
+                derived.name,
+                derived.ty.name(),
+                format_expr(&derived.value, 0)
             ),
         );
     }

@@ -203,6 +203,24 @@ fn emit_linux_gtk_application(
             }
         }
     }
+    for derived in &view.derived {
+        let derived_name = ui_derived_c_name(&derived.name);
+        let initial = match signatures.canonical_type(&derived.ty) {
+            Type::I64 => "INT64_C(0)",
+            Type::Bool => "false",
+            Type::Str => "NULL",
+            _ => {
+                return Err(diag(
+                    derived.type_span,
+                    "bootstrap Linux derived view values currently support i64, bool, and str",
+                ));
+            }
+        };
+        out.push_str(&format!(
+            "static {} {derived_name} = {initial};\n",
+            c_type(&derived.ty, signatures)
+        ));
+    }
     for element in &view.elements {
         out.push_str(&format!(
             "static GtkWidget *{} = NULL;\n",
@@ -1118,6 +1136,10 @@ fn ui_state_c_name(name: &str) -> String {
     format!("flux__ui_state_{name}")
 }
 
+fn ui_derived_c_name(name: &str) -> String {
+    format!("flux__ui_derived_{name}")
+}
+
 fn ui_widget_c_name(name: &str) -> String {
     format!("flux__ui_{name}")
 }
@@ -1242,10 +1264,13 @@ fn ui_expr_c(
             if view.states.iter().any(|state| state.name == *name) {
                 return Ok(ui_state_c_name(name));
             }
+            if view.derived.iter().any(|derived| derived.name == *name) {
+                return Ok(ui_derived_c_name(name));
+            }
             let Some(constant) = signatures.constant(name) else {
                 return Err(diag(
                     expr.span,
-                    "bootstrap Linux dynamic UI expression may reference only view environment, view state, or compile-time constants",
+                    "bootstrap Linux dynamic UI expression may reference only view environment, view state, derived view values, or compile-time constants",
                 ));
             };
             match &constant.value {
@@ -1295,6 +1320,13 @@ fn emit_ui_refresh(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     out.push_str("static void flux__ui_refresh(void) {\n");
+    for derived in &view.derived {
+        let value = ui_expr_c(&derived.value, view, signatures)?;
+        out.push_str(&format!(
+            "    {} = {value};\n",
+            ui_derived_c_name(&derived.name)
+        ));
+    }
     for element in &view.elements {
         let widget = ui_widget_c_name(&element.name);
         if let Some(property) = view_property(element, "visible") {

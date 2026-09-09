@@ -303,6 +303,7 @@ pub struct ViewDef {
     pub keyword_span: SourceSpan,
     pub params: Vec<Param>,
     pub states: Vec<ViewState>,
+    pub derived: Vec<ViewDerived>,
     pub grid: GridLayout,
     pub elements: Vec<ViewElement>,
     pub line: usize,
@@ -316,6 +317,17 @@ pub struct ViewState {
     pub ty: Type,
     pub type_span: SourceSpan,
     pub initial: Expr,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewDerived {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub ty: Type,
+    pub type_span: SourceSpan,
+    pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,
 }

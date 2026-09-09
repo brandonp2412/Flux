@@ -681,22 +681,28 @@ A GUI executable may select one zero-parameter root view with an application dec
 ```flux
 view HelloApp {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     grid gap: 12
     state clicked: bool = false
+    derived showGreeting: bool = !clicked
 
-    Text title at 1,1
-        text: "Clicked!" if clicked else "Hello, Flux!"
+    Text greeting at 1,1
+        text: "Hello, Flux!"
+        visible: showGreeting
 
-    Button action at 2,1
-        text: "Reset" if clicked else "Click me"
+    Text status at 2,1
+        text: "Clicked!"
+        visible: clicked
+
+    Button action at 3,1
+        text: "Toggle"
         onPress: clicked => !clicked
 }
 
 app HelloApp
 ```
 
-The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text`, `Button`, `TextInput`, `Image`, `Toggle`, and `Radio` become native GTK controls. View-local state is explicit `bool` or `i64` data initialized from compile-time values, and events may apply typed functional transitions such as `onPress: state => nextExpression`. State-dependent properties use ordinary Flux expressions and lower to a small native refresh function that updates existing controls rather than reconstructing the window/grid. Root views also receive compiler-owned read-only environment bindings `windowWidth`, `windowHeight`, `windowIsLandscape`, `windowIsPortrait`, and `displayScale`; ordinary native window resizes/scale changes update those values and reuse the same refresh path, so responsive property expressions need no window/controller object. Common transforms participate in the same model: translation, rotation, uniform/per-axis scale, skew, and percentage transform origins are typed flat-element properties. Static values fold into the element stylesheet, while state-derived primitive expressions refresh a persistent native CSS provider. Named callbacks remain supported as a separate event form. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. Exact maximized/fullscreen content geometry, responsive grid definitions, owned/string/aggregate state, animation timelines, and a lower-level long-term Wayland renderer remain later work.
+The bootstrap Linux backend lowers this root view to a GTK4 application/window and `GtkGrid`; `Text`, `Button`, `TextInput`, `Image`, `Toggle`, and `Radio` become native GTK controls. View-local state is explicit `bool` or `i64` data initialized from compile-time values, and events may apply typed functional transitions such as `onPress: state => nextExpression`. Views may also declare read-only computed bindings with `derived name: type = expression`. Bootstrap derived values support `i64`, `bool`, and `str`; they may read view parameters, mutable state, read-only window environment bindings, compile-time constants, and earlier derived bindings. Declaration order is significant, which rejects forward/cyclic derived dependencies without a runtime dependency graph. Derived values cannot be transition targets and are recomputed in order at the start of each native refresh before dependent properties update. State- and derived-dependent properties use ordinary Flux expressions and update existing controls rather than reconstructing the window/grid. Root views also receive compiler-owned read-only environment bindings `windowWidth`, `windowHeight`, `windowIsLandscape`, `windowIsPortrait`, and `displayScale`; ordinary native window resizes/scale changes update those values and reuse the same refresh path, so responsive property expressions need no window/controller object. Common transforms participate in the same model: translation, rotation, uniform/per-axis scale, skew, and percentage transform origins are typed flat-element properties. Static values fold into the element stylesheet, while runtime primitive expressions refresh a persistent native CSS provider. Named callbacks remain supported as a separate event form. Fixed grid tracks feed native size requests, `fr` tracks expand, and row/column spans remain the explicit Flux placement model. GTK types are not exposed in Flux source and do not establish a widget-oriented source architecture. Exact maximized/fullscreen content geometry, responsive grid definitions, owned/string/aggregate mutable state, animation timelines, and a lower-level long-term Wayland renderer remain later work.
 
 ## UI direction
 

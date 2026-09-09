@@ -4,8 +4,8 @@ use crate::ast::{
     InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, MatchArm,
     MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, ShellRedirect,
     ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
-    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewElement, ViewProperty, ViewState,
-    ViewStateTransition,
+    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty,
+    ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -429,6 +429,12 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
             state.name_span = state.name_span.with_source(source_id);
             state.type_span = state.type_span.with_source(source_id);
             attach_expr_source(&mut state.initial, source_id);
+        }
+        for derived in &mut view.derived {
+            derived.span = derived.span.with_source(source_id);
+            derived.name_span = derived.name_span.with_source(source_id);
+            derived.type_span = derived.type_span.with_source(source_id);
+            attach_expr_source(&mut derived.value, source_id);
         }
         for element in &mut view.elements {
             element.span = element.span.with_source(source_id);
@@ -1698,6 +1704,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
     *index += 1;
 
     let mut states = Vec::new();
+    let mut derived = Vec::new();
     let mut grid = GridLayout::default();
     let mut elements = Vec::new();
     while *index < lines.len() && lines[*index].indent > 0 {
@@ -1721,11 +1728,17 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             if states
                 .iter()
                 .any(|state: &ViewState| state.name == binding.name)
+                || derived
+                    .iter()
+                    .any(|value: &ViewDerived| value.name == binding.name)
                 || params.iter().any(|param| param.name == binding.name)
             {
                 return Err(diag(
                     line.number,
-                    &format!("duplicate view state or parameter '{}'", binding.name),
+                    &format!(
+                        "duplicate view state, derived value, or parameter '{}'",
+                        binding.name
+                    ),
                 ));
             }
             let raw_value = &raw_state[eq_offset + 1..];
@@ -1743,6 +1756,50 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 ty: binding.ty,
                 type_span: binding.type_span,
                 initial: parse_expression_at(value_source, line.number, value_column)?,
+                line: line.number,
+                span: line.span(),
+            });
+            *index += 1;
+            continue;
+        }
+
+        if let Some(raw_derived) = line.text.strip_prefix("derived ") {
+            let Some(eq_offset) = raw_derived.find('=') else {
+                return Err(diag(
+                    line.number,
+                    "derived view values use 'derived name: type = expression' syntax",
+                ));
+            };
+            let binding_source = raw_derived[..eq_offset].trim();
+            let binding = parse_binding(binding_source, line.number, line.indent + 9)?;
+            if states
+                .iter()
+                .any(|state: &ViewState| state.name == binding.name)
+                || derived
+                    .iter()
+                    .any(|value: &ViewDerived| value.name == binding.name)
+                || params.iter().any(|param| param.name == binding.name)
+            {
+                return Err(diag(
+                    line.number,
+                    &format!(
+                        "duplicate view state, derived value, or parameter '{}'",
+                        binding.name
+                    ),
+                ));
+            }
+            let raw_value = &raw_derived[eq_offset + 1..];
+            let value_column = line.indent + 9 + eq_offset + 1;
+            let (value_source, value_column) = trim_with_column(raw_value, value_column);
+            if value_source.is_empty() {
+                return Err(diag(line.number, "derived view value cannot be empty"));
+            }
+            derived.push(ViewDerived {
+                name: binding.name,
+                name_span: binding.name_span,
+                ty: binding.ty,
+                type_span: binding.type_span,
+                value: parse_expression_at(value_source, line.number, value_column)?,
                 line: line.number,
                 span: line.span(),
             });
@@ -1949,6 +2006,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
         keyword_span: SourceSpan::new(header.number, 1 + visibility_offset, 4),
         params,
         states,
+        derived,
         grid,
         elements,
         line: header.number,

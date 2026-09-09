@@ -442,8 +442,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap explicit primitive view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
 - [ ] Immutable state updates by default.
   - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer arithmetic/division, and conditionals.
-- [ ] Derived/computed state.
-  - [x] Bootstrap native Text/Button properties can derive values from bool/i64 local state through statically typed primitive expressions and conditionals, enabling counter/toggle-style UI without a view-model object.
+- [x] Derived/computed state for the current primitive UI-state model.
+  - [x] Views may declare typed read-only `derived name: type = expression` bindings. Bootstrap `i64`/`bool`/`str` derived values may depend on parameters, mutable view state, read-only window environment, compile-time constants, and earlier derived bindings; declaration order rejects forward/cyclic dependencies, derived values cannot be transition targets, semantic/LSP tooling indexes them, and the Linux backend recomputes them before dependent native properties refresh.
 - [ ] Explicit effects.
 - [ ] Shared state/store primitives only where necessary.
 - [ ] State ownership/lifetime rules integrated with the compiler.
