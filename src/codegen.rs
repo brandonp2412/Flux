@@ -2214,7 +2214,7 @@ fn emit_block(
                 expr,
                 else_return,
             } => {
-                let (value, tag) = emit_multi_expr(expr, env, signatures)?;
+                let (value, tag, _) = emit_multi_expr(expr, env, signatures)?;
                 let temp = format!("flux__multi_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -2240,6 +2240,48 @@ fn emit_block(
                         local_c_name(&binding.name)
                     ));
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
+                }
+            }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                let temp = format!("flux__multi_pattern_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                if *else_return {
+                    let error_index = bindings.len() - 1;
+                    let return_tag = multi_return_struct_name(&current_function.name);
+                    let return_temp = format!("flux__return_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
+                    out.push_str(&format!("{pad}    struct {return_tag} {return_temp};\n"));
+                    for index in 0..bindings.len() {
+                        out.push_str(&format!(
+                            "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
+                        ));
+                    }
+                    out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                for (index, binding) in bindings.iter().enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = actuals.get(index).ok_or_else(|| {
+                        diag(
+                            stmt.span,
+                            "multi-value pattern arity changed after type checking",
+                        )
+                    })?;
+                    out.push_str(&format!(
+                        "{pad}{} {} = {temp}.v{index};\n",
+                        c_type(ty, signatures),
+                        local_c_name(&binding.name)
+                    ));
+                    env.insert(binding.name.clone(), signatures.canonical_type(ty));
                 }
             }
             StmtKind::LetListDestructure {
@@ -2346,7 +2388,7 @@ fn emit_block(
                 out.push_str(&format!("{pad}return;\n"));
             }
             StmtKind::Return(values) if values.len() == 1 && current_function.returns.len() > 1 => {
-                let (value, source_tag) = emit_multi_expr(&values[0], env, signatures)?;
+                let (value, source_tag, _) = emit_multi_expr(&values[0], env, signatures)?;
                 let source_temp = format!("flux__forward_{}", *temp_counter);
                 *temp_counter += 1;
                 let return_tag = multi_return_struct_name(&current_function.name);
@@ -2628,65 +2670,92 @@ fn emit_block(
                     value.code
                 ));
                 out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
-                for arm in arms {
-                    let variant = definition
-                        .variant(&arm.variant)
-                        .expect("type checking guarantees match variants exist");
+                for variant in &definition.variants {
+                    let variant_arms = arms
+                        .iter()
+                        .filter(|arm| arm.variant == variant.name)
+                        .collect::<Vec<_>>();
+                    if variant_arms.is_empty() {
+                        continue;
+                    }
                     out.push_str(&format!(
                         "{pad}    case {}: {{\n",
-                        enum_tag_value_name(enum_name, &arm.variant)
+                        enum_tag_value_name(enum_name, &variant.name)
                     ));
-                    let mut nested = env.clone();
-                    for (index, (pattern, payload_ty)) in
-                        arm.patterns.iter().zip(&variant.payloads).enumerate()
-                    {
-                        let payload_access = format!(
-                            "{temp}.payload.{}.v{index}",
-                            enum_payload_member_name(&arm.variant)
-                        );
-                        match pattern {
-                            MatchPattern::Binding(binding) => {
-                                if binding.name == "_" {
-                                    continue;
-                                }
-                                out.push_str(&format!(
-                                    "{pad}        {} {} = {payload_access};\n",
-                                    c_type(payload_ty, signatures),
-                                    local_c_name(&binding.name),
-                                ));
-                                nested.insert(binding.name.clone(), payload_ty.clone());
-                            }
-                            MatchPattern::Struct(pattern) => {
-                                let Type::Named(struct_name) =
-                                    signatures.canonical_type(payload_ty)
-                                else {
-                                    return Err(diag(
-                                        pattern.struct_span,
-                                        "match struct pattern code generation requires a struct value",
+                    for arm in variant_arms {
+                        out.push_str(&format!("{pad}        {{\n"));
+                        let mut nested = env.clone();
+                        for (index, (pattern, payload_ty)) in
+                            arm.patterns.iter().zip(&variant.payloads).enumerate()
+                        {
+                            let payload_access = format!(
+                                "{temp}.payload.{}.v{index}",
+                                enum_payload_member_name(&arm.variant)
+                            );
+                            match pattern {
+                                MatchPattern::Binding(binding) => {
+                                    if binding.name == "_" {
+                                        continue;
+                                    }
+                                    out.push_str(&format!(
+                                        "{pad}            {} {} = {payload_access};\n",
+                                        c_type(payload_ty, signatures),
+                                        local_c_name(&binding.name),
                                     ));
-                                };
-                                emit_struct_pattern_bindings(
-                                    out,
-                                    &format!("{pad}        "),
-                                    &pattern.fields,
-                                    &struct_name,
-                                    &payload_access,
-                                    &mut nested,
-                                    signatures,
-                                )?;
+                                    nested.insert(binding.name.clone(), payload_ty.clone());
+                                }
+                                MatchPattern::Struct(pattern) => {
+                                    let Type::Named(struct_name) =
+                                        signatures.canonical_type(payload_ty)
+                                    else {
+                                        return Err(diag(
+                                            pattern.struct_span,
+                                            "match struct pattern code generation requires a struct value",
+                                        ));
+                                    };
+                                    emit_struct_pattern_bindings(
+                                        out,
+                                        &format!("{pad}            "),
+                                        &pattern.fields,
+                                        &struct_name,
+                                        &payload_access,
+                                        &mut nested,
+                                        signatures,
+                                    )?;
+                                }
                             }
                         }
+                        if let Some(guard) = &arm.guard {
+                            let guard = emit_expr(guard, &nested, signatures)?;
+                            out.push_str(&format!(
+                                "{pad}            if ({}) {{\n",
+                                c_condition(&guard.code)
+                            ));
+                            emit_block(
+                                out,
+                                &arm.body,
+                                depth + 4,
+                                &mut nested,
+                                signatures,
+                                temp_counter,
+                                current_function,
+                            )?;
+                            out.push_str(&format!("{pad}                break;\n"));
+                            out.push_str(&format!("{pad}            }}\n"));
+                        } else {
+                            emit_block(
+                                out,
+                                &arm.body,
+                                depth + 3,
+                                &mut nested,
+                                signatures,
+                                temp_counter,
+                                current_function,
+                            )?;
+                            out.push_str(&format!("{pad}            break;\n"));
+                        }
+                        out.push_str(&format!("{pad}        }}\n"));
                     }
-                    emit_block(
-                        out,
-                        &arm.body,
-                        depth + 2,
-                        &mut nested,
-                        signatures,
-                        temp_counter,
-                        current_function,
-                    )?;
-                    out.push_str(&format!("{pad}        break;\n"));
                     out.push_str(&format!("{pad}    }}\n"));
                 }
                 out.push_str(&format!("{pad}}}\n"));
@@ -2705,35 +2774,85 @@ fn emit_block(
                     "{pad}struct flux__list {temp} = {};\n",
                     value.code
                 ));
-                for (arm_index, arm) in arms.iter().enumerate() {
-                    let condition = list_match_condition(&arm.pattern, &temp);
-                    if arm_index == 0 {
-                        out.push_str(&format!("{pad}if ({condition}) {{\n"));
-                    } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
-                        out.push_str(&format!("{pad}else {{\n"));
-                    } else {
-                        out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+                if arms.iter().all(|arm| arm.guard.is_none()) {
+                    for (arm_index, arm) in arms.iter().enumerate() {
+                        let condition = list_match_condition(&arm.pattern, &temp);
+                        if arm_index == 0 {
+                            out.push_str(&format!("{pad}if ({condition}) {{\n"));
+                        } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+                            out.push_str(&format!("{pad}else {{\n"));
+                        } else {
+                            out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+                        }
+                        let mut nested = env.clone();
+                        emit_list_match_pattern_bindings(
+                            out,
+                            &format!("{pad}    "),
+                            &arm.pattern,
+                            &temp,
+                            element,
+                            &mut nested,
+                            signatures,
+                        )?;
+                        emit_block(
+                            out,
+                            &arm.body,
+                            depth + 1,
+                            &mut nested,
+                            signatures,
+                            temp_counter,
+                            current_function,
+                        )?;
+                        out.push_str(&format!("{pad}}}\n"));
                     }
-                    let mut nested = env.clone();
-                    emit_list_match_pattern_bindings(
-                        out,
-                        &format!("{pad}    "),
-                        &arm.pattern,
-                        &temp,
-                        element,
-                        &mut nested,
-                        signatures,
-                    )?;
-                    emit_block(
-                        out,
-                        &arm.body,
-                        depth + 1,
-                        &mut nested,
-                        signatures,
-                        temp_counter,
-                        current_function,
-                    )?;
-                    out.push_str(&format!("{pad}}}\n"));
+                } else {
+                    let matched = format!("flux__list_match_done_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}bool {matched} = false;\n"));
+                    for arm in arms {
+                        let condition = list_match_condition(&arm.pattern, &temp);
+                        out.push_str(&format!("{pad}if (!{matched} && ({condition})) {{\n"));
+                        let mut nested = env.clone();
+                        emit_list_match_pattern_bindings(
+                            out,
+                            &format!("{pad}    "),
+                            &arm.pattern,
+                            &temp,
+                            element,
+                            &mut nested,
+                            signatures,
+                        )?;
+                        if let Some(guard) = &arm.guard {
+                            let guard = emit_expr(guard, &nested, signatures)?;
+                            out.push_str(&format!(
+                                "{pad}    if ({}) {{\n",
+                                c_condition(&guard.code)
+                            ));
+                            out.push_str(&format!("{pad}        {matched} = true;\n"));
+                            emit_block(
+                                out,
+                                &arm.body,
+                                depth + 2,
+                                &mut nested,
+                                signatures,
+                                temp_counter,
+                                current_function,
+                            )?;
+                            out.push_str(&format!("{pad}    }}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}    {matched} = true;\n"));
+                            emit_block(
+                                out,
+                                &arm.body,
+                                depth + 1,
+                                &mut nested,
+                                signatures,
+                                temp_counter,
+                                current_function,
+                            )?;
+                        }
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
                 }
             }
         }
@@ -2851,55 +2970,82 @@ fn emit_match_expr_into(
         emitted_value.code
     ));
     out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
-    for arm in arms {
-        let variant = definition
-            .variant(&arm.variant)
-            .expect("type checking guarantees match expression variants exist");
+    for variant in &definition.variants {
+        let variant_arms = arms
+            .iter()
+            .filter(|arm| arm.variant == variant.name)
+            .collect::<Vec<_>>();
+        if variant_arms.is_empty() {
+            continue;
+        }
         out.push_str(&format!(
             "{pad}    case {}: {{\n",
-            enum_tag_value_name(enum_name, &arm.variant)
+            enum_tag_value_name(enum_name, &variant.name)
         ));
-        let mut nested = env.clone();
-        for (index, (pattern, payload_ty)) in arm.patterns.iter().zip(&variant.payloads).enumerate()
-        {
-            let payload_access = format!(
-                "{temp}.payload.{}.v{index}",
-                enum_payload_member_name(&arm.variant)
-            );
-            match pattern {
-                MatchPattern::Binding(binding) => {
-                    if binding.name == "_" {
-                        continue;
-                    }
-                    out.push_str(&format!(
-                        "{pad}        {} {} = {payload_access};\n",
-                        c_type(payload_ty, signatures),
-                        local_c_name(&binding.name),
-                    ));
-                    nested.insert(binding.name.clone(), payload_ty.clone());
-                }
-                MatchPattern::Struct(pattern) => {
-                    let Type::Named(struct_name) = signatures.canonical_type(payload_ty) else {
-                        return Err(diag(
-                            pattern.struct_span,
-                            "match struct pattern code generation requires a struct value",
+        for arm in variant_arms {
+            out.push_str(&format!("{pad}        {{\n"));
+            let mut nested = env.clone();
+            for (index, (pattern, payload_ty)) in
+                arm.patterns.iter().zip(&variant.payloads).enumerate()
+            {
+                let payload_access = format!(
+                    "{temp}.payload.{}.v{index}",
+                    enum_payload_member_name(&arm.variant)
+                );
+                match pattern {
+                    MatchPattern::Binding(binding) => {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        out.push_str(&format!(
+                            "{pad}            {} {} = {payload_access};\n",
+                            c_type(payload_ty, signatures),
+                            local_c_name(&binding.name),
                         ));
-                    };
-                    emit_struct_pattern_bindings(
-                        out,
-                        &format!("{pad}        "),
-                        &pattern.fields,
-                        &struct_name,
-                        &payload_access,
-                        &mut nested,
-                        signatures,
-                    )?;
+                        nested.insert(binding.name.clone(), payload_ty.clone());
+                    }
+                    MatchPattern::Struct(pattern) => {
+                        let Type::Named(struct_name) = signatures.canonical_type(payload_ty) else {
+                            return Err(diag(
+                                pattern.struct_span,
+                                "match struct pattern code generation requires a struct value",
+                            ));
+                        };
+                        emit_struct_pattern_bindings(
+                            out,
+                            &format!("{pad}            "),
+                            &pattern.fields,
+                            &struct_name,
+                            &payload_access,
+                            &mut nested,
+                            signatures,
+                        )?;
+                    }
                 }
             }
+            if let Some(guard) = &arm.guard {
+                let guard = emit_expr(guard, &nested, signatures)?;
+                out.push_str(&format!(
+                    "{pad}            if ({}) {{\n",
+                    c_condition(&guard.code)
+                ));
+                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                out.push_str(&format!(
+                    "{pad}                {target} = {};\n",
+                    arm_value.code
+                ));
+                out.push_str(&format!("{pad}                break;\n"));
+                out.push_str(&format!("{pad}            }}\n"));
+            } else {
+                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                out.push_str(&format!(
+                    "{pad}            {target} = {};\n",
+                    arm_value.code
+                ));
+                out.push_str(&format!("{pad}            break;\n"));
+            }
+            out.push_str(&format!("{pad}        }}\n"));
         }
-        let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-        out.push_str(&format!("{pad}        {target} = {};\n", arm_value.code));
-        out.push_str(&format!("{pad}        break;\n"));
         out.push_str(&format!("{pad}    }}\n"));
     }
     out.push_str(&format!("{pad}}}\n"));
@@ -2935,28 +3081,61 @@ fn emit_list_match_expr_into(
         "{pad}struct flux__list {temp} = {};\n",
         emitted_value.code
     ));
-    for (arm_index, arm) in arms.iter().enumerate() {
-        let condition = list_match_condition(&arm.pattern, &temp);
-        if arm_index == 0 {
-            out.push_str(&format!("{pad}if ({condition}) {{\n"));
-        } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
-            out.push_str(&format!("{pad}else {{\n"));
-        } else {
-            out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+    if arms.iter().all(|arm| arm.guard.is_none()) {
+        for (arm_index, arm) in arms.iter().enumerate() {
+            let condition = list_match_condition(&arm.pattern, &temp);
+            if arm_index == 0 {
+                out.push_str(&format!("{pad}if ({condition}) {{\n"));
+            } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+                out.push_str(&format!("{pad}else {{\n"));
+            } else {
+                out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+            }
+            let mut nested = env.clone();
+            emit_list_match_pattern_bindings(
+                out,
+                &format!("{pad}    "),
+                &arm.pattern,
+                &temp,
+                element,
+                &mut nested,
+                signatures,
+            )?;
+            let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+            out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
+            out.push_str(&format!("{pad}}}\n"));
         }
-        let mut nested = env.clone();
-        emit_list_match_pattern_bindings(
-            out,
-            &format!("{pad}    "),
-            &arm.pattern,
-            &temp,
-            element,
-            &mut nested,
-            signatures,
-        )?;
-        let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-        out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
-        out.push_str(&format!("{pad}}}\n"));
+    } else {
+        let matched = format!("flux__list_match_done_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!("{pad}bool {matched} = false;\n"));
+        for arm in arms {
+            let condition = list_match_condition(&arm.pattern, &temp);
+            out.push_str(&format!("{pad}if (!{matched} && ({condition})) {{\n"));
+            let mut nested = env.clone();
+            emit_list_match_pattern_bindings(
+                out,
+                &format!("{pad}    "),
+                &arm.pattern,
+                &temp,
+                element,
+                &mut nested,
+                signatures,
+            )?;
+            if let Some(guard) = &arm.guard {
+                let guard = emit_expr(guard, &nested, signatures)?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
+                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                out.push_str(&format!("{pad}        {target} = {};\n", arm_value.code));
+                out.push_str(&format!("{pad}        {matched} = true;\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            } else {
+                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
+                out.push_str(&format!("{pad}    {matched} = true;\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
     }
     Ok(())
 }
@@ -4981,8 +5160,37 @@ fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-) -> Result<(String, String), Diagnostic> {
+) -> Result<(String, String, Vec<Type>), Diagnostic> {
     match &expr.kind {
+        ExprKind::ShellCall { name, args, .. } => {
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: args.clone(),
+                    named_args: Vec::new(),
+                },
+            };
+            emit_multi_expr(&call, env, signatures)
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(pipe_input_expr(input, env, signatures));
+            call_args.extend(args.iter().cloned());
+            let call = Expr {
+                line: expr.line,
+                span: expr.span,
+                kind: ExprKind::Call {
+                    name: name.clone(),
+                    args: call_args,
+                    named_args: Vec::new(),
+                },
+            };
+            emit_multi_expr(&call, env, signatures)
+        }
         ExprKind::Call {
             name,
             args,
@@ -5004,6 +5212,7 @@ fn emit_multi_expr(
             Ok((
                 format!("{}({})", function_c_name(name), rendered.join(", ")),
                 multi_return_struct_name(name),
+                signature.returns.clone(),
             ))
         }
         ExprKind::QualifiedCall {
@@ -5028,7 +5237,7 @@ fn emit_multi_expr(
                     "multi-value interface dispatch is missing its native return shape",
                 )
             })?;
-            Ok((code, multi_struct))
+            Ok((code, multi_struct, returns))
         }
         _ => Err(diag(
             expr.span,
@@ -5451,7 +5660,8 @@ fn collect_function_types_from_block(
                     collect_function_type(&binding.ty, signatures, types);
                 }
             }
-            StmtKind::LetListDestructure { .. }
+            StmtKind::LetMultiDestructure { .. }
+            | StmtKind::LetListDestructure { .. }
             | StmtKind::LetStructDestructure { .. }
             | StmtKind::Assign { .. }
             | StmtKind::Return(_)
@@ -5542,6 +5752,7 @@ fn collect_update_helpers_from_block(
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
             | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
@@ -5589,12 +5800,18 @@ fn collect_update_helpers_from_block(
             StmtKind::Match { value, arms } => {
                 collect_update_helpers_from_expr(value, signatures, emitted, helpers);
                 for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_update_helpers_from_expr(guard, signatures, emitted, helpers);
+                    }
                     collect_update_helpers_from_block(&arm.body, signatures, emitted, helpers);
                 }
             }
             StmtKind::ListMatch { value, arms } => {
                 collect_update_helpers_from_expr(value, signatures, emitted, helpers);
                 for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_update_helpers_from_expr(guard, signatures, emitted, helpers);
+                    }
                     collect_update_helpers_from_block(&arm.body, signatures, emitted, helpers);
                 }
             }
@@ -5655,12 +5872,18 @@ fn collect_update_helpers_from_expr(
         ExprKind::Match { value, arms } => {
             collect_update_helpers_from_expr(value, signatures, emitted, helpers);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_update_helpers_from_expr(guard, signatures, emitted, helpers);
+                }
                 collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);
             }
         }
         ExprKind::ListMatch { value, arms } => {
             collect_update_helpers_from_expr(value, signatures, emitted, helpers);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_update_helpers_from_expr(guard, signatures, emitted, helpers);
+                }
                 collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);
             }
         }

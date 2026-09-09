@@ -352,6 +352,9 @@ fn collect_expr_pattern_symbols(
                         }
                     }
                 }
+                if let Some(guard) = &arm.guard {
+                    collect_expr_pattern_symbols(guard, symbols, signatures);
+                }
                 collect_expr_pattern_symbols(&arm.value, symbols, signatures);
             }
         }
@@ -367,6 +370,9 @@ fn collect_expr_pattern_symbols(
             collect_expr_pattern_symbols(value, symbols, signatures);
             for arm in arms {
                 collect_list_match_pattern_symbols(&arm.pattern, element_ty.as_ref(), symbols);
+                if let Some(guard) = &arm.guard {
+                    collect_expr_pattern_symbols(guard, symbols, signatures);
+                }
                 collect_expr_pattern_symbols(&arm.value, symbols, signatures);
             }
         }
@@ -582,6 +588,35 @@ fn collect_block_symbols(
                     });
                 }
             }
+            StmtKind::LetMultiDestructure { bindings, expr, .. } => {
+                let env = symbols
+                    .iter()
+                    .filter(|symbol| {
+                        matches!(
+                            symbol.kind,
+                            SymbolKind::Parameter
+                                | SymbolKind::Binding
+                                | SymbolKind::MutableBinding
+                                | SymbolKind::PatternBinding
+                                | SymbolKind::LoopVariable
+                        )
+                    })
+                    .filter_map(|symbol| symbol.ty.clone().map(|ty| (symbol.name.clone(), ty)))
+                    .collect::<HashMap<_, _>>();
+                let actuals = typecheck::value_types_of_expr(expr, &env, signatures).ok();
+                for (index, binding) in bindings.iter().enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    symbols.push(SemanticSymbol {
+                        name: binding.name.clone(),
+                        kind: SymbolKind::PatternBinding,
+                        ty: actuals.as_ref().and_then(|types| types.get(index)).cloned(),
+                        span: binding.span,
+                    });
+                }
+                collect_expr_pattern_symbols(expr, symbols, signatures);
+            }
             StmtKind::LetListDestructure {
                 bindings,
                 rest,
@@ -730,6 +765,9 @@ fn collect_block_symbols(
                             }
                         }
                     }
+                    if let Some(guard) = &arm.guard {
+                        collect_expr_pattern_symbols(guard, symbols, signatures);
+                    }
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }
             }
@@ -745,6 +783,9 @@ fn collect_block_symbols(
                 collect_expr_pattern_symbols(value, symbols, signatures);
                 for arm in arms {
                     collect_list_match_pattern_symbols(&arm.pattern, element_ty.as_ref(), symbols);
+                    if let Some(guard) = &arm.guard {
+                        collect_expr_pattern_symbols(guard, symbols, signatures);
+                    }
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }
             }

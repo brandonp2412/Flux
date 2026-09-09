@@ -482,6 +482,22 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format!("{pad}let {bindings} = {}{suffix}", format_expr(expr, 0)),
                 );
             }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                let pattern = bindings
+                    .iter()
+                    .map(|binding| binding.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if *else_return { " else return" } else { "" };
+                lines.insert(
+                    stmt.line,
+                    format!("{pad}let ({pattern}) = {}{suffix}", format_expr(expr, 0)),
+                );
+            }
             StmtKind::LetListDestructure {
                 bindings,
                 rest,
@@ -680,9 +696,17 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|guard| format!(" if {}", format_expr(guard, 0)))
+                        .unwrap_or_default();
                     lines.insert(
                         arm.line,
-                        format!("{arm_pad}{}.{}({patterns}):", arm.enum_name, arm.variant),
+                        format!(
+                            "{arm_pad}{}.{}({patterns}){guard}:",
+                            arm.enum_name, arm.variant
+                        ),
                     );
                     format_block(&arm.body, depth + 2, lines);
                 }
@@ -691,9 +715,17 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 lines.insert(stmt.line, format!("{pad}match {}:", format_expr(value, 0)));
                 let arm_pad = "    ".repeat(depth + 1);
                 for arm in arms {
+                    let guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|guard| format!(" if {}", format_expr(guard, 0)))
+                        .unwrap_or_default();
                     lines.insert(
                         arm.line,
-                        format!("{arm_pad}{}:", format_list_match_pattern(&arm.pattern)),
+                        format!(
+                            "{arm_pad}{}{guard}:",
+                            format_list_match_pattern(&arm.pattern)
+                        ),
                     );
                     format_block(&arm.body, depth + 2, lines);
                 }
@@ -726,10 +758,15 @@ fn format_match_expr_arms(
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let guard = arm
+            .guard
+            .as_ref()
+            .map(|guard| format!(" if {}", format_expr(guard, 0)))
+            .unwrap_or_default();
         lines.insert(
             arm.line,
             format!(
-                "{pad}{}.{}({patterns}): {}",
+                "{pad}{}.{}({patterns}){guard}: {}",
                 arm.enum_name,
                 arm.variant,
                 format_expr(&arm.value, 0)
@@ -745,10 +782,15 @@ fn format_list_match_expr_arms(
 ) {
     let pad = "    ".repeat(depth);
     for arm in arms {
+        let guard = arm
+            .guard
+            .as_ref()
+            .map(|guard| format!(" if {}", format_expr(guard, 0)))
+            .unwrap_or_default();
         lines.insert(
             arm.line,
             format!(
-                "{pad}{}: {}",
+                "{pad}{}{guard}: {}",
                 format_list_match_pattern(&arm.pattern),
                 format_expr(&arm.value, 0)
             ),

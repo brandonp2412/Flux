@@ -292,7 +292,7 @@ First-class function types currently support zero or one return value. Ordinary 
 
 Flux does not use exceptions or `try` / `catch` for recoverable failures.
 
-The model uses explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. Multi-values are deliberately not general-purpose tuple values. A function returning multiple values must be consumed by a destructuring binding, and every binding type is checked positionally at compile time. This keeps the feature narrow, predictable, and easy to lower efficiently.
+The model uses explicit multiple return values, similar in spirit to Go but strictly typed and integrated with Flux ownership. Multi-values are deliberately not general-purpose tuple values. A function returning multiple values must be consumed by a destructuring binding. Bindings may spell out their types explicitly or use the narrow inferred pattern form `let (first, second) = call(...)`; inferred positions take their types directly from the function's return shape, and `_` ignores a position without creating a binding. Arity and positional types are checked at compile time. This keeps the feature narrow, predictable, and easy to lower efficiently.
 
 Recoverable failures use the compiler-known `error` type. `nil` is the only no-error value, and `error("message")` constructs an error. `error` is intentionally not a generic `Result<T, E>` or general optional type; Flux has no generics, and normal error handling stays explicit in function signatures and control flow:
 
@@ -304,13 +304,15 @@ fn load(path: str) -> (str, error) {
 }
 
 fn main() -> i64 {
-    let data: str, err: error = load("settings.flux")
+    let (data, err) = load("settings.flux")
     if err != nil:
         print(err)
     print(data)
     return 0
 }
 ```
+
+The explicit typed form remains available when the declaration should repeat the return contract, for example `let data: str, err: error = load(path)`. Both forms evaluate the source call exactly once. The inferred parenthesized form is a multi-value pattern, not a tuple value: it cannot be stored, indexed, or passed around as a general aggregate.
 
 The bootstrap representation stores only an error message. The language-level type is opaque so richer error metadata can be introduced later without turning errors into strings.
 
@@ -320,7 +322,7 @@ When successful values are needed before the enclosing function returns, a destr
 
 ```flux
 fn loadConfig(path: str) -> (str, error) {
-    let data: str, err: error = load(path) else return
+    let (data, _) = load(path) else return
     print(data)
     return data, nil
 }
@@ -452,6 +454,27 @@ fn show(values: i64[]) -> i64 {
 ```
 
 The list scrutinee is evaluated once. Prefix and suffix element bindings use logical list order even for stepped/reversed views, and rest bindings remain zero-copy strided views. Named pattern bindings are ordinary Flux bindings: if they are not read, compilation fails rather than emitting a warning.
+
+Enum and list match arms may add a boolean guard after the pattern. Pattern bindings are in scope inside the guard, and guarded arms may fall through to later arms of the same variant or list shape when the condition is false:
+
+```flux
+fn classify(outcome: Outcome) -> i64 {
+    return match outcome:
+        Outcome.Ok(value) if value > 100: 2
+        Outcome.Ok(_): 1
+        Outcome.Error(_): -1
+        Outcome.Pending(): 0
+}
+
+fn classifyList(values: i64[]) -> i64 {
+    return match values:
+        [only] if only > 100: 2
+        [only]: 1
+        _: 0
+}
+```
+
+Guards must have type `bool`. A guarded arm does not make its variant or list-length domain exhaustive because the guard may be false, so an unguarded covering arm is still required somewhere later. Once an unguarded arm covers a variant or list shape, a later arm for that already-covered domain is rejected as unreachable. These rules apply to both statement and value-producing `match` forms.
 
 ## String literals
 

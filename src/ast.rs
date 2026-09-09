@@ -449,6 +449,11 @@ pub enum StmtKind {
         expr: Expr,
         else_return: bool,
     },
+    LetMultiDestructure {
+        bindings: Vec<PatternBinding>,
+        expr: Expr,
+        else_return: bool,
+    },
     LetListDestructure {
         bindings: Vec<PatternBinding>,
         rest: Option<ListRestPattern>,
@@ -524,6 +529,7 @@ pub struct MatchArm {
     pub variant: String,
     pub variant_span: SourceSpan,
     pub patterns: Vec<MatchPattern>,
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
     pub line: usize,
     pub span: SourceSpan,
@@ -536,6 +542,7 @@ pub struct MatchExprArm {
     pub variant: String,
     pub variant_span: SourceSpan,
     pub patterns: Vec<MatchPattern>,
+    pub guard: Option<Expr>,
     pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,
@@ -544,6 +551,7 @@ pub struct MatchExprArm {
 #[derive(Debug, Clone)]
 pub struct ListMatchArm {
     pub pattern: ListMatchPattern,
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
     pub line: usize,
     pub span: SourceSpan,
@@ -552,6 +560,7 @@ pub struct ListMatchArm {
 #[derive(Debug, Clone)]
 pub struct ListMatchExprArm {
     pub pattern: ListMatchPattern,
+    pub guard: Option<Expr>,
     pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,

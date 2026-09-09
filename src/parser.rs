@@ -509,6 +509,12 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 }
                 attach_expr_source(expr, source_id);
             }
+            StmtKind::LetMultiDestructure { bindings, expr, .. } => {
+                for binding in bindings {
+                    binding.span = binding.span.with_source(source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
             StmtKind::LetListDestructure {
                 bindings,
                 rest,
@@ -609,6 +615,9 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                             }
                         }
                     }
+                    if let Some(guard) = &mut arm.guard {
+                        attach_expr_source(guard, source_id);
+                    }
                     attach_block_source(&mut arm.body, source_id);
                 }
             }
@@ -617,6 +626,9 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 for arm in arms {
                     arm.span = arm.span.with_source(source_id);
                     attach_list_match_pattern_source(&mut arm.pattern, source_id);
+                    if let Some(guard) = &mut arm.guard {
+                        attach_expr_source(guard, source_id);
+                    }
                     attach_block_source(&mut arm.body, source_id);
                 }
             }
@@ -774,6 +786,9 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                         }
                     }
                 }
+                if let Some(guard) = &mut arm.guard {
+                    attach_expr_source(guard, source_id);
+                }
                 attach_expr_source(&mut arm.value, source_id);
             }
         }
@@ -782,6 +797,9 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             for arm in arms {
                 arm.span = arm.span.with_source(source_id);
                 attach_list_match_pattern_source(&mut arm.pattern, source_id);
+                if let Some(guard) = &mut arm.guard {
+                    attach_expr_source(guard, source_id);
+                }
                 attach_expr_source(&mut arm.value, source_id);
             }
         }
@@ -1061,6 +1079,9 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
                 for pattern in &mut arm.patterns {
                     shift_match_pattern_columns(pattern, offset);
                 }
+                if let Some(guard) = &mut arm.guard {
+                    shift_expr_columns(guard, offset);
+                }
                 shift_expr_columns(&mut arm.value, offset);
             }
         }
@@ -1069,6 +1090,9 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             for arm in arms {
                 arm.span.column += offset;
                 shift_list_match_pattern_columns(&mut arm.pattern, offset);
+                if let Some(guard) = &mut arm.guard {
+                    shift_expr_columns(guard, offset);
+                }
                 shift_expr_columns(&mut arm.value, offset);
             }
         }
@@ -2902,6 +2926,7 @@ fn parse_match_expr_arm(line: &Line) -> Result<MatchExprArm, Diagnostic> {
         variant: arm.variant,
         variant_span: arm.variant_span,
         patterns: arm.patterns,
+        guard: arm.guard,
         value,
         line: line.number,
         span: line.span(),
@@ -2921,8 +2946,9 @@ fn parse_list_match_expr_arm(line: &Line) -> Result<ListMatchExprArm, Diagnostic
         return Err(diag(line.number, "match expression arm requires a value"));
     }
     let pattern_offset = line.text[..colon].find(pattern_text).unwrap_or(0);
-    let pattern =
-        parse_list_match_pattern(pattern_text, line.number, line.indent + 1 + pattern_offset)?;
+    let pattern_column = line.indent + 1 + pattern_offset;
+    let (pattern_text, guard) = parse_match_guard(pattern_text, line.number, pattern_column)?;
+    let pattern = parse_list_match_pattern(pattern_text, line.number, pattern_column)?;
     let value_offset = line.text[colon + 1..].find(value_text).unwrap_or(0);
     let value = parse_expression_at(
         value_text,
@@ -2931,6 +2957,7 @@ fn parse_list_match_expr_arm(line: &Line) -> Result<ListMatchExprArm, Diagnostic
     )?;
     Ok(ListMatchExprArm {
         pattern,
+        guard,
         value,
         line: line.number,
         span: line.span(),
@@ -2942,7 +2969,57 @@ fn is_list_match_arm_line(line: &Line) -> bool {
         return line.text.trim_start().starts_with('[');
     };
     let pattern = line.text[..colon].trim();
-    pattern.starts_with('[') || pattern == "_"
+    pattern.starts_with('[') || pattern == "_" || pattern.starts_with("_ if ")
+}
+
+fn parse_match_guard(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<(&str, Option<Expr>), Diagnostic> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+                b' ' if depth == 0 && input[index..].starts_with(" if ") => {
+                    let pattern = input[..index].trim_end();
+                    let raw_guard = &input[index + 4..];
+                    let (guard_source, guard_column) =
+                        trim_with_column(raw_guard, column + index + 4);
+                    if guard_source.is_empty() {
+                        return Err(diag(line, "match guard requires a boolean expression"));
+                    }
+                    let guard = parse_expression_at(guard_source, line, guard_column)?;
+                    return Ok((pattern, Some(guard)));
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    Ok((input.trim(), None))
 }
 
 fn find_top_level_colon(input: &str) -> Option<usize> {
@@ -3005,13 +3082,14 @@ fn parse_match_statement(
         let mut arms = Vec::new();
         while *index < lines.len() && lines[*index].indent == arm_indent {
             let arm_line = &lines[*index];
-            let pattern = parse_list_match_arm_header(arm_line)?;
+            let (pattern, guard) = parse_list_match_arm_header(arm_line)?;
             let arm_line_number = arm_line.number;
             let arm_span = arm_line.span();
             *index += 1;
             let body = parse_nested_block(lines, index, arm_indent, arm_line_number, "match arm")?;
             arms.push(ListMatchArm {
                 pattern,
+                guard,
                 body,
                 line: arm_line_number,
                 span: arm_span,
@@ -3042,13 +3120,20 @@ fn parse_match_statement(
     })
 }
 
-fn parse_list_match_arm_header(line: &Line) -> Result<ListMatchPattern, Diagnostic> {
+fn parse_list_match_arm_header(
+    line: &Line,
+) -> Result<(ListMatchPattern, Option<Expr>), Diagnostic> {
     let Some(pattern) = line.text.strip_suffix(':') else {
         return Err(diag(line.number, "match arms must end with ':'"));
     };
     let pattern = pattern.trim();
     let offset = line.text.find(pattern).unwrap_or(0);
-    parse_list_match_pattern(pattern, line.number, line.indent + 1 + offset)
+    let column = line.indent + 1 + offset;
+    let (pattern, guard) = parse_match_guard(pattern, line.number, column)?;
+    Ok((
+        parse_list_match_pattern(pattern, line.number, column)?,
+        guard,
+    ))
 }
 
 fn parse_list_match_pattern(
@@ -3080,6 +3165,9 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
         return Err(diag(line.number, "match arms must end with ':'"));
     };
     let pattern = pattern.trim();
+    let pattern_offset = line.text.find(pattern).unwrap_or(0);
+    let (pattern, guard) =
+        parse_match_guard(pattern, line.number, line.indent + 1 + pattern_offset)?;
     let Some(dot_offset) = pattern.find('.') else {
         return Err(diag(
             line.number,
@@ -3143,6 +3231,7 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
         variant: variant.to_string(),
         variant_span: SourceSpan::new(line.number, variant_column, variant.len()),
         patterns,
+        guard,
         body: Vec::new(),
         line: line.number,
         span: line.span(),
@@ -3292,6 +3381,21 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             } else {
                 (trimmed_expr, false)
             };
+        if let Some(bindings) =
+            parse_multi_value_destructure_pattern(binding_src, line, span.column + 4)?
+        {
+            let expr = parse_expression_at(expr_src, line, expr_column)?;
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetMultiDestructure {
+                    bindings,
+                    expr,
+                    else_return,
+                },
+            });
+        }
         if let Some(list_pattern) =
             parse_list_destructure_pattern(binding_src, line, span.column + 4, false)?
         {
@@ -3632,6 +3736,61 @@ fn attach_struct_pattern_field_source(field: &mut StructPatternField, source_id:
             attach_struct_pattern_field_source(field, source_id);
         }
     }
+}
+
+fn parse_multi_value_destructure_pattern(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<Option<Vec<PatternBinding>>, Diagnostic> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('(') {
+        return Ok(None);
+    }
+    let Some(inner) = trimmed
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return Err(diag(
+            line,
+            "multi-value destructuring uses 'let (first, second) = expression' syntax",
+        ));
+    };
+    let entries = split_top_level_commas_with_offsets(inner);
+    if entries.len() < 2 {
+        return Err(diag(
+            line,
+            "multi-value destructuring requires at least two pattern positions",
+        ));
+    }
+    let leading = input.len() - input.trim_start().len();
+    let pattern_column = column + leading;
+    let mut bindings = Vec::with_capacity(entries.len());
+    for (raw_binding, offset) in entries {
+        let (name, name_column) = trim_with_column(raw_binding, pattern_column + 1 + offset);
+        if name.is_empty() {
+            return Err(diag(
+                line,
+                "multi-value destructuring contains an empty pattern position",
+            ));
+        }
+        validate_identifier(name, line)?;
+        if name != "_"
+            && bindings
+                .iter()
+                .any(|binding: &PatternBinding| binding.name == name)
+        {
+            return Err(diag(
+                line,
+                &format!("duplicate destructured binding '{name}'"),
+            ));
+        }
+        bindings.push(PatternBinding {
+            name: name.to_string(),
+            span: SourceSpan::new(line, name_column, name.len()),
+        });
+    }
+    Ok(Some(bindings))
 }
 
 fn parse_list_destructure_pattern(

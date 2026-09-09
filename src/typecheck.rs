@@ -1965,6 +1965,17 @@ fn collect_binding_declarations(
                     declarations.push((binding.name.clone(), binding.name_span, "binding"));
                 }
             }
+            StmtKind::LetMultiDestructure { bindings, .. } => {
+                for binding in bindings {
+                    if binding.name != "_" {
+                        declarations.push((
+                            binding.name.clone(),
+                            binding.span,
+                            "destructured binding",
+                        ));
+                    }
+                }
+            }
             StmtKind::LetListDestructure { bindings, rest, .. } => {
                 for binding in bindings {
                     if binding.name != "_" {
@@ -2143,6 +2154,19 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
                     reads.insert(binding.name.clone());
                 }
             }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                collect_expr_reads(expr, reads);
+                if *else_return
+                    && let Some(binding) = bindings.last()
+                    && binding.name != "_"
+                {
+                    reads.insert(binding.name.clone());
+                }
+            }
             StmtKind::Return(values) => {
                 for value in values {
                     collect_expr_reads(value, reads);
@@ -2183,12 +2207,18 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
             StmtKind::Match { value, arms } => {
                 collect_expr_reads(value, reads);
                 for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr_reads(guard, reads);
+                    }
                     collect_block_reads(&arm.body, reads);
                 }
             }
             StmtKind::ListMatch { value, arms } => {
                 collect_expr_reads(value, reads);
                 for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_expr_reads(guard, reads);
+                    }
                     collect_block_reads(&arm.body, reads);
                 }
             }
@@ -2309,12 +2339,18 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
         ExprKind::Match { value, arms } => {
             collect_expr_reads(value, reads);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_reads(guard, reads);
+                }
                 collect_expr_reads(&arm.value, reads);
             }
         }
         ExprKind::ListMatch { value, arms } => {
             collect_expr_reads(value, reads);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_reads(guard, reads);
+                }
                 collect_expr_reads(&arm.value, reads);
             }
         }
@@ -2503,6 +2539,72 @@ fn check_block_all(
                                 return_types_name(actuals)
                             ),
                         ));
+                    }
+                }
+            }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+            } => {
+                let actuals = match value_types_of_expr(expr, env, signatures) {
+                    Ok(actuals) => Some(actuals),
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                if let Some(actuals) = actuals.as_ref() {
+                    if actuals.len() != bindings.len() {
+                        diagnostics.push(diag(
+                            stmt.span,
+                            &format!(
+                                "multi-value pattern expects {} values, expression returns {}",
+                                bindings.len(),
+                                actuals.len()
+                            ),
+                        ));
+                    }
+                    for (binding, actual) in bindings.iter().zip(actuals) {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        if env.contains_key(&binding.name) {
+                            diagnostics.push(diag(
+                                binding.span,
+                                &format!("'{}' is already defined in this scope", binding.name),
+                            ));
+                        } else {
+                            env.insert(binding.name.clone(), signatures.canonical_type(actual));
+                        }
+                    }
+                    if *else_return {
+                        if actuals.last().map(|ty| signatures.canonical_type(ty))
+                            != Some(Type::Error)
+                        {
+                            diagnostics.push(diag(
+                                stmt.span,
+                                "'else return' requires the final multi-value pattern position to have type error",
+                            ));
+                        }
+                        let canonical_actuals = actuals
+                            .iter()
+                            .map(|ty| signatures.canonical_type(ty))
+                            .collect::<Vec<_>>();
+                        let canonical_returns = return_types
+                            .iter()
+                            .map(|ty| signatures.canonical_type(ty))
+                            .collect::<Vec<_>>();
+                        if canonical_actuals != canonical_returns {
+                            diagnostics.push(diag(
+                                stmt.span,
+                                &format!(
+                                    "'else return' can only forward an exact return shape: function returns {}, expression returns {}",
+                                    return_types_name(return_types),
+                                    return_types_name(actuals)
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -2880,7 +2982,7 @@ fn check_block_all(
                     ));
                     continue;
                 };
-                let mut seen = HashSet::new();
+                let mut covered = HashSet::new();
                 for arm in arms {
                     if arm.enum_name != enum_name {
                         diagnostics.push(diag(
@@ -2902,10 +3004,13 @@ fn check_block_all(
                         );
                         continue;
                     };
-                    if !seen.insert(arm.variant.as_str()) {
+                    if covered.contains(arm.variant.as_str()) {
                         diagnostics.push(diag(
                             arm.variant_span,
-                            &format!("duplicate match arm for '{enum_name}.{}'", arm.variant),
+                            &format!(
+                                "duplicate match arm for '{enum_name}.{}' is unreachable; an earlier unguarded arm already covers this variant",
+                                arm.variant
+                            ),
                         ));
                         continue;
                     }
@@ -2985,6 +3090,20 @@ fn check_block_all(
                             }
                         }
                     }
+                    if let Some(guard) = &arm.guard {
+                        match type_of_expr(guard, &nested, signatures) {
+                            Ok(actual) => {
+                                if let Err(diagnostic) =
+                                    require_type(guard.span, &Type::Bool, &actual, "match guard")
+                                {
+                                    diagnostics.push(diagnostic);
+                                }
+                            }
+                            Err(diagnostic) => diagnostics.push(diagnostic),
+                        }
+                    } else {
+                        covered.insert(arm.variant.as_str());
+                    }
                     let mut nested_mutable = mutable.clone();
                     check_block_all(
                         &arm.body,
@@ -2999,7 +3118,7 @@ fn check_block_all(
                 let missing = definition
                     .variants
                     .iter()
-                    .filter(|variant| !seen.contains(variant.name.as_str()))
+                    .filter(|variant| !covered.contains(variant.name.as_str()))
                     .map(|variant| variant.name.as_str())
                     .collect::<Vec<_>>();
                 if !missing.is_empty() {
@@ -3029,7 +3148,10 @@ fn check_block_all(
                         None
                     }
                 };
-                let patterns = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+                let patterns = arms
+                    .iter()
+                    .map(|arm| (&arm.pattern, arm.guard.is_some()))
+                    .collect::<Vec<_>>();
                 if let Err(diagnostic) = validate_list_match_coverage(&patterns, stmt.span) {
                     diagnostics.push(diagnostic);
                 }
@@ -3040,6 +3162,21 @@ fn check_block_all(
                             bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)
                         {
                             diagnostics.push(diagnostic);
+                        }
+                        if let Some(guard) = &arm.guard {
+                            match type_of_expr(guard, &nested, signatures) {
+                                Ok(actual) => {
+                                    if let Err(diagnostic) = require_type(
+                                        guard.span,
+                                        &Type::Bool,
+                                        &actual,
+                                        "match guard",
+                                    ) {
+                                        diagnostics.push(diagnostic);
+                                    }
+                                }
+                                Err(diagnostic) => diagnostics.push(diagnostic),
+                            }
                         }
                         let mut nested_mutable = mutable.clone();
                         check_block_all(
@@ -3108,7 +3245,7 @@ fn list_match_pattern_span(pattern: &ListMatchPattern) -> SourceSpan {
 }
 
 fn validate_list_match_coverage(
-    patterns: &[&ListMatchPattern],
+    patterns: &[(&ListMatchPattern, bool)],
     span: SourceSpan,
 ) -> Result<(), Diagnostic> {
     if patterns.is_empty() {
@@ -3117,7 +3254,7 @@ fn validate_list_match_coverage(
     let mut exact_lengths = HashSet::new();
     let mut minimum_rest: Option<usize> = None;
     let mut wildcard_seen = false;
-    for pattern in patterns {
+    for (pattern, guarded) in patterns {
         let already_complete = minimum_rest
             .is_some_and(|minimum| (0..minimum).all(|length| exact_lengths.contains(&length)));
         if wildcard_seen || already_complete {
@@ -3127,7 +3264,11 @@ fn validate_list_match_coverage(
             ));
         }
         match pattern {
-            ListMatchPattern::Wildcard { .. } => wildcard_seen = true,
+            ListMatchPattern::Wildcard { .. } => {
+                if !*guarded {
+                    wildcard_seen = true;
+                }
+            }
             ListMatchPattern::List { bindings, rest, .. } => {
                 let fixed = bindings.len();
                 if rest.is_some() {
@@ -3137,7 +3278,10 @@ fn validate_list_match_coverage(
                             "unreachable list match arm; an earlier rest pattern already covers this length range",
                         ));
                     }
-                    minimum_rest = Some(minimum_rest.map_or(fixed, |minimum| minimum.min(fixed)));
+                    if !*guarded {
+                        minimum_rest =
+                            Some(minimum_rest.map_or(fixed, |minimum| minimum.min(fixed)));
+                    }
                 } else {
                     if exact_lengths.contains(&fixed)
                         || minimum_rest.is_some_and(|minimum| minimum <= fixed)
@@ -3150,7 +3294,9 @@ fn validate_list_match_coverage(
                             ),
                         ));
                     }
-                    exact_lengths.insert(fixed);
+                    if !*guarded {
+                        exact_lengths.insert(fixed);
+                    }
                 }
             }
         }
@@ -3994,7 +4140,7 @@ pub fn type_of_expr(
                     &format!("match requires an enum value, got {enum_name}"),
                 ));
             };
-            let mut seen = HashSet::new();
+            let mut covered = HashSet::new();
             let mut result_ty: Option<Type> = None;
             for arm in arms {
                 if arm.enum_name != enum_name {
@@ -4012,10 +4158,13 @@ pub fn type_of_expr(
                         &format!("enum '{enum_name}' has no variant '{}'", arm.variant),
                     ));
                 };
-                if !seen.insert(arm.variant.as_str()) {
+                if covered.contains(arm.variant.as_str()) {
                     return Err(diag(
                         arm.variant_span,
-                        &format!("duplicate match arm for '{enum_name}.{}'", arm.variant),
+                        &format!(
+                            "duplicate match arm for '{enum_name}.{}' is unreachable; an earlier unguarded arm already covers this variant",
+                            arm.variant
+                        ),
                     ));
                 }
                 if arm.patterns.len() != variant.payloads.len() {
@@ -4091,6 +4240,12 @@ pub fn type_of_expr(
                         }
                     }
                 }
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = type_of_expr(guard, &nested, signatures)?;
+                    require_type(guard.span, &Type::Bool, &guard_ty, "match guard")?;
+                } else {
+                    covered.insert(arm.variant.as_str());
+                }
                 let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 if arm_ty == Type::Void {
                     return Err(diag(
@@ -4107,7 +4262,7 @@ pub fn type_of_expr(
             let missing = definition
                 .variants
                 .iter()
-                .filter(|variant| !seen.contains(variant.name.as_str()))
+                .filter(|variant| !covered.contains(variant.name.as_str()))
                 .map(|variant| variant.name.as_str())
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
@@ -4129,12 +4284,19 @@ pub fn type_of_expr(
                     &format!("list match requires a list value, got {}", value_ty.name()),
                 ));
             };
-            let patterns = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+            let patterns = arms
+                .iter()
+                .map(|arm| (&arm.pattern, arm.guard.is_some()))
+                .collect::<Vec<_>>();
             validate_list_match_coverage(&patterns, expr.span)?;
             let mut result_ty: Option<Type> = None;
             for arm in arms {
                 let mut nested = env.clone();
                 bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)?;
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = type_of_expr(guard, &nested, signatures)?;
+                    require_type(guard.span, &Type::Bool, &guard_ty, "match guard")?;
+                }
                 let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 if arm_ty == Type::Void {
                     return Err(diag(
@@ -4240,7 +4402,7 @@ pub fn type_of_expr(
     }
 }
 
-fn value_types_of_expr(
+pub(crate) fn value_types_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
@@ -4638,6 +4800,7 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::Var { .. }
             | StmtKind::Assign { .. }
             | StmtKind::LetDestructure { .. }
+            | StmtKind::LetMultiDestructure { .. }
             | StmtKind::LetListDestructure { .. }
             | StmtKind::LetStructDestructure { .. }
             | StmtKind::Break

@@ -119,7 +119,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 - [x] Exhaustive `match` expressions and statements.
   - [x] Exhaustive enum `match` statements with typed payload bindings, duplicate/missing-arm diagnostics, guaranteed-return analysis, formatter/semantic support, single scrutinee evaluation, and native `switch` lowering.
   - [x] Value-producing enum `match` expressions for typed bindings and returns, using indentation-based arms, exhaustive/type-consistent results, pattern bindings/struct patterns, formatter/semantic support, and native `switch` lowering.
-- [ ] Pattern matching over structs, enums, lists, and multi-values.
+- [x] Pattern matching over structs, enums, lists, and narrow function multi-values.
   - [x] Enum variant payload patterns in `match` statements, including `_` ignored payload positions.
   - [x] Flat struct destructuring patterns with shorthand fields, renaming, ignored bindings, inferred field types, aliases, and single source-expression evaluation.
   - [x] Nested struct destructuring patterns with recursive type validation, formatter/semantic support, and single root-expression evaluation.
@@ -128,8 +128,8 @@ Flux should be capable of modelling substantial programs without object-oriented
   - [x] Local prefix/rest list patterns with `let [first, ...middle, last] = source`: one `...rest` binding infers `T[]`, captures the unmatched middle as a zero-copy strided view, supports `..._`, and requires only the fixed prefix/suffix arity at runtime.
   - [x] Direct list patterns in statement and value-producing `match`: exact `[]`/`[a, b]`, prefix/rest/suffix `[first, ...middle, last]`, and `_` fallback arms are statically exhaustive over list lengths, reject unreachable arms, infer `T`/`T[]` bindings, preserve strided-view order, evaluate the scrutinee once, and lower rest bindings as zero-copy views.
   - [ ] Map/record patterns after those value types exist.
-  - [ ] Multi-value patterns outside call destructuring.
-- [x] Destructuring bindings beyond multi-return calls: struct plus exact/rest list value destructuring are supported, including direct exhaustive list `match`; broader map/record and multi-value patterns remain tracked above.
+  - [x] Inferred multi-value patterns outside typed call destructuring with `let (first, _, last) = expression`: arity and positional types come from the function return shape, `_` ignores positions, the source is evaluated once, shell-style calls/pipelines are supported, and `else return` retains exact error-shape forwarding.
+- [x] Destructuring bindings beyond typed multi-return calls: struct, exact/rest list, and inferred narrow multi-value `let` patterns are supported, including direct exhaustive list `match`; broader map/record patterns remain tracked above.
 - [x] Transparent concrete type aliases with forward/chained resolution, cycle diagnostics, formatter/tooling support, and zero runtime representation.
 - [x] Compile-time constants with forward references, constant folding, cycle diagnostics, alias-aware typing, and zero-runtime-storage lowering for `i64`, `bool`, and `str`.
 
@@ -261,9 +261,9 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [x] Struct patterns for bindings and enum match payloads; map/record pattern forms remain pending with their value types.
 - [x] Enum/tagged-union variant patterns with typed positional payload bindings, ignored positions, nested struct payload patterns, and exhaustive statement/value matching.
 - [ ] Relational/logical patterns where readable.
-- [ ] Pattern guards.
+- [x] Boolean pattern guards on enum/list statement and value-producing `match` arms, with pattern bindings in scope, formatter/semantic support, native lowering, guarded-arm fallthrough, conservative exhaustiveness, and unreachable-arm diagnostics after an unguarded covering arm.
 - [x] Exhaustiveness checking for the implemented closed enum and list-length pattern domains, including unreachable/duplicate-arm rejection.
-- [ ] Pattern-based variable declarations/assignments beyond the implemented struct/list `let` destructuring forms.
+- [ ] Pattern-based variable declarations/assignments beyond the implemented struct/list/multi-value `let` destructuring forms.
 
 ## Expression ergonomics
 

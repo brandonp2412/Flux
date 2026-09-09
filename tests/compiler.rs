@@ -3427,6 +3427,126 @@ fn main() -> i64 {
 }
 
 #[test]
+fn match_guards_use_pattern_bindings_and_preserve_exhaustiveness() {
+    let source = r#"
+enum Outcome {
+    Value(i64)
+    Empty
+}
+
+fn score(outcome: Outcome) -> i64 {
+    return match outcome:
+        Outcome.Value(value) if value > 10: 2
+        Outcome.Value(_): 1
+        Outcome.Empty(): 0
+}
+
+fn main() -> i64 {
+    let values: i64[] = [12]
+    match values:
+        [only] if only > 10:
+            print only
+        [only]:
+            print only
+        _:
+            print 0
+    let outcome: Outcome = Outcome.Value(12)
+    return score(outcome)
+}
+"#;
+
+    check_source(source).expect("guarded enum and list matches should typecheck");
+    let generated = compile_to_c(source).expect("guarded matches should lower natively");
+    assert!(generated.contains("switch (flux__match_"));
+    assert!(generated.contains("flux__list_match_done_"));
+    assert!(generated.contains("flux__local_value > INT64_C(10)"));
+    assert!(generated.contains("flux__local_only > INT64_C(10)"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("match guards should format");
+    assert!(formatted.contains("Outcome.Value(value) if value > 10: 2"));
+    assert!(formatted.contains("[only] if only > 10:"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted guards should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(744))
+        .expect("guarded matches should analyze semantically");
+    assert!(
+        database
+            .symbols_named("value")
+            .any(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+    );
+}
+
+#[test]
+fn match_guards_must_be_boolean_and_do_not_make_matches_exhaustive() {
+    let non_boolean = r#"
+enum Outcome {
+    Value(i64)
+    Empty
+}
+fn main() -> i64 {
+    let outcome: Outcome = Outcome.Value(1)
+    match outcome:
+        Outcome.Value(value) if value:
+            print value
+        Outcome.Value(_):
+            print 0
+        Outcome.Empty():
+            print 0
+    return 0
+}
+"#;
+    let error = check_source(non_boolean).expect_err("match guards must be boolean");
+    assert!(
+        error
+            .message
+            .contains("match guard: expected bool, got i64")
+    );
+
+    let guarded_only = r#"
+enum Outcome {
+    Value(i64)
+    Empty
+}
+fn main() -> i64 {
+    let outcome: Outcome = Outcome.Value(1)
+    match outcome:
+        Outcome.Value(value) if value > 0:
+            print value
+        Outcome.Empty():
+            print 0
+    return 0
+}
+"#;
+    let error = check_source(guarded_only)
+        .expect_err("a guarded variant alone cannot make an enum match exhaustive");
+    assert!(error.message.contains("non-exhaustive match"));
+    assert!(error.message.contains("Value"));
+}
+
+#[test]
+fn unguarded_match_arms_make_later_same_shape_arms_unreachable() {
+    let source = r#"
+enum Outcome {
+    Value(i64)
+}
+fn main() -> i64 {
+    let outcome: Outcome = Outcome.Value(1)
+    match outcome:
+        Outcome.Value(value):
+            print value
+        Outcome.Value(value) if value > 0:
+            print value
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err("later guarded duplicate must be unreachable");
+    assert!(error.message.contains("duplicate match arm"));
+    assert!(error.message.contains("earlier unguarded arm"));
+}
+
+#[test]
 fn match_scrutinee_is_evaluated_exactly_once() {
     let source = r#"
 enum Outcome {
@@ -7974,6 +8094,112 @@ fn main() -> i64 {
     assert!(generated.contains("flux__multi_"));
     assert!(generated.contains(".v0"));
     assert!(generated.contains(".v1"));
+}
+
+#[test]
+fn accepts_inferred_multi_value_pattern_destructuring() {
+    let source = r#"
+fn divide(value: i64, by: i64) -> (i64, bool) {
+    return value / by, true
+}
+
+fn main() -> i64 {
+    let (result, _) = divide(84, 2)
+    let (shellResult, _) = divide 84 2
+    let (pipedResult, _) = 84 | divide 2
+    print(result)
+    print(shellResult)
+    return pipedResult
+}
+"#;
+
+    check_source(source).expect("inferred multi-value pattern should typecheck");
+    let generated = compile_to_c(source).expect("inferred multi-value pattern should compile");
+    assert!(generated.contains("flux__multi_pattern_"));
+    assert!(generated.contains("flux__local_result"));
+    assert!(generated.contains("flux__local_shellResult"));
+    assert!(generated.contains("flux__local_pipedResult"));
+    assert!(!generated.contains("flux__local__"));
+
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("inferred multi-value pattern should format");
+    assert!(formatted.contains("let (result, _) = divide(84, 2)"));
+    assert!(formatted.contains("let (shellResult, _) = divide 84 2"));
+    assert!(formatted.contains("let (pipedResult, _) = 84 | divide 2"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted inferred multi-value pattern should reparse");
+    assert_eq!(formatted, formatted_again);
+}
+
+#[test]
+fn accepts_inferred_multi_value_pattern_else_return() {
+    let source = r#"
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("path is required")
+    return "config", nil
+}
+
+fn loadConfig(path: str) -> (str, error) {
+    let (data, _) = load(path) else return
+    return data, nil
+}
+
+fn main() -> i64 {
+    let (data, err) = loadConfig("settings")
+    if err != nil:
+        print(err)
+    print(data)
+    return 0
+}
+"#;
+
+    check_source(source).expect("inferred else-return pattern should typecheck");
+    let generated = compile_to_c(source).expect("inferred else-return pattern should compile");
+    assert!(generated.contains("flux__multi_pattern_"));
+    assert!(generated.contains(".v1 != NULL"));
+}
+
+#[test]
+fn rejects_inferred_multi_value_pattern_arity_mismatch() {
+    let source = r#"
+fn pair() -> (i64, bool) {
+    return 1, true
+}
+
+fn main() -> i64 {
+    let (first, second, third) = pair()
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("multi-value pattern arity must match exactly");
+    assert!(
+        error
+            .message
+            .contains("multi-value pattern expects 3 values, expression returns 2")
+    );
+}
+
+#[test]
+fn rejects_duplicate_inferred_multi_value_pattern_binding() {
+    let source = r#"
+fn pair() -> (i64, bool) {
+    return 1, true
+}
+
+fn main() -> i64 {
+    let (value, value) = pair()
+    return 0
+}
+"#;
+
+    let error = check_source(source).expect_err("duplicate pattern bindings must fail");
+    assert!(
+        error
+            .message
+            .contains("duplicate destructured binding 'value'")
+    );
 }
 
 #[test]
