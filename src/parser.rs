@@ -1,11 +1,11 @@
 use crate::ast::{
     ApplicationDef, ApplicationMetadataField, BinOp, Binding, ConstantDef, EnumDef, EnumPayload,
     EnumVariant, Expr, ExprKind, Function, GridLayout, GridTrack, ImportDef, InterfaceDef,
-    InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, ListRestPattern,
-    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, Program, ShellRedirect,
-    ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
-    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty,
-    ViewState, ViewStateTransition,
+    InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, ListMatchArm,
+    ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm, MatchPattern,
+    NamedArg, Param, PatternBinding, Program, ShellRedirect, ShellRedirectMode, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
+    UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -612,6 +612,14 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                     attach_block_source(&mut arm.body, source_id);
                 }
             }
+            StmtKind::ListMatch { value, arms } => {
+                attach_expr_source(value, source_id);
+                for arm in arms {
+                    arm.span = arm.span.with_source(source_id);
+                    attach_list_match_pattern_source(&mut arm.pattern, source_id);
+                    attach_block_source(&mut arm.body, source_id);
+                }
+            }
         }
     }
 }
@@ -766,6 +774,14 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                         }
                     }
                 }
+                attach_expr_source(&mut arm.value, source_id);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            attach_expr_source(value, source_id);
+            for arm in arms {
+                arm.span = arm.span.with_source(source_id);
+                attach_list_match_pattern_source(&mut arm.pattern, source_id);
                 attach_expr_source(&mut arm.value, source_id);
             }
         }
@@ -1048,6 +1064,14 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
                 shift_expr_columns(&mut arm.value, offset);
             }
         }
+        ExprKind::ListMatch { value, arms } => {
+            shift_expr_columns(value, offset);
+            for arm in arms {
+                arm.span.column += offset;
+                shift_list_match_pattern_columns(&mut arm.pattern, offset);
+                shift_expr_columns(&mut arm.value, offset);
+            }
+        }
         ExprKind::Conditional {
             then_expr,
             cond,
@@ -1086,6 +1110,25 @@ fn shift_match_pattern_columns(pattern: &mut MatchPattern, offset: usize) {
                 }
             }
         }
+    }
+}
+
+fn shift_list_match_pattern_columns(pattern: &mut ListMatchPattern, offset: usize) {
+    match pattern {
+        ListMatchPattern::List {
+            bindings,
+            rest,
+            span,
+        } => {
+            span.column += offset;
+            for binding in bindings {
+                binding.span.column += offset;
+            }
+            if let Some(rest) = rest {
+                rest.binding.span.column += offset;
+            }
+        }
+        ListMatchPattern::Wildcard { span } => span.column += offset,
     }
 }
 
@@ -2790,27 +2833,38 @@ fn parse_match_expression(
         ));
     }
     let arm_indent = lines[*index].indent;
+    let span = SourceSpan::new(
+        header.number,
+        start_column,
+        header
+            .text
+            .len()
+            .saturating_sub(start_column.saturating_sub(header.indent + 1)),
+    );
+    if is_list_match_arm_line(&lines[*index]) {
+        let mut arms = Vec::new();
+        while *index < lines.len() && lines[*index].indent == arm_indent {
+            arms.push(parse_list_match_expr_arm(&lines[*index])?);
+            *index += 1;
+        }
+        return Ok(Expr {
+            line: header.number,
+            span,
+            kind: ExprKind::ListMatch {
+                value: Box::new(value),
+                arms,
+            },
+        });
+    }
+
     let mut arms = Vec::new();
     while *index < lines.len() && lines[*index].indent == arm_indent {
         arms.push(parse_match_expr_arm(&lines[*index])?);
         *index += 1;
     }
-    if arms.is_empty() {
-        return Err(diag(
-            header.number,
-            "match expression requires at least one arm",
-        ));
-    }
     Ok(Expr {
         line: header.number,
-        span: SourceSpan::new(
-            header.number,
-            start_column,
-            header
-                .text
-                .len()
-                .saturating_sub(start_column.saturating_sub(header.indent + 1)),
-        ),
+        span,
         kind: ExprKind::Match {
             value: Box::new(value),
             arms,
@@ -2854,9 +2908,47 @@ fn parse_match_expr_arm(line: &Line) -> Result<MatchExprArm, Diagnostic> {
     })
 }
 
+fn parse_list_match_expr_arm(line: &Line) -> Result<ListMatchExprArm, Diagnostic> {
+    let Some(colon) = find_top_level_colon(&line.text) else {
+        return Err(diag(
+            line.number,
+            "list match expression arms use '[pattern]: expression' or '_: expression'",
+        ));
+    };
+    let pattern_text = line.text[..colon].trim();
+    let value_text = line.text[colon + 1..].trim();
+    if value_text.is_empty() {
+        return Err(diag(line.number, "match expression arm requires a value"));
+    }
+    let pattern_offset = line.text[..colon].find(pattern_text).unwrap_or(0);
+    let pattern =
+        parse_list_match_pattern(pattern_text, line.number, line.indent + 1 + pattern_offset)?;
+    let value_offset = line.text[colon + 1..].find(value_text).unwrap_or(0);
+    let value = parse_expression_at(
+        value_text,
+        line.number,
+        line.indent + colon + 2 + value_offset,
+    )?;
+    Ok(ListMatchExprArm {
+        pattern,
+        value,
+        line: line.number,
+        span: line.span(),
+    })
+}
+
+fn is_list_match_arm_line(line: &Line) -> bool {
+    let Some(colon) = find_top_level_colon(&line.text) else {
+        return line.text.trim_start().starts_with('[');
+    };
+    let pattern = line.text[..colon].trim();
+    pattern.starts_with('[') || pattern == "_"
+}
+
 fn find_top_level_colon(input: &str) -> Option<usize> {
     let mut paren = 0usize;
     let mut brace = 0usize;
+    let mut bracket = 0usize;
     let mut in_string = false;
     let mut escaped = false;
     for (index, byte) in input.bytes().enumerate() {
@@ -2880,7 +2972,9 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
             b')' => paren = paren.saturating_sub(1),
             b'{' => brace += 1,
             b'}' => brace = brace.saturating_sub(1),
-            b':' if paren == 0 && brace == 0 => return Some(index),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            b':' if paren == 0 && brace == 0 && bracket == 0 => return Some(index),
             _ => {}
         }
     }
@@ -2907,6 +3001,30 @@ fn parse_match_statement(
         return Err(diag(stmt_line, "match requires at least one indented arm"));
     }
     let arm_indent = lines[*index].indent;
+    if is_list_match_arm_line(&lines[*index]) {
+        let mut arms = Vec::new();
+        while *index < lines.len() && lines[*index].indent == arm_indent {
+            let arm_line = &lines[*index];
+            let pattern = parse_list_match_arm_header(arm_line)?;
+            let arm_line_number = arm_line.number;
+            let arm_span = arm_line.span();
+            *index += 1;
+            let body = parse_nested_block(lines, index, arm_indent, arm_line_number, "match arm")?;
+            arms.push(ListMatchArm {
+                pattern,
+                body,
+                line: arm_line_number,
+                span: arm_span,
+            });
+        }
+        return Ok(Stmt {
+            line: stmt_line,
+            span: stmt_span,
+            keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 5),
+            kind: StmtKind::ListMatch { value, arms },
+        });
+    }
+
     let mut arms = Vec::new();
     while *index < lines.len() && lines[*index].indent == arm_indent {
         let arm_line = &lines[*index];
@@ -2915,15 +3033,45 @@ fn parse_match_statement(
         arm.body = parse_nested_block(lines, index, arm_indent, arm.line, "match arm")?;
         arms.push(arm);
     }
-    if arms.is_empty() {
-        return Err(diag(stmt_line, "match requires at least one arm"));
-    }
 
     Ok(Stmt {
         line: stmt_line,
         span: stmt_span,
         keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 5),
         kind: StmtKind::Match { value, arms },
+    })
+}
+
+fn parse_list_match_arm_header(line: &Line) -> Result<ListMatchPattern, Diagnostic> {
+    let Some(pattern) = line.text.strip_suffix(':') else {
+        return Err(diag(line.number, "match arms must end with ':'"));
+    };
+    let pattern = pattern.trim();
+    let offset = line.text.find(pattern).unwrap_or(0);
+    parse_list_match_pattern(pattern, line.number, line.indent + 1 + offset)
+}
+
+fn parse_list_match_pattern(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<ListMatchPattern, Diagnostic> {
+    let trimmed = input.trim();
+    let leading = input.len() - input.trim_start().len();
+    let span = SourceSpan::new(line, column + leading, trimmed.len());
+    if trimmed == "_" {
+        return Ok(ListMatchPattern::Wildcard { span });
+    }
+    let Some(pattern) = parse_list_destructure_pattern(input, line, column, true)? else {
+        return Err(diag(
+            line,
+            "list match arms use '[pattern]:' or '_:' syntax",
+        ));
+    };
+    Ok(ListMatchPattern::List {
+        bindings: pattern.bindings,
+        rest: pattern.rest,
+        span,
     })
 }
 
@@ -3145,7 +3293,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                 (trimmed_expr, false)
             };
         if let Some(list_pattern) =
-            parse_list_destructure_pattern(binding_src, line, span.column + 4)?
+            parse_list_destructure_pattern(binding_src, line, span.column + 4, false)?
         {
             if else_return {
                 return Err(diag(
@@ -3456,6 +3604,25 @@ fn find_shell_redirect(input: &str) -> Option<(usize, bool)> {
     None
 }
 
+fn attach_list_match_pattern_source(pattern: &mut ListMatchPattern, source_id: SourceId) {
+    match pattern {
+        ListMatchPattern::List {
+            bindings,
+            rest,
+            span,
+        } => {
+            *span = span.with_source(source_id);
+            for binding in bindings {
+                binding.span = binding.span.with_source(source_id);
+            }
+            if let Some(rest) = rest {
+                rest.binding.span = rest.binding.span.with_source(source_id);
+            }
+        }
+        ListMatchPattern::Wildcard { span } => *span = span.with_source(source_id),
+    }
+}
+
 fn attach_struct_pattern_field_source(field: &mut StructPatternField, source_id: SourceId) {
     field.field_span = field.field_span.with_source(source_id);
     field.binding.span = field.binding.span.with_source(source_id);
@@ -3471,6 +3638,7 @@ fn parse_list_destructure_pattern(
     input: &str,
     line: usize,
     column: usize,
+    allow_empty: bool,
 ) -> Result<Option<ParsedListDestructure>, Diagnostic> {
     let trimmed = input.trim();
     if !trimmed.starts_with('[') {
@@ -3486,6 +3654,12 @@ fn parse_list_destructure_pattern(
         ));
     };
     if inner.trim().is_empty() {
+        if allow_empty {
+            return Ok(Some(ParsedListDestructure {
+                bindings: Vec::new(),
+                rest: None,
+            }));
+        }
         return Err(diag(
             line,
             "list destructuring requires at least one binding",

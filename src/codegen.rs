@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, ShellRedirectMode,
-    Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg, Program,
+    ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceSpan};
 use crate::typecheck::{ConstantValue, Signature, Signatures, type_of_expr};
@@ -2185,7 +2185,10 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
-                if matches!(expr.kind, ExprKind::Match { .. }) =>
+                if matches!(
+                    expr.kind,
+                    ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                ) =>
             {
                 let target = local_c_name(name);
                 out.push_str(&format!("{pad}{} {target};\n", c_type(ty, signatures)));
@@ -2361,7 +2364,11 @@ fn emit_block(
                 out.push_str(&format!("{pad}return {return_temp};\n"));
             }
             StmtKind::Return(values)
-                if values.len() == 1 && matches!(values[0].kind, ExprKind::Match { .. }) =>
+                if values.len() == 1
+                    && matches!(
+                        values[0].kind,
+                        ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                    ) =>
             {
                 let result_ty = type_of_expr(&values[0], env, signatures)?;
                 let target = format!("flux__match_result_{}", *temp_counter);
@@ -2684,6 +2691,51 @@ fn emit_block(
                 }
                 out.push_str(&format!("{pad}}}\n"));
             }
+            StmtKind::ListMatch { value, arms } => {
+                let value = emit_expr(value, env, signatures)?;
+                let Type::List(element) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "list match code generation requires a list value",
+                    ));
+                };
+                let temp = format!("flux__list_match_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}struct flux__list {temp} = {};\n",
+                    value.code
+                ));
+                for (arm_index, arm) in arms.iter().enumerate() {
+                    let condition = list_match_condition(&arm.pattern, &temp);
+                    if arm_index == 0 {
+                        out.push_str(&format!("{pad}if ({condition}) {{\n"));
+                    } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+                        out.push_str(&format!("{pad}else {{\n"));
+                    } else {
+                        out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+                    }
+                    let mut nested = env.clone();
+                    emit_list_match_pattern_bindings(
+                        out,
+                        &format!("{pad}    "),
+                        &arm.pattern,
+                        &temp,
+                        element,
+                        &mut nested,
+                        signatures,
+                    )?;
+                    emit_block(
+                        out,
+                        &arm.body,
+                        depth + 1,
+                        &mut nested,
+                        signatures,
+                        temp_counter,
+                        current_function,
+                    )?;
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+            }
         }
     }
     Ok(())
@@ -2692,6 +2744,71 @@ fn emit_block(
 struct EmittedExpr {
     code: String,
     ty: Type,
+}
+
+fn list_match_condition(pattern: &ListMatchPattern, temp: &str) -> String {
+    match pattern {
+        ListMatchPattern::Wildcard { .. } => "true".to_string(),
+        ListMatchPattern::List { bindings, rest, .. } => {
+            if rest.is_some() {
+                format!("{temp}.len >= {}", bindings.len())
+            } else {
+                format!("{temp}.len == {}", bindings.len())
+            }
+        }
+    }
+}
+
+fn emit_list_match_pattern_bindings(
+    out: &mut String,
+    pad: &str,
+    pattern: &ListMatchPattern,
+    temp: &str,
+    element: &Type,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let ListMatchPattern::List { bindings, rest, .. } = pattern else {
+        return Ok(());
+    };
+    let element_c = c_type(element, signatures);
+    for (index, binding) in bindings.iter().enumerate() {
+        if binding.name == "_" {
+            continue;
+        }
+        let index_code = if let Some(rest) = rest {
+            if index < rest.index {
+                format!("INT64_C({index})")
+            } else {
+                format!("-INT64_C({})", bindings.len() - index)
+            }
+        } else {
+            format!("INT64_C({index})")
+        };
+        out.push_str(&format!(
+            "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, {index_code}, sizeof({element_c})));\n",
+            local_c_name(&binding.name)
+        ));
+        env.insert(binding.name.clone(), element.clone());
+    }
+    if let Some(rest) = rest
+        && rest.binding.name != "_"
+    {
+        let rest_name = local_c_name(&rest.binding.name);
+        out.push_str(&format!(
+            "{pad}struct flux__list {rest_name} = {{ .data = {temp}.data, .len = {temp}.len - {}, .stride = flux_list_stride({temp}, sizeof({element_c})) }};\n",
+            bindings.len()
+        ));
+        out.push_str(&format!(
+            "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at({temp}, INT64_C({}), sizeof({element_c})); }}\n",
+            rest.index
+        ));
+        env.insert(
+            rest.binding.name.clone(),
+            Type::List(Box::new(element.clone())),
+        );
+    }
+    Ok(())
 }
 
 fn emit_match_expr_into(
@@ -2703,6 +2820,9 @@ fn emit_match_expr_into(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if matches!(expr.kind, ExprKind::ListMatch { .. }) {
+        return emit_list_match_expr_into(out, expr, target, depth, env, signatures, temp_counter);
+    }
     let ExprKind::Match { value, arms } = &expr.kind else {
         return Err(diag(
             expr.span,
@@ -2783,6 +2903,61 @@ fn emit_match_expr_into(
         out.push_str(&format!("{pad}    }}\n"));
     }
     out.push_str(&format!("{pad}}}\n"));
+    Ok(())
+}
+
+fn emit_list_match_expr_into(
+    out: &mut String,
+    expr: &Expr,
+    target: &str,
+    depth: usize,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let ExprKind::ListMatch { value, arms } = &expr.kind else {
+        return Err(diag(
+            expr.span,
+            "expected list match expression during code generation",
+        ));
+    };
+    let emitted_value = emit_expr(value, env, signatures)?;
+    let Type::List(element) = &emitted_value.ty else {
+        return Err(diag(
+            value.span,
+            "list match expression code generation requires a list value",
+        ));
+    };
+    let temp = format!("flux__list_match_{}", *temp_counter);
+    *temp_counter += 1;
+    let pad = "    ".repeat(depth);
+    out.push_str(&format!(
+        "{pad}struct flux__list {temp} = {};\n",
+        emitted_value.code
+    ));
+    for (arm_index, arm) in arms.iter().enumerate() {
+        let condition = list_match_condition(&arm.pattern, &temp);
+        if arm_index == 0 {
+            out.push_str(&format!("{pad}if ({condition}) {{\n"));
+        } else if matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+            out.push_str(&format!("{pad}else {{\n"));
+        } else {
+            out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+        }
+        let mut nested = env.clone();
+        emit_list_match_pattern_bindings(
+            out,
+            &format!("{pad}    "),
+            &arm.pattern,
+            &temp,
+            element,
+            &mut nested,
+            signatures,
+        )?;
+        let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+        out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
+        out.push_str(&format!("{pad}}}\n"));
+    }
     Ok(())
 }
 
@@ -4559,7 +4734,7 @@ fn emit_expr(
                 }
             }
         }
-        ExprKind::Match { .. } => {
+        ExprKind::Match { .. } | ExprKind::ListMatch { .. } => {
             return Err(diag(
                 expr.span,
                 "multiline match expressions are lowered from binding/return statements",
@@ -5256,6 +5431,7 @@ fn block_uses_background(body: &[Stmt]) -> bool {
         | StmtKind::ForEach { body, .. }
         | StmtKind::While { body, .. } => block_uses_background(body),
         StmtKind::Match { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
+        StmtKind::ListMatch { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
         _ => false,
     })
 }
@@ -5295,6 +5471,11 @@ fn collect_function_types_from_block(
                 collect_function_types_from_block(body, signatures, types);
             }
             StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect_function_types_from_block(&arm.body, signatures, types);
+                }
+            }
+            StmtKind::ListMatch { arms, .. } => {
                 for arm in arms {
                     collect_function_types_from_block(&arm.body, signatures, types);
                 }
@@ -5411,6 +5592,12 @@ fn collect_update_helpers_from_block(
                     collect_update_helpers_from_block(&arm.body, signatures, emitted, helpers);
                 }
             }
+            StmtKind::ListMatch { value, arms } => {
+                collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+                for arm in arms {
+                    collect_update_helpers_from_block(&arm.body, signatures, emitted, helpers);
+                }
+            }
         }
     }
 }
@@ -5466,6 +5653,12 @@ fn collect_update_helpers_from_expr(
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
         }
         ExprKind::Match { value, arms } => {
+            collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+            for arm in arms {
+                collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
             collect_update_helpers_from_expr(value, signatures, emitted, helpers);
             for arm in arms {
                 collect_update_helpers_from_expr(&arm.value, signatures, emitted, helpers);

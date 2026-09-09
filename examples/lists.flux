@@ -28,6 +28,22 @@ fn main() -> i64 {
     print reverseBody.first
     print reverseBody.last
     print reverseTail
+    match reversed:
+        []:
+            print 0
+        [only]:
+            print only
+        [matchFirst, ...matchMiddle, matchLast]:
+            print matchFirst
+            print matchMiddle.length
+            print matchMiddle.first
+            print matchMiddle.last
+            print matchLast
+    let matchedLength: i64 = match values:
+        []: 0
+        [_]: 1
+        [_, ...matchBody, _]: matchBody.length + 2
+    print matchedLength
     let reverseMiddle: i64[] = values[3:0:-2]
     let chained: i64[] = values[::-1][1:4:2]
     let reverseWindow: i64[] = values[::-1] | skip 1 | take 2

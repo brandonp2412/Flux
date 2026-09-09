@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, GridTrack, MatchPattern, ShellRedirectMode, Stmt, StmtKind,
-    StructPatternField, Type, UnaryOp,
+    BinOp, Expr, ExprKind, Function, GridTrack, ListMatchPattern, MatchPattern, ShellRedirectMode,
+    Stmt, StmtKind, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -419,6 +419,38 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 );
                 format_match_expr_arms(arms, depth + 1, lines);
             }
+            StmtKind::Let { name, ty, expr, .. }
+                if matches!(expr.kind, ExprKind::ListMatch { .. }) =>
+            {
+                let ExprKind::ListMatch { value, arms } = &expr.kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}let {name}: {} = match {}:",
+                        ty.name(),
+                        format_expr(value, 0)
+                    ),
+                );
+                format_list_match_expr_arms(arms, depth + 1, lines);
+            }
+            StmtKind::Var { name, ty, expr, .. }
+                if matches!(expr.kind, ExprKind::ListMatch { .. }) =>
+            {
+                let ExprKind::ListMatch { value, arms } = &expr.kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}var {name}: {} = match {}:",
+                        ty.name(),
+                        format_expr(value, 0)
+                    ),
+                );
+                format_list_match_expr_arms(arms, depth + 1, lines);
+            }
             StmtKind::Let { name, ty, expr, .. } => {
                 lines.insert(
                     stmt.line,
@@ -501,6 +533,18 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format!("{pad}return match {}:", format_expr(value, 0)),
                 );
                 format_match_expr_arms(arms, depth + 1, lines);
+            }
+            StmtKind::Return(values)
+                if values.len() == 1 && matches!(values[0].kind, ExprKind::ListMatch { .. }) =>
+            {
+                let ExprKind::ListMatch { value, arms } = &values[0].kind else {
+                    unreachable!()
+                };
+                lines.insert(
+                    stmt.line,
+                    format!("{pad}return match {}:", format_expr(value, 0)),
+                );
+                format_list_match_expr_arms(arms, depth + 1, lines);
             }
             StmtKind::Return(values) => {
                 if values.is_empty() {
@@ -643,6 +687,17 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format_block(&arm.body, depth + 2, lines);
                 }
             }
+            StmtKind::ListMatch { value, arms } => {
+                lines.insert(stmt.line, format!("{pad}match {}:", format_expr(value, 0)));
+                let arm_pad = "    ".repeat(depth + 1);
+                for arm in arms {
+                    lines.insert(
+                        arm.line,
+                        format!("{arm_pad}{}:", format_list_match_pattern(&arm.pattern)),
+                    );
+                    format_block(&arm.body, depth + 2, lines);
+                }
+            }
         }
     }
 }
@@ -680,6 +735,40 @@ fn format_match_expr_arms(
                 format_expr(&arm.value, 0)
             ),
         );
+    }
+}
+
+fn format_list_match_expr_arms(
+    arms: &[crate::ast::ListMatchExprArm],
+    depth: usize,
+    lines: &mut HashMap<usize, String>,
+) {
+    let pad = "    ".repeat(depth);
+    for arm in arms {
+        lines.insert(
+            arm.line,
+            format!(
+                "{pad}{}: {}",
+                format_list_match_pattern(&arm.pattern),
+                format_expr(&arm.value, 0)
+            ),
+        );
+    }
+}
+
+fn format_list_match_pattern(pattern: &ListMatchPattern) -> String {
+    match pattern {
+        ListMatchPattern::Wildcard { .. } => "_".to_string(),
+        ListMatchPattern::List { bindings, rest, .. } => {
+            let mut entries = bindings
+                .iter()
+                .map(|binding| binding.name.clone())
+                .collect::<Vec<_>>();
+            if let Some(rest) = rest {
+                entries.insert(rest.index, format!("...{}", rest.binding.name));
+            }
+            format!("[{}]", entries.join(", "))
+        }
     }
 }
 
@@ -865,7 +954,9 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             );
             format!("{name} {{ {} }}", parts.join(", "))
         }
-        ExprKind::Match { value, .. } => format!("match {}:", format_expr(value, 0)),
+        ExprKind::Match { value, .. } | ExprKind::ListMatch { value, .. } => {
+            format!("match {}:", format_expr(value, 0))
+        }
         ExprKind::Conditional {
             then_expr,
             cond,

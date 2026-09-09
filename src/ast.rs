@@ -499,6 +499,10 @@ pub enum StmtKind {
         value: Expr,
         arms: Vec<MatchArm>,
     },
+    ListMatch {
+        value: Expr,
+        arms: Vec<ListMatchArm>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -535,6 +539,34 @@ pub struct MatchExprArm {
     pub value: Expr,
     pub line: usize,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListMatchArm {
+    pub pattern: ListMatchPattern,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListMatchExprArm {
+    pub pattern: ListMatchPattern,
+    pub value: Expr,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub enum ListMatchPattern {
+    List {
+        bindings: Vec<PatternBinding>,
+        rest: Option<ListRestPattern>,
+        span: SourceSpan,
+    },
+    Wildcard {
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -651,6 +683,10 @@ pub enum ExprKind {
     Match {
         value: Box<Expr>,
         arms: Vec<MatchExprArm>,
+    },
+    ListMatch {
+        value: Box<Expr>,
+        arms: Vec<ListMatchExprArm>,
     },
     Conditional {
         then_expr: Box<Expr>,

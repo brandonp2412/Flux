@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::ast::{Expr, ExprKind, MatchPattern, Program, Stmt, StmtKind, StructPatternField, Type};
+use crate::ast::{
+    Expr, ExprKind, ListMatchPattern, MatchPattern, Program, Stmt, StmtKind, StructPatternField,
+    Type,
+};
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
@@ -352,6 +355,21 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&arm.value, symbols, signatures);
             }
         }
+        ExprKind::ListMatch { value, arms } => {
+            let env = semantic_env(symbols);
+            let element_ty = typecheck::type_of_expr(value, &env, signatures)
+                .ok()
+                .map(|ty| signatures.canonical_type(&ty))
+                .and_then(|ty| match ty {
+                    Type::List(element) => Some(*element),
+                    _ => None,
+                });
+            collect_expr_pattern_symbols(value, symbols, signatures);
+            for arm in arms {
+                collect_list_match_pattern_symbols(&arm.pattern, element_ty.as_ref(), symbols);
+                collect_expr_pattern_symbols(&arm.value, symbols, signatures);
+            }
+        }
         ExprKind::Conditional {
             then_expr,
             cond,
@@ -465,6 +483,56 @@ fn collect_expr_pattern_symbols(
         | ExprKind::Str(_)
         | ExprKind::Nil
         | ExprKind::Var(_) => {}
+    }
+}
+
+fn semantic_env(symbols: &[SemanticSymbol]) -> HashMap<String, Type> {
+    symbols
+        .iter()
+        .filter(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::Parameter
+                    | SymbolKind::Binding
+                    | SymbolKind::MutableBinding
+                    | SymbolKind::PatternBinding
+                    | SymbolKind::LoopVariable
+            )
+        })
+        .filter_map(|symbol| symbol.ty.clone().map(|ty| (symbol.name.clone(), ty)))
+        .collect()
+}
+
+fn collect_list_match_pattern_symbols(
+    pattern: &ListMatchPattern,
+    element_ty: Option<&Type>,
+    symbols: &mut Vec<SemanticSymbol>,
+) {
+    let ListMatchPattern::List { bindings, rest, .. } = pattern else {
+        return;
+    };
+    for binding in bindings {
+        if binding.name == "_" {
+            continue;
+        }
+        symbols.push(SemanticSymbol {
+            name: binding.name.clone(),
+            kind: SymbolKind::PatternBinding,
+            ty: element_ty.cloned(),
+            span: binding.span,
+        });
+    }
+    if let Some(rest) = rest
+        && rest.binding.name != "_"
+    {
+        symbols.push(SemanticSymbol {
+            name: rest.binding.name.clone(),
+            kind: SymbolKind::PatternBinding,
+            ty: element_ty
+                .cloned()
+                .map(|element| Type::List(Box::new(element))),
+            span: rest.binding.span,
+        });
     }
 }
 
@@ -662,6 +730,21 @@ fn collect_block_symbols(
                             }
                         }
                     }
+                    collect_block_symbols(&arm.body, symbols, signatures);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                let env = semantic_env(symbols);
+                let element_ty = typecheck::type_of_expr(value, &env, signatures)
+                    .ok()
+                    .map(|ty| signatures.canonical_type(&ty))
+                    .and_then(|ty| match ty {
+                        Type::List(element) => Some(*element),
+                        _ => None,
+                    });
+                collect_expr_pattern_symbols(value, symbols, signatures);
+                for arm in arms {
+                    collect_list_match_pattern_symbols(&arm.pattern, element_ty.as_ref(), symbols);
                     collect_block_symbols(&arm.body, symbols, signatures);
                 }
             }

@@ -3273,6 +3273,160 @@ fn formatter_and_semantic_database_preserve_match_expressions() {
 }
 
 #[test]
+fn list_match_statements_and_expressions_are_exhaustive_typed_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    match values[::-1]:
+        []:
+            print 0
+        [single]:
+            print single
+        [first, ...middle, last]:
+            print first
+            print middle.length
+            print middle.first
+            print middle.last
+            print last
+    let count: i64 = match values:
+        []: 0
+        [_]: 1
+        [_, ...body, _]: body.length + 2
+    print count
+    return 0
+}
+"#;
+
+    check_source(source).expect("list matches should typecheck");
+    let generated = compile_to_c(source).expect("list matches should lower natively");
+    assert!(generated.contains("flux__list_match_"));
+    assert!(generated.contains(".len == 0"));
+    assert!(generated.contains(".len == 1"));
+    assert!(generated.contains(".len >= 2"));
+    assert!(generated.contains("-INT64_C(1)"));
+    assert!(generated.contains("flux_list_stride(flux__list_match_"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("list match should format");
+    assert!(formatted.contains("[first, ...middle, last]:"));
+    assert!(formatted.contains("[_, ...body, _]: body.length + 2"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted list match should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(743))
+        .expect("list match should analyze semantically");
+    let middle = database
+        .symbols_named("middle")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("list rest match binding should be indexed");
+    assert_eq!(
+        middle.ty,
+        Some(fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64)))
+    );
+    let first = database
+        .symbols_named("first")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
+        .expect("list element match binding should be indexed");
+    assert_eq!(first.ty, Some(fluxc::ast::Type::I64));
+}
+
+#[test]
+fn list_match_supports_wildcard_fallbacks() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    let result: i64 = match values:
+        [only]: only
+        _: values.length
+    return result
+}
+"#;
+
+    check_source(source).expect("wildcard list match should be exhaustive");
+    let generated = compile_to_c(source).expect("wildcard list match should lower natively");
+    assert!(generated.contains(".len == 1"));
+    assert!(generated.contains("else {"));
+}
+
+#[test]
+fn rejects_invalid_or_non_exhaustive_list_matches() {
+    let non_list = r#"
+fn main() -> i64 {
+    match 7:
+        []:
+            print 0
+        _:
+            print 1
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("list match source must be a list");
+    assert!(
+        error
+            .message
+            .contains("list match requires a list value, got i64")
+    );
+
+    let missing_length = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    match values:
+        []:
+            print 0
+        [_, ...middle, _]:
+            print middle.length
+    return 0
+}
+"#;
+    let error = check_source(missing_length).expect_err("list match must cover every length");
+    assert!(error.message.contains("non-exhaustive list match"));
+    assert!(error.message.contains("missing exact length 1"));
+
+    let unreachable = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    match values:
+        [...all]:
+            print all.length
+        _:
+            print 0
+    return 0
+}
+"#;
+    let error = check_source(unreachable)
+        .expect_err("wildcard after an exhaustive rest arm is unreachable");
+    assert!(error.message.contains("unreachable list match arm"));
+
+    let mismatched = r#"
+fn main() -> i64 {
+    let values: i64[] = [1]
+    let result: i64 = match values:
+        []: 0
+        _: "value"
+    return result
+}
+"#;
+    let error = check_source(mismatched).expect_err("list match expression arms must agree");
+    assert!(
+        error
+            .message
+            .contains("match expression arm: expected i64, got str")
+    );
+
+    let unused_binding = r#"
+fn main() -> i64 {
+    let values: i64[] = [1]
+    let result: i64 = match values:
+        [unused]: 1
+        _: 0
+    return result
+}
+"#;
+    let error = check_source(unused_binding).expect_err("named list match bindings must be used");
+    assert!(error.message.contains("unused match binding 'unused'"));
+}
+
+#[test]
 fn match_scrutinee_is_evaluated_exactly_once() {
     let source = r#"
 enum Outcome {

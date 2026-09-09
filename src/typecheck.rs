@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, ConstantDef, Expr, ExprKind, Function, MatchPattern, NamedArg, Program, Stmt, StmtKind,
-    StructPatternField, Type, UnaryOp,
+    BinOp, ConstantDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
+    Program, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -1943,14 +1943,22 @@ fn collect_binding_declarations(
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let {
-                name, name_span, ..
+                name,
+                name_span,
+                expr,
+                ..
             } => {
                 declarations.push((name.clone(), *name_span, "binding"));
+                collect_expr_pattern_declarations(expr, declarations);
             }
             StmtKind::Var {
-                name, name_span, ..
+                name,
+                name_span,
+                expr,
+                ..
             } => {
                 declarations.push((name.clone(), *name_span, "mutable binding"));
+                collect_expr_pattern_declarations(expr, declarations);
             }
             StmtKind::LetDestructure { bindings, .. } => {
                 for binding in bindings {
@@ -2025,13 +2033,77 @@ fn collect_binding_declarations(
                     collect_binding_declarations(&arm.body, declarations);
                 }
             }
+            StmtKind::ListMatch { arms, .. } => {
+                for arm in arms {
+                    collect_list_match_pattern_declarations(&arm.pattern, declarations);
+                    collect_binding_declarations(&arm.body, declarations);
+                }
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_expr_pattern_declarations(value, declarations);
+                }
+            }
             StmtKind::Assign { .. }
-            | StmtKind::Return(_)
             | StmtKind::Break
             | StmtKind::Continue
             | StmtKind::Expr(_)
             | StmtKind::Shell { .. } => {}
         }
+    }
+}
+
+fn collect_expr_pattern_declarations(
+    expr: &Expr,
+    declarations: &mut Vec<(String, SourceSpan, &'static str)>,
+) {
+    match &expr.kind {
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                for pattern in &arm.patterns {
+                    match pattern {
+                        MatchPattern::Binding(binding) if binding.name != "_" => {
+                            declarations.push((binding.name.clone(), binding.span, "match binding"))
+                        }
+                        MatchPattern::Struct(pattern) => {
+                            collect_struct_pattern_declarations(&pattern.fields, declarations);
+                        }
+                        MatchPattern::Binding(_) => {}
+                    }
+                }
+                collect_expr_pattern_declarations(&arm.value, declarations);
+            }
+        }
+        ExprKind::ListMatch { arms, .. } => {
+            for arm in arms {
+                collect_list_match_pattern_declarations(&arm.pattern, declarations);
+                collect_expr_pattern_declarations(&arm.value, declarations);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_list_match_pattern_declarations(
+    pattern: &ListMatchPattern,
+    declarations: &mut Vec<(String, SourceSpan, &'static str)>,
+) {
+    let ListMatchPattern::List { bindings, rest, .. } = pattern else {
+        return;
+    };
+    for binding in bindings {
+        if binding.name != "_" {
+            declarations.push((binding.name.clone(), binding.span, "match binding"));
+        }
+    }
+    if let Some(rest) = rest
+        && rest.binding.name != "_"
+    {
+        declarations.push((
+            rest.binding.name.clone(),
+            rest.binding.span,
+            "match binding",
+        ));
     }
 }
 
@@ -2109,6 +2181,12 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
                 collect_block_reads(body, reads);
             }
             StmtKind::Match { value, arms } => {
+                collect_expr_reads(value, reads);
+                for arm in arms {
+                    collect_block_reads(&arm.body, reads);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
                 collect_expr_reads(value, reads);
                 for arm in arms {
                     collect_block_reads(&arm.body, reads);
@@ -2229,6 +2307,12 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             collect_expr_reads(base, reads);
         }
         ExprKind::Match { value, arms } => {
+            collect_expr_reads(value, reads);
+            for arm in arms {
+                collect_expr_reads(&arm.value, reads);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
             collect_expr_reads(value, reads);
             for arm in arms {
                 collect_expr_reads(&arm.value, reads);
@@ -2928,7 +3012,176 @@ fn check_block_all(
                     ));
                 }
             }
+            StmtKind::ListMatch { value, arms } => {
+                let element_ty = match type_of_expr(value, env, signatures) {
+                    Ok(value_ty) => match signatures.canonical_type(&value_ty) {
+                        Type::List(element) => Some(*element),
+                        actual => {
+                            diagnostics.push(diag(
+                                value.span,
+                                &format!("list match requires a list value, got {}", actual.name()),
+                            ));
+                            None
+                        }
+                    },
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                let patterns = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+                if let Err(diagnostic) = validate_list_match_coverage(&patterns, stmt.span) {
+                    diagnostics.push(diagnostic);
+                }
+                if let Some(element_ty) = element_ty {
+                    for arm in arms {
+                        let mut nested = env.clone();
+                        if let Err(diagnostic) =
+                            bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)
+                        {
+                            diagnostics.push(diagnostic);
+                        }
+                        let mut nested_mutable = mutable.clone();
+                        check_block_all(
+                            &arm.body,
+                            &mut nested,
+                            &mut nested_mutable,
+                            return_types,
+                            signatures,
+                            diagnostics,
+                            loop_depth,
+                        );
+                    }
+                }
+            }
         }
+    }
+}
+
+fn bind_list_match_pattern(
+    pattern: &ListMatchPattern,
+    element_ty: &Type,
+    env: &mut HashMap<String, Type>,
+) -> Result<(), Diagnostic> {
+    let ListMatchPattern::List { bindings, rest, .. } = pattern else {
+        return Ok(());
+    };
+    for binding in bindings {
+        if binding.name == "_" {
+            continue;
+        }
+        if env.contains_key(&binding.name) {
+            return Err(diag(
+                binding.span,
+                &format!(
+                    "match binding '{}' shadows an existing binding",
+                    binding.name
+                ),
+            ));
+        }
+        env.insert(binding.name.clone(), element_ty.clone());
+    }
+    if let Some(rest) = rest
+        && rest.binding.name != "_"
+    {
+        if env.contains_key(&rest.binding.name) {
+            return Err(diag(
+                rest.binding.span,
+                &format!(
+                    "match binding '{}' shadows an existing binding",
+                    rest.binding.name
+                ),
+            ));
+        }
+        env.insert(
+            rest.binding.name.clone(),
+            Type::List(Box::new(element_ty.clone())),
+        );
+    }
+    Ok(())
+}
+
+fn list_match_pattern_span(pattern: &ListMatchPattern) -> SourceSpan {
+    match pattern {
+        ListMatchPattern::List { span, .. } | ListMatchPattern::Wildcard { span } => *span,
+    }
+}
+
+fn validate_list_match_coverage(
+    patterns: &[&ListMatchPattern],
+    span: SourceSpan,
+) -> Result<(), Diagnostic> {
+    if patterns.is_empty() {
+        return Err(diag(span, "list match requires at least one arm"));
+    }
+    let mut exact_lengths = HashSet::new();
+    let mut minimum_rest: Option<usize> = None;
+    let mut wildcard_seen = false;
+    for pattern in patterns {
+        let already_complete = minimum_rest
+            .is_some_and(|minimum| (0..minimum).all(|length| exact_lengths.contains(&length)));
+        if wildcard_seen || already_complete {
+            return Err(diag(
+                list_match_pattern_span(pattern),
+                "unreachable list match arm; earlier patterns are already exhaustive",
+            ));
+        }
+        match pattern {
+            ListMatchPattern::Wildcard { .. } => wildcard_seen = true,
+            ListMatchPattern::List { bindings, rest, .. } => {
+                let fixed = bindings.len();
+                if rest.is_some() {
+                    if minimum_rest.is_some_and(|minimum| minimum <= fixed) {
+                        return Err(diag(
+                            list_match_pattern_span(pattern),
+                            "unreachable list match arm; an earlier rest pattern already covers this length range",
+                        ));
+                    }
+                    minimum_rest = Some(minimum_rest.map_or(fixed, |minimum| minimum.min(fixed)));
+                } else {
+                    if exact_lengths.contains(&fixed)
+                        || minimum_rest.is_some_and(|minimum| minimum <= fixed)
+                    {
+                        return Err(diag(
+                            list_match_pattern_span(pattern),
+                            &format!(
+                                "unreachable list match arm for exactly {fixed} element{}",
+                                if fixed == 1 { "" } else { "s" }
+                            ),
+                        ));
+                    }
+                    exact_lengths.insert(fixed);
+                }
+            }
+        }
+    }
+    if wildcard_seen {
+        return Ok(());
+    }
+    let Some(minimum_rest) = minimum_rest else {
+        return Err(diag(
+            span,
+            "non-exhaustive list match; add a rest pattern or '_:' fallback",
+        ));
+    };
+    let missing = (0..minimum_rest)
+        .filter(|length| !exact_lengths.contains(length))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(diag(
+            span,
+            &format!(
+                "non-exhaustive list match; missing exact length{} {} before the rest range",
+                if missing.len() == 1 { "" } else { "s" },
+                missing
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ))
     }
 }
 
@@ -3868,6 +4121,35 @@ pub fn type_of_expr(
             }
             result_ty.ok_or_else(|| diag(expr.span, "match expression requires at least one arm"))
         }
+        ExprKind::ListMatch { value, arms } => {
+            let value_ty = signatures.canonical_type(&type_of_expr(value, env, signatures)?);
+            let Type::List(element_ty) = value_ty else {
+                return Err(diag(
+                    value.span,
+                    &format!("list match requires a list value, got {}", value_ty.name()),
+                ));
+            };
+            let patterns = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+            validate_list_match_coverage(&patterns, expr.span)?;
+            let mut result_ty: Option<Type> = None;
+            for arm in arms {
+                let mut nested = env.clone();
+                bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)?;
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                if arm_ty == Type::Void {
+                    return Err(diag(
+                        arm.value.span,
+                        "match expression arms cannot produce void",
+                    ));
+                }
+                if let Some(expected) = &result_ty {
+                    require_type(arm.value.span, expected, &arm_ty, "match expression arm")?;
+                } else {
+                    result_ty = Some(arm_ty);
+                }
+            }
+            result_ty.ok_or_else(|| diag(expr.span, "match expression requires at least one arm"))
+        }
         ExprKind::Field {
             base,
             name,
@@ -4340,11 +4622,18 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             {
                 return true;
             }
+            StmtKind::ListMatch { arms, .. }
+                if !arms.is_empty()
+                    && arms.iter().all(|arm| block_guarantees_return(&arm.body)) =>
+            {
+                return true;
+            }
             StmtKind::If { .. }
             | StmtKind::ForRange { .. }
             | StmtKind::ForEach { .. }
             | StmtKind::While { .. }
             | StmtKind::Match { .. }
+            | StmtKind::ListMatch { .. }
             | StmtKind::Let { .. }
             | StmtKind::Var { .. }
             | StmtKind::Assign { .. }
@@ -4461,7 +4750,8 @@ fn evaluate_default_expr(
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
-        | ExprKind::Match { .. } => Err(diag(
+        | ExprKind::Match { .. }
+        | ExprKind::ListMatch { .. } => Err(diag(
             expr.span,
             "parameter defaults must be compile-time primitive expressions",
         )),
@@ -4607,7 +4897,8 @@ fn evaluate_constant_expr(
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
-        | ExprKind::Match { .. } => Err(diag(
+        | ExprKind::Match { .. }
+        | ExprKind::ListMatch { .. } => Err(diag(
             expr.span,
             "constant expressions currently support primitive literals, constant references, and primitive operators",
         )),
