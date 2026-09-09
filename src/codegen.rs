@@ -122,11 +122,18 @@ pub fn emit_c_with_source_paths(
         out.push('\n');
     }
 
-    emit_interface_value_definitions(&mut out, program, signatures, &reachable_interfaces);
+    emit_interface_value_definitions(
+        &mut out,
+        program,
+        signatures,
+        &reachable_interfaces,
+        &reachable_value_types,
+    );
     out.push_str(&interface_pack_helpers(
         program,
         signatures,
         &reachable_interfaces,
+        &reachable_value_types,
         &runtime_usage,
     ));
     out.push_str(&enum_variant_helpers(
@@ -182,6 +189,7 @@ pub fn emit_c_with_source_paths(
         program,
         signatures,
         &reachable_interfaces,
+        &reachable_value_types,
         &runtime_usage,
     )?;
     out.push_str(&generated_body);
@@ -2344,6 +2352,15 @@ fn emit_anonymous_function(
     Ok(())
 }
 
+fn runtime_views(program: &Program) -> impl Iterator<Item = &crate::ast::ViewDef> {
+    program.application.iter().filter_map(|application| {
+        program
+            .views
+            .iter()
+            .find(|view| view.name == application.view_name)
+    })
+}
+
 fn reachable_interface_names(
     program: &Program,
     signatures: &Signatures,
@@ -2391,15 +2408,6 @@ fn reachable_interface_names(
             }
         }
     }
-    for constant in &program.constants {
-        collect_interface_names_from_type(&constant.ty, signatures, &mut reachable, &mut pending);
-        collect_interface_names_from_expr(
-            &constant.value,
-            signatures,
-            &mut reachable,
-            &mut pending,
-        );
-    }
     if let Some(application) = &program.application {
         for field in &application.metadata {
             collect_interface_names_from_expr(
@@ -2410,7 +2418,7 @@ fn reachable_interface_names(
             );
         }
     }
-    for view in &program.views {
+    for view in runtime_views(program) {
         for param in &view.params {
             collect_interface_names_from_type(&param.ty, signatures, &mut reachable, &mut pending);
             if let Some(default) = &param.default {
@@ -2667,12 +2675,8 @@ fn collect_interface_names_from_expr(
             }
         }
         ExprKind::QualifiedCall {
-            namespace,
-            args,
-            named_args,
-            ..
+            args, named_args, ..
         } => {
-            enqueue_interface_name(namespace, signatures, reachable, pending);
             for arg in args {
                 collect_interface_names_from_expr(arg, signatures, reachable, pending);
             }
@@ -2794,15 +2798,12 @@ fn reachable_enum_variant_helpers(
     reachable_functions: &HashSet<String>,
 ) -> HashSet<(String, String)> {
     let mut variants = HashSet::new();
-    for constant in &program.constants {
-        collect_enum_variant_refs_from_expr(&constant.value, signatures, &mut variants);
-    }
     if let Some(application) = &program.application {
         for field in &application.metadata {
             collect_enum_variant_refs_from_expr(&field.value, signatures, &mut variants);
         }
     }
-    for view in &program.views {
+    for view in runtime_views(program) {
         for param in &view.params {
             if let Some(default) = &param.default {
                 collect_enum_variant_refs_from_expr(default, signatures, &mut variants);
@@ -3084,17 +3085,6 @@ fn reachable_value_type_names(
             enqueue_value_type_name(&definition.name, &known, &mut reachable, &mut pending);
         }
     }
-    for implementation in &program.implementations {
-        if reachable_interfaces.contains(&implementation.interface_name) {
-            enqueue_value_type_name(
-                &implementation.target_name,
-                &known,
-                &mut reachable,
-                &mut pending,
-            );
-        }
-    }
-
     for definition in &program.interfaces {
         if !reachable_interfaces.contains(&definition.name) {
             continue;
@@ -3121,22 +3111,6 @@ fn reachable_value_type_names(
         }
     }
 
-    for constant in &program.constants {
-        collect_value_type_names_from_type(
-            &constant.ty,
-            signatures,
-            &known,
-            &mut reachable,
-            &mut pending,
-        );
-        collect_value_type_names_from_expr(
-            &constant.value,
-            signatures,
-            &known,
-            &mut reachable,
-            &mut pending,
-        );
-    }
     if let Some(application) = &program.application {
         for field in &application.metadata {
             collect_value_type_names_from_expr(
@@ -3148,7 +3122,7 @@ fn reachable_value_type_names(
             );
         }
     }
-    for view in &program.views {
+    for view in runtime_views(program) {
         for param in &view.params {
             collect_value_type_names_from_type(
                 &param.ty,
@@ -3678,57 +3652,60 @@ fn reachable_function_names(
     }
     let mut roots = HashSet::new();
     let mut interface_capabilities = HashSet::new();
-    for constant in &program.constants {
-        collect_named_function_refs_from_expr(&constant.value, &known, &mut roots);
-        collect_interface_capability_refs_from_expr(
-            &constant.value,
-            signatures,
-            &mut interface_capabilities,
-        );
-    }
+    let empty_env = HashMap::new();
     if let Some(application) = &program.application {
         for field in &application.metadata {
             collect_named_function_refs_from_expr(&field.value, &known, &mut roots);
-            collect_interface_capability_refs_from_expr(
+            collect_interface_dispatch_refs_from_expr(
                 &field.value,
+                &empty_env,
                 signatures,
+                &mut roots,
                 &mut interface_capabilities,
             );
         }
     }
-    for view in &program.views {
+    for view in runtime_views(program) {
         for param in &view.params {
             if let Some(default) = &param.default {
                 collect_named_function_refs_from_expr(default, &known, &mut roots);
-                collect_interface_capability_refs_from_expr(
+                collect_interface_dispatch_refs_from_expr(
                     default,
+                    &empty_env,
                     signatures,
+                    &mut roots,
                     &mut interface_capabilities,
                 );
             }
         }
         for state in &view.states {
             collect_named_function_refs_from_expr(&state.initial, &known, &mut roots);
-            collect_interface_capability_refs_from_expr(
+            collect_interface_dispatch_refs_from_expr(
                 &state.initial,
+                &empty_env,
                 signatures,
+                &mut roots,
                 &mut interface_capabilities,
             );
         }
         for derived in &view.derived {
             collect_named_function_refs_from_expr(&derived.value, &known, &mut roots);
-            collect_interface_capability_refs_from_expr(
+            collect_interface_dispatch_refs_from_expr(
                 &derived.value,
+                &empty_env,
                 signatures,
+                &mut roots,
                 &mut interface_capabilities,
             );
         }
         for element in &view.elements {
             for property in &element.properties {
                 collect_named_function_refs_from_expr(&property.value, &known, &mut roots);
-                collect_interface_capability_refs_from_expr(
+                collect_interface_dispatch_refs_from_expr(
                     &property.value,
+                    &empty_env,
                     signatures,
+                    &mut roots,
                     &mut interface_capabilities,
                 );
             }
@@ -3756,14 +3733,31 @@ fn reachable_function_names(
         };
         let mut references = HashSet::new();
         let mut capabilities = HashSet::new();
+        let mut env = function
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+            .collect::<HashMap<_, _>>();
         for param in &function.params {
             if let Some(default) = &param.default {
                 collect_named_function_refs_from_expr(default, &known, &mut references);
-                collect_interface_capability_refs_from_expr(default, signatures, &mut capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    default,
+                    &env,
+                    signatures,
+                    &mut references,
+                    &mut capabilities,
+                );
             }
         }
         collect_named_function_refs_from_block(&function.body, &known, &mut references);
-        collect_interface_capability_refs_from_block(&function.body, signatures, &mut capabilities);
+        collect_interface_dispatch_refs_from_block(
+            &function.body,
+            &mut env,
+            signatures,
+            &mut references,
+            &mut capabilities,
+        );
         for reference in references {
             enqueue_function(&reference, &known, &mut reachable, &mut pending);
         }
@@ -3818,35 +3812,74 @@ fn enqueue_function(
     }
 }
 
-fn collect_interface_capability_refs_from_block(
+fn collect_interface_dispatch_refs_from_block(
     body: &[Stmt],
+    env: &mut HashMap<String, Type>,
     signatures: &Signatures,
-    capabilities: &mut HashSet<(String, String)>,
+    direct_functions: &mut HashSet<String>,
+    dynamic_capabilities: &mut HashSet<(String, String)>,
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { expr, .. }
-            | StmtKind::Var { expr, .. }
-            | StmtKind::Assign { expr, .. }
-            | StmtKind::LetDestructure { expr, .. }
+            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
+                collect_interface_dispatch_refs_from_expr(
+                    expr,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                env.insert(name.clone(), signatures.canonical_type(ty));
+            }
+            StmtKind::Assign { expr, .. }
             | StmtKind::LetMultiDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => {
-                collect_interface_capability_refs_from_expr(expr, signatures, capabilities);
+            | StmtKind::Expr(expr) => collect_interface_dispatch_refs_from_expr(
+                expr,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            ),
+            StmtKind::LetDestructure { bindings, expr, .. } => {
+                collect_interface_dispatch_refs_from_expr(
+                    expr,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                for binding in bindings {
+                    env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
+                }
             }
             StmtKind::Return(values) => {
                 for value in values {
-                    collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                    collect_interface_dispatch_refs_from_expr(
+                        value,
+                        env,
+                        signatures,
+                        direct_functions,
+                        dynamic_capabilities,
+                    );
                 }
             }
             StmtKind::Shell { expr, redirect, .. } => {
-                collect_interface_capability_refs_from_expr(expr, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    expr,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
                 if let Some(redirect) = redirect {
-                    collect_interface_capability_refs_from_expr(
+                    collect_interface_dispatch_refs_from_expr(
                         &redirect.path,
+                        env,
                         signatures,
-                        capabilities,
+                        direct_functions,
+                        dynamic_capabilities,
                     );
                 }
             }
@@ -3856,56 +3889,160 @@ fn collect_interface_capability_refs_from_block(
                 else_body,
                 ..
             } => {
-                collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
-                collect_interface_capability_refs_from_block(body, signatures, capabilities);
-                collect_interface_capability_refs_from_block(else_body, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    cond,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                let mut body_env = env.clone();
+                collect_interface_dispatch_refs_from_block(
+                    body,
+                    &mut body_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                let mut else_env = env.clone();
+                collect_interface_dispatch_refs_from_block(
+                    else_body,
+                    &mut else_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
             StmtKind::ForRange {
-                start, end, body, ..
+                name,
+                start,
+                end,
+                body,
+                ..
             } => {
-                collect_interface_capability_refs_from_expr(start, signatures, capabilities);
-                collect_interface_capability_refs_from_expr(end, signatures, capabilities);
-                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    start,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                collect_interface_dispatch_refs_from_expr(
+                    end,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                let mut body_env = env.clone();
+                body_env.insert(name.clone(), Type::I64);
+                collect_interface_dispatch_refs_from_block(
+                    body,
+                    &mut body_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
-            StmtKind::ForEach { iterable, body, .. } => {
-                collect_interface_capability_refs_from_expr(iterable, signatures, capabilities);
-                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+            StmtKind::ForEach {
+                index_name,
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                collect_interface_dispatch_refs_from_expr(
+                    iterable,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                let mut body_env = env.clone();
+                if let Ok(Type::List(element)) = type_of_expr(iterable, env, signatures) {
+                    body_env.insert(name.clone(), signatures.canonical_type(&element));
+                }
+                if let Some(index_name) = index_name {
+                    body_env.insert(index_name.clone(), Type::I64);
+                }
+                collect_interface_dispatch_refs_from_block(
+                    body,
+                    &mut body_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
             StmtKind::While { cond, body } => {
-                collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
-                collect_interface_capability_refs_from_block(body, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    cond,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+                let mut body_env = env.clone();
+                collect_interface_dispatch_refs_from_block(
+                    body,
+                    &mut body_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
             StmtKind::Match { value, arms } => {
-                collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
                 for arm in arms {
+                    let mut arm_env = env.clone();
                     if let Some(guard) = &arm.guard {
-                        collect_interface_capability_refs_from_expr(
+                        collect_interface_dispatch_refs_from_expr(
                             guard,
+                            &arm_env,
                             signatures,
-                            capabilities,
+                            direct_functions,
+                            dynamic_capabilities,
                         );
                     }
-                    collect_interface_capability_refs_from_block(
+                    collect_interface_dispatch_refs_from_block(
                         &arm.body,
+                        &mut arm_env,
                         signatures,
-                        capabilities,
+                        direct_functions,
+                        dynamic_capabilities,
                     );
                 }
             }
             StmtKind::ListMatch { value, arms } => {
-                collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
                 for arm in arms {
+                    let mut arm_env = env.clone();
                     if let Some(guard) = &arm.guard {
-                        collect_interface_capability_refs_from_expr(
+                        collect_interface_dispatch_refs_from_expr(
                             guard,
+                            &arm_env,
                             signatures,
-                            capabilities,
+                            direct_functions,
+                            dynamic_capabilities,
                         );
                     }
-                    collect_interface_capability_refs_from_block(
+                    collect_interface_dispatch_refs_from_block(
                         &arm.body,
+                        &mut arm_env,
                         signatures,
-                        capabilities,
+                        direct_functions,
+                        dynamic_capabilities,
                     );
                 }
             }
@@ -3914,76 +4051,167 @@ fn collect_interface_capability_refs_from_block(
     }
 }
 
-fn collect_interface_capability_refs_from_expr(
+fn collect_interface_dispatch_refs_from_expr(
     expr: &Expr,
+    env: &HashMap<String, Type>,
     signatures: &Signatures,
-    capabilities: &mut HashSet<(String, String)>,
+    direct_functions: &mut HashSet<String>,
+    dynamic_capabilities: &mut HashSet<(String, String)>,
 ) {
-    match &expr.kind {
-        ExprKind::QualifiedCall {
-            namespace,
-            name,
-            args,
-            named_args,
-            ..
-        } => {
-            if signatures.interface(namespace).is_some() {
-                capabilities.insert((namespace.clone(), name.clone()));
+    if let ExprKind::QualifiedCall {
+        namespace,
+        name,
+        args,
+        ..
+    } = &expr.kind
+        && signatures.interface(namespace).is_some()
+    {
+        let direct_target = args.first().and_then(|receiver| {
+            let receiver_ty = type_of_expr(receiver, env, signatures).ok()?;
+            let Type::Named(target_name) = signatures.canonical_type(&receiver_ty) else {
+                return None;
+            };
+            if target_name == *namespace && signatures.interface(&target_name).is_some() {
+                return None;
             }
-            for arg in args {
-                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
-            }
-            for arg in named_args {
-                collect_interface_capability_refs_from_expr(&arg.value, signatures, capabilities);
-            }
+            signatures
+                .implementation(namespace, &target_name)
+                .and_then(|implementation| implementation.functions.get(name))
+                .cloned()
+        });
+        if let Some(mapped) = direct_target {
+            direct_functions.insert(mapped);
+        } else {
+            dynamic_capabilities.insert((namespace.clone(), name.clone()));
         }
-        ExprKind::AnonymousFunction { body, .. } => {
-            collect_interface_capability_refs_from_expr(body, signatures, capabilities);
+    }
+
+    match &expr.kind {
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            let mut body_env = env.clone();
+            for param in params {
+                body_env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+            }
+            collect_interface_dispatch_refs_from_expr(
+                body,
+                &body_env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
         }
         ExprKind::Call {
             args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
         } => {
             for arg in args {
-                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    arg,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
             for arg in named_args {
-                collect_interface_capability_refs_from_expr(&arg.value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    &arg.value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::ShellCall { args, .. } => {
             for arg in args {
-                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    arg,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::Pipe { input, args, .. } => {
-            collect_interface_capability_refs_from_expr(input, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                input,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             for arg in args {
-                collect_interface_capability_refs_from_expr(arg, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    arg,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::List(items) => {
             for item in items {
-                collect_interface_capability_refs_from_expr(item, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    item,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
-        ExprKind::ListSpread { value, .. } => {
-            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
-        }
+        ExprKind::ListSpread { value, .. } => collect_interface_dispatch_refs_from_expr(
+            value,
+            env,
+            signatures,
+            direct_functions,
+            dynamic_capabilities,
+        ),
         ExprKind::ListIf {
             condition,
             value,
             else_value,
             ..
         } => {
-            collect_interface_capability_refs_from_expr(condition, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                condition,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
+            collect_interface_dispatch_refs_from_expr(
+                value,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             if let Some(else_value) = else_value {
-                collect_interface_capability_refs_from_expr(else_value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    else_value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::Index { base, index } => {
-            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(index, signatures, capabilities);
+            for item in [base.as_ref(), index.as_ref()] {
+                collect_interface_dispatch_refs_from_expr(
+                    item,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+            }
         }
         ExprKind::Slice {
             base,
@@ -3991,50 +4219,139 @@ fn collect_interface_capability_refs_from_expr(
             end,
             step,
         } => {
-            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                base,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             for part in [start, end, step].into_iter().flatten() {
-                collect_interface_capability_refs_from_expr(part, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    part,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::ListComprehension {
             value,
             iterable,
             condition,
+            binding,
             ..
         } => {
-            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(iterable, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                iterable,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
+            let mut item_env = env.clone();
+            if let Ok(Type::List(element)) = type_of_expr(iterable, env, signatures) {
+                item_env.insert(binding.clone(), signatures.canonical_type(&element));
+            }
+            collect_interface_dispatch_refs_from_expr(
+                value,
+                &item_env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             if let Some(condition) = condition {
-                collect_interface_capability_refs_from_expr(condition, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    condition,
+                    &item_env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
             if let Some(base) = base {
-                collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    base,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
             for field in fields {
-                collect_interface_capability_refs_from_expr(&field.value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    &field.value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
-            collect_interface_capability_refs_from_expr(base, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                base,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
         }
         ExprKind::Match { value, arms } => {
-            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                value,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_interface_capability_refs_from_expr(guard, signatures, capabilities);
+                    collect_interface_dispatch_refs_from_expr(
+                        guard,
+                        env,
+                        signatures,
+                        direct_functions,
+                        dynamic_capabilities,
+                    );
                 }
-                collect_interface_capability_refs_from_expr(&arm.value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    &arm.value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::ListMatch { value, arms } => {
-            collect_interface_capability_refs_from_expr(value, signatures, capabilities);
+            collect_interface_dispatch_refs_from_expr(
+                value,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_interface_capability_refs_from_expr(guard, signatures, capabilities);
+                    collect_interface_dispatch_refs_from_expr(
+                        guard,
+                        env,
+                        signatures,
+                        direct_functions,
+                        dynamic_capabilities,
+                    );
                 }
-                collect_interface_capability_refs_from_expr(&arm.value, signatures, capabilities);
+                collect_interface_dispatch_refs_from_expr(
+                    &arm.value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
             }
         }
         ExprKind::Conditional {
@@ -4042,13 +4359,26 @@ fn collect_interface_capability_refs_from_expr(
             cond,
             else_expr,
         } => {
-            collect_interface_capability_refs_from_expr(then_expr, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(cond, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(else_expr, signatures, capabilities);
+            for item in [then_expr.as_ref(), cond.as_ref(), else_expr.as_ref()] {
+                collect_interface_dispatch_refs_from_expr(
+                    item,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+            }
         }
         ExprKind::Binary { left, right, .. } => {
-            collect_interface_capability_refs_from_expr(left, signatures, capabilities);
-            collect_interface_capability_refs_from_expr(right, signatures, capabilities);
+            for item in [left.as_ref(), right.as_ref()] {
+                collect_interface_dispatch_refs_from_expr(
+                    item,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+            }
         }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
@@ -7816,6 +8146,7 @@ fn interface_targets(
     program: &Program,
     interface_name: &str,
     signatures: &Signatures,
+    reachable_value_types: &HashSet<String>,
 ) -> Vec<String> {
     let mut targets = Vec::new();
     for implementation in &program.implementations {
@@ -7827,7 +8158,7 @@ fn interface_targets(
         else {
             continue;
         };
-        if !targets.contains(&target_name) {
+        if reachable_value_types.contains(&target_name) && !targets.contains(&target_name) {
             targets.push(target_name);
         }
     }
@@ -7839,12 +8170,14 @@ fn emit_interface_value_definitions(
     program: &Program,
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
+    reachable_value_types: &HashSet<String>,
 ) {
     for definition in &program.interfaces {
         if !reachable_interfaces.contains(&definition.name) {
             continue;
         }
-        let targets = interface_targets(program, &definition.name, signatures);
+        let targets =
+            interface_targets(program, &definition.name, signatures, reachable_value_types);
         if !targets.is_empty() {
             out.push_str("enum {\n");
             for (index, target) in targets.iter().enumerate() {
@@ -7880,6 +8213,7 @@ fn interface_pack_helpers(
     program: &Program,
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
+    reachable_value_types: &HashSet<String>,
     runtime_usage: &str,
 ) -> String {
     let mut out = String::new();
@@ -7887,7 +8221,9 @@ fn interface_pack_helpers(
         if !reachable_interfaces.contains(&definition.name) {
             continue;
         }
-        for target in interface_targets(program, &definition.name, signatures) {
+        for target in
+            interface_targets(program, &definition.name, signatures, reachable_value_types)
+        {
             let helper = interface_pack_helper_name(&definition.name, &target);
             if !runtime_usage.contains(&format!("{helper}(")) {
                 continue;
@@ -7965,6 +8301,7 @@ fn emit_interface_dispatch_helpers(
     program: &Program,
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
+    reachable_value_types: &HashSet<String>,
     runtime_usage: &str,
 ) -> Result<(), Diagnostic> {
     let mut emitted = false;
@@ -7975,7 +8312,8 @@ fn emit_interface_dispatch_helpers(
         let Some(interface) = signatures.interface(&definition.name) else {
             continue;
         };
-        let targets = interface_targets(program, &definition.name, signatures);
+        let targets =
+            interface_targets(program, &definition.name, signatures, reachable_value_types);
         let mut member_names = interface.functions.keys().collect::<Vec<_>>();
         member_names.sort();
         for member_name in member_names {
@@ -8184,7 +8522,7 @@ fn emit_function_type_typedefs(
             }
         }
     }
-    for view in &program.views {
+    for view in runtime_views(program) {
         for param in &view.params {
             collect_function_type(&param.ty, signatures, &mut types);
         }

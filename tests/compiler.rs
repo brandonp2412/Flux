@@ -4495,6 +4495,130 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tree_shakes_interface_value_layout_targets_that_cannot_be_packed() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Used {
+    amount: i64
+}
+
+struct Dead {
+    amount: i64
+}
+
+fn usedApply(receiver: Used, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn deadApply(receiver: Dead, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Used {
+    apply: usedApply
+}
+
+impl Tool for Dead {
+    apply: deadApply
+}
+
+fn main() -> i64 {
+    let receiver: Used = Used { amount: 2 }
+    let _tool: Tool = Tool(receiver)
+    return 0
+}
+"#;
+
+    check_source(source).expect("interface layout tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("interface layout fixture should lower");
+    assert!(generated.contains("flux__type_Used"));
+    assert!(generated.contains("flux__iface_tag_Tool_Used"));
+    assert!(generated.contains("flux__iface_pack_Tool_Used"));
+    assert!(!generated.contains("flux__type_Dead"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Dead"));
+    assert!(!generated.contains("flux__iface_pack_Tool_Dead"));
+    assert!(!generated.contains("flux__fn_deadApply"));
+}
+
+#[test]
+fn tree_shakes_other_interface_implementations_for_static_dispatch() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Used {
+    amount: i64
+}
+
+struct Dead {
+    amount: i64
+}
+
+fn usedApply(receiver: Used, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn deadApply(receiver: Dead, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Used {
+    apply: usedApply
+}
+
+impl Tool for Dead {
+    apply: deadApply
+}
+
+fn main() -> i64 {
+    let receiver: Used = Used { amount: 2 }
+    return Tool.apply(receiver, 40)
+}
+"#;
+
+    check_source(source).expect("static interface dispatch fixture should typecheck");
+    let generated = compile_to_c(source).expect("static interface dispatch fixture should lower");
+    assert!(generated.contains("flux__fn_usedApply"));
+    assert!(generated.contains("flux__type_Used"));
+    assert!(!generated.contains("flux__interface_Tool"));
+    assert!(!generated.contains("flux__iface_call_Tool_apply"));
+    assert!(!generated.contains("flux__fn_deadApply"));
+    assert!(!generated.contains("flux__type_Dead"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Dead"));
+}
+
+#[test]
+fn tree_shakes_metadata_from_views_the_native_backend_does_not_emit() {
+    let source = r#"
+fn unusedViewAction() -> void {
+    print("dead")
+}
+
+view Unused {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Dead"
+        onPress: unusedViewAction
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    check_source(source).expect("unused view tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("unused view fixture should lower");
+    assert!(!generated.contains("flux__fn_unusedViewAction"));
+    assert!(!generated.contains("Flux runtime error"));
+    assert!(!generated.contains("flux_print_str"));
+}
+
+#[test]
 fn tree_shakes_unused_enum_constructor_helpers_per_variant() {
     let source = r#"
 enum Choice {
