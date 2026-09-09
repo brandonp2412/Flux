@@ -721,6 +721,22 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .join(", ")
         ),
         ExprKind::ListSpread { value, .. } => format!("...{}", format_expr(value, 0)),
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            let mut text = format!(
+                "if {}: {}",
+                format_expr(condition, 0),
+                format_expr(value, 0)
+            );
+            if let Some(else_value) = else_value {
+                text.push_str(&format!(" else: {}", format_expr(else_value, 0)));
+            }
+            text
+        }
         ExprKind::Index { base, index } => {
             format!("{}[{}]", format_expr(base, 7), format_expr(index, 0))
         }

@@ -582,6 +582,13 @@ pub enum ExprKind {
         value: Box<Expr>,
         spread_span: SourceSpan,
     },
+    ListIf {
+        condition: Box<Expr>,
+        value: Box<Expr>,
+        else_value: Option<Box<Expr>>,
+        if_span: SourceSpan,
+        else_span: Option<SourceSpan>,
+    },
     Index {
         base: Box<Expr>,
         index: Box<Expr>,

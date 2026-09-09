@@ -240,7 +240,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 - [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
 - [ ] Optional-aware spread analogous to Dart `...?`.
 - [ ] Null/optional-aware collection elements analogous to modern Dart `?element`.
-- [ ] `if` / `else` elements inside collection literals.
+- [x] List-only `if condition: value` / `if condition: first else: second` construction items with strict bool conditions, exact element typing, selected-branch evaluation, and the same overflow-checked stack-backed builder used by spreads.
 - [x] Python-style list comprehensions with optional boolean filters: `[expr for item in source if condition]`.
 - [ ] Pattern guards inside collection construction where useful.
 - [x] Bootstrap list literals/slices/comprehensions lower directly to native list descriptors; slices are zero-copy and comprehensions use stack-backed output sized from the source list without intermediate collections.

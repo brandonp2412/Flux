@@ -2128,8 +2128,8 @@ fn emit_block(
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if list_literal_has_spread(expr) => {
-                emit_list_spread_binding(
+            StmtKind::Let { name, ty, expr, .. } if list_literal_needs_builder(expr) => {
+                emit_list_builder_binding(
                     out,
                     &pad,
                     (name, ty),
@@ -3743,17 +3743,27 @@ fn emit_sequence_reduction_binding(
     Ok(())
 }
 
-fn list_literal_has_spread(expr: &Expr) -> bool {
+fn list_literal_needs_builder(expr: &Expr) -> bool {
     matches!(
         &expr.kind,
         ExprKind::List(items)
-            if items
-                .iter()
-                .any(|item| matches!(item.kind, ExprKind::ListSpread { .. }))
+            if items.iter().any(|item| {
+                matches!(item.kind, ExprKind::ListSpread { .. } | ExprKind::ListIf { .. })
+            })
     )
 }
 
-fn emit_list_spread_binding(
+enum BufferedListItem {
+    Scalar(String),
+    Spread(String),
+    Conditional {
+        condition: String,
+        value: String,
+        has_else: bool,
+    },
+}
+
+fn emit_list_builder_binding(
     out: &mut String,
     pad: &str,
     target: (&str, &Type),
@@ -3768,44 +3778,83 @@ fn emit_list_spread_binding(
     };
     let result_ty = signatures.canonical_type(declared_ty);
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "spread list binding requires a list type"));
+        return Err(diag(
+            expr.span,
+            "constructed list binding requires a list type",
+        ));
     };
     let element_c = c_type(element, signatures);
-    let capacity_name = format!("flux__spread_capacity_{}", *temp_counter);
+    let capacity_name = format!("flux__list_build_capacity_{}", *temp_counter);
     *temp_counter += 1;
-    let buffer_name = format!("flux__spread_buffer_{}", *temp_counter);
+    let buffer_name = format!("flux__list_build_buffer_{}", *temp_counter);
     *temp_counter += 1;
-    let count_name = format!("flux__spread_count_{}", *temp_counter);
+    let count_name = format!("flux__list_build_count_{}", *temp_counter);
     *temp_counter += 1;
-    let index_name = format!("flux__spread_index_{}", *temp_counter);
+    let index_name = format!("flux__list_build_index_{}", *temp_counter);
     *temp_counter += 1;
-    let mut value_names = Vec::with_capacity(items.len());
+    let mut buffered_items = Vec::with_capacity(items.len());
 
     out.push_str(&format!("{pad}size_t {capacity_name} = 0;\n"));
     for item in items {
         match &item.kind {
             ExprKind::ListSpread { value, .. } => {
                 let spread = emit_expr(value, env, signatures)?;
-                let source_name = format!("flux__spread_source_{}", *temp_counter);
+                let source_name = format!("flux__list_build_source_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}struct flux__list {source_name} = {};\n",
                     spread.code
                 ));
                 out.push_str(&format!(
-                    "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: spread list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
+                    "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
                 ));
-                value_names.push((true, source_name));
+                buffered_items.push(BufferedListItem::Spread(source_name));
+            }
+            ExprKind::ListIf {
+                condition,
+                value,
+                else_value,
+                ..
+            } => {
+                let condition = emit_expr(condition, env, signatures)?;
+                let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
+                *temp_counter += 1;
+                let value_name = format!("flux__list_build_value_{}", *temp_counter);
+                *temp_counter += 1;
+                let then_value = emit_expr(value, env, signatures)?;
+                out.push_str(&format!(
+                    "{pad}bool {condition_name} = {};\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n{pad}    {value_name} = {};\n",
+                    condition.code, then_value.code
+                ));
+                if else_value.is_none() {
+                    out.push_str(&format!(
+                        "{pad}    if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}    ++{capacity_name};\n"
+                    ));
+                }
+                if let Some(else_value) = else_value {
+                    let else_value = emit_expr(else_value, env, signatures)?;
+                    out.push_str(&format!(
+                        "{pad}}} else {{\n{pad}    {value_name} = {};\n{pad}}}\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
+                        else_value.code
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                buffered_items.push(BufferedListItem::Conditional {
+                    condition: condition_name,
+                    value: value_name,
+                    has_else: else_value.is_some(),
+                });
             }
             _ => {
                 let value = emit_expr(item, env, signatures)?;
-                let value_name = format!("flux__spread_value_{}", *temp_counter);
+                let value_name = format!("flux__list_build_value_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
-                    "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: spread list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
+                    "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
                     value.code
                 ));
-                value_names.push((false, value_name));
+                buffered_items.push(BufferedListItem::Scalar(value_name));
             }
         }
     }
@@ -3813,15 +3862,31 @@ fn emit_list_spread_binding(
     out.push_str(&format!(
         "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
     ));
-    for (is_spread, value_name) in value_names {
-        if is_spread {
-            out.push_str(&format!(
-                "{pad}for (size_t {index_name} = 0; {index_name} < {value_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({value_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
-            ));
-        } else {
-            out.push_str(&format!(
-                "{pad}{buffer_name}[{count_name}++] = {value_name};\n"
-            ));
+    for item in buffered_items {
+        match item {
+            BufferedListItem::Scalar(value_name) => {
+                out.push_str(&format!(
+                    "{pad}{buffer_name}[{count_name}++] = {value_name};\n"
+                ));
+            }
+            BufferedListItem::Spread(source_name) => {
+                out.push_str(&format!(
+                    "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+                ));
+            }
+            BufferedListItem::Conditional {
+                condition,
+                value,
+                has_else,
+            } => {
+                if has_else {
+                    out.push_str(&format!("{pad}{buffer_name}[{count_name}++] = {value};\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}if ({condition}) {buffer_name}[{count_name}++] = {value};\n"
+                    ));
+                }
+            }
         }
     }
     out.push_str(&format!(
@@ -4027,13 +4092,15 @@ fn emit_expr(
             return emit_expr(&call, env, signatures);
         }
         ExprKind::List(items) => {
-            if items
-                .iter()
-                .any(|item| matches!(item.kind, ExprKind::ListSpread { .. }))
-            {
+            if items.iter().any(|item| {
+                matches!(
+                    item.kind,
+                    ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+                )
+            }) {
                 return Err(diag(
                     expr.span,
-                    "list literals with spread currently lower only when bound directly to an immutable local value",
+                    "list literals with spread/if control currently lower only when bound directly to an immutable local value",
                 ));
             }
             let result_ty = type_of_expr(expr, env, signatures)?;
@@ -4058,6 +4125,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list spread syntax is only valid inside a list literal",
+            ));
+        }
+        ExprKind::ListIf { .. } => {
+            return Err(diag(
+                expr.span,
+                "list if/else syntax is only valid inside a list literal",
             ));
         }
         ExprKind::Index { base, index } => {
@@ -5336,6 +5409,18 @@ fn collect_update_helpers_from_expr(
         }
         ExprKind::ListSpread { value, .. } => {
             collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_update_helpers_from_expr(condition, signatures, emitted, helpers);
+            collect_update_helpers_from_expr(value, signatures, emitted, helpers);
+            if let Some(else_value) = else_value {
+                collect_update_helpers_from_expr(else_value, signatures, emitted, helpers);
+            }
         }
         ExprKind::Index { base, index } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);

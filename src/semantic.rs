@@ -386,6 +386,18 @@ fn collect_expr_pattern_symbols(
         ExprKind::ListSpread { value, .. } => {
             collect_expr_pattern_symbols(value, symbols, signatures);
         }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_expr_pattern_symbols(condition, symbols, signatures);
+            collect_expr_pattern_symbols(value, symbols, signatures);
+            if let Some(else_value) = else_value {
+                collect_expr_pattern_symbols(else_value, symbols, signatures);
+            }
+        }
         ExprKind::Index { base, index } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
             collect_expr_pattern_symbols(index, symbols, signatures);

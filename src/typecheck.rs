@@ -2091,6 +2091,18 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             }
         }
         ExprKind::ListSpread { value, .. } => collect_expr_reads(value, reads),
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_expr_reads(condition, reads);
+            collect_expr_reads(value, reads);
+            if let Some(else_value) = else_value {
+                collect_expr_reads(else_value, reads);
+            }
+        }
         ExprKind::Index { base, index } => {
             collect_expr_reads(base, reads);
             collect_expr_reads(index, reads);
@@ -2905,15 +2917,41 @@ pub fn type_of_expr(
                 ));
             };
             let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
-                if let ExprKind::ListSpread { value, .. } = &item.kind {
-                    let spread_ty =
-                        signatures.canonical_type(&type_of_expr(value, env, signatures)?);
-                    let Type::List(element) = spread_ty else {
-                        return Err(diag(value.span, "list spread expression must be a list"));
-                    };
-                    Ok(*element)
-                } else {
-                    type_of_expr(item, env, signatures)
+                match &item.kind {
+                    ExprKind::ListSpread { value, .. } => {
+                        let spread_ty =
+                            signatures.canonical_type(&type_of_expr(value, env, signatures)?);
+                        let Type::List(element) = spread_ty else {
+                            return Err(diag(value.span, "list spread expression must be a list"));
+                        };
+                        Ok(*element)
+                    }
+                    ExprKind::ListIf {
+                        condition,
+                        value,
+                        else_value,
+                        ..
+                    } => {
+                        let condition_ty = type_of_expr(condition, env, signatures)?;
+                        require_type(
+                            condition.span,
+                            &Type::Bool,
+                            &condition_ty,
+                            "list if condition",
+                        )?;
+                        let value_ty = type_of_expr(value, env, signatures)?;
+                        if let Some(else_value) = else_value {
+                            let else_ty = type_of_expr(else_value, env, signatures)?;
+                            require_type(
+                                else_value.span,
+                                &value_ty,
+                                &else_ty,
+                                "list else element",
+                            )?;
+                        }
+                        Ok(value_ty)
+                    }
+                    _ => type_of_expr(item, env, signatures),
                 }
             };
             let element_ty = item_element_type(first)?;
@@ -2932,6 +2970,10 @@ pub fn type_of_expr(
         ExprKind::ListSpread { .. } => Err(diag(
             expr.span,
             "list spread syntax is only valid inside a list literal",
+        )),
+        ExprKind::ListIf { .. } => Err(diag(
+            expr.span,
+            "list if/else syntax is only valid inside a list literal",
         )),
         ExprKind::Index { base, index } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
@@ -4289,6 +4331,7 @@ fn evaluate_default_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::ListSpread { .. }
+        | ExprKind::ListIf { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }
@@ -4434,6 +4477,7 @@ fn evaluate_constant_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::ListSpread { .. }
+        | ExprKind::ListIf { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }

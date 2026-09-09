@@ -634,6 +634,21 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             *spread_span = spread_span.with_source(source_id);
             attach_expr_source(value, source_id);
         }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            if_span,
+            else_span,
+        } => {
+            *if_span = if_span.with_source(source_id);
+            *else_span = else_span.map(|span| span.with_source(source_id));
+            attach_expr_source(condition, source_id);
+            attach_expr_source(value, source_id);
+            if let Some(else_value) = else_value {
+                attach_expr_source(else_value, source_id);
+            }
+        }
         ExprKind::Index { base, index } => {
             attach_expr_source(base, source_id);
             attach_expr_source(index, source_id);
@@ -905,6 +920,23 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
         ExprKind::ListSpread { value, spread_span } => {
             spread_span.column += offset;
             shift_expr_columns(value, offset);
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            if_span,
+            else_span,
+        } => {
+            if_span.column += offset;
+            if let Some(else_span) = else_span {
+                else_span.column += offset;
+            }
+            shift_expr_columns(condition, offset);
+            shift_expr_columns(value, offset);
+            if let Some(else_value) = else_value {
+                shift_expr_columns(else_value, offset);
+            }
         }
         ExprKind::Index { base, index } => {
             shift_expr_columns(base, offset);
@@ -4742,6 +4774,70 @@ impl ExprParser<'_> {
     }
 
     fn parse_list_item(&mut self) -> Result<Expr, Diagnostic> {
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::If)
+        ) {
+            let if_span = self.tokens[self.index].span;
+            self.index += 1;
+            let condition = self.parse_conditional()?;
+            let Some(colon) = self.tokens.get(self.index).cloned() else {
+                return Err(diag(
+                    self.line,
+                    "list 'if' item requires ':' before its value",
+                ));
+            };
+            if !matches!(colon.kind, TokenKind::Colon) {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    colon.span,
+                    "list 'if' item requires ':' before its value",
+                ));
+            }
+            self.index += 1;
+            let value = self.parse_conditional()?;
+            let (else_value, else_span) = if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Else)
+            ) {
+                let else_span = self.tokens[self.index].span;
+                self.index += 1;
+                let Some(colon) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(
+                        self.line,
+                        "list 'else' item requires ':' before its value",
+                    ));
+                };
+                if !matches!(colon.kind, TokenKind::Colon) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        colon.span,
+                        "list 'else' item requires ':' before its value",
+                    ));
+                }
+                self.index += 1;
+                (Some(Box::new(self.parse_conditional()?)), Some(else_span))
+            } else {
+                (None, None)
+            };
+            let end = else_value.as_deref().unwrap_or(&value);
+            return Ok(Expr {
+                line: self.line,
+                span: SourceSpan::new(
+                    self.line,
+                    if_span.column,
+                    end.span.column + end.span.length - if_span.column,
+                ),
+                kind: ExprKind::ListIf {
+                    condition: Box::new(condition),
+                    value: Box::new(value),
+                    else_value,
+                    if_span,
+                    else_span,
+                },
+            });
+        }
+
         let is_spread = matches!(
             (
                 self.tokens.get(self.index).map(|token| &token.kind),
@@ -4794,12 +4890,13 @@ impl ExprParser<'_> {
         }
 
         let first = self.parse_list_item()?;
-        if !matches!(first.kind, ExprKind::ListSpread { .. })
-            && matches!(
-                self.tokens.get(self.index).map(|token| &token.kind),
-                Some(TokenKind::For)
-            )
-        {
+        if !matches!(
+            first.kind,
+            ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+        ) && matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::For)
+        ) {
             self.index += 1;
             let Some(binding_token) = self.tokens.get(self.index).cloned() else {
                 return Err(diag(

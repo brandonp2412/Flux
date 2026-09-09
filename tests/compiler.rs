@@ -1202,9 +1202,14 @@ fn main() -> i64 {
     let chained: i64[] = values[::-1][1:4:2]
     let reverse_window: i64[] = values[::-1] | skip 1 | take 2
     let spread_values: i64[] = [0, ...middle, ...reversed[::2], 9]
+    let include_high: bool = true
+    let conditional_values: i64[] = [0, if include_high: 7, if false: 8 else: 9, ...middle]
     print spread_values.length
     print spread_values.first
     print spread_values.last
+    print conditional_values.length
+    print conditional_values.first
+    print conditional_values.last
     print evens.first
     print evens.last
     print reversed.first
@@ -1263,9 +1268,10 @@ fn main() -> i64 {
     assert!(generated.contains("Flux runtime error: list.single requires exactly one element"));
     assert!(generated.contains("flux_list_skip("));
     assert!(generated.contains("flux_list_take("));
-    assert!(generated.contains("flux__spread_capacity_"));
-    assert!(generated.contains("flux__spread_source_"));
-    assert!(generated.contains("Flux runtime error: spread list is too large"));
+    assert!(generated.contains("flux__list_build_capacity_"));
+    assert!(generated.contains("flux__list_build_source_"));
+    assert!(generated.contains("flux__list_build_condition_"));
+    assert!(generated.contains("Flux runtime error: constructed list is too large"));
     assert!(generated.contains("Flux runtime error: list count must be non-negative"));
     assert!(generated.contains("flux_list_any_bool"));
     assert!(generated.contains("flux_list_every_bool"));
@@ -1280,6 +1286,9 @@ fn main() -> i64 {
     assert!(formatted.contains("let chained: i64[] = values[::-1][1:4:2]"));
     assert!(formatted.contains("let reverse_window: i64[] = values[::-1] | skip 1 | take 2"));
     assert!(formatted.contains("let spread_values: i64[] = [0, ...middle, ...reversed[::2], 9]"));
+    assert!(formatted.contains(
+        "let conditional_values: i64[] = [0, if include_high: 7, if false: 8 else: 9, ...middle]"
+    ));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
     assert!(formatted.contains("let has_large: bool = checks | any"));
@@ -1318,6 +1327,37 @@ fn main() -> i64 {
         error
             .message
             .contains("list element: expected i64, got bool")
+    );
+}
+
+#[test]
+fn rejects_invalid_list_if_elements() {
+    let bad_condition = r#"
+fn main() -> i64 {
+    let values: i64[] = [if 1: 2]
+    print values.length
+    return 0
+}
+"#;
+    let error = check_source(bad_condition).expect_err("list if condition should require bool");
+    assert!(
+        error
+            .message
+            .contains("list if condition: expected bool, got i64")
+    );
+
+    let bad_else = r#"
+fn main() -> i64 {
+    let values: i64[] = [if true: 1 else: false]
+    print values.length
+    return 0
+}
+"#;
+    let error = check_source(bad_else).expect_err("list else branch should match its element type");
+    assert!(
+        error
+            .message
+            .contains("list else element: expected i64, got bool")
     );
 }
 

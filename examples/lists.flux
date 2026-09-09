@@ -23,9 +23,14 @@ fn main() -> i64 {
     let chained: i64[] = values[::-1][1:4:2]
     let reverseWindow: i64[] = values[::-1] | skip 1 | take 2
     let spreadValues: i64[] = [0, ...middle, ...reversed[::2], 9]
+    let includeHigh: bool = true
+    let conditionalValues: i64[] = [0, if includeHigh: 7, if false: 8 else: 9, ...middle]
     print spreadValues.length
     print spreadValues.first
     print spreadValues.last
+    print conditionalValues.length
+    print conditionalValues.first
+    print conditionalValues.last
     print evens.first
     print evens.last
     print reversed.first
