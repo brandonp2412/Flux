@@ -314,7 +314,8 @@ The ownership track now has an explicit compiler-level copyability classificatio
 - [x] Define copyable primitive/value types with alias-aware structural classification shared by semantic validation.
 - [ ] Move semantics for non-copy values.
   - [x] Bootstrap direct local transfers (`let destination: T = source`) move non-copy values, preserve ordinary reuse for `Copy` types, and conservatively merge moves across `if`/exhaustive `match` branches.
-  - [ ] General move analysis across calls, returns, aggregate fields, loops, and owned resource types after normalized control-flow ownership facts exist; direct non-copy transfers inside loops are rejected rather than guessed today.
+  - [x] Bootstrap loop control-flow recognizes iteration-safe direct moves when every remaining path in the current loop block is guaranteed to `break`; fallthrough and `continue` paths remain compile errors because they could consume the same non-copy value again.
+  - [ ] General move analysis across calls, returns, aggregate fields, arbitrary nested loop exits, and owned resource types after normalized control-flow ownership facts exist.
 - [ ] Immutable borrows.
   - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
   - [ ] First-class borrow/reference types and inferred borrow lifetimes for owned values.

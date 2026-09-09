@@ -2630,11 +2630,44 @@ fn main() -> i64 {
     return 0
 }
 "#;
-    let errors = check_source_all(loop_move).expect_err("loop moves need CFG ownership checking");
+    let errors =
+        check_source_all(loop_move).expect_err("fallthrough loop moves must remain rejected");
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("moving non-copy binding 'source' inside a loop is not supported")
+        error.message.contains(
+            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break before another iteration",
+        )
+    }));
+
+    let break_after_move = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20]
+    for index in 0..2:
+        let destination: i64[] = source
+        print(destination[index])
+        break
+    return 0
+}
+"#;
+    check_source(break_after_move)
+        .expect("a non-copy loop move followed by a guaranteed break should be iteration-safe");
+    compile_to_c(break_after_move).expect("a break-terminated loop move should lower natively");
+
+    let continue_after_move = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20]
+    for index in 0..2:
+        let destination: i64[] = source
+        print(destination[index])
+        continue
+    return 0
+}
+"#;
+    let errors = check_source_all(continue_after_move)
+        .expect_err("a move followed by continue could consume the same value twice");
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break before another iteration",
+        )
     }));
 }
 

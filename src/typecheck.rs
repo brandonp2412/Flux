@@ -2428,7 +2428,7 @@ fn check_block_all(
     diagnostics: &mut Vec<Diagnostic>,
     ownership: &mut OwnershipState,
 ) {
-    for stmt in body {
+    for (stmt_index, stmt) in body.iter().enumerate() {
         let mut reads = HashSet::new();
         collect_block_reads(std::slice::from_ref(stmt), &mut reads);
         let mut moved_reads = reads
@@ -2518,11 +2518,13 @@ fn check_block_all(
                     && let ExprKind::Var(source) = &expr.kind
                     && env.contains_key(source)
                 {
-                    if ownership.loop_depth > 0 {
+                    if ownership.loop_depth > 0
+                        && !block_guarantees_loop_break(&body[stmt_index + 1..])
+                    {
                         diagnostics.push(diag(
                             expr.span,
                             &format!(
-                                "moving non-copy binding '{source}' inside a loop is not supported until control-flow ownership checking is implemented"
+                                "moving non-copy binding '{source}' inside a loop requires every remaining path in this loop block to break before another iteration"
                             ),
                         ));
                     } else {
@@ -4961,6 +4963,56 @@ fn check_declared_call(
     }
 
     Ok(signature.returns.clone())
+}
+
+fn block_guarantees_loop_break(body: &[Stmt]) -> bool {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Break => return true,
+            StmtKind::If {
+                body, else_body, ..
+            } if !else_body.is_empty()
+                && block_guarantees_loop_break(body)
+                && block_guarantees_loop_break(else_body) =>
+            {
+                return true;
+            }
+            StmtKind::Match { arms, .. }
+                if !arms.is_empty()
+                    && arms.iter().all(|arm| {
+                        arm.guard.is_none() && block_guarantees_loop_break(&arm.body)
+                    }) =>
+            {
+                return true;
+            }
+            StmtKind::ListMatch { arms, .. }
+                if !arms.is_empty()
+                    && arms.iter().all(|arm| {
+                        arm.guard.is_none() && block_guarantees_loop_break(&arm.body)
+                    }) =>
+            {
+                return true;
+            }
+            StmtKind::Return(_)
+            | StmtKind::Continue
+            | StmtKind::ForRange { .. }
+            | StmtKind::ForEach { .. }
+            | StmtKind::While { .. }
+            | StmtKind::If { .. }
+            | StmtKind::Match { .. }
+            | StmtKind::ListMatch { .. }
+            | StmtKind::Let { .. }
+            | StmtKind::Var { .. }
+            | StmtKind::Assign { .. }
+            | StmtKind::LetDestructure { .. }
+            | StmtKind::LetMultiDestructure { .. }
+            | StmtKind::LetListDestructure { .. }
+            | StmtKind::LetStructDestructure { .. }
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
+        }
+    }
+    false
 }
 
 fn block_guarantees_return(body: &[Stmt]) -> bool {
