@@ -750,8 +750,21 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
 fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
     let mut lines = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut multiline: Option<Line> = None;
+
     for (index, raw) in source.lines().enumerate() {
         let number = index + 1;
+
+        if let Some(line) = multiline.as_mut() {
+            line.text.push('\n');
+            line.text.push_str(raw);
+            if unescaped_triple_quote_count(raw) % 2 == 1 {
+                let completed = multiline.take().expect("multiline line exists");
+                push_preprocessed_line(completed, &mut lines, &mut diagnostics);
+            }
+            continue;
+        }
+
         if raw.contains('\t') {
             diagnostics.push(diag(
                 number,
@@ -762,26 +775,78 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
 
         let indent = raw.bytes().take_while(|byte| *byte == b' ').count();
         let source_text = &raw[indent..];
-        if let Some(offset) = comment_marker(source_text) {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticStage::Parse,
-                SourceSpan::new(number, indent + offset + 1, 1),
-                "comments are not part of Flux syntax; remove '#...' text",
-            ));
-            continue;
-        }
-        let text = source_text.trim_end();
-        if text.trim().is_empty() {
+        if unescaped_triple_quote_count(source_text) % 2 == 1 {
+            multiline = Some(Line {
+                number,
+                indent,
+                text: source_text.to_string(),
+            });
             continue;
         }
 
-        lines.push(Line {
-            number,
-            indent,
-            text: text.to_string(),
-        });
+        push_preprocessed_line(
+            Line {
+                number,
+                indent,
+                text: source_text.to_string(),
+            },
+            &mut lines,
+            &mut diagnostics,
+        );
     }
+
+    if let Some(line) = multiline {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticStage::Parse,
+            SourceSpan::new(line.number, line.indent + 1, 3),
+            "unterminated multiline string literal",
+        ));
+    }
+
     (lines, diagnostics)
+}
+
+fn push_preprocessed_line(
+    mut line: Line,
+    lines: &mut Vec<Line>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(offset) = comment_marker(&line.text) {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticStage::Parse,
+            SourceSpan::new(line.number, line.indent + offset + 1, 1),
+            "comments are not part of Flux syntax; remove '#...' text",
+        ));
+        return;
+    }
+    line.text = line.text.trim_end().to_string();
+    if line.text.trim().is_empty() {
+        return;
+    }
+    lines.push(line);
+}
+
+fn unescaped_triple_quote_count(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    let mut count = 0usize;
+    while index + 2 < bytes.len() {
+        if bytes[index..].starts_with(b"\"\"\"") {
+            let mut slashes = 0usize;
+            let mut cursor = index;
+            while cursor > 0 && bytes[cursor - 1] == b'\\' {
+                slashes += 1;
+                cursor -= 1;
+            }
+            if slashes.is_multiple_of(2) {
+                count += 1;
+                index += 3;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    count
 }
 
 fn split_visibility(input: &str) -> (&str, bool, usize) {
@@ -2027,24 +2092,65 @@ fn parse_struct_declaration(lines: &[Line], index: &mut usize) -> Result<StructD
 }
 
 fn comment_marker(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
     let mut in_string = false;
+    let mut raw_string = false;
+    let mut multiline_string = false;
     let mut escaped = false;
-    for (index, ch) in input.char_indices() {
-        if escaped {
-            escaped = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if multiline_string {
+                if bytes[index..].starts_with(b"\"\"\"") {
+                    in_string = false;
+                    multiline_string = false;
+                    index += 3;
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                }
+            } else if raw_string {
+                if byte == b'"' {
+                    in_string = false;
+                    raw_string = false;
+                }
+            } else if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
             continue;
         }
-        if ch == '\\' && in_string {
-            escaped = true;
+
+        if bytes[index..].starts_with(b"\"\"\"") {
+            in_string = true;
+            multiline_string = true;
+            index += 3;
             continue;
         }
-        if ch == '"' {
-            in_string = !in_string;
+        if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            in_string = true;
+            raw_string = true;
+            index += 2;
             continue;
         }
-        if ch == '#' && !in_string {
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'#' {
             return Some(index);
         }
+        index += 1;
     }
     None
 }
@@ -3853,6 +3959,45 @@ fn split_top_level_shell_words(input: &str) -> Vec<(&str, usize)> {
     words
 }
 
+fn normalize_multiline_string(mut value: String) -> String {
+    if value.starts_with('\n') {
+        value.remove(0);
+    }
+    if let Some(last_newline) = value.rfind('\n')
+        && value[last_newline + 1..]
+            .chars()
+            .all(|ch| matches!(ch, ' ' | '\t'))
+    {
+        value.truncate(last_newline);
+    }
+
+    let common_indent = value
+        .split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+                .count()
+        })
+        .min()
+        .unwrap_or(0);
+    if common_indent == 0 {
+        return value;
+    }
+
+    value
+        .split('\n')
+        .map(|line| {
+            if line.trim().is_empty() {
+                String::new()
+            } else {
+                line.chars().skip(common_indent).collect::<String>()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>, Diagnostic> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
@@ -3866,7 +4011,60 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
         }
 
         let start = index;
-        let kind = if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+        let kind = if bytes[index..].starts_with(b"\"\"\"") {
+            index += 3;
+            let mut value = String::new();
+            let mut closed = false;
+            while index < bytes.len() {
+                if bytes[index..].starts_with(b"\"\"\"") {
+                    index += 3;
+                    closed = true;
+                    break;
+                }
+                match bytes[index] {
+                    b'\\' => {
+                        index += 1;
+                        if index >= bytes.len() {
+                            break;
+                        }
+                        let escaped = match bytes[index] {
+                            b'n' => '\n',
+                            b'r' => '\r',
+                            b't' => '\t',
+                            b'"' => '"',
+                            b'\\' => '\\',
+                            other => {
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    SourceSpan::new(line, column + index, 1),
+                                    format!("unsupported escape '\\\\{}'", other as char),
+                                ));
+                            }
+                        };
+                        value.push(escaped);
+                        index += 1;
+                    }
+                    other if other.is_ascii() => {
+                        value.push(other as char);
+                        index += 1;
+                    }
+                    _ => {
+                        let rest = &input[index..];
+                        let ch = rest.chars().next().expect("non-empty unicode tail");
+                        value.push(ch);
+                        index += ch.len_utf8();
+                    }
+                }
+            }
+            if !closed {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    SourceSpan::new(line, column + start, input.len() - start),
+                    "unterminated multiline string literal",
+                ));
+            }
+            TokenKind::Str(normalize_multiline_string(value))
+        } else if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
             index += 2;
             let mut value = String::new();
             let mut closed = false;

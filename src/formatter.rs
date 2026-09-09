@@ -70,10 +70,20 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let raw_lines = source.lines().collect::<Vec<_>>();
     let mut output = Vec::with_capacity(raw_lines.len());
     let mut blank_pending = false;
+    let mut preserve_multiline_continuation = false;
 
     for (index, raw) in raw_lines.iter().enumerate() {
+        if preserve_multiline_continuation {
+            output.push(raw.trim_end().to_string());
+            if unescaped_triple_quote_count(raw) % 2 == 1 {
+                preserve_multiline_continuation = false;
+            }
+            continue;
+        }
+
         let line_number = index + 1;
         let trimmed = raw.trim();
+        let starts_multiline = unescaped_triple_quote_count(raw) % 2 == 1;
         if trimmed.is_empty() {
             blank_pending = !output.is_empty();
             continue;
@@ -82,6 +92,12 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
         if blank_pending {
             output.push(String::new());
             blank_pending = false;
+        }
+
+        if starts_multiline {
+            output.push(raw.trim_end().to_string());
+            preserve_multiline_continuation = true;
+            continue;
         }
 
         if let Some(code) = formatted.get(&line_number) {
@@ -862,6 +878,29 @@ fn binary_text(op: BinOp) -> &'static str {
         BinOp::And => "&&",
         BinOp::Or => "||",
     }
+}
+
+fn unescaped_triple_quote_count(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    let mut count = 0usize;
+    while index + 2 < bytes.len() {
+        if bytes[index..].starts_with(b"\"\"\"") {
+            let mut slashes = 0usize;
+            let mut cursor = index;
+            while cursor > 0 && bytes[cursor - 1] == b'\\' {
+                slashes += 1;
+                cursor -= 1;
+            }
+            if slashes.is_multiple_of(2) {
+                count += 1;
+                index += 3;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    count
 }
 
 fn format_string(value: &str) -> String {

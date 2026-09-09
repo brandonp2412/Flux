@@ -2204,11 +2204,24 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     let mut index = 0usize;
     let mut in_string = false;
     let mut raw_string = false;
+    let mut multiline_string = false;
     let mut escaped = false;
     while index < bytes.len() {
         let byte = bytes[index];
         if in_string {
-            if raw_string {
+            if multiline_string {
+                if bytes[index..].starts_with(b"\"\"\"") {
+                    in_string = false;
+                    multiline_string = false;
+                    index += 3;
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                }
+            } else if raw_string {
                 if byte == b'"' {
                     in_string = false;
                     raw_string = false;
@@ -2221,6 +2234,12 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
                 in_string = false;
             }
             index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"\"\"\"") {
+            in_string = true;
+            multiline_string = true;
+            index += 3;
             continue;
         }
         if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
@@ -2262,11 +2281,24 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     let mut index = open + 1;
     let mut in_string = false;
     let mut raw_string = false;
+    let mut multiline_string = false;
     let mut escaped = false;
     while index < bytes.len() {
         let byte = bytes[index];
         if in_string {
-            if raw_string {
+            if multiline_string {
+                if bytes[index..].starts_with(b"\"\"\"") {
+                    in_string = false;
+                    multiline_string = false;
+                    index += 3;
+                    continue;
+                }
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                }
+            } else if raw_string {
                 if byte == b'"' {
                     in_string = false;
                     raw_string = false;
@@ -2279,6 +2311,12 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
                 in_string = false;
             }
             index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"\"\"\"") {
+            in_string = true;
+            multiline_string = true;
+            index += 3;
             continue;
         }
         if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
@@ -2454,6 +2492,7 @@ fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<J
                 })
         });
     let mut tokens = Vec::new();
+    let mut in_multiline_string = false;
     for (line_index, line) in source.lines().enumerate() {
         tokenize_semantic_line(
             &mut tokens,
@@ -2462,6 +2501,7 @@ fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<J
             source_id,
             database.as_ref(),
             encoding,
+            &mut in_multiline_string,
         );
     }
     encode_semantic_tokens(&tokens)
@@ -2474,13 +2514,60 @@ fn tokenize_semantic_line(
     source_id: SourceId,
     database: Option<&crate::semantic::SemanticDatabase>,
     encoding: PositionEncoding,
+    in_multiline_string: &mut bool,
 ) {
     let bytes = line.as_bytes();
     let mut index = 0usize;
+
+    if *in_multiline_string {
+        if let Some(end) = multiline_string_end(bytes, 0) {
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                0,
+                end,
+                SemanticTokenKind::String,
+                encoding,
+            );
+            *in_multiline_string = false;
+            index = end;
+        } else {
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                0,
+                bytes.len(),
+                SemanticTokenKind::String,
+                encoding,
+            );
+            return;
+        }
+    }
     while index < bytes.len() {
         let byte = bytes[index];
         if byte.is_ascii_whitespace() {
             index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"\"\"\"") {
+            let start = index;
+            if let Some(end) = multiline_string_end(bytes, index + 3) {
+                index = end;
+            } else {
+                index = bytes.len();
+                *in_multiline_string = true;
+            }
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                start,
+                index,
+                SemanticTokenKind::String,
+                encoding,
+            );
             continue;
         }
         if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
@@ -2675,6 +2762,27 @@ fn is_operator_byte(byte: u8) -> bool {
         byte,
         b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'.'
     )
+}
+
+fn multiline_string_end(bytes: &[u8], mut index: usize) -> Option<usize> {
+    let mut escaped = false;
+    while index < bytes.len() {
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if bytes[index] == b'\\' {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"\"\"\"") {
+            return Some(index + 3);
+        }
+        index += 1;
+    }
+    None
 }
 
 fn push_semantic_token(
@@ -5740,6 +5848,50 @@ mod tests {
         assert!(status.contains("\"generation\":3"));
         let _ = std::fs::remove_file(status_path);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn multiline_strings_stay_strings_for_lsp_scanners() {
+        let mut tokens = Vec::new();
+        let mut in_multiline = false;
+        tokenize_semantic_line(
+            &mut tokens,
+            "    let text: str = \"\"\"alpha",
+            0,
+            SourceId::new(1),
+            None,
+            PositionEncoding::Utf8,
+            &mut in_multiline,
+        );
+        assert!(in_multiline);
+        tokenize_semantic_line(
+            &mut tokens,
+            "beta \" quote, (still string)",
+            1,
+            SourceId::new(1),
+            None,
+            PositionEncoding::Utf8,
+            &mut in_multiline,
+        );
+        assert!(in_multiline);
+        assert_eq!(
+            tokens.last().map(|token| token.kind),
+            Some(SemanticTokenKind::String)
+        );
+        tokenize_semantic_line(
+            &mut tokens,
+            "gamma\"\"\"",
+            2,
+            SourceId::new(1),
+            None,
+            PositionEncoding::Utf8,
+            &mut in_multiline,
+        );
+        assert!(!in_multiline);
+        assert_eq!(
+            active_call("print(\"\"\"hello (x, y)\nworld\"\"\", "),
+            Some(("print", 1))
+        );
     }
 
     #[test]

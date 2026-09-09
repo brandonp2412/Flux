@@ -427,6 +427,22 @@ fn main() -> i64 {
 
 Every expression arm must produce the same non-`void` type and the match must remain exhaustive. Pattern bindings and nested struct payload patterns work exactly as in statement matches. Native lowering evaluates the scrutinee once, switches on the enum tag, projects payload values only in the selected arm, and assigns or returns the selected result without introducing a boxed runtime value.
 
+## String literals
+
+Flux `str` values support ordinary escaped strings, raw strings, and multiline strings:
+
+```flux
+let escaped: str = "line one\nline two"
+let path: str = r"C:\Flux\bin"
+let message: str = """
+    Flux multiline strings
+    keep source indentation readable.
+    # remains literal text here.
+"""
+```
+
+Triple-quoted `"""..."""` strings use the same escapes as ordinary strings. When the opening delimiter is followed by a newline and the closing delimiter is on its own indented line, Flux removes the delimiter-only leading/trailing line and strips the shared indentation from non-empty content lines. This keeps source indentation out of the runtime value. A `#` inside any string remains ordinary text; Flux still has no comment syntax outside strings. The formatter preserves multiline literal blocks verbatim while formatting the surrounding Flux source, so readable indentation and line breaks are retained exactly as written.
+
 ## Compile-time constants
 
 Top-level constants use `const name: type = expression`. Constants are evaluated by the compiler and substituted directly into generated code rather than emitted as mutable/runtime globals:

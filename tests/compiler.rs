@@ -2869,6 +2869,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_multiline_string_literals_with_indent_normalization() {
+    let source = r####"
+fn main() -> i64 {
+    let message: str = """
+        Flux says "hello".
+        Path: C:\\Flux
+        # literal text
+    """
+    print(message)
+    return 0
+}
+"####;
+
+    check_source(source).expect("multiline strings should typecheck as str");
+    let generated =
+        compile_to_c(source).expect("multiline strings should lower as ordinary strings");
+    assert!(generated.contains("Flux says \\\"hello\\\"."));
+    assert!(generated.contains("Path: C:\\\\Flux"));
+    assert!(generated.contains("# literal text"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("multiline strings should format");
+    assert!(formatted.contains("let message: str = \"\"\""));
+    assert!(formatted.contains("        Flux says \"hello\"."));
+    assert!(formatted.contains("        Path: C:\\\\Flux"));
+    assert!(formatted.contains("        # literal text"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted multiline string should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let unterminated = r####"
+fn main() -> i64 {
+    let message: str = """
+        never closes
+}
+"####;
+    let error = check_source(unterminated).expect_err("unterminated multiline string must fail");
+    assert!(
+        error
+            .message
+            .contains("unterminated multiline string literal")
+    );
+}
+
+#[test]
 fn formatter_refuses_ternary_syntax() {
     let source = "fn main()->i64 {\n let value:i64=1 if true else 2\n return value\n}\n";
     let diagnostics = fluxc::formatter::format_source(source)
