@@ -1227,11 +1227,6 @@ fn main() -> i64 {
     print window.length
     print window.first
     print window.last
-    let empty: i64[] = values[:0]
-    let safe_first: i64 = empty | firstOrDefault 99
-    let safe_last: i64 = empty | lastOrDefault 88
-    print safe_first
-    print safe_last
     let checks: bool[] = [value > 2 for value in values]
     let has_large: bool = checks | any
     let all_large: bool = checks | every
@@ -1265,9 +1260,6 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_skip("));
     assert!(generated.contains("flux_list_take("));
     assert!(generated.contains("Flux runtime error: list count must be non-negative"));
-    assert!(generated.contains("len == 0 ?"));
-    assert!(generated.contains("INT64_C(99)"));
-    assert!(generated.contains("INT64_C(88)"));
     assert!(generated.contains("flux_list_any_bool"));
     assert!(generated.contains("flux_list_every_bool"));
     assert!(generated.contains("flux__local_value > INT64_C(2)"));
@@ -1282,8 +1274,6 @@ fn main() -> i64 {
     assert!(formatted.contains("let reverse_window: i64[] = values[::-1] | skip 1 | take 2"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
-    assert!(formatted.contains("let safe_first: i64 = empty | firstOrDefault 99"));
-    assert!(formatted.contains("let safe_last: i64 = empty | lastOrDefault 88"));
     assert!(formatted.contains("let has_large: bool = checks | any"));
     assert!(formatted.contains("let all_large: bool = checks | every"));
     let formatted_again =
@@ -1345,51 +1335,19 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_invalid_safe_list_access_calls() {
-    let non_list = r#"
-fn main() -> i64 {
-    let value: i64 = firstOrDefault(7, 1)
-    print value
-    return 0
-}
-"#;
-    let error = check_source(non_list).expect_err("firstOrDefault should require a list");
-    assert!(
-        error
-            .message
-            .contains("firstOrDefault expects a list as its first argument")
-    );
-
-    let bad_fallback = r#"
-fn main() -> i64 {
-    let values: i64[] = [1, 2]
-    let value: i64 = lastOrDefault(values, false)
-    print value
-    return 0
-}
-"#;
-    let error = check_source(bad_fallback).expect_err("fallback should match element type");
-    assert!(
-        error
-            .message
-            .contains("lastOrDefault fallback: expected i64, got bool")
-    );
-
-    let old_function_name = r#"
-fn main() -> i64 {
-    let values: i64[] = [1, 2]
-    let value: i64 = first_or(values, 0)
-    print value
-    return 0
-}
-"#;
-    let error =
-        check_source(old_function_name).expect_err("old fallback spelling should be rejected");
-    assert!(
-        error
-            .message
-            .contains("unknown function or callable 'first_or'")
-    );
+fn rejects_removed_safe_list_access_names() {
+    for removed in ["firstOrDefault", "lastOrDefault", "first_or", "last_or"] {
+        let source = format!(
+            "fn main() -> i64 {{\n    let values: i64[] = [1, 2]\n    let value: i64 = {removed}(values, 0)\n    print value\n    return 0\n}}\n"
+        );
+        let error =
+            check_source(&source).expect_err("removed safe list accessor should be rejected");
+        assert!(
+            error
+                .message
+                .contains(&format!("unknown function or callable '{removed}'"))
+        );
+    }
 
     let old_property_name = r#"
 fn main() -> i64 {

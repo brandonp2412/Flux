@@ -206,7 +206,6 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [x] Checked `first` and `last` conveniences for compiler-known lists; empty access fails with an explicit Flux bounds diagnostic.
 - [x] Checked `single` / exactly-one validation for compiler-known lists; any length other than one fails explicitly at runtime.
 - [x] `length` and `isEmpty` / `isNotEmpty` conveniences for compiler-known lists, exposed as zero-cost properties rather than methods.
-- [x] Safe `firstOrDefault(list, fallback)` / `lastOrDefault(list, fallback)` forms for possibly empty lists; the fallback must match the element type and composes through typed pipelines.
 - [x] Full Python-style list slices/ranges: `[start:end]` and `[start:end:step]`, omitted/negative bounds, positive or negative steps, `[::-1]` reversal, clipping, and explicit zero-step rejection. Native slices remain zero-copy through strided list views.
 - [x] Typed list iteration with `for value in list:` and indexed `for index, value in list:` forms; the source is evaluated once and the index is `i64`.
 - [x] Typed `map(list, callback)`, `filter(list, predicate)`, and `where` alias with exact concrete callback signatures, strided-source support, pipeline composition, and stack-backed bootstrap results; chained transforms fuse into one source loop and one final result buffer.

@@ -49,10 +49,6 @@ fn main() -> i64 {
     print window.first
     print window.last
     let empty: i64[] = values[:0]
-    let safeFirst: i64 = empty | firstOrDefault 99
-    let safeLast: i64 = empty | lastOrDefault 88
-    print safeFirst
-    print safeLast
     let checks: bool[] = [value > 2 for value in values]
     let hasLarge: bool = checks | any
     let allLarge: bool = checks | every

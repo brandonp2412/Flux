@@ -608,8 +608,6 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "error"
                 | "take"
                 | "skip"
-                | "firstOrDefault"
-                | "lastOrDefault"
                 | "any"
                 | "every"
                 | "fold"
@@ -3299,39 +3297,6 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
-        } if matches!(name.as_str(), "firstOrDefault" | "lastOrDefault") => {
-            if !named_args.is_empty() {
-                return Err(diag(
-                    expr.span,
-                    &format!("{name} does not accept named arguments"),
-                ));
-            }
-            if args.len() != 2 {
-                return Err(diag(
-                    expr.span,
-                    &format!("{name} expects exactly two arguments: a list and a fallback value"),
-                ));
-            }
-            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-            let Type::List(element) = list_ty else {
-                return Err(diag(
-                    args[0].span,
-                    &format!("{name} expects a list as its first argument"),
-                ));
-            };
-            let fallback_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-            require_type(
-                args[1].span,
-                &element,
-                &fallback_ty,
-                &format!("{name} fallback"),
-            )?;
-            Ok(*element)
-        }
-        ExprKind::Call {
-            name,
-            args,
-            named_args,
         } if name == "take" || name == "skip" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3853,8 +3818,6 @@ fn value_types_of_expr(
                     name.as_str(),
                     "take"
                         | "skip"
-                        | "firstOrDefault"
-                        | "lastOrDefault"
                         | "any"
                         | "every"
                         | "fold"

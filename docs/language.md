@@ -46,7 +46,7 @@ Tabs are not valid indentation. Blocks must use consistent indentation at each n
 
 Flux has no lint-warning tier: an unused parameter or binding is a compile error unless its name begins with `_` to mark it intentionally ignored.
 
-Flux source naming is lower camelCase for values, functions, constants, built-ins, properties, events, and environment bindings: `safeFirst`, `requestCount`, `firstOrDefault`, `onPress`, and `windowHeight`. Type-like names remain PascalCase. Tooling emits camelCase only; ordinary user-defined identifiers may still parse in legacy snake_case for compatibility, but language-owned names use the camelCase spelling.
+Flux source naming is lower camelCase for values, functions, constants, built-ins, properties, events, and environment bindings: `requestCount`, `onPress`, and `windowHeight`. Type-like names remain PascalCase. Tooling emits camelCase only; ordinary user-defined identifiers may still parse in legacy snake_case for compatibility, but language-owned names use the camelCase spelling.
 
 Bindings are explicitly typed and immutable by default:
 
@@ -483,8 +483,6 @@ let first: i64 = values.first
 let last: i64 = values.last
 let one: i64 = values[2:3].single
 let window: i64[] = values | skip 1 | take 3
-let safeFirst: i64 = values[:0] | firstOrDefault 99
-let safeLast: i64 = values[:0] | lastOrDefault 88
 let checks: bool[] = [value > 2 for value in values]
 let hasLarge: bool = checks | any
 let allLarge: bool = checks | every
@@ -513,7 +511,6 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 
 `take(list, count)` and `skip(list, count)` are compiler-known typed sequence functions. They preserve the concrete list element type, require an `i64` count, clamp oversized counts to the available length, and reject negative counts with an explicit Flux runtime error. Both lower to zero-copy list views, so pipelines such as `values | skip 1 | take 3` do not allocate or copy list elements.
 
-`firstOrDefault(list, fallback)` and `lastOrDefault(list, fallback)` are non-throwing accessors for possibly empty lists. The fallback must have exactly the list element type. On an empty list the fallback is returned; otherwise the corresponding edge element is returned. They compose with the same typed pipeline syntax, for example `values[:0] | firstOrDefault 99`.
 
 `any(list)` and `every(list)` currently accept `bool[]`. `any` returns true when at least one element is true and returns false for an empty list. `every` returns true only when every element is true and uses the standard vacuous-truth identity of true for an empty list. Predicate-style queries remain explicit and allocation-free in source by composing a boolean comprehension with the pipeline, for example `[value > 2 for value in values] | any`.
 

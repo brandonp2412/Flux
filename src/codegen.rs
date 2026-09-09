@@ -4082,36 +4082,6 @@ fn emit_expr(
             name,
             args,
             named_args,
-        } if matches!(name.as_str(), "firstOrDefault" | "lastOrDefault") => {
-            if !named_args.is_empty() || args.len() != 2 {
-                return Err(diag(
-                    expr.span,
-                    "invalid safe list access call reached code generation",
-                ));
-            }
-            let list = emit_expr(&args[0], env, signatures)?;
-            let fallback = emit_expr(&args[1], env, signatures)?;
-            let Type::List(element) = &list.ty else {
-                return Err(diag(expr.span, "safe list access requires a list value"));
-            };
-            let element_c = c_type(element, signatures);
-            let index = if name == "firstOrDefault" {
-                "INT64_C(0)"
-            } else {
-                "INT64_C(-1)"
-            };
-            EmittedExpr {
-                code: format!(
-                    "(({}).len == 0 ? ({}) : (*(({element_c} *)flux_list_at({}, {index}, sizeof({element_c})))))",
-                    list.code, fallback.code, list.code
-                ),
-                ty: (**element).clone(),
-            }
-        }
-        ExprKind::Call {
-            name,
-            args,
-            named_args,
         } if name == "take" || name == "skip" => {
             if !named_args.is_empty() || args.len() != 2 {
                 return Err(diag(
