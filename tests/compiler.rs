@@ -437,7 +437,8 @@ fn main() -> i64 {
 
     check_source(source).expect("composed interface should typecheck");
     let generated = compile_to_c(source).expect("composed interface should compile");
-    assert!(generated.contains("switch (receiver.tag)"));
+    assert!(!generated.contains("switch (receiver.tag)"));
+    assert!(generated.contains("receiver.flux__value_MemoryStorage"));
     assert!(generated.contains("flux__fn_memory_load"));
     assert!(!generated.contains("flux__fn_memory_save"));
     assert!(generated.contains("flux__fn_memory_label"));
@@ -4491,6 +4492,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__iface_pack_Tool_Offset"));
     assert!(generated.contains("flux__iface_call_Tool_used"));
     assert!(generated.contains("struct flux__iface_ret_Tool_used"));
+    assert!(generated.contains("receiver.flux__value_Offset"));
+    assert!(!generated.contains("switch (receiver.tag)"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Offset"));
     assert!(!generated.contains("flux__iface_call_Tool_unused"));
     assert!(!generated.contains("struct flux__iface_ret_Tool_unused"));
     assert!(!generated.contains("flux__fn_unusedImpl"));
@@ -4537,12 +4541,168 @@ fn main() -> i64 {
     check_source(source).expect("interface layout tree-shaking fixture should typecheck");
     let generated = compile_to_c(source).expect("interface layout fixture should lower");
     assert!(generated.contains("flux__type_Used"));
-    assert!(generated.contains("flux__iface_tag_Tool_Used"));
+    assert!(generated.contains("struct flux__type_Used flux__value_Used;"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Used"));
     assert!(generated.contains("flux__iface_pack_Tool_Used"));
     assert!(!generated.contains("flux__type_Dead"));
     assert!(!generated.contains("flux__iface_tag_Tool_Dead"));
     assert!(!generated.contains("flux__iface_pack_Tool_Dead"));
     assert!(!generated.contains("flux__fn_deadApply"));
+}
+
+#[test]
+fn specializes_dynamic_interface_dispatch_to_concrete_packed_targets() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Used {
+    amount: i64
+}
+
+struct Dead {
+    amount: i64
+}
+
+fn usedApply(receiver: Used, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn deadApply(receiver: Dead, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Used {
+    apply: usedApply
+}
+
+impl Tool for Dead {
+    apply: deadApply
+}
+
+fn run(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+fn keepDead(value: Dead) -> i64 {
+    return value.amount
+}
+
+fn main() -> i64 {
+    let used: Used = Used { amount: 2 }
+    let tool: Tool = Tool(used)
+    let dead: Dead = Dead { amount: 7 }
+    print(keepDead(dead))
+    return run(tool, 40)
+}
+"#;
+
+    check_source(source).expect("closed-world interface specialization fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("closed-world interface specialization fixture should lower");
+    assert!(generated.contains("flux__type_Used"));
+    assert!(generated.contains("flux__type_Dead"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Used"));
+    assert!(generated.contains("receiver.flux__value_Used"));
+    assert!(!generated.contains("switch (receiver.tag)"));
+    assert!(generated.contains("flux__iface_pack_Tool_Used"));
+    assert!(generated.contains("flux__fn_usedApply"));
+    assert!(generated.contains("flux__fn_keepDead"));
+    assert!(!generated.contains("flux__iface_tag_Tool_Dead"));
+    assert!(!generated.contains("flux__value_Dead"));
+    assert!(!generated.contains("flux__iface_pack_Tool_Dead"));
+    assert!(!generated.contains("flux__fn_deadApply"));
+}
+
+#[test]
+fn keeps_interface_dispatch_mappings_reachable_through_anonymous_ir_bodies() {
+    let source = r#"
+type Runner = fn(Tool) -> i64
+
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn offsetApply(receiver: Offset, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Offset {
+    apply: offsetApply
+}
+
+fn invoke(runner: Runner, tool: Tool) -> i64 {
+    return runner(tool)
+}
+
+fn main() -> i64 {
+    let offset: Offset = Offset { amount: 2 }
+    let tool: Tool = Tool(offset)
+    let runner: Runner = fn(value: Tool) { Tool.apply(value, 40) }
+    return invoke(runner, tool)
+}
+"#;
+
+    check_source(source).expect("anonymous interface dispatch fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("anonymous interface dispatch fixture should lower");
+    assert!(generated.contains("flux__fn_offsetApply"));
+    assert!(generated.contains("flux__iface_call_Tool_apply"));
+    assert!(generated.contains("receiver.flux__value_Offset"));
+    assert!(!generated.contains("switch (receiver.tag)"));
+}
+
+#[test]
+fn keeps_dynamic_interface_targets_open_across_public_interface_parameters() {
+    let source = r#"
+pub interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct First {
+    amount: i64
+}
+
+struct Second {
+    amount: i64
+}
+
+fn firstApply(receiver: First, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn secondApply(receiver: Second, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for First {
+    apply: firstApply
+}
+
+impl Tool for Second {
+    apply: secondApply
+}
+
+pub fn run(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    check_source(source).expect("public interface boundary fixture should typecheck");
+    let generated = compile_to_c(source).expect("public interface boundary fixture should lower");
+    assert!(generated.contains("flux__iface_tag_Tool_First"));
+    assert!(generated.contains("flux__iface_tag_Tool_Second"));
+    assert!(generated.contains("flux__fn_firstApply"));
+    assert!(generated.contains("flux__fn_secondApply"));
 }
 
 #[test]
@@ -5631,6 +5791,189 @@ fn main() -> i64 {
             .all(|id| graph
                 .value(id)
                 .is_some_and(|value| value.producer == evaluation.id))
+    );
+}
+
+#[test]
+fn semantic_cfg_normalizes_match_and_comprehension_subgraphs() {
+    let source = r#"
+enum Choice {
+    One(i64)
+    None
+}
+
+fn main() -> i64 {
+    let choice: Choice = Choice.One(2)
+    let selected: i64 = match choice:
+        Choice.One(value): value * 2
+        Choice.None(): 0
+    let values: i64[] = [1, 2, 3]
+    let mapped: i64[] = [value * 3 for value in values if value > 1]
+    return selected + mapped.length
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1312))
+        .expect("control-dependent expressions should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+
+    let match_value = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::Match { .. }))
+        .expect("match expression should have a typed IR root");
+    let ControlFlowValueKind::Match {
+        value,
+        guards,
+        arms,
+    } = &match_value.kind
+    else {
+        unreachable!();
+    };
+    assert_eq!(guards, &[None, None]);
+    assert_eq!(arms.len(), 2);
+    assert!(matches!(
+        graph.value(*value).map(|value| &value.kind),
+        Some(ControlFlowValueKind::NameRead(name)) if name == "choice"
+    ));
+    assert!(matches!(
+        graph.value(arms[0]).map(|value| &value.kind),
+        Some(ControlFlowValueKind::Binary {
+            op: fluxc::ast::BinOp::Mul,
+            ..
+        })
+    ));
+    assert!(matches!(
+        graph.value(arms[1]).map(|value| &value.kind),
+        Some(ControlFlowValueKind::Literal)
+    ));
+
+    let comprehension = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::ListComprehension { .. }))
+        .expect("list comprehension should have a typed IR root");
+    let ControlFlowValueKind::ListComprehension {
+        iterable,
+        value,
+        condition,
+    } = &comprehension.kind
+    else {
+        unreachable!();
+    };
+    assert!(matches!(
+        graph.value(*iterable).map(|value| &value.kind),
+        Some(ControlFlowValueKind::NameRead(name)) if name == "values"
+    ));
+    assert!(matches!(
+        graph.value(*value).map(|value| &value.kind),
+        Some(ControlFlowValueKind::Binary {
+            op: fluxc::ast::BinOp::Mul,
+            ..
+        })
+    ));
+    assert!(matches!(
+        condition
+            .and_then(|condition| graph.value(condition))
+            .map(|value| &value.kind),
+        Some(ControlFlowValueKind::Binary {
+            op: fluxc::ast::BinOp::Gt,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn semantic_cfg_records_concrete_interface_pack_targets() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn applyOffset(receiver: Offset, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Offset {
+    apply: applyOffset
+}
+
+fn main() -> i64 {
+    let offset: Offset = Offset { amount: 2 }
+    let direct: i64 = Tool.apply(offset, 1)
+    let tool: Tool = Tool(offset)
+    return direct + Tool.apply(tool, 40)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1311))
+        .expect("interface packing should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let packed = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::InterfacePack { .. }))
+        .expect("interface conversion should retain its concrete target in typed IR");
+    let ControlFlowValueKind::InterfacePack {
+        interface,
+        target,
+        value,
+    } = &packed.kind
+    else {
+        unreachable!();
+    };
+    assert_eq!(interface, "Tool");
+    assert_eq!(target, "Offset");
+    assert_eq!(packed.ty, fluxc::ast::Type::Named("Tool".to_string()));
+    let input = graph
+        .value(*value)
+        .expect("interface pack should retain its concrete input dependency");
+    assert_eq!(input.ty, fluxc::ast::Type::Named("Offset".to_string()));
+    assert!(matches!(
+        &input.kind,
+        ControlFlowValueKind::NameRead(name) if name == "offset"
+    ));
+
+    let dispatches = graph
+        .values()
+        .iter()
+        .filter_map(|value| match &value.kind {
+            ControlFlowValueKind::InterfaceDispatch {
+                interface,
+                capability,
+                target,
+                mapped_function,
+                ..
+            } => Some((interface, capability, target, mapped_function)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dispatches.len(), 2);
+    assert!(
+        dispatches
+            .iter()
+            .any(|(interface, capability, target, mapped)| {
+                *interface == "Tool"
+                    && *capability == "apply"
+                    && target.as_deref() == Some("Offset")
+                    && mapped.as_deref() == Some("applyOffset")
+            })
+    );
+    assert!(
+        dispatches
+            .iter()
+            .any(|(interface, capability, target, mapped)| {
+                *interface == "Tool"
+                    && *capability == "apply"
+                    && target.is_none()
+                    && mapped.is_none()
+            })
     );
 }
 

@@ -14,10 +14,17 @@ pub struct ControlFlowValueId(pub usize);
 pub enum ControlFlowValueKind {
     Literal,
     NameRead(String),
-    AnonymousFunction,
+    AnonymousFunction {
+        body: ControlFlowValueId,
+    },
     Call {
         callee: String,
         arguments: Vec<ControlFlowValueId>,
+    },
+    InterfacePack {
+        interface: String,
+        target: String,
+        value: ControlFlowValueId,
     },
     List {
         items: Vec<ControlFlowValueId>,
@@ -42,6 +49,8 @@ pub enum ControlFlowValueKind {
     },
     ListComprehension {
         iterable: ControlFlowValueId,
+        value: ControlFlowValueId,
+        condition: Option<ControlFlowValueId>,
     },
     StructLiteral {
         base: Option<ControlFlowValueId>,
@@ -52,15 +61,26 @@ pub enum ControlFlowValueKind {
         name: String,
         arguments: Vec<ControlFlowValueId>,
     },
+    InterfaceDispatch {
+        interface: String,
+        capability: String,
+        target: Option<String>,
+        mapped_function: Option<String>,
+        arguments: Vec<ControlFlowValueId>,
+    },
     Field {
         base: ControlFlowValueId,
         name: String,
     },
     Match {
         value: ControlFlowValueId,
+        guards: Vec<Option<ControlFlowValueId>>,
+        arms: Vec<ControlFlowValueId>,
     },
     ListMatch {
         value: ControlFlowValueId,
+        guards: Vec<Option<ControlFlowValueId>>,
+        arms: Vec<ControlFlowValueId>,
     },
     Conditional {
         condition: ControlFlowValueId,
@@ -904,15 +924,48 @@ impl<'a> ControlFlowBuilder<'a> {
                 ControlFlowValueKind::Literal
             }
             ExprKind::Var(name) => ControlFlowValueKind::NameRead(name.clone()),
-            ExprKind::AnonymousFunction { .. } => ControlFlowValueKind::AnonymousFunction,
+            ExprKind::AnonymousFunction { body, .. } => self
+                .lower_scalar_expr(producer, body)
+                .map_or(ControlFlowValueKind::Opaque, |body| {
+                    ControlFlowValueKind::AnonymousFunction { body }
+                }),
             ExprKind::Call {
                 name,
                 args,
                 named_args,
-            } => ControlFlowValueKind::Call {
-                callee: name.clone(),
-                arguments: self.lower_call_arguments(producer, args, named_args),
-            },
+            } => {
+                let arguments = self.lower_call_arguments(producer, args, named_args);
+                if self.signatures.interface(name).is_some()
+                    && named_args.is_empty()
+                    && arguments.len() == 1
+                {
+                    let value = arguments[0];
+                    let target = self.values.get(value.0).and_then(|argument| {
+                        let Type::Named(target) = self.signatures.canonical_type(&argument.ty)
+                        else {
+                            return None;
+                        };
+                        (target != *name && self.signatures.implementation(name, &target).is_some())
+                            .then_some(target)
+                    });
+                    target.map_or(
+                        ControlFlowValueKind::Call {
+                            callee: name.clone(),
+                            arguments,
+                        },
+                        |target| ControlFlowValueKind::InterfacePack {
+                            interface: name.clone(),
+                            target,
+                            value,
+                        },
+                    )
+                } else {
+                    ControlFlowValueKind::Call {
+                        callee: name.clone(),
+                        arguments,
+                    }
+                }
+            }
             ExprKind::ShellCall { name, args, .. } => ControlFlowValueKind::Call {
                 callee: name.clone(),
                 arguments: self.lower_expr_arguments(producer, args),
@@ -988,11 +1041,26 @@ impl<'a> ControlFlowBuilder<'a> {
                     }
                 })
             }
-            ExprKind::ListComprehension { iterable, .. } => self
-                .lower_scalar_expr(producer, iterable)
-                .map_or(ControlFlowValueKind::Opaque, |iterable| {
-                    ControlFlowValueKind::ListComprehension { iterable }
-                }),
+            ExprKind::ListComprehension {
+                value,
+                iterable,
+                condition,
+                ..
+            } => {
+                let iterable = self.lower_scalar_expr(producer, iterable);
+                let condition = condition
+                    .as_deref()
+                    .and_then(|condition| self.lower_scalar_expr(producer, condition));
+                let value = self.lower_scalar_expr(producer, value);
+                match (iterable, value) {
+                    (Some(iterable), Some(value)) => ControlFlowValueKind::ListComprehension {
+                        iterable,
+                        value,
+                        condition,
+                    },
+                    _ => ControlFlowValueKind::Opaque,
+                }
+            }
             ExprKind::StructLiteral { base, fields, .. } => {
                 let base = base
                     .as_deref()
@@ -1009,11 +1077,40 @@ impl<'a> ControlFlowBuilder<'a> {
                 args,
                 named_args,
                 ..
-            } => ControlFlowValueKind::QualifiedCall {
-                namespace: namespace.clone(),
-                name: name.clone(),
-                arguments: self.lower_call_arguments(producer, args, named_args),
-            },
+            } => {
+                let arguments = self.lower_call_arguments(producer, args, named_args);
+                if self.signatures.interface(namespace).is_some() {
+                    let concrete_target = arguments.first().and_then(|receiver| {
+                        let receiver = self.values.get(receiver.0)?;
+                        let Type::Named(target) = self.signatures.canonical_type(&receiver.ty)
+                        else {
+                            return None;
+                        };
+                        (target != *namespace
+                            && self.signatures.implementation(namespace, &target).is_some())
+                        .then_some(target)
+                    });
+                    let mapped_function = concrete_target.as_ref().and_then(|target| {
+                        self.signatures
+                            .implementation(namespace, target)
+                            .and_then(|implementation| implementation.functions.get(name))
+                            .cloned()
+                    });
+                    ControlFlowValueKind::InterfaceDispatch {
+                        interface: namespace.clone(),
+                        capability: name.clone(),
+                        target: concrete_target,
+                        mapped_function,
+                        arguments,
+                    }
+                } else {
+                    ControlFlowValueKind::QualifiedCall {
+                        namespace: namespace.clone(),
+                        name: name.clone(),
+                        arguments,
+                    }
+                }
+            }
             ExprKind::Field { base, name, .. } => self.lower_scalar_expr(producer, base).map_or(
                 ControlFlowValueKind::Opaque,
                 |base| ControlFlowValueKind::Field {
@@ -1021,16 +1118,50 @@ impl<'a> ControlFlowBuilder<'a> {
                     name: name.clone(),
                 },
             ),
-            ExprKind::Match { value, .. } => self
-                .lower_scalar_expr(producer, value)
-                .map_or(ControlFlowValueKind::Opaque, |value| {
-                    ControlFlowValueKind::Match { value }
-                }),
-            ExprKind::ListMatch { value, .. } => self
-                .lower_scalar_expr(producer, value)
-                .map_or(ControlFlowValueKind::Opaque, |value| {
-                    ControlFlowValueKind::ListMatch { value }
-                }),
+            ExprKind::Match { value, arms } => {
+                let value = self.lower_scalar_expr(producer, value);
+                let mut guards = Vec::with_capacity(arms.len());
+                let mut arm_values = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    guards.push(
+                        arm.guard
+                            .as_ref()
+                            .and_then(|guard| self.lower_scalar_expr(producer, guard)),
+                    );
+                    if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
+                        arm_values.push(value);
+                    }
+                }
+                value.map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::Match {
+                        value,
+                        guards,
+                        arms: arm_values,
+                    }
+                })
+            }
+            ExprKind::ListMatch { value, arms } => {
+                let value = self.lower_scalar_expr(producer, value);
+                let mut guards = Vec::with_capacity(arms.len());
+                let mut arm_values = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    guards.push(
+                        arm.guard
+                            .as_ref()
+                            .and_then(|guard| self.lower_scalar_expr(producer, guard)),
+                    );
+                    if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
+                        arm_values.push(value);
+                    }
+                }
+                value.map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::ListMatch {
+                        value,
+                        guards,
+                        arms: arm_values,
+                    }
+                })
+            }
             ExprKind::Conditional {
                 then_expr,
                 cond,

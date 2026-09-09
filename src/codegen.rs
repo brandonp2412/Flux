@@ -16,14 +16,22 @@ pub fn emit_c_with_source_paths(
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<String, Diagnostic> {
+    let function_ir = build_function_ir_cache(program, signatures);
     let mut reachable_interfaces = HashSet::new();
-    let mut reachable_functions =
-        reachable_function_names(program, signatures, &reachable_interfaces);
+    let mut interface_pack_facts = InterfacePackFacts::external_roots(program, signatures);
+    let mut reachable_functions = reachable_function_names(
+        program,
+        signatures,
+        &reachable_interfaces,
+        &interface_pack_facts,
+        &function_ir,
+    );
     let mut reachable_value_types = reachable_value_type_names(
         program,
         signatures,
         &reachable_functions,
         &reachable_interfaces,
+        &function_ir,
     );
     loop {
         let next_interfaces = reachable_interface_names(
@@ -31,19 +39,39 @@ pub fn emit_c_with_source_paths(
             signatures,
             &reachable_functions,
             &reachable_value_types,
+            &function_ir,
         );
-        let next_functions = reachable_function_names(program, signatures, &next_interfaces);
-        let next_value_types =
-            reachable_value_type_names(program, signatures, &next_functions, &next_interfaces);
+        let next_pack_facts = InterfacePackFacts::from_reachable_functions(
+            program,
+            signatures,
+            &reachable_functions,
+            &function_ir,
+        );
+        let next_functions = reachable_function_names(
+            program,
+            signatures,
+            &next_interfaces,
+            &next_pack_facts,
+            &function_ir,
+        );
+        let next_value_types = reachable_value_type_names(
+            program,
+            signatures,
+            &next_functions,
+            &next_interfaces,
+            &function_ir,
+        );
         if next_interfaces == reachable_interfaces
             && next_functions == reachable_functions
             && next_value_types == reachable_value_types
+            && next_pack_facts == interface_pack_facts
         {
             break;
         }
         reachable_interfaces = next_interfaces;
         reachable_functions = next_functions;
         reachable_value_types = next_value_types;
+        interface_pack_facts = next_pack_facts;
     }
     let reachable_enum_variants =
         reachable_enum_variant_helpers(program, signatures, &reachable_functions);
@@ -56,10 +84,14 @@ pub fn emit_c_with_source_paths(
     let mut temp_counter = 0usize;
     for function in &program.functions {
         if reachable_functions.contains(&function.name) {
+            let cfg = function_ir
+                .get(&function.name)
+                .expect("all parsed functions have cached typed IR");
             emit_function(
                 &mut generated_body,
                 function,
                 signatures,
+                cfg,
                 &mut temp_counter,
                 source_paths,
             )?;
@@ -128,12 +160,14 @@ pub fn emit_c_with_source_paths(
         signatures,
         &reachable_interfaces,
         &reachable_value_types,
+        &interface_pack_facts,
     );
     out.push_str(&interface_pack_helpers(
         program,
         signatures,
         &reachable_interfaces,
         &reachable_value_types,
+        &interface_pack_facts,
         &runtime_usage,
     ));
     out.push_str(&enum_variant_helpers(
@@ -190,6 +224,7 @@ pub fn emit_c_with_source_paths(
         signatures,
         &reachable_interfaces,
         &reachable_value_types,
+        &interface_pack_facts,
         &runtime_usage,
     )?;
     out.push_str(&generated_body);
@@ -2352,6 +2387,21 @@ fn emit_anonymous_function(
     Ok(())
 }
 
+type FunctionIrCache = HashMap<String, crate::ir::ControlFlowGraph>;
+
+fn build_function_ir_cache(program: &Program, signatures: &Signatures) -> FunctionIrCache {
+    program
+        .functions
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                crate::ir::ControlFlowGraph::from_function(function, signatures),
+            )
+        })
+        .collect()
+}
+
 fn runtime_views(program: &Program) -> impl Iterator<Item = &crate::ast::ViewDef> {
     program.application.iter().filter_map(|application| {
         program
@@ -2361,11 +2411,35 @@ fn runtime_views(program: &Program) -> impl Iterator<Item = &crate::ast::ViewDef
     })
 }
 
+fn collect_interface_names_from_ir(
+    function: &Function,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    let Some(cfg) = function_ir.get(&function.name) else {
+        return;
+    };
+    for node in cfg.nodes() {
+        for definition in &node.definitions {
+            collect_interface_names_from_type(&definition.ty, signatures, reachable, pending);
+        }
+    }
+    for value in cfg.values() {
+        collect_interface_names_from_type(&value.ty, signatures, reachable, pending);
+        if let crate::ir::ControlFlowValueKind::InterfaceDispatch { interface, .. } = &value.kind {
+            enqueue_interface_name(interface, signatures, reachable, pending);
+        }
+    }
+}
+
 fn reachable_interface_names(
     program: &Program,
     signatures: &Signatures,
     reachable_functions: &HashSet<String>,
     reachable_value_types: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> HashSet<String> {
     let mut reachable = HashSet::new();
     let mut pending = Vec::new();
@@ -2482,9 +2556,10 @@ fn reachable_interface_names(
         for ty in &function.returns {
             collect_interface_names_from_type(ty, signatures, &mut reachable, &mut pending);
         }
-        collect_interface_names_from_block(
-            &function.body,
+        collect_interface_names_from_ir(
+            function,
             signatures,
+            function_ir,
             &mut reachable,
             &mut pending,
         );
@@ -2549,95 +2624,6 @@ fn collect_interface_names_from_type(
             }
         }
         Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void => {}
-    }
-}
-
-fn collect_interface_names_from_block(
-    body: &[Stmt],
-    signatures: &Signatures,
-    reachable: &mut HashSet<String>,
-    pending: &mut Vec<String>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
-                collect_interface_names_from_type(ty, signatures, reachable, pending);
-                collect_interface_names_from_expr(expr, signatures, reachable, pending);
-            }
-            StmtKind::LetDestructure { bindings, expr, .. } => {
-                for binding in bindings {
-                    collect_interface_names_from_type(&binding.ty, signatures, reachable, pending);
-                }
-                collect_interface_names_from_expr(expr, signatures, reachable, pending);
-            }
-            StmtKind::Assign { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => {
-                collect_interface_names_from_expr(expr, signatures, reachable, pending);
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    collect_interface_names_from_expr(value, signatures, reachable, pending);
-                }
-            }
-            StmtKind::Shell { expr, redirect, .. } => {
-                collect_interface_names_from_expr(expr, signatures, reachable, pending);
-                if let Some(redirect) = redirect {
-                    collect_interface_names_from_expr(
-                        &redirect.path,
-                        signatures,
-                        reachable,
-                        pending,
-                    );
-                }
-            }
-            StmtKind::If {
-                cond,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_interface_names_from_expr(cond, signatures, reachable, pending);
-                collect_interface_names_from_block(body, signatures, reachable, pending);
-                collect_interface_names_from_block(else_body, signatures, reachable, pending);
-            }
-            StmtKind::ForRange {
-                start, end, body, ..
-            } => {
-                collect_interface_names_from_expr(start, signatures, reachable, pending);
-                collect_interface_names_from_expr(end, signatures, reachable, pending);
-                collect_interface_names_from_block(body, signatures, reachable, pending);
-            }
-            StmtKind::ForEach { iterable, body, .. } => {
-                collect_interface_names_from_expr(iterable, signatures, reachable, pending);
-                collect_interface_names_from_block(body, signatures, reachable, pending);
-            }
-            StmtKind::While { cond, body } => {
-                collect_interface_names_from_expr(cond, signatures, reachable, pending);
-                collect_interface_names_from_block(body, signatures, reachable, pending);
-            }
-            StmtKind::Match { value, arms } => {
-                collect_interface_names_from_expr(value, signatures, reachable, pending);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_interface_names_from_expr(guard, signatures, reachable, pending);
-                    }
-                    collect_interface_names_from_block(&arm.body, signatures, reachable, pending);
-                }
-            }
-            StmtKind::ListMatch { value, arms } => {
-                collect_interface_names_from_expr(value, signatures, reachable, pending);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_interface_names_from_expr(guard, signatures, reachable, pending);
-                    }
-                    collect_interface_names_from_block(&arm.body, signatures, reachable, pending);
-                }
-            }
-            StmtKind::Break | StmtKind::Continue => {}
-        }
     }
 }
 
@@ -3055,11 +3041,39 @@ fn collect_enum_variant_refs_from_expr(
     }
 }
 
+fn collect_value_type_names_from_ir(
+    function: &Function,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+    known: &HashSet<String>,
+    reachable: &mut HashSet<String>,
+    pending: &mut Vec<String>,
+) {
+    let Some(cfg) = function_ir.get(&function.name) else {
+        return;
+    };
+    for node in cfg.nodes() {
+        for definition in &node.definitions {
+            collect_value_type_names_from_type(
+                &definition.ty,
+                signatures,
+                known,
+                reachable,
+                pending,
+            );
+        }
+    }
+    for value in cfg.values() {
+        collect_value_type_names_from_type(&value.ty, signatures, known, reachable, pending);
+    }
+}
+
 fn reachable_value_type_names(
     program: &Program,
     signatures: &Signatures,
     reachable_functions: &HashSet<String>,
     reachable_interfaces: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> HashSet<String> {
     let known = program
         .structs
@@ -3217,9 +3231,10 @@ fn reachable_value_type_names(
                 &mut pending,
             );
         }
-        collect_value_type_names_from_block(
-            &function.body,
+        collect_value_type_names_from_ir(
+            function,
             signatures,
+            function_ir,
             &known,
             &mut reachable,
             &mut pending,
@@ -3319,136 +3334,6 @@ fn collect_value_type_names_from_match_pattern(
 ) {
     if let MatchPattern::Struct(pattern) = pattern {
         collect_value_type_names_from_struct_pattern(pattern, known, reachable, pending);
-    }
-}
-
-fn collect_value_type_names_from_block(
-    body: &[Stmt],
-    signatures: &Signatures,
-    known: &HashSet<String>,
-    reachable: &mut HashSet<String>,
-    pending: &mut Vec<String>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Let { ty, expr, .. } | StmtKind::Var { ty, expr, .. } => {
-                collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
-                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
-            }
-            StmtKind::Assign { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::Expr(expr) => {
-                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
-            }
-            StmtKind::LetDestructure { bindings, expr, .. } => {
-                for binding in bindings {
-                    collect_value_type_names_from_type(
-                        &binding.ty,
-                        signatures,
-                        known,
-                        reachable,
-                        pending,
-                    );
-                }
-                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
-            }
-            StmtKind::LetStructDestructure {
-                struct_name,
-                fields,
-                expr,
-                ..
-            } => {
-                enqueue_value_type_name(struct_name, known, reachable, pending);
-                for field in fields {
-                    if let Some(nested) = &field.nested {
-                        collect_value_type_names_from_struct_pattern(
-                            nested, known, reachable, pending,
-                        );
-                    }
-                }
-                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    collect_value_type_names_from_expr(
-                        value, signatures, known, reachable, pending,
-                    );
-                }
-            }
-            StmtKind::Shell { expr, redirect, .. } => {
-                collect_value_type_names_from_expr(expr, signatures, known, reachable, pending);
-                if let Some(redirect) = redirect {
-                    collect_value_type_names_from_expr(
-                        &redirect.path,
-                        signatures,
-                        known,
-                        reachable,
-                        pending,
-                    );
-                }
-            }
-            StmtKind::If {
-                cond,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_value_type_names_from_expr(cond, signatures, known, reachable, pending);
-                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
-                collect_value_type_names_from_block(
-                    else_body, signatures, known, reachable, pending,
-                );
-            }
-            StmtKind::ForRange {
-                start, end, body, ..
-            } => {
-                collect_value_type_names_from_expr(start, signatures, known, reachable, pending);
-                collect_value_type_names_from_expr(end, signatures, known, reachable, pending);
-                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
-            }
-            StmtKind::ForEach { iterable, body, .. } => {
-                collect_value_type_names_from_expr(iterable, signatures, known, reachable, pending);
-                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
-            }
-            StmtKind::While { cond, body } => {
-                collect_value_type_names_from_expr(cond, signatures, known, reachable, pending);
-                collect_value_type_names_from_block(body, signatures, known, reachable, pending);
-            }
-            StmtKind::Match { value, arms } => {
-                collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
-                for arm in arms {
-                    enqueue_value_type_name(&arm.enum_name, known, reachable, pending);
-                    for pattern in &arm.patterns {
-                        collect_value_type_names_from_match_pattern(
-                            pattern, known, reachable, pending,
-                        );
-                    }
-                    if let Some(guard) = &arm.guard {
-                        collect_value_type_names_from_expr(
-                            guard, signatures, known, reachable, pending,
-                        );
-                    }
-                    collect_value_type_names_from_block(
-                        &arm.body, signatures, known, reachable, pending,
-                    );
-                }
-            }
-            StmtKind::ListMatch { value, arms } => {
-                collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_value_type_names_from_expr(
-                            guard, signatures, known, reachable, pending,
-                        );
-                    }
-                    collect_value_type_names_from_block(
-                        &arm.body, signatures, known, reachable, pending,
-                    );
-                }
-            }
-            StmtKind::Break | StmtKind::Continue => {}
-        }
     }
 }
 
@@ -3632,10 +3517,351 @@ fn collect_value_type_names_from_expr(
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct InterfacePackFacts {
+    targets: HashMap<String, HashSet<String>>,
+    open_interfaces: HashSet<String>,
+}
+
+impl InterfacePackFacts {
+    fn external_roots(program: &Program, signatures: &Signatures) -> Self {
+        let mut facts = Self::default();
+        for function in &program.functions {
+            if !function.public {
+                continue;
+            }
+            for param in &function.params {
+                facts.mark_open_type(&param.ty, signatures);
+            }
+        }
+        facts
+    }
+
+    fn from_reachable_functions(
+        program: &Program,
+        signatures: &Signatures,
+        reachable_functions: &HashSet<String>,
+        function_ir: &FunctionIrCache,
+    ) -> Self {
+        let mut facts = Self::external_roots(program, signatures);
+        let empty_env = HashMap::new();
+
+        if let Some(application) = &program.application {
+            for field in &application.metadata {
+                collect_interface_pack_facts_from_expr(
+                    &field.value,
+                    &empty_env,
+                    signatures,
+                    &mut facts,
+                );
+            }
+        }
+
+        for view in runtime_views(program) {
+            let env =
+                view.params
+                    .iter()
+                    .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+                    .chain(
+                        view.states.iter().map(|state| {
+                            (state.name.clone(), signatures.canonical_type(&state.ty))
+                        }),
+                    )
+                    .chain(view.derived.iter().map(|derived| {
+                        (derived.name.clone(), signatures.canonical_type(&derived.ty))
+                    }))
+                    .collect::<HashMap<_, _>>();
+            for param in &view.params {
+                if let Some(default) = &param.default {
+                    collect_interface_pack_facts_from_expr(default, &env, signatures, &mut facts);
+                }
+            }
+            for state in &view.states {
+                collect_interface_pack_facts_from_expr(
+                    &state.initial,
+                    &env,
+                    signatures,
+                    &mut facts,
+                );
+            }
+            for derived in &view.derived {
+                collect_interface_pack_facts_from_expr(
+                    &derived.value,
+                    &env,
+                    signatures,
+                    &mut facts,
+                );
+            }
+            for element in &view.elements {
+                for property in &element.properties {
+                    collect_interface_pack_facts_from_expr(
+                        &property.value,
+                        &env,
+                        signatures,
+                        &mut facts,
+                    );
+                }
+            }
+        }
+
+        for function in &program.functions {
+            if !reachable_functions.contains(&function.name) {
+                continue;
+            }
+            let Some(cfg) = function_ir.get(&function.name) else {
+                continue;
+            };
+            for value in cfg.values() {
+                if let crate::ir::ControlFlowValueKind::InterfacePack {
+                    interface, target, ..
+                } = &value.kind
+                {
+                    facts.record_target(interface, target.clone());
+                }
+            }
+        }
+
+        facts
+    }
+
+    fn mark_open_type(&mut self, ty: &Type, signatures: &Signatures) {
+        match signatures.canonical_type(ty) {
+            Type::Named(name) if signatures.interface(&name).is_some() => {
+                self.open_interfaces.insert(name);
+            }
+            Type::List(element) => self.mark_open_type(&element, signatures),
+            Type::Function { params, returns } => {
+                for ty in params.iter().chain(&returns) {
+                    self.mark_open_type(ty, signatures);
+                }
+            }
+            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::Named(_) => {}
+        }
+    }
+
+    fn record_target(&mut self, interface_name: &str, target_name: String) {
+        self.targets
+            .entry(interface_name.to_string())
+            .or_default()
+            .insert(target_name);
+    }
+
+    fn mark_open(&mut self, interface_name: &str) {
+        self.open_interfaces.insert(interface_name.to_string());
+    }
+
+    fn allows(&self, interface_name: &str, target_name: &str) -> bool {
+        self.open_interfaces.contains(interface_name)
+            || self
+                .targets
+                .get(interface_name)
+                .is_some_and(|targets| targets.contains(target_name))
+    }
+}
+
+fn collect_interface_pack_facts_from_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    facts: &mut InterfacePackFacts,
+) {
+    if let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &expr.kind
+        && signatures.interface(name).is_some()
+        && named_args.is_empty()
+        && args.len() == 1
+    {
+        match type_of_expr(&args[0], env, signatures)
+            .ok()
+            .map(|ty| signatures.canonical_type(&ty))
+        {
+            Some(Type::Named(target_name))
+                if target_name != *name
+                    && signatures.implementation(name, &target_name).is_some() =>
+            {
+                facts.record_target(name, target_name);
+            }
+            _ => facts.mark_open(name),
+        }
+    }
+
+    match &expr.kind {
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            let mut body_env = env.clone();
+            for param in params {
+                body_env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+            }
+            collect_interface_pack_facts_from_expr(body, &body_env, signatures, facts);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_interface_pack_facts_from_expr(arg, env, signatures, facts);
+            }
+            for arg in named_args {
+                collect_interface_pack_facts_from_expr(&arg.value, env, signatures, facts);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_interface_pack_facts_from_expr(arg, env, signatures, facts);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_interface_pack_facts_from_expr(input, env, signatures, facts);
+            for arg in args {
+                collect_interface_pack_facts_from_expr(arg, env, signatures, facts);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_interface_pack_facts_from_expr(item, env, signatures, facts);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_interface_pack_facts_from_expr(value, env, signatures, facts)
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_interface_pack_facts_from_expr(condition, env, signatures, facts);
+            collect_interface_pack_facts_from_expr(value, env, signatures, facts);
+            if let Some(else_value) = else_value {
+                collect_interface_pack_facts_from_expr(else_value, env, signatures, facts);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_interface_pack_facts_from_expr(base, env, signatures, facts);
+            collect_interface_pack_facts_from_expr(index, env, signatures, facts);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_interface_pack_facts_from_expr(base, env, signatures, facts);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_interface_pack_facts_from_expr(part, env, signatures, facts);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            binding,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_interface_pack_facts_from_expr(iterable, env, signatures, facts);
+            let mut item_env = env.clone();
+            if let Ok(Type::List(element)) = type_of_expr(iterable, env, signatures) {
+                item_env.insert(binding.clone(), signatures.canonical_type(&element));
+            }
+            collect_interface_pack_facts_from_expr(value, &item_env, signatures, facts);
+            if let Some(condition) = condition {
+                collect_interface_pack_facts_from_expr(condition, &item_env, signatures, facts);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_interface_pack_facts_from_expr(base, env, signatures, facts);
+            }
+            for field in fields {
+                collect_interface_pack_facts_from_expr(&field.value, env, signatures, facts);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_interface_pack_facts_from_expr(base, env, signatures, facts);
+        }
+        ExprKind::Match { value, arms } => {
+            collect_interface_pack_facts_from_expr(value, env, signatures, facts);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_pack_facts_from_expr(guard, env, signatures, facts);
+                }
+                collect_interface_pack_facts_from_expr(&arm.value, env, signatures, facts);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_interface_pack_facts_from_expr(value, env, signatures, facts);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_interface_pack_facts_from_expr(guard, env, signatures, facts);
+                }
+                collect_interface_pack_facts_from_expr(&arm.value, env, signatures, facts);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_interface_pack_facts_from_expr(then_expr, env, signatures, facts);
+            collect_interface_pack_facts_from_expr(cond, env, signatures, facts);
+            collect_interface_pack_facts_from_expr(else_expr, env, signatures, facts);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_interface_pack_facts_from_expr(left, env, signatures, facts);
+            collect_interface_pack_facts_from_expr(right, env, signatures, facts);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
+}
+
+fn collect_function_reachability_from_ir(
+    function: &Function,
+    function_ir: &FunctionIrCache,
+    known_functions: &HashSet<String>,
+    direct_functions: &mut HashSet<String>,
+    dynamic_capabilities: &mut HashSet<(String, String)>,
+) {
+    let Some(cfg) = function_ir.get(&function.name) else {
+        return;
+    };
+    for value in cfg.values() {
+        match &value.kind {
+            crate::ir::ControlFlowValueKind::Call { callee, .. }
+                if known_functions.contains(callee) =>
+            {
+                direct_functions.insert(callee.clone());
+            }
+            crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                interface,
+                capability,
+                mapped_function,
+                ..
+            } => {
+                if let Some(mapped) = mapped_function {
+                    direct_functions.insert(mapped.clone());
+                } else {
+                    dynamic_capabilities.insert((interface.clone(), capability.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn reachable_function_names(
     program: &Program,
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
+    interface_pack_facts: &InterfacePackFacts,
+    function_ir: &FunctionIrCache,
 ) -> HashSet<String> {
     let known = program
         .functions
@@ -3718,6 +3944,7 @@ fn reachable_function_names(
         program,
         reachable_interfaces,
         &interface_capabilities,
+        interface_pack_facts,
         &known,
         &mut reachable,
         &mut pending,
@@ -3733,7 +3960,7 @@ fn reachable_function_names(
         };
         let mut references = HashSet::new();
         let mut capabilities = HashSet::new();
-        let mut env = function
+        let env = function
             .params
             .iter()
             .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
@@ -3750,11 +3977,10 @@ fn reachable_function_names(
                 );
             }
         }
-        collect_named_function_refs_from_block(&function.body, &known, &mut references);
-        collect_interface_dispatch_refs_from_block(
-            &function.body,
-            &mut env,
-            signatures,
+        collect_function_reachability_from_ir(
+            function,
+            function_ir,
+            &known,
             &mut references,
             &mut capabilities,
         );
@@ -3765,6 +3991,7 @@ fn reachable_function_names(
             program,
             reachable_interfaces,
             &capabilities,
+            interface_pack_facts,
             &known,
             &mut reachable,
             &mut pending,
@@ -3778,6 +4005,7 @@ fn enqueue_interface_capability_mappings(
     program: &Program,
     reachable_interfaces: &HashSet<String>,
     capabilities: &HashSet<(String, String)>,
+    interface_pack_facts: &InterfacePackFacts,
     known: &HashSet<String>,
     reachable: &mut HashSet<String>,
     pending: &mut Vec<String>,
@@ -3787,7 +4015,9 @@ fn enqueue_interface_capability_mappings(
             continue;
         }
         for implementation in &program.implementations {
-            if implementation.interface_name != *interface_name {
+            if implementation.interface_name != *interface_name
+                || !interface_pack_facts.allows(interface_name, &implementation.target_name)
+            {
                 continue;
             }
             if let Some(mapping) = implementation
@@ -3809,245 +4039,6 @@ fn enqueue_function(
 ) {
     if known.contains(name) && reachable.insert(name.to_string()) {
         pending.push(name.to_string());
-    }
-}
-
-fn collect_interface_dispatch_refs_from_block(
-    body: &[Stmt],
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    direct_functions: &mut HashSet<String>,
-    dynamic_capabilities: &mut HashSet<(String, String)>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
-                collect_interface_dispatch_refs_from_expr(
-                    expr,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                env.insert(name.clone(), signatures.canonical_type(ty));
-            }
-            StmtKind::Assign { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => collect_interface_dispatch_refs_from_expr(
-                expr,
-                env,
-                signatures,
-                direct_functions,
-                dynamic_capabilities,
-            ),
-            StmtKind::LetDestructure { bindings, expr, .. } => {
-                collect_interface_dispatch_refs_from_expr(
-                    expr,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                for binding in bindings {
-                    env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
-                }
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    collect_interface_dispatch_refs_from_expr(
-                        value,
-                        env,
-                        signatures,
-                        direct_functions,
-                        dynamic_capabilities,
-                    );
-                }
-            }
-            StmtKind::Shell { expr, redirect, .. } => {
-                collect_interface_dispatch_refs_from_expr(
-                    expr,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                if let Some(redirect) = redirect {
-                    collect_interface_dispatch_refs_from_expr(
-                        &redirect.path,
-                        env,
-                        signatures,
-                        direct_functions,
-                        dynamic_capabilities,
-                    );
-                }
-            }
-            StmtKind::If {
-                cond,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_interface_dispatch_refs_from_expr(
-                    cond,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                let mut body_env = env.clone();
-                collect_interface_dispatch_refs_from_block(
-                    body,
-                    &mut body_env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                let mut else_env = env.clone();
-                collect_interface_dispatch_refs_from_block(
-                    else_body,
-                    &mut else_env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-            StmtKind::ForRange {
-                name,
-                start,
-                end,
-                body,
-                ..
-            } => {
-                collect_interface_dispatch_refs_from_expr(
-                    start,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                collect_interface_dispatch_refs_from_expr(
-                    end,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                let mut body_env = env.clone();
-                body_env.insert(name.clone(), Type::I64);
-                collect_interface_dispatch_refs_from_block(
-                    body,
-                    &mut body_env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-            StmtKind::ForEach {
-                index_name,
-                name,
-                iterable,
-                body,
-                ..
-            } => {
-                collect_interface_dispatch_refs_from_expr(
-                    iterable,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                let mut body_env = env.clone();
-                if let Ok(Type::List(element)) = type_of_expr(iterable, env, signatures) {
-                    body_env.insert(name.clone(), signatures.canonical_type(&element));
-                }
-                if let Some(index_name) = index_name {
-                    body_env.insert(index_name.clone(), Type::I64);
-                }
-                collect_interface_dispatch_refs_from_block(
-                    body,
-                    &mut body_env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-            StmtKind::While { cond, body } => {
-                collect_interface_dispatch_refs_from_expr(
-                    cond,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                let mut body_env = env.clone();
-                collect_interface_dispatch_refs_from_block(
-                    body,
-                    &mut body_env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-            StmtKind::Match { value, arms } => {
-                collect_interface_dispatch_refs_from_expr(
-                    value,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                for arm in arms {
-                    let mut arm_env = env.clone();
-                    if let Some(guard) = &arm.guard {
-                        collect_interface_dispatch_refs_from_expr(
-                            guard,
-                            &arm_env,
-                            signatures,
-                            direct_functions,
-                            dynamic_capabilities,
-                        );
-                    }
-                    collect_interface_dispatch_refs_from_block(
-                        &arm.body,
-                        &mut arm_env,
-                        signatures,
-                        direct_functions,
-                        dynamic_capabilities,
-                    );
-                }
-            }
-            StmtKind::ListMatch { value, arms } => {
-                collect_interface_dispatch_refs_from_expr(
-                    value,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-                for arm in arms {
-                    let mut arm_env = env.clone();
-                    if let Some(guard) = &arm.guard {
-                        collect_interface_dispatch_refs_from_expr(
-                            guard,
-                            &arm_env,
-                            signatures,
-                            direct_functions,
-                            dynamic_capabilities,
-                        );
-                    }
-                    collect_interface_dispatch_refs_from_block(
-                        &arm.body,
-                        &mut arm_env,
-                        signatures,
-                        direct_functions,
-                        dynamic_capabilities,
-                    );
-                }
-            }
-            StmtKind::Break | StmtKind::Continue => {}
-        }
     }
 }
 
@@ -4385,82 +4376,6 @@ fn collect_interface_dispatch_refs_from_expr(
         | ExprKind::Str(_)
         | ExprKind::Nil
         | ExprKind::Var(_) => {}
-    }
-}
-
-fn collect_named_function_refs_from_block(
-    body: &[Stmt],
-    known: &HashSet<String>,
-    references: &mut HashSet<String>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Let { expr, .. }
-            | StmtKind::Var { expr, .. }
-            | StmtKind::Assign { expr, .. }
-            | StmtKind::LetDestructure { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => {
-                collect_named_function_refs_from_expr(expr, known, references);
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    collect_named_function_refs_from_expr(value, known, references);
-                }
-            }
-            StmtKind::Shell { expr, redirect, .. } => {
-                collect_named_function_refs_from_expr(expr, known, references);
-                if let Some(redirect) = redirect {
-                    collect_named_function_refs_from_expr(&redirect.path, known, references);
-                }
-            }
-            StmtKind::If {
-                cond,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_named_function_refs_from_expr(cond, known, references);
-                collect_named_function_refs_from_block(body, known, references);
-                collect_named_function_refs_from_block(else_body, known, references);
-            }
-            StmtKind::ForRange {
-                start, end, body, ..
-            } => {
-                collect_named_function_refs_from_expr(start, known, references);
-                collect_named_function_refs_from_expr(end, known, references);
-                collect_named_function_refs_from_block(body, known, references);
-            }
-            StmtKind::ForEach { iterable, body, .. } => {
-                collect_named_function_refs_from_expr(iterable, known, references);
-                collect_named_function_refs_from_block(body, known, references);
-            }
-            StmtKind::While { cond, body } => {
-                collect_named_function_refs_from_expr(cond, known, references);
-                collect_named_function_refs_from_block(body, known, references);
-            }
-            StmtKind::Match { value, arms } => {
-                collect_named_function_refs_from_expr(value, known, references);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_named_function_refs_from_expr(guard, known, references);
-                    }
-                    collect_named_function_refs_from_block(&arm.body, known, references);
-                }
-            }
-            StmtKind::ListMatch { value, arms } => {
-                collect_named_function_refs_from_expr(value, known, references);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_named_function_refs_from_expr(guard, known, references);
-                    }
-                    collect_named_function_refs_from_block(&arm.body, known, references);
-                }
-            }
-            StmtKind::Break | StmtKind::Continue => {}
-        }
     }
 }
 
@@ -4854,10 +4769,10 @@ fn emit_function(
     out: &mut String,
     function: &Function,
     signatures: &Signatures,
+    cfg: &crate::ir::ControlFlowGraph,
     temp_counter: &mut usize,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
-    let cfg = crate::ir::ControlFlowGraph::from_function(function, signatures);
     let reachable_spans = cfg
         .nodes()
         .iter()
@@ -5305,9 +5220,11 @@ fn emit_block(
                     fields,
                     struct_name,
                     &temp,
-                    env,
-                    signatures,
-                    dead_definitions,
+                    &mut PatternBindingEmitContext {
+                        env,
+                        signatures,
+                        dead_definitions,
+                    },
                 )?;
             }
             StmtKind::Return(values) if values.is_empty() => {
@@ -5703,9 +5620,11 @@ fn emit_block(
                                         &pattern.fields,
                                         &struct_name,
                                         &payload_access,
-                                        &mut nested,
-                                        signatures,
-                                        dead_arm_definitions,
+                                        &mut PatternBindingEmitContext {
+                                            env: &mut nested,
+                                            signatures,
+                                            dead_definitions: dead_arm_definitions,
+                                        },
                                     )?;
                                 }
                             }
@@ -5779,9 +5698,11 @@ fn emit_block(
                             &arm.pattern,
                             &temp,
                             element,
-                            &mut nested,
-                            signatures,
-                            dead_arm_definitions,
+                            &mut PatternBindingEmitContext {
+                                env: &mut nested,
+                                signatures,
+                                dead_definitions: dead_arm_definitions,
+                            },
                         )?;
                         emit_block(
                             out,
@@ -5811,9 +5732,11 @@ fn emit_block(
                             &arm.pattern,
                             &temp,
                             element,
-                            &mut nested,
-                            signatures,
-                            dead_arm_definitions,
+                            &mut PatternBindingEmitContext {
+                                env: &mut nested,
+                                signatures,
+                                dead_definitions: dead_arm_definitions,
+                            },
                         )?;
                         if let Some(guard) = &arm.guard {
                             let guard = emit_expr(guard, &nested, signatures)?;
@@ -5871,22 +5794,29 @@ fn list_match_condition(pattern: &ListMatchPattern, temp: &str) -> String {
     }
 }
 
+struct PatternBindingEmitContext<'a> {
+    env: &'a mut HashMap<String, Type>,
+    signatures: &'a Signatures,
+    dead_definitions: Option<&'a HashSet<String>>,
+}
+
 fn emit_list_match_pattern_bindings(
     out: &mut String,
     pad: &str,
     pattern: &ListMatchPattern,
     temp: &str,
     element: &Type,
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    dead_definitions: Option<&HashSet<String>>,
+    context: &mut PatternBindingEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
     let ListMatchPattern::List { bindings, rest, .. } = pattern else {
         return Ok(());
     };
-    let element_c = c_type(element, signatures);
+    let element_c = c_type(element, context.signatures);
     for (index, binding) in bindings.iter().enumerate() {
-        if binding.name == "_" || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+        if binding.name == "_"
+            || context
+                .dead_definitions
+                .is_some_and(|dead| dead.contains(&binding.name))
         {
             continue;
         }
@@ -5903,11 +5833,13 @@ fn emit_list_match_pattern_bindings(
             "{pad}{element_c} {} = *(({element_c} *)flux_list_at_unchecked({temp}, {index_code}, sizeof({element_c})));\n",
             local_c_name(&binding.name)
         ));
-        env.insert(binding.name.clone(), element.clone());
+        context.env.insert(binding.name.clone(), element.clone());
     }
     if let Some(rest) = rest
         && rest.binding.name != "_"
-        && !dead_definitions.is_some_and(|dead| dead.contains(&rest.binding.name))
+        && !context
+            .dead_definitions
+            .is_some_and(|dead| dead.contains(&rest.binding.name))
     {
         let rest_name = local_c_name(&rest.binding.name);
         out.push_str(&format!(
@@ -5918,7 +5850,7 @@ fn emit_list_match_pattern_bindings(
             "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at_unchecked({temp}, {}, sizeof({element_c})); }}\n",
             rest.index
         ));
-        env.insert(
+        context.env.insert(
             rest.binding.name.clone(),
             Type::List(Box::new(element.clone())),
         );
@@ -6013,9 +5945,11 @@ fn emit_match_expr_into(
                             &pattern.fields,
                             &struct_name,
                             &payload_access,
-                            &mut nested,
-                            signatures,
-                            None,
+                            &mut PatternBindingEmitContext {
+                                env: &mut nested,
+                                signatures,
+                                dead_definitions: None,
+                            },
                         )?;
                     }
                 }
@@ -6095,9 +6029,11 @@ fn emit_list_match_expr_into(
                 &arm.pattern,
                 &temp,
                 element,
-                &mut nested,
-                signatures,
-                None,
+                &mut PatternBindingEmitContext {
+                    env: &mut nested,
+                    signatures,
+                    dead_definitions: None,
+                },
             )?;
             let arm_value = emit_expr(&arm.value, &nested, signatures)?;
             out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
@@ -6117,9 +6053,11 @@ fn emit_list_match_expr_into(
                 &arm.pattern,
                 &temp,
                 element,
-                &mut nested,
-                signatures,
-                None,
+                &mut PatternBindingEmitContext {
+                    env: &mut nested,
+                    signatures,
+                    dead_definitions: None,
+                },
             )?;
             if let Some(guard) = &arm.guard {
                 let guard = emit_expr(guard, &nested, signatures)?;
@@ -6145,11 +6083,10 @@ fn emit_struct_pattern_bindings(
     fields: &[StructPatternField],
     struct_name: &str,
     base: &str,
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    dead_definitions: Option<&HashSet<String>>,
+    context: &mut PatternBindingEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
-    let definition = signatures
+    let definition = context
+        .signatures
         .struct_type(struct_name)
         .expect("type checking guarantees struct pattern type exists");
     for field in fields {
@@ -6158,35 +6095,31 @@ fn emit_struct_pattern_bindings(
             .expect("type checking guarantees struct pattern fields exist");
         let access = format!("{base}.{}", field_c_name(&field.field));
         if let Some(nested) = &field.nested {
-            let Type::Named(nested_name) = signatures.canonical_type(&field_signature.ty) else {
+            let Type::Named(nested_name) = context.signatures.canonical_type(&field_signature.ty)
+            else {
                 return Err(diag(
                     nested.struct_span,
                     "nested struct pattern code generation requires a struct value",
                 ));
             };
-            emit_struct_pattern_bindings(
-                out,
-                pad,
-                &nested.fields,
-                &nested_name,
-                &access,
-                env,
-                signatures,
-                dead_definitions,
-            )?;
+            emit_struct_pattern_bindings(out, pad, &nested.fields, &nested_name, &access, context)?;
             continue;
         }
         if field.binding.name == "_"
-            || dead_definitions.is_some_and(|dead| dead.contains(&field.binding.name))
+            || context
+                .dead_definitions
+                .is_some_and(|dead| dead.contains(&field.binding.name))
         {
             continue;
         }
         out.push_str(&format!(
             "{pad}{} {} = {access};\n",
-            c_type(&field_signature.ty, signatures),
+            c_type(&field_signature.ty, context.signatures),
             local_c_name(&field.binding.name),
         ));
-        env.insert(field.binding.name.clone(), field_signature.ty.clone());
+        context
+            .env
+            .insert(field.binding.name.clone(), field_signature.ty.clone());
     }
     Ok(())
 }
@@ -8281,6 +8214,7 @@ fn interface_targets(
     interface_name: &str,
     signatures: &Signatures,
     reachable_value_types: &HashSet<String>,
+    interface_pack_facts: &InterfacePackFacts,
 ) -> Vec<String> {
     let mut targets = Vec::new();
     for implementation in &program.implementations {
@@ -8292,7 +8226,10 @@ fn interface_targets(
         else {
             continue;
         };
-        if reachable_value_types.contains(&target_name) && !targets.contains(&target_name) {
+        if interface_pack_facts.allows(interface_name, &target_name)
+            && reachable_value_types.contains(&target_name)
+            && !targets.contains(&target_name)
+        {
             targets.push(target_name);
         }
     }
@@ -8305,14 +8242,20 @@ fn emit_interface_value_definitions(
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
     reachable_value_types: &HashSet<String>,
+    interface_pack_facts: &InterfacePackFacts,
 ) {
     for definition in &program.interfaces {
         if !reachable_interfaces.contains(&definition.name) {
             continue;
         }
-        let targets =
-            interface_targets(program, &definition.name, signatures, reachable_value_types);
-        if !targets.is_empty() {
+        let targets = interface_targets(
+            program,
+            &definition.name,
+            signatures,
+            reachable_value_types,
+            interface_pack_facts,
+        );
+        if targets.len() > 1 {
             out.push_str("enum {\n");
             for (index, target) in targets.iter().enumerate() {
                 out.push_str(&format!(
@@ -8327,17 +8270,25 @@ fn emit_interface_value_definitions(
             "struct {} {{\n",
             interface_c_name(&definition.name)
         ));
-        out.push_str("    int32_t tag;\n");
-        if !targets.is_empty() {
-            out.push_str("    union {\n");
-            for target in &targets {
-                out.push_str(&format!(
-                    "        struct {} {};\n",
-                    struct_c_name(target),
-                    interface_value_member_name(target)
-                ));
+        match targets.as_slice() {
+            [] => out.push_str("    int32_t tag;\n"),
+            [target] => out.push_str(&format!(
+                "    struct {} {};\n",
+                struct_c_name(target),
+                interface_value_member_name(target)
+            )),
+            _ => {
+                out.push_str("    int32_t tag;\n");
+                out.push_str("    union {\n");
+                for target in &targets {
+                    out.push_str(&format!(
+                        "        struct {} {};\n",
+                        struct_c_name(target),
+                        interface_value_member_name(target)
+                    ));
+                }
+                out.push_str("    } value;\n");
             }
-            out.push_str("    } value;\n");
         }
         out.push_str("};\n\n");
     }
@@ -8348,6 +8299,7 @@ fn interface_pack_helpers(
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
     reachable_value_types: &HashSet<String>,
+    interface_pack_facts: &InterfacePackFacts,
     runtime_usage: &str,
 ) -> String {
     let mut out = String::new();
@@ -8355,9 +8307,13 @@ fn interface_pack_helpers(
         if !reachable_interfaces.contains(&definition.name) {
             continue;
         }
-        for target in
-            interface_targets(program, &definition.name, signatures, reachable_value_types)
-        {
+        for target in interface_targets(
+            program,
+            &definition.name,
+            signatures,
+            reachable_value_types,
+            interface_pack_facts,
+        ) {
             let helper = interface_pack_helper_name(&definition.name, &target);
             if !runtime_usage.contains(&format!("{helper}(")) {
                 continue;
@@ -8371,14 +8327,28 @@ fn interface_pack_helpers(
                 "    struct {} result;\n",
                 interface_c_name(&definition.name)
             ));
-            out.push_str(&format!(
-                "    result.tag = {};\n",
-                interface_tag_name(&definition.name, &target)
-            ));
-            out.push_str(&format!(
-                "    result.value.{} = value;\n",
-                interface_value_member_name(&target)
-            ));
+            let targets = interface_targets(
+                program,
+                &definition.name,
+                signatures,
+                reachable_value_types,
+                interface_pack_facts,
+            );
+            if targets.len() == 1 {
+                out.push_str(&format!(
+                    "    result.{} = value;\n",
+                    interface_value_member_name(&target)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    result.tag = {};\n",
+                    interface_tag_name(&definition.name, &target)
+                ));
+                out.push_str(&format!(
+                    "    result.value.{} = value;\n",
+                    interface_value_member_name(&target)
+                ));
+            }
             out.push_str("    return result;\n}\n");
         }
     }
@@ -8436,6 +8406,7 @@ fn emit_interface_dispatch_helpers(
     signatures: &Signatures,
     reachable_interfaces: &HashSet<String>,
     reachable_value_types: &HashSet<String>,
+    interface_pack_facts: &InterfacePackFacts,
     runtime_usage: &str,
 ) -> Result<(), Diagnostic> {
     let mut emitted = false;
@@ -8446,8 +8417,13 @@ fn emit_interface_dispatch_helpers(
         let Some(interface) = signatures.interface(&definition.name) else {
             continue;
         };
-        let targets =
-            interface_targets(program, &definition.name, signatures, reachable_value_types);
+        let targets = interface_targets(
+            program,
+            &definition.name,
+            signatures,
+            reachable_value_types,
+            interface_pack_facts,
+        );
         let mut member_names = interface.functions.keys().collect::<Vec<_>>();
         member_names.sort();
         for member_name in member_names {
@@ -8471,6 +8447,38 @@ fn emit_interface_dispatch_helpers(
             ));
             for (index, param) in member.param_details.iter().enumerate() {
                 out.push_str(&format!(", {} arg_{index}", c_type(&param.ty, signatures)));
+            }
+            if let [target] = targets.as_slice() {
+                out.push_str(") {\n");
+                let implementation = signatures
+                    .implementation(&definition.name, target)
+                    .expect("type checking records each interface implementation");
+                let mapped = implementation
+                    .functions
+                    .get(member_name)
+                    .expect("type checking requires exhaustive capability mappings");
+                let mut args = vec![format!("receiver.{}", interface_value_member_name(target))];
+                args.extend((0..member.param_details.len()).map(|index| format!("arg_{index}")));
+                let call = format!("{}({})", function_c_name(mapped), args.join(", "));
+                match member.returns.as_slice() {
+                    [] => out.push_str(&format!("    {call};\n}}\n")),
+                    [_] => out.push_str(&format!("    return {call};\n}}\n")),
+                    returns => {
+                        out.push_str(&format!(
+                            "    struct {} raw = {call};\n",
+                            multi_return_struct_name(mapped)
+                        ));
+                        out.push_str(&format!(
+                            "    struct {} result;\n",
+                            interface_multi_return_struct_name(&definition.name, member_name)
+                        ));
+                        for index in 0..returns.len() {
+                            out.push_str(&format!("    result.v{index} = raw.v{index};\n"));
+                        }
+                        out.push_str("    return result;\n}\n");
+                    }
+                }
+                continue;
             }
             out.push_str(") {\n    switch (receiver.tag) {\n");
             for target in &targets {
