@@ -2672,6 +2672,169 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_control_flow_inherits_enclosing_loop_exit_for_move_safety() {
+    let nested_if = r#"
+fn consume(flag: bool) -> i64 {
+    let source: i64[] = [4, 5]
+    for index in 0..1:
+        if flag:
+            let destination: i64[] = source
+            print(destination[index])
+        break
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(true)
+}
+"#;
+    check_source(nested_if)
+        .expect("a nested move should inherit a guaranteed enclosing-loop break");
+    compile_to_c(nested_if).expect("nested break-terminated ownership flow should lower natively");
+
+    let nested_match = r#"
+enum Choice {
+    Take
+    Skip
+}
+
+fn consume(choice: Choice) -> i64 {
+    let source: i64[] = [4, 5]
+    for index in 0..1:
+        match choice:
+            Choice.Take():
+                let destination: i64[] = source
+                print(destination[index])
+            Choice.Skip():
+                print(index)
+        break
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(Choice.Take())
+}
+"#;
+    check_source(nested_match)
+        .expect("match-arm moves should inherit the enclosing loop's guaranteed break");
+    compile_to_c(nested_match).expect("nested match ownership flow should lower natively");
+
+    let nested_loops = r#"
+fn safe() -> i64 {
+    let source: i64[] = [4, 5]
+    for outer in 0..2:
+        for inner in 0..1:
+            let destination: i64[] = source
+            print(destination[inner])
+            break
+        print(outer)
+        break
+    return 0
+}
+
+fn main() -> i64 {
+    return safe()
+}
+"#;
+    check_source(nested_loops)
+        .expect("an inner-loop move is safe when the enclosing loop also exits before repeating");
+    compile_to_c(nested_loops).expect("nested loop ownership flow should lower natively");
+
+    let unsafe_nested_loops = r#"
+fn unsafe() -> i64 {
+    let source: i64[] = [4, 5]
+    for outer in 0..2:
+        for inner in 0..1:
+            let destination: i64[] = source
+            print(destination[inner])
+            break
+        print(outer)
+    return 0
+}
+
+fn main() -> i64 {
+    return unsafe()
+}
+"#;
+    let errors = check_source_all(unsafe_nested_loops)
+        .expect_err("an inner-loop move must not be reused by another enclosing-loop iteration");
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "moving non-copy binding 'source' through a nested loop requires the enclosing loop to break or return before another iteration",
+        )
+    }));
+
+    let conditional_break = r#"
+fn consume(flag: bool) -> i64 {
+    let source: i64[] = [4, 5]
+    for index in 0..1:
+        if flag:
+            let destination: i64[] = source
+            print(destination[index])
+            break
+        print(source[index])
+        break
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(false)
+}
+"#;
+    check_source(conditional_break)
+        .expect("a move on a breaking branch must not poison the sibling fallthrough path");
+    compile_to_c(conditional_break).expect("branch-specific break ownership should lower natively");
+
+    let post_break_use = r#"
+fn consume(flag: bool) -> i64 {
+    let source: i64[] = [4, 5]
+    for index in 0..1:
+        if flag:
+            let destination: i64[] = source
+            print(destination[index])
+            break
+        break
+    print(source.first)
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(false)
+}
+"#;
+    let errors = check_source_all(post_break_use)
+        .expect_err("a move that exits through break must still invalidate post-loop ownership");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
+    }));
+
+    let unsafe_nested_if = r#"
+fn consume(flag: bool) -> i64 {
+    let source: i64[] = [4, 5]
+    for index in 0..2:
+        if flag:
+            let destination: i64[] = source
+            print(destination[index])
+        print(index)
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(true)
+}
+"#;
+    let errors = check_source_all(unsafe_nested_if)
+        .expect_err("nested moves must still fail when the enclosing loop can repeat");
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
+        )
+    }));
+}
+
+#[test]
 fn return_terminated_move_paths_do_not_poison_reachable_ownership_state() {
     let branch_return = r#"
 fn consumeOrRead(flag: bool) -> i64 {

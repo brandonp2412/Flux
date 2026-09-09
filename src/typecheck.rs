@@ -1940,6 +1940,7 @@ fn check_function_all(
         signatures,
         diagnostics,
         &mut ownership,
+        false,
     );
     if diagnostics.len() == diagnostics_before_body {
         check_unused_function_bindings(function, diagnostics);
@@ -2417,6 +2418,7 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
 struct OwnershipState {
     moved: HashMap<String, SourceSpan>,
     loop_depth: usize,
+    break_moves: Vec<HashMap<String, SourceSpan>>,
 }
 
 fn check_block_all(
@@ -2427,6 +2429,7 @@ fn check_block_all(
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
     ownership: &mut OwnershipState,
+    enclosing_loop_exit: bool,
 ) {
     for (stmt_index, stmt) in body.iter().enumerate() {
         let mut reads = HashSet::new();
@@ -2458,6 +2461,8 @@ fn check_block_all(
             diagnostics.push(diagnostic);
             continue;
         }
+        let following_loop_exit =
+            enclosing_loop_exit || block_guarantees_loop_exit(&body[stmt_index + 1..]);
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -2518,9 +2523,7 @@ fn check_block_all(
                     && let ExprKind::Var(source) = &expr.kind
                     && env.contains_key(source)
                 {
-                    if ownership.loop_depth > 0
-                        && !block_guarantees_loop_exit(&body[stmt_index + 1..])
-                    {
+                    if ownership.loop_depth > 0 && !following_loop_exit {
                         diagnostics.push(diag(
                             expr.span,
                             &format!(
@@ -2858,6 +2861,13 @@ fn check_block_all(
                         stmt.keyword_span,
                         "'break' is only valid inside a loop",
                     ));
+                } else if let Some(break_moves) = ownership.break_moves.last_mut() {
+                    break_moves.extend(
+                        ownership
+                            .moved
+                            .iter()
+                            .map(|(name, span)| (name.clone(), *span)),
+                    );
                 }
             }
             StmtKind::Continue => {
@@ -2918,6 +2928,7 @@ fn check_block_all(
                     }
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
+                let nested_loop_exit = following_loop_exit;
                 let mut then_env = env.clone();
                 let mut then_mutable = mutable.clone();
                 let mut then_ownership = ownership.clone();
@@ -2929,6 +2940,7 @@ fn check_block_all(
                     signatures,
                     diagnostics,
                     &mut then_ownership,
+                    nested_loop_exit,
                 );
                 let mut else_env = env.clone();
                 let mut else_mutable = mutable.clone();
@@ -2941,11 +2953,14 @@ fn check_block_all(
                     signatures,
                     diagnostics,
                     &mut else_ownership,
+                    nested_loop_exit,
                 );
-                if !block_guarantees_return(body) {
+                merge_child_break_moves(ownership, &then_ownership);
+                merge_child_break_moves(ownership, &else_ownership);
+                if !block_guarantees_control_exit(body) {
                     merge_child_moves(ownership, &then_ownership, env);
                 }
-                if !block_guarantees_return(else_body) {
+                if !block_guarantees_control_exit(else_body) {
                     merge_child_moves(ownership, &else_ownership, env);
                 }
             }
@@ -2987,6 +3002,7 @@ fn check_block_all(
                 let mut nested_mutable = mutable.clone();
                 let mut nested_ownership = ownership.clone();
                 nested_ownership.loop_depth += 1;
+                nested_ownership.break_moves.push(HashMap::new());
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
                 }
@@ -2998,9 +3014,22 @@ fn check_block_all(
                     signatures,
                     diagnostics,
                     &mut nested_ownership,
+                    false,
                 );
+                let break_moves = nested_ownership
+                    .break_moves
+                    .pop()
+                    .expect("loop ownership state should have a break frame");
+                nested_ownership.loop_depth -= 1;
+                nested_ownership.moved.extend(break_moves);
                 if !block_guarantees_return(body) {
-                    merge_child_moves(ownership, &nested_ownership, env);
+                    merge_loop_child_moves(
+                        ownership,
+                        &nested_ownership,
+                        env,
+                        following_loop_exit,
+                        diagnostics,
+                    );
                 }
             }
             StmtKind::ForEach {
@@ -3030,6 +3059,7 @@ fn check_block_all(
                 let mut nested_mutable = mutable.clone();
                 let mut nested_ownership = ownership.clone();
                 nested_ownership.loop_depth += 1;
+                nested_ownership.break_moves.push(HashMap::new());
                 if let Some(index_name) = index_name {
                     if env.contains_key(index_name) {
                         diagnostics.push(diag(
@@ -3056,9 +3086,22 @@ fn check_block_all(
                     signatures,
                     diagnostics,
                     &mut nested_ownership,
+                    false,
                 );
+                let break_moves = nested_ownership
+                    .break_moves
+                    .pop()
+                    .expect("loop ownership state should have a break frame");
+                nested_ownership.loop_depth -= 1;
+                nested_ownership.moved.extend(break_moves);
                 if !block_guarantees_return(body) {
-                    merge_child_moves(ownership, &nested_ownership, env);
+                    merge_loop_child_moves(
+                        ownership,
+                        &nested_ownership,
+                        env,
+                        following_loop_exit,
+                        diagnostics,
+                    );
                 }
             }
             StmtKind::While { cond, body } => {
@@ -3076,6 +3119,7 @@ fn check_block_all(
                 let mut nested_mutable = mutable.clone();
                 let mut nested_ownership = ownership.clone();
                 nested_ownership.loop_depth += 1;
+                nested_ownership.break_moves.push(HashMap::new());
                 check_block_all(
                     body,
                     &mut nested,
@@ -3084,9 +3128,22 @@ fn check_block_all(
                     signatures,
                     diagnostics,
                     &mut nested_ownership,
+                    false,
                 );
+                let break_moves = nested_ownership
+                    .break_moves
+                    .pop()
+                    .expect("loop ownership state should have a break frame");
+                nested_ownership.loop_depth -= 1;
+                nested_ownership.moved.extend(break_moves);
                 if !block_guarantees_return(body) {
-                    merge_child_moves(ownership, &nested_ownership, env);
+                    merge_loop_child_moves(
+                        ownership,
+                        &nested_ownership,
+                        env,
+                        following_loop_exit,
+                        diagnostics,
+                    );
                 }
             }
             StmtKind::Match { value, arms } => {
@@ -3244,8 +3301,10 @@ fn check_block_all(
                         signatures,
                         diagnostics,
                         &mut nested_ownership,
+                        following_loop_exit,
                     );
-                    if !block_guarantees_return(&arm.body) {
+                    merge_child_break_moves(&mut post_match_ownership, &nested_ownership);
+                    if !block_guarantees_control_exit(&arm.body) {
                         merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
                     }
                 }
@@ -3324,8 +3383,10 @@ fn check_block_all(
                             signatures,
                             diagnostics,
                             &mut nested_ownership,
+                            following_loop_exit,
                         );
-                        if !block_guarantees_return(&arm.body) {
+                        merge_child_break_moves(&mut post_match_ownership, &nested_ownership);
+                        if !block_guarantees_control_exit(&arm.body) {
                             merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
                         }
                     }
@@ -3333,6 +3394,12 @@ fn check_block_all(
                 }
             }
         }
+    }
+}
+
+fn merge_child_break_moves(ownership: &mut OwnershipState, child: &OwnershipState) {
+    for (parent_moves, child_moves) in ownership.break_moves.iter_mut().zip(&child.break_moves) {
+        parent_moves.extend(child_moves.iter().map(|(name, span)| (name.clone(), *span)));
     }
 }
 
@@ -3348,6 +3415,36 @@ fn merge_child_moves(
             .filter(|(name, _)| parent_env.contains_key(name.as_str()))
             .map(|(name, span)| (name.clone(), *span)),
     );
+}
+
+fn merge_loop_child_moves(
+    ownership: &mut OwnershipState,
+    child: &OwnershipState,
+    parent_env: &HashMap<String, Type>,
+    following_loop_exit: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let child_moves = child
+        .moved
+        .iter()
+        .filter(|(name, _)| parent_env.contains_key(name.as_str()))
+        .map(|(name, span)| (name.clone(), *span))
+        .collect::<Vec<_>>();
+    for (name, span) in child_moves {
+        if ownership.moved.contains_key(name.as_str()) {
+            continue;
+        }
+        if ownership.loop_depth > 0 && !following_loop_exit {
+            diagnostics.push(diag(
+                span,
+                &format!(
+                    "moving non-copy binding '{name}' through a nested loop requires the enclosing loop to break or return before another iteration"
+                ),
+            ));
+        } else {
+            ownership.moved.insert(name, span);
+        }
+    }
 }
 
 fn bind_list_match_pattern(
@@ -5012,6 +5109,54 @@ fn block_guarantees_loop_exit(body: &[Stmt]) -> bool {
             | StmtKind::ForEach { .. }
             | StmtKind::While { .. }
             | StmtKind::If { .. }
+            | StmtKind::Match { .. }
+            | StmtKind::ListMatch { .. }
+            | StmtKind::Let { .. }
+            | StmtKind::Var { .. }
+            | StmtKind::Assign { .. }
+            | StmtKind::LetDestructure { .. }
+            | StmtKind::LetMultiDestructure { .. }
+            | StmtKind::LetListDestructure { .. }
+            | StmtKind::LetStructDestructure { .. }
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
+        }
+    }
+    false
+}
+
+fn block_guarantees_control_exit(body: &[Stmt]) -> bool {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => return true,
+            StmtKind::If {
+                body, else_body, ..
+            } if !else_body.is_empty()
+                && block_guarantees_control_exit(body)
+                && block_guarantees_control_exit(else_body) =>
+            {
+                return true;
+            }
+            StmtKind::Match { arms, .. }
+                if !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| block_guarantees_control_exit(&arm.body)) =>
+            {
+                return true;
+            }
+            StmtKind::ListMatch { arms, .. }
+                if !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| block_guarantees_control_exit(&arm.body)) =>
+            {
+                return true;
+            }
+            StmtKind::If { .. }
+            | StmtKind::ForRange { .. }
+            | StmtKind::ForEach { .. }
+            | StmtKind::While { .. }
             | StmtKind::Match { .. }
             | StmtKind::ListMatch { .. }
             | StmtKind::Let { .. }
