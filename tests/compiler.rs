@@ -1765,6 +1765,99 @@ fn main() -> i64 {
 }
 
 #[test]
+fn chunked_is_zero_copy_strided_and_composable() {
+    let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3, 4, 5]
+    let chunks: i64[][] = values[::-1] | chunked 2
+    let firstChunk: i64[] = chunks[0]
+    let lastChunk: i64[] = chunks[-1]
+    let flattened: i64[] = chunks | flatten
+    let total: i64 = chunks | flatten | reduce add
+    let emptyChunks: i64[][] = values[:0] | chunked 3
+    print chunks.length
+    print firstChunk.first
+    print firstChunk.last
+    print lastChunk.single
+    print flattened.first
+    print flattened.last
+    print total
+    print emptyChunks.length
+    return 0
+}
+"#;
+
+    check_source(source).expect("chunked should typecheck for concrete lists");
+    let generated = compile_to_c(source).expect("chunked should lower natively");
+    assert!(generated.contains("flux__chunked_source_"));
+    assert!(generated.contains("flux__chunked_buffer_"));
+    assert!(generated.contains("Flux runtime error: chunked size must be greater than zero"));
+    assert!(generated.contains(".stride = flux__chunked_source_"));
+    assert!(generated.contains("(ptrdiff_t)flux__chunked_start_"));
+    assert!(generated.contains("sizeof(struct flux__list)"));
+    assert!(generated.contains("flux__fn_add(flux__local_total"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("chunked source should format");
+    assert!(formatted.contains("let chunks: i64[][] = values[::-1] | chunked 2"));
+    assert!(formatted.contains("let flattened: i64[] = chunks | flatten"));
+    assert!(formatted.contains("let total: i64 = chunks | flatten | reduce add"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted chunked should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_chunked_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let chunks: i64[][] = chunked(7, 2)
+    print chunks.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("chunked should require a list");
+    assert!(
+        error
+            .message
+            .contains("chunked expects a list as its first argument")
+    );
+
+    let bad_size = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let chunks: i64[][] = values | chunked true
+    print chunks.length
+    return 0
+}
+"#;
+    let error = check_source(bad_size).expect_err("chunked size should be i64");
+    assert!(
+        error
+            .message
+            .contains("chunked size: expected i64, got bool")
+    );
+
+    let zero_size = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let chunks: i64[][] = values | chunked 0
+    print chunks.length
+    return 0
+}
+"#;
+    let error = check_source(zero_size).expect_err("zero chunk size should fail statically");
+    assert!(
+        error
+            .message
+            .contains("chunked size must be greater than zero")
+    );
+}
+
+#[test]
 fn fuses_map_filter_pipelines_and_terminal_reductions() {
     let source = r#"
 fn double(value: i64) -> i64 {

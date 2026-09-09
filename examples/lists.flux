@@ -86,6 +86,9 @@ fn main() -> i64 {
     let sortable: i64[] = [4, 1, 3, 2, 3]
     let ordered: i64[] = sortable[::-1] | sorted
     let orderedDoubled: i64[] = sortable[::-1] | sorted | map double
+    let chunks: i64[][] = reversed | chunked 2
+    let firstChunk: i64[] = chunks[0]
+    let rejoined: i64[] = chunks | flatten
     print mapped.first
     print mapped.last
     print filtered.length
@@ -117,6 +120,10 @@ fn main() -> i64 {
     print ordered.last
     print orderedDoubled.first
     print orderedDoubled.last
+    print chunks.length
+    print firstChunk.first
+    print firstChunk.last
+    print rejoined.last
     for value in middle:
         print value
     for index, value in middle:

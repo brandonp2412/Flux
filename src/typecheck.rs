@@ -621,6 +621,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "distinct"
                 | "flatten"
                 | "sorted"
+                | "chunked"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -3015,6 +3016,34 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "chunked" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "chunked does not accept named arguments"));
+            }
+            if args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    "chunked expects exactly two arguments: a list and an i64 size",
+                ));
+            }
+            let list_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            if !matches!(list_ty, Type::List(_)) {
+                return Err(diag(
+                    args[0].span,
+                    "chunked expects a list as its first argument",
+                ));
+            }
+            let size_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            require_type(args[1].span, &Type::I64, &size_ty, "chunked size")?;
+            if matches!(args[1].kind, ExprKind::Int(0)) {
+                return Err(diag(args[1].span, "chunked size must be greater than zero"));
+            }
+            Ok(Type::List(Box::new(list_ty)))
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "sorted" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "sorted does not accept named arguments"));
@@ -3837,6 +3866,7 @@ fn value_types_of_expr(
                         | "distinct"
                         | "flatten"
                         | "sorted"
+                        | "chunked"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

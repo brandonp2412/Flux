@@ -2059,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_chunked(expr).is_some() => {
+                emit_sequence_chunked_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_sorted(expr).is_some() => {
                 emit_sequence_sorted_binding(
                     out,
@@ -2756,6 +2767,22 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
     }
 }
 
+fn sequence_chunked(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "chunked" && args.len() == 2 => {
+            Some((&args[0], &args[1]))
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "chunked" && args.len() == 1 => Some((input, &args[0])),
+        _ => None,
+    }
+}
+
 fn sequence_sorted(expr: &Expr) -> Option<&Expr> {
     match &expr.kind {
         ExprKind::Call {
@@ -2824,6 +2851,8 @@ fn emit_sequence_list_value(
 ) -> Result<EmittedExpr, Diagnostic> {
     if sequence_transform(expr).is_some() {
         emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)
+    } else if sequence_chunked(expr).is_some() {
+        emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_concat(expr).is_some() {
         emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_distinct(expr).is_some() {
@@ -2835,6 +2864,102 @@ fn emit_sequence_list_value(
     } else {
         emit_expr(expr, env, signatures)
     }
+}
+
+fn emit_sequence_chunked_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "chunked binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_chunked_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let (source_expr, size_expr) = sequence_chunked(expr)
+        .ok_or_else(|| diag(expr.span, "invalid chunked call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let source_ty = signatures.canonical_type(&source.ty);
+    let Type::List(_) = &source_ty else {
+        return Err(diag(expr.span, "chunked source must be a list"));
+    };
+    let size = emit_expr(size_expr, env, signatures)?;
+    if size.ty != Type::I64 {
+        return Err(diag(expr.span, "chunked size must be i64"));
+    }
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    if result_ty != Type::List(Box::new(source_ty.clone())) {
+        return Err(diag(
+            expr.span,
+            "chunked result type mismatch reached code generation",
+        ));
+    }
+    let source_name = format!("flux__chunked_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_name = format!("flux__chunked_size_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_unsigned_name = format!("flux__chunked_size_u_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__chunked_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__chunked_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__chunked_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let start_name = format!("flux__chunked_start_{}", *temp_counter);
+    *temp_counter += 1;
+    let remaining_name = format!("flux__chunked_remaining_{}", *temp_counter);
+    *temp_counter += 1;
+    let len_name = format!("flux__chunked_len_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__chunked_result_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n{pad}int64_t {size_name} = {};\n",
+        source.code, size.code
+    ));
+    out.push_str(&format!(
+        "{pad}if ({size_name} <= 0) {{ fputs(\"Flux runtime error: chunked size must be greater than zero\\n\", stderr); abort(); }}\n{pad}size_t {size_unsigned_name} = (size_t){size_name};\n"
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {count_name} = ({source_name}.len / {size_unsigned_name}) + (({source_name}.len % {size_unsigned_name}) != 0);\n{pad}struct flux__list {buffer_name}[{count_name} > 0 ? {count_name} : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {count_name}; ++{index_name}) {{\n{pad}    size_t {start_name} = {index_name} * {size_unsigned_name};\n{pad}    size_t {remaining_name} = {source_name}.len - {start_name};\n{pad}    size_t {len_name} = {remaining_name} < {size_unsigned_name} ? {remaining_name} : {size_unsigned_name};\n{pad}    {buffer_name}[{index_name}] = (struct flux__list){{ .data = (void *)((unsigned char *){source_name}.data + (ptrdiff_t){start_name} * {source_name}.stride), .len = {len_name}, .stride = {source_name}.stride }};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof(struct flux__list) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
 }
 
 fn sorted_less(left: &str, right: &str, ty: &Type) -> Option<String> {
@@ -3865,6 +3990,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "chunked" => {
+            return Err(diag(
+                expr.span,
+                "chunked currently lowers only when bound directly to an immutable local value",
             ));
         }
         ExprKind::Call { name, .. } if name == "sorted" => {

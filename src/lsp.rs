@@ -769,6 +769,13 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
         3,
         "fn sorted(list: ordered[]) -> same ordered list type",
     );
+    push_completion_item(
+        &mut items,
+        &mut seen,
+        "chunked",
+        3,
+        "fn chunked(list: T[], size: i64) -> T[][]",
+    );
 
     let Ok(program) = crate::parser::parse_all(source) else {
         return items;
@@ -1939,6 +1946,14 @@ fn signature_help_for_document_cached(
             "sorted",
             &["list: ordered[]"],
             "same ordered list type",
+            active_parameter,
+        ));
+    }
+    if call_name == "chunked" {
+        return Some(signature_help_for_builtin(
+            "chunked",
+            &["list: T[]", "size: i64"],
+            "T[][]",
             active_parameter,
         ));
     }
@@ -5012,7 +5027,7 @@ mod tests {
     #[test]
     fn signature_help_supports_sequence_transforms() {
         let uri = "file:///tmp/sequence-transform-signatures.flux";
-        let source = "fn double(value: i64) -> i64 { value * 2 }\nfn keep(value: i64) -> bool { value > 0 }\nfn main() -> i64 {\n    let values: i64[] = [1, 2]\n    let other: i64[] = [3, 4]\n    let nested: i64[][] = [values, other]\n    let _mapped: i64[] = map(values, double)\n    let _filtered: i64[] = filter(values, keep)\n    let _selected: i64[] = where(values, keep)\n    let _joined: i64[] = concat(values, other)\n    let _unique: i64[] = distinct(values)\n    let _flat: i64[] = flatten(nested)\n    let _sorted: i64[] = sorted(values)\n    return 0\n}\n";
+        let source = "fn double(value: i64) -> i64 { value * 2 }\nfn keep(value: i64) -> bool { value > 0 }\nfn main() -> i64 {\n    let values: i64[] = [1, 2]\n    let other: i64[] = [3, 4]\n    let nested: i64[][] = [values, other]\n    let _mapped: i64[] = map(values, double)\n    let _filtered: i64[] = filter(values, keep)\n    let _selected: i64[] = where(values, keep)\n    let _joined: i64[] = concat(values, other)\n    let _unique: i64[] = distinct(values)\n    let _flat: i64[] = flatten(nested)\n    let _sorted: i64[] = sorted(values)\n    let _chunks: i64[][] = chunked(values, 1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -5047,6 +5062,8 @@ mod tests {
         assert!(flatten_help.contains("fn flatten(list: T[][]) -> T[]"));
         let sorted_help = help_for("sorted(");
         assert!(sorted_help.contains("fn sorted(list: ordered[]) -> same ordered list type"));
+        let chunked_help = help_for("chunked(values, ");
+        assert!(chunked_help.contains("fn chunked(list: T[], size: i64) -> T[][]"));
     }
 
     #[test]
@@ -5430,6 +5447,8 @@ mod tests {
         assert!(json.contains("fn flatten(list: T[][]) -> T[]"));
         assert!(json.contains("\"label\":\"sorted\""));
         assert!(json.contains("fn sorted(list: ordered[]) -> same ordered list type"));
+        assert!(json.contains("\"label\":\"chunked\""));
+        assert!(json.contains("fn chunked(list: T[], size: i64) -> T[][]"));
     }
 
     #[test]

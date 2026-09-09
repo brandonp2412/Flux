@@ -209,11 +209,12 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [x] Full Python-style list slices/ranges: `[start:end]` and `[start:end:step]`, omitted/negative bounds, positive or negative steps, `[::-1]` reversal, clipping, and explicit zero-step rejection. Native slices remain zero-copy through strided list views.
 - [x] Typed list iteration with `for value in list:` and indexed `for index, value in list:` forms; the source is evaluated once and the index is `i64`.
 - [x] Typed `map(list, callback)`, `filter(list, predicate)`, and `where` alias with exact concrete callback signatures, strided-source support, pipeline composition, and stack-backed bootstrap results; chained transforms fuse into one source loop and one final result buffer.
-- [ ] Related collection-producing functional sequence operations beyond map/filter/where.
+- [x] Related collection-producing functional sequence operations beyond map/filter/where.
   - [x] Typed `concat(left, right)` with exact element-type matching, strided-input support, pipeline composition, overflow checking, and a stack-backed local result.
   - [x] Stable `distinct(list)` for scalar-equality lists (`i64`, `bool`, `str`, `error`), preserving first-occurrence order across strided inputs and composing through typed pipelines.
   - [x] One-level `flatten(nested)` for concrete nested lists, preserving logical order across strided outer/inner lists, checking total length overflow, and producing a stack-backed local result.
   - [x] Immutable stable `sorted(list)` for ordered scalar lists (`i64`, `bool`, `str`), preserving the source, consuming strided inputs in logical order, and producing a stack-backed ascending result that composes through pipelines.
+  - [x] Zero-copy `chunked(list, size)` producing `T[][]` from strided inputs, with a positive `i64` size contract, shorter final chunk, empty-input identity, and stack-backed chunk descriptors that reference the original list storage.
 - [x] Typed `fold(list, initial, reducer)` and `reduce(list, reducer)` scalar reductions with concrete callback signatures, strided-view support, pipeline composition, and explicit empty-list rejection for `reduce`.
 - [x] `any(bool[])` / `every(bool[])` boolean aggregation with Python/Dart-style empty-sequence identities (`false` / `true`), designed to combine with boolean comprehensions and typed pipelines.
 - [x] Zero-copy `take(list, count)` / `skip(list, count)` sequence views, designed to compose naturally through typed pipelines such as `values | skip 1 | take 3`; counts are `i64`, oversized counts clamp, and negative counts fail explicitly at runtime.

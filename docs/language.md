@@ -494,6 +494,8 @@ let unique: i64[] = values | concat values[::-1] | distinct
 let nested: i64[][] = [values[::2], values[::-1][:2]]
 let flat: i64[] = nested | flatten
 let ordered: i64[] = [4, 1, 3, 2] | sorted
+let chunks: i64[][] = values[::-1] | chunked 2
+let rejoined: i64[] = chunks | flatten
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -523,6 +525,8 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 `flatten(nested)` removes exactly one list layer, converting `T[][]` to `T[]`. Both the outer nested list and each inner list may be strided views; flattening walks their logical order, checks total output length overflow before allocating the result buffer, and then writes one contiguous stack-backed local list. It does not recursively flatten arbitrary depth.
 
 `sorted(list)` returns a new ascending list without mutating its source. The bootstrap supports `i64[]`, `bool[]`, and `str[]`; booleans order `false` before `true`, strings use lexical ordering, and other element types are rejected until Flux has an explicit ordering contract. Strided inputs are read in logical order, the stable result is stack-backed, and pipelines such as `values[::-1] | sorted | map double` compose normally.
+
+`chunked(list, size)` splits a list into consecutive `T[]` views and returns them as `T[][]`. The size is an `i64` and must be greater than zero; a literal zero is rejected statically and dynamic non-positive sizes fail with an explicit Flux runtime error. Chunk descriptors are stack-backed but their elements remain zero-copy views into the original list, preserving positive or negative source stride. The final chunk may be shorter, an empty source produces zero chunks, and pipelines such as `values[::-1] | chunked 2 | flatten` preserve logical order.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 
