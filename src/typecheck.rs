@@ -2232,6 +2232,7 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
         ExprKind::Var(name) => {
             reads.insert(name.clone());
         }
+        ExprKind::AnonymousFunction { .. } => {}
         ExprKind::Call {
             name,
             args,
@@ -3401,6 +3402,76 @@ pub fn type_of_expr(
                 &format!("unknown binding, constant, or function '{name}'"),
             ))
         }
+        ExprKind::AnonymousFunction {
+            params,
+            return_type,
+            body,
+        } => {
+            let mut reads = HashSet::new();
+            collect_expr_reads(body, &mut reads);
+            let param_names = params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<HashSet<_>>();
+            if let Some(captured) = reads
+                .iter()
+                .filter(|name| env.contains_key(*name) && !param_names.contains(name.as_str()))
+                .min()
+            {
+                return Err(diag(
+                    body.span,
+                    &format!(
+                        "anonymous function captures outer binding '{captured}'; closure capture semantics are not implemented yet"
+                    ),
+                ));
+            }
+
+            let mut lambda_env = HashMap::new();
+            for param in params {
+                require_known_type(param.type_span, &param.ty, signatures)?;
+                let ty = signatures.canonical_type(&param.ty);
+                if ty == Type::Void {
+                    return Err(diag(
+                        param.type_span,
+                        "anonymous function parameters cannot have type void",
+                    ));
+                }
+                lambda_env.insert(param.name.clone(), ty);
+            }
+            for param in params {
+                if !param.name.starts_with('_') && !reads.contains(&param.name) {
+                    return Err(diag(
+                        param.name_span,
+                        &format!("unused anonymous function parameter '{}'", param.name),
+                    )
+                    .with_note("Flux has no lint-warning tier: unused bindings are compile errors; prefix an intentionally ignored binding with '_'"));
+                }
+            }
+
+            let actual = signatures.canonical_type(&type_of_expr(body, &lambda_env, signatures)?);
+            let returns = if let Some(declared) = return_type {
+                require_known_type(expr.span, declared, signatures)?;
+                let declared = signatures.canonical_type(declared);
+                if declared == Type::Void {
+                    require_type(body.span, &Type::Void, &actual, "anonymous function body")?;
+                    Vec::new()
+                } else {
+                    require_type(body.span, &declared, &actual, "anonymous function body")?;
+                    vec![declared]
+                }
+            } else if actual == Type::Void {
+                Vec::new()
+            } else {
+                vec![actual]
+            };
+            Ok(Type::Function {
+                params: params
+                    .iter()
+                    .map(|param| signatures.canonical_type(&param.ty))
+                    .collect(),
+                returns,
+            })
+        }
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
                 line: expr.line,
@@ -3748,12 +3819,6 @@ pub fn type_of_expr(
                     &format!("{name} expects a list as its first argument"),
                 ));
             };
-            if !matches!(args[1].kind, ExprKind::Var(_)) {
-                return Err(diag(
-                    args[1].span,
-                    &format!("{name} callback must be a named function or function binding"),
-                ));
-            }
             let callback_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
             if name == "map" {
                 let Type::Function { params, returns } = callback_ty else {
@@ -3827,12 +3892,6 @@ pub fn type_of_expr(
                     vec![(*element).clone(), (*element).clone()],
                 )
             };
-            if !matches!(args[reducer_index].kind, ExprKind::Var(_)) {
-                return Err(diag(
-                    args[reducer_index].span,
-                    &format!("{name} reducer must be a named function or function binding"),
-                ));
-            }
             let reducer_ty =
                 signatures.canonical_type(&type_of_expr(&args[reducer_index], env, signatures)?);
             let expected_reducer = Type::Function {
@@ -4901,6 +4960,7 @@ fn evaluate_default_expr(
             evaluate_constant_binary(expr.span, *op, left, right)
         }
         ExprKind::Nil
+        | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
@@ -5048,6 +5108,7 @@ fn evaluate_constant_expr(
             evaluate_constant_binary(expr.span, *op, left, right)
         }
         ExprKind::Nil
+        | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }

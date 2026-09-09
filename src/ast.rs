@@ -625,6 +625,11 @@ pub enum ExprKind {
     Str(String),
     Nil,
     Var(String),
+    AnonymousFunction {
+        params: Vec<Param>,
+        return_type: Option<Type>,
+        body: Box<Expr>,
+    },
     Call {
         name: String,
         args: Vec<Expr>,

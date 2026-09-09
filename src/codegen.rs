@@ -112,8 +112,17 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
         out.push_str(&function_prototype(function, signatures));
         out.push_str(";\n");
     }
+    let anonymous_functions = collect_anonymous_functions(program);
+    for function in &anonymous_functions {
+        out.push_str(&anonymous_function_prototype(function, signatures)?);
+        out.push_str(";\n");
+    }
     out.push('\n');
     emit_interface_dispatch_helpers(&mut out, program, signatures)?;
+    for function in &anonymous_functions {
+        emit_anonymous_function(&mut out, function, signatures)?;
+        out.push('\n');
+    }
 
     let mut temp_counter = 0usize;
     for function in &program.functions {
@@ -2042,6 +2051,301 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
             .join(", ")
     };
     format!("{ret} {}({params})", function_c_name(&function.name))
+}
+
+fn anonymous_function_c_name(span: SourceSpan) -> String {
+    format!(
+        "flux__lambda_{}_{}_{}",
+        span.source_id.value(),
+        span.line,
+        span.column
+    )
+}
+
+fn anonymous_function_prototype(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    let ExprKind::AnonymousFunction { params, .. } = &expr.kind else {
+        return Err(diag(
+            expr.span,
+            "expected anonymous function during code generation",
+        ));
+    };
+    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
+    let Type::Function {
+        params: param_types,
+        returns,
+    } = ty
+    else {
+        return Err(diag(
+            expr.span,
+            "anonymous function did not produce a function type",
+        ));
+    };
+    if returns.len() > 1 {
+        return Err(diag(
+            expr.span,
+            "anonymous functions currently support zero or one return value",
+        ));
+    }
+    let ret = returns
+        .first()
+        .map(|ty| c_type(ty, signatures))
+        .unwrap_or_else(|| "void".to_string());
+    let params_text = if params.is_empty() {
+        "void".to_string()
+    } else {
+        params
+            .iter()
+            .zip(param_types.iter())
+            .map(|(param, ty)| format!("{} {}", c_type(ty, signatures), local_c_name(&param.name)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Ok(format!(
+        "{ret} {}({params_text})",
+        anonymous_function_c_name(expr.span)
+    ))
+}
+
+fn emit_anonymous_function(
+    out: &mut String,
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let ExprKind::AnonymousFunction { params, body, .. } = &expr.kind else {
+        return Err(diag(
+            expr.span,
+            "expected anonymous function during code generation",
+        ));
+    };
+    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
+    let Type::Function { returns, .. } = ty else {
+        return Err(diag(
+            expr.span,
+            "anonymous function did not produce a function type",
+        ));
+    };
+    out.push_str(&anonymous_function_prototype(expr, signatures)?);
+    out.push_str(" {\n");
+    let mut env = HashMap::new();
+    for param in params {
+        env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+    }
+    let body = emit_expr(body, &env, signatures)?;
+    if returns.is_empty() {
+        out.push_str(&format!("    {};\n", body.code));
+    } else {
+        out.push_str(&format!("    return {};\n", body.code));
+    }
+    out.push_str("}\n");
+    Ok(())
+}
+
+fn collect_anonymous_functions(program: &Program) -> Vec<&Expr> {
+    let mut functions = Vec::new();
+    for function in &program.functions {
+        collect_anonymous_functions_from_block(&function.body, &mut functions);
+    }
+    functions
+}
+
+fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut Vec<&'a Expr>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => collect_anonymous_functions_from_expr(expr, functions),
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_anonymous_functions_from_expr(value, functions);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_anonymous_functions_from_expr(expr, functions);
+                if let Some(redirect) = redirect {
+                    collect_anonymous_functions_from_expr(&redirect.path, functions);
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_anonymous_functions_from_expr(cond, functions);
+                collect_anonymous_functions_from_block(body, functions);
+                collect_anonymous_functions_from_block(else_body, functions);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_anonymous_functions_from_expr(start, functions);
+                collect_anonymous_functions_from_expr(end, functions);
+                collect_anonymous_functions_from_block(body, functions);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_anonymous_functions_from_expr(iterable, functions);
+                collect_anonymous_functions_from_block(body, functions);
+            }
+            StmtKind::While { cond, body } => {
+                collect_anonymous_functions_from_expr(cond, functions);
+                collect_anonymous_functions_from_block(body, functions);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_anonymous_functions_from_expr(value, functions);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_anonymous_functions_from_expr(guard, functions);
+                    }
+                    collect_anonymous_functions_from_block(&arm.body, functions);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_anonymous_functions_from_expr(value, functions);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_anonymous_functions_from_expr(guard, functions);
+                    }
+                    collect_anonymous_functions_from_block(&arm.body, functions);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+}
+
+fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'a Expr>) {
+    match &expr.kind {
+        ExprKind::AnonymousFunction { body, .. } => {
+            functions.push(expr);
+            collect_anonymous_functions_from_expr(body, functions);
+        }
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            for arg in args {
+                collect_anonymous_functions_from_expr(arg, functions);
+            }
+            for arg in named_args {
+                collect_anonymous_functions_from_expr(&arg.value, functions);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for arg in args {
+                collect_anonymous_functions_from_expr(arg, functions);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            collect_anonymous_functions_from_expr(input, functions);
+            for arg in args {
+                collect_anonymous_functions_from_expr(arg, functions);
+            }
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                collect_anonymous_functions_from_expr(item, functions);
+            }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_anonymous_functions_from_expr(value, functions)
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            collect_anonymous_functions_from_expr(condition, functions);
+            collect_anonymous_functions_from_expr(value, functions);
+            if let Some(else_value) = else_value {
+                collect_anonymous_functions_from_expr(else_value, functions);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            collect_anonymous_functions_from_expr(base, functions);
+            collect_anonymous_functions_from_expr(index, functions);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            collect_anonymous_functions_from_expr(base, functions);
+            for part in [start, end, step].into_iter().flatten() {
+                collect_anonymous_functions_from_expr(part, functions);
+            }
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            collect_anonymous_functions_from_expr(value, functions);
+            collect_anonymous_functions_from_expr(iterable, functions);
+            if let Some(condition) = condition {
+                collect_anonymous_functions_from_expr(condition, functions);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                collect_anonymous_functions_from_expr(base, functions);
+            }
+            for field in fields {
+                collect_anonymous_functions_from_expr(&field.value, functions);
+            }
+        }
+        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+            collect_anonymous_functions_from_expr(base, functions)
+        }
+        ExprKind::Match { value, arms } => {
+            collect_anonymous_functions_from_expr(value, functions);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_anonymous_functions_from_expr(guard, functions);
+                }
+                collect_anonymous_functions_from_expr(&arm.value, functions);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            collect_anonymous_functions_from_expr(value, functions);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_anonymous_functions_from_expr(guard, functions);
+                }
+                collect_anonymous_functions_from_expr(&arm.value, functions);
+            }
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            collect_anonymous_functions_from_expr(then_expr, functions);
+            collect_anonymous_functions_from_expr(cond, functions);
+            collect_anonymous_functions_from_expr(else_expr, functions);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_anonymous_functions_from_expr(left, functions);
+            collect_anonymous_functions_from_expr(right, functions);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::Var(_) => {}
+    }
 }
 
 fn emit_function(
@@ -4517,6 +4821,10 @@ fn emit_expr(
                 ));
             }
         }
+        ExprKind::AnonymousFunction { .. } => EmittedExpr {
+            code: anonymous_function_c_name(expr.span),
+            ty: type_of_expr(expr, env, signatures)?,
+        },
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
                 line: expr.line,
@@ -5826,6 +6134,9 @@ fn collect_update_helpers_from_expr(
     helpers: &mut String,
 ) {
     match &expr.kind {
+        ExprKind::AnonymousFunction { body, .. } => {
+            collect_update_helpers_from_expr(body, signatures, emitted, helpers);
+        }
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {

@@ -23,5 +23,8 @@ fn main() -> i64 {
     print(apply(mapper, 21))
     let selected: Mapper = choose(false)
     print(selected(41))
+    let anonymous: Mapper = fn(value: i64) { value * 3 }
+    print(apply(anonymous, 14))
+    print(apply(fn(value: i64) -> i64 { value + 2 }, 40))
     return 0
 }

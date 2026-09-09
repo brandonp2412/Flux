@@ -142,7 +142,7 @@ Flux should be capable of modelling substantial programs without object-oriented
 
 ## Interfaces and capabilities
 
-The interface track is now the active Milestone 2 subsystem. Declarations come first so type checking, semantic tooling, and later implementation/dispatch rules share one contract model; declaring an interface must not create an object hierarchy or runtime allocation by itself.
+The interface/capability foundation is complete for the bootstrap compiler: declarations, implementations, static dispatch, dynamic interface values, and composition all share one non-OOP contract model. The remaining platform-capability item is intentionally sequenced behind the first real non-Linux platform backend rather than blocking the current function-language work.
 
 - [x] `interface` declarations consisting of statically validated function signatures/capabilities, with named-only parameter metadata, formatter/semantic support, namespace diagnostics, and zero-runtime lowering until implementation/dispatch semantics are introduced.
 - [x] Explicit implementation of interfaces by concrete data types without inheritance, using exhaustive capability-to-free-function mappings with concrete first-parameter receiver validation, exact named-parameter/return contracts, formatter/semantic support, and zero-runtime conformance metadata. Module implementations remain naturally downstream of modules/packages.
@@ -150,13 +150,13 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 - [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interfaceValue, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
 - [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, statement-level conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
 - [x] Interface composition without class inheritance using `interface Child: ParentA, ParentB { ... }`; compatible capabilities flatten into one contract for implementation/static/dynamic dispatch, while unknown parents, cycles, duplicate parents, and conflicting inherited signatures are rejected.
-- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Blocked on modules/imports plus the first real platform backend; do not invent placeholder platform APIs before those exist.
+- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Modules/imports now exist; this is blocked on the first real platform backend. Do not invent placeholder platform APIs before one exists.
 
 ## Functions
 
 - [x] Named functions as first-class values: typed function references can be stored, passed, returned, and invoked through native function-pointer lowering.
-- [ ] Closures with safe capture semantics.
-- [ ] Anonymous functions.
+- [ ] Closures with safe capture semantics. Outer-local capture from anonymous functions is deliberately rejected until ownership/lifetime rules can make the environment representation safe rather than silently heap-boxing it.
+- [x] Capture-free anonymous functions using `fn(value: i64) { value * 2 }` with typed positional parameters, optional explicit scalar/`void` return annotations, inferred scalar/`void` returns, formatter/semantic support, direct higher-order-call use, and deterministic native helper/function-pointer lowering. Anonymous parameters obey the same unused-binding compile-error rule as named functions.
 - [x] Concise single-expression function syntax using `fn name(args) -> type { expression }`, preserving brace-delimited bodies while lowering through the ordinary implicit return/type-check/native ABI path, including exact multi-return call forwarding.
 - [x] Named-only parameters using a `*` delimiter, with statically validated named call arguments and native ABI reordering.
 - [x] Optional positional/named parameters with explicit compile-time primitive defaults, including top-level constant references and call-site default expansion.

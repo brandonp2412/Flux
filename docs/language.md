@@ -284,9 +284,26 @@ fn apply(transform: Mapper, value: i64) -> i64 {
 }
 ```
 
-A named function can be assigned to a binding, passed as an argument, returned from another function, and invoked through that binding. Function-value calls are positional because a function type describes the callable ABI rather than declaration-only parameter names/defaults. The bootstrap backend lowers these values to typed native C function pointers with deterministic generated typedefs; there is no callable object, boxing, reflection, or dynamic-dispatch runtime.
+A named function can be assigned to a binding, passed as an argument, returned from another function, and invoked through that binding. Capture-free anonymous functions use the same concrete function-value representation and can be stored or passed directly:
 
-First-class function types currently support zero or one return value. Ordinary Flux functions may still return multiple values; making multi-return shapes first-class requires a standardized function-value ABI and remains future work. Anonymous functions and closures are separate planned features because captured values must integrate with the ownership model rather than being hidden heap objects.
+```flux
+type Mapper = fn(i64) -> i64
+
+fn apply(transform: Mapper, value: i64) -> i64 {
+    return transform(value)
+}
+
+fn main() -> i64 {
+    let double: Mapper = fn(value: i64) { value * 2 }
+    return apply(fn(value: i64) -> i64 { value + 1 }, double(20))
+}
+```
+
+Anonymous parameters are typed and positional. Their single-expression body may infer a scalar or `void` return, or the return type may be written explicitly with `->`. Anonymous parameters follow the normal source-cleanliness rule: an unused named parameter is a compile error unless it begins with `_`. Reading an outer local binding from an anonymous function is currently rejected; that operation is a closure capture and remains blocked on the ownership/lifetime model rather than being implemented as an implicit heap object.
+
+Function-value calls are positional because a function type describes the callable ABI rather than declaration-only parameter names/defaults. The bootstrap backend lowers named and capture-free anonymous values to typed native C function pointers with deterministic generated typedefs/helpers; there is no callable object, boxing, reflection, or dynamic-dispatch runtime.
+
+First-class function types currently support zero or one return value. Ordinary Flux functions may still return multiple values; making multi-return shapes first-class requires a standardized function-value ABI and remains future work. Safe captured closures remain future work under the ownership model.
 
 ## Error handling
 
@@ -588,7 +605,7 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 
 `map(list, callback)`, `filter(list, predicate)`, and its readable alias `where(list, predicate)` are compiler-known collection transforms. `map` requires a concrete `fn(T) -> U` callback and produces `U[]`; `filter`/`where` require `fn(T) -> bool` and preserve `T[]`. The source is evaluated once and strided views are consumed directly. Chained transform stages fuse into one source loop and write only the final collection into one stack-backed buffer sized to the original source, avoiding intermediate list materialization. During the bootstrap collection-producing transform pipelines must be bound directly to an immutable local value, matching list comprehensions.
 
-`fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a named function or function binding with an exact concrete type: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one produced element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly, and compose through pipelines such as `values[::-1] | reduce add`. When a terminal reduction follows `map`/`filter`/`where`, those transforms are executed lazily inside the reduction loop, so no intermediate transformed list or buffer is created. During the bootstrap reductions lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
+`fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a concrete function value with an exact type, so either a named/function binding or a capture-free anonymous function is valid: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one produced element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly, and compose through pipelines such as `values[::-1] | reduce add`. When a terminal reduction follows `map`/`filter`/`where`, those transforms are executed lazily inside the reduction loop, so no intermediate transformed list or buffer is created. During the bootstrap reductions lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
 
 `concat(left, right)` joins two lists with exactly the same concrete element type. It accepts strided inputs, preserves logical element order, checks length overflow explicitly, and produces one contiguous stack-backed local list. It composes through pipelines, for example `left | concat right | map double`. Like other collection-producing bootstrap operations, the concatenated result must remain within the supported local lifetime.
 

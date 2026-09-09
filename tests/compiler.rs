@@ -2551,6 +2551,98 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_capture_free_anonymous_functions_and_inline_higher_order_calls() {
+    let source = r#"
+type Mapper = fn(i64) -> i64
+
+fn apply(transform: Mapper, value: i64) -> i64 {
+    return transform(value)
+}
+
+fn main() -> i64 {
+    let double: Mapper = fn(value: i64) { value * 2 }
+    print(apply(double, 21))
+    let values: i64[] = [1, 2, 3]
+    let doubled: i64[] = map(values, fn(value: i64) { value * 2 })
+    let total: i64 = fold(doubled, 0, fn(total: i64, value: i64) { total + value })
+    print(total)
+    return apply(fn(value: i64) -> i64 { value + 1 }, 41)
+}
+"#;
+
+    check_source(source).expect("capture-free anonymous functions should typecheck");
+    let generated = compile_to_c(source).expect("anonymous functions should lower natively");
+    assert!(generated.contains("flux__lambda_0_"));
+    assert!(generated.contains("return flux_mul_i64(flux__local_value, INT64_C(2));"));
+    assert!(generated.contains("flux__fn_i64__to__i64 flux__local_double = flux__lambda_0_"));
+    assert!(generated.contains("return flux__fn_apply(flux__lambda_0_"));
+}
+
+#[test]
+fn formatter_and_semantic_database_preserve_anonymous_functions() {
+    let source = "type Mapper=fn(i64)->i64\nfn main()->i64 {\n let mapper:Mapper=fn(value:i64)->i64 { value+1 }\n return mapper(41)\n}\n";
+    let expected = "type Mapper = fn(i64) -> i64\nfn main() -> i64 {\n    let mapper: Mapper = fn(value: i64) -> i64 { value + 1 }\n    return mapper(41)\n}\n";
+    let formatted =
+        fluxc::formatter::format_source(source).expect("anonymous functions should format");
+    assert_eq!(formatted, expected);
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted anonymous functions should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(705))
+        .expect("anonymous function source should analyze");
+    let parameter = database
+        .symbols_named("value")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Parameter)
+        .expect("anonymous parameter should be indexed");
+    assert_eq!(parameter.ty, Some(fluxc::ast::Type::I64));
+}
+
+#[test]
+fn rejects_anonymous_function_captures_and_invalid_bodies() {
+    let capture = r#"
+type Mapper = fn(i64) -> i64
+fn main() -> i64 {
+    let factor: i64 = 2
+    let mapper: Mapper = fn(value: i64) { value * factor }
+    return mapper(21)
+}
+"#;
+    let error = check_source(capture).expect_err("captures must wait for safe closure semantics");
+    assert!(
+        error
+            .message
+            .contains("anonymous function captures outer binding 'factor'")
+    );
+
+    let wrong_return = r#"
+type Mapper = fn(i64) -> bool
+fn main() -> i64 {
+    let mapper: Mapper = fn(value: i64) -> bool { value + 1 }
+    print(mapper(1))
+    return 0
+}
+"#;
+    let error = check_source(wrong_return).expect_err("explicit anonymous return type must match");
+    assert!(error.message.contains("anonymous function body"));
+    assert!(error.message.contains("expected bool, got i64"));
+
+    let unused = r#"
+type Mapper = fn(i64) -> i64
+fn main() -> i64 {
+    let mapper: Mapper = fn(value: i64) { 1 }
+    return mapper(0)
+}
+"#;
+    let error = check_source(unused).expect_err("anonymous parameters obey no-warning cleanliness");
+    assert!(
+        error
+            .message
+            .contains("unused anonymous function parameter 'value'")
+    );
+}
+
+#[test]
 fn rejects_invalid_first_class_function_value_usage() {
     let wrong_shape = r#"
 type Mapper = fn(i64) -> i64

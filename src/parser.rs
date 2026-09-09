@@ -639,6 +639,13 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
 fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
     expr.span = expr.span.with_source(source_id);
     match &mut expr.kind {
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            for param in params {
+                param.name_span = param.name_span.with_source(source_id);
+                param.type_span = param.type_span.with_source(source_id);
+            }
+            attach_expr_source(body, source_id);
+        }
         ExprKind::Call {
             args, named_args, ..
         } => {
@@ -940,6 +947,13 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
     }
     expr.span.column += offset;
     match &mut expr.kind {
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            for param in params {
+                param.name_span.column += offset;
+                param.type_span.column += offset;
+            }
+            shift_expr_columns(body, offset);
+        }
         ExprKind::Call {
             args, named_args, ..
         } => {
@@ -4228,12 +4242,14 @@ enum TokenKind {
     True,
     False,
     Nil,
+    Fn,
     If,
     Else,
     For,
     In,
     Plus,
     Minus,
+    Arrow,
     Star,
     Slash,
     EqEq,
@@ -4724,6 +4740,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "true" => TokenKind::True,
                 "false" => TokenKind::False,
                 "nil" => TokenKind::Nil,
+                "fn" => TokenKind::Fn,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
                 "for" => TokenKind::For,
@@ -4733,6 +4750,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
         } else {
             let (kind, width) = match byte {
                 b'+' => (TokenKind::Plus, 1),
+                b'-' if bytes.get(index + 1) == Some(&b'>') => (TokenKind::Arrow, 2),
                 b'-' => (TokenKind::Minus, 1),
                 b'*' => (TokenKind::Star, 1),
                 b'/' => (TokenKind::Slash, 1),
@@ -5115,6 +5133,289 @@ impl ExprParser<'_> {
         Ok(expr)
     }
 
+    fn parse_type_annotation(&mut self) -> Result<(Type, SourceSpan), Diagnostic> {
+        let Some(start) = self.tokens.get(self.index).cloned() else {
+            return Err(diag(self.line, "expected type"));
+        };
+        let start_span = start.span;
+        let mut ty = match start.kind {
+            TokenKind::Ident(name) => {
+                self.index += 1;
+                Type::parse(&name).ok_or_else(|| {
+                    Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        start_span,
+                        format!("unknown type syntax '{name}'"),
+                    )
+                })?
+            }
+            TokenKind::Fn => {
+                self.index += 1;
+                let Some(open) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "function types require '(' after 'fn'"));
+                };
+                if !matches!(open.kind, TokenKind::LParen) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        open.span,
+                        "function types require '(' after 'fn'",
+                    ));
+                }
+                self.index += 1;
+                let mut params = Vec::new();
+                if !matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::RParen)
+                ) {
+                    loop {
+                        let (param, span) = self.parse_type_annotation()?;
+                        if param == Type::Void {
+                            return Err(Diagnostic::new(
+                                DiagnosticStage::Parse,
+                                span,
+                                "function parameters cannot have type void",
+                            ));
+                        }
+                        params.push(param);
+                        match self.tokens.get(self.index).map(|token| &token.kind) {
+                            Some(TokenKind::Comma) => self.index += 1,
+                            Some(TokenKind::RParen) => break,
+                            _ => {
+                                return Err(diag(
+                                    self.line,
+                                    "expected ',' or ')' in function type parameters",
+                                ));
+                            }
+                        }
+                    }
+                }
+                let Some(close) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "expected ')' in function type"));
+                };
+                if !matches!(close.kind, TokenKind::RParen) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        close.span,
+                        "expected ')' in function type",
+                    ));
+                }
+                self.index += 1;
+                let Some(arrow) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(self.line, "function types require '->' return type"));
+                };
+                if !matches!(arrow.kind, TokenKind::Arrow) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        arrow.span,
+                        "function types require '->' return type",
+                    ));
+                }
+                self.index += 1;
+                let (return_ty, _) = self.parse_type_annotation()?;
+                Type::Function {
+                    params,
+                    returns: if return_ty == Type::Void {
+                        Vec::new()
+                    } else {
+                        vec![return_ty]
+                    },
+                }
+            }
+            _ => {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    start_span,
+                    "expected type",
+                ));
+            }
+        };
+
+        while matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::LBracket)
+        ) && matches!(
+            self.tokens.get(self.index + 1).map(|token| &token.kind),
+            Some(TokenKind::RBracket)
+        ) {
+            self.index += 2;
+            ty = Type::List(Box::new(ty));
+        }
+        let end = self.tokens[self.index.saturating_sub(1)].span;
+        Ok((
+            ty,
+            SourceSpan::new(
+                self.line,
+                start_span.column,
+                end.column + end.length - start_span.column,
+            ),
+        ))
+    }
+
+    fn parse_anonymous_function(&mut self, fn_span: SourceSpan) -> Result<Expr, Diagnostic> {
+        let Some(open) = self.tokens.get(self.index).cloned() else {
+            return Err(diag(
+                self.line,
+                "anonymous functions require '(' after 'fn'",
+            ));
+        };
+        if !matches!(open.kind, TokenKind::LParen) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                open.span,
+                "anonymous functions require '(' after 'fn'",
+            ));
+        }
+        self.index += 1;
+        let mut params = Vec::new();
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RParen)
+        ) {
+            loop {
+                let Some(name_token) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(
+                        self.line,
+                        "anonymous function requires a parameter name",
+                    ));
+                };
+                let TokenKind::Ident(name) = name_token.kind else {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        name_token.span,
+                        "anonymous function parameters use 'name: type' syntax",
+                    ));
+                };
+                validate_identifier(&name, self.line)?;
+                if params.iter().any(|param: &Param| param.name == name) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        name_token.span,
+                        format!("duplicate anonymous function parameter '{name}'"),
+                    ));
+                }
+                self.index += 1;
+                let Some(colon) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(
+                        self.line,
+                        "anonymous function parameters use 'name: type' syntax",
+                    ));
+                };
+                if !matches!(colon.kind, TokenKind::Colon) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        colon.span,
+                        "anonymous function parameters use 'name: type' syntax",
+                    ));
+                }
+                self.index += 1;
+                let (ty, type_span) = self.parse_type_annotation()?;
+                if ty == Type::Void {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        type_span,
+                        "anonymous function parameters cannot have type void",
+                    ));
+                }
+                params.push(Param {
+                    name,
+                    name_span: name_token.span,
+                    ty,
+                    type_span,
+                    named_only: false,
+                    default: None,
+                });
+                match self.tokens.get(self.index).map(|token| &token.kind) {
+                    Some(TokenKind::Comma) => self.index += 1,
+                    Some(TokenKind::RParen) => break,
+                    _ => {
+                        return Err(diag(
+                            self.line,
+                            "expected ',' or ')' after anonymous function parameter",
+                        ));
+                    }
+                }
+            }
+        }
+        let Some(close_params) = self.tokens.get(self.index).cloned() else {
+            return Err(diag(
+                self.line,
+                "expected ')' after anonymous function parameters",
+            ));
+        };
+        if !matches!(close_params.kind, TokenKind::RParen) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                close_params.span,
+                "expected ')' after anonymous function parameters",
+            ));
+        }
+        self.index += 1;
+
+        let return_type = if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Arrow)
+        ) {
+            self.index += 1;
+            let (ty, _) = self.parse_type_annotation()?;
+            Some(ty)
+        } else {
+            None
+        };
+
+        let Some(open_body) = self.tokens.get(self.index).cloned() else {
+            return Err(diag(
+                self.line,
+                "anonymous functions require a single-expression '{ ... }' body",
+            ));
+        };
+        if !matches!(open_body.kind, TokenKind::LBrace) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                open_body.span,
+                "anonymous functions require a single-expression '{ ... }' body",
+            ));
+        }
+        self.index += 1;
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBrace)
+        ) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                open_body.span,
+                "anonymous function body requires an expression",
+            ));
+        }
+        let body = self.parse_conditional()?;
+        let Some(close_body) = self.tokens.get(self.index).cloned() else {
+            return Err(diag(
+                self.line,
+                "expected '}' after anonymous function body",
+            ));
+        };
+        if !matches!(close_body.kind, TokenKind::RBrace) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                close_body.span,
+                "expected '}' after anonymous function body",
+            ));
+        }
+        self.index += 1;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(
+                self.line,
+                fn_span.column,
+                close_body.span.column + close_body.span.length - fn_span.column,
+            ),
+            kind: ExprKind::AnonymousFunction {
+                params,
+                return_type,
+                body: Box::new(body),
+            },
+        })
+    }
+
     fn parse_atom(&mut self) -> Result<Expr, Diagnostic> {
         let Some(token) = self.tokens.get(self.index).cloned() else {
             return Err(diag(self.line, "expected expression"));
@@ -5148,6 +5449,7 @@ impl ExprParser<'_> {
                 span: token_span,
                 kind: ExprKind::Nil,
             }),
+            TokenKind::Fn => self.parse_anonymous_function(token_span),
             TokenKind::LBracket => self.parse_list_literal(token_span),
             TokenKind::Ident(name) => {
                 if matches!(

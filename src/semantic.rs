@@ -314,6 +314,17 @@ fn collect_expr_pattern_symbols(
     signatures: &Signatures,
 ) {
     match &expr.kind {
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            for param in params {
+                symbols.push(SemanticSymbol {
+                    name: param.name.clone(),
+                    kind: SymbolKind::Parameter,
+                    ty: Some(param.ty.clone()),
+                    span: param.name_span,
+                });
+            }
+            collect_expr_pattern_symbols(body, symbols, signatures);
+        }
         ExprKind::Match { value, arms } => {
             collect_expr_pattern_symbols(value, symbols, signatures);
             for arm in arms {

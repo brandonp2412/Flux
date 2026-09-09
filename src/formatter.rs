@@ -849,6 +849,22 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Str(value) => format_string(value),
         ExprKind::Nil => "nil".to_string(),
         ExprKind::Var(name) => name.clone(),
+        ExprKind::AnonymousFunction {
+            params,
+            return_type,
+            body,
+        } => {
+            let params = params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.ty.name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let return_type = return_type
+                .as_ref()
+                .map(|ty| format!(" -> {}", ty.name()))
+                .unwrap_or_default();
+            format!("fn({params}){return_type} {{ {} }}", format_expr(body, 0))
+        }
         ExprKind::ShellCall { name, args, .. } => {
             if args.is_empty() {
                 name.clone()
