@@ -292,19 +292,68 @@ fn emit_runtime_prelude(
     }
     out.push('\n');
 
+    let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
+    let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
+    let uses_android_platform_api = uses_android_vibrate || uses_android_open_url;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
-    if uses_android && runtime_usage.contains("flux__android_vibrate(") {
-        out.push_str("static void flux__android_vibrate(int64_t duration_ms) {\n");
-        out.push_str("    if (duration_ms <= 0 || flux__android_activity == NULL) return;\n");
+    if uses_android_platform_api {
+        out.push_str("static JNIEnv *flux__android_get_env(bool *detach) {\n");
+        out.push_str("    *detach = false;\n");
+        out.push_str("    if (flux__android_activity == NULL) return NULL;\n");
         out.push_str("    JavaVM *vm = flux__android_activity->vm;\n");
         out.push_str("    JNIEnv *env = NULL;\n");
-        out.push_str("    bool detach = false;\n");
-        out.push_str("    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {\n");
-        out.push_str("        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;\n");
-        out.push_str("        detach = true;\n");
+        out.push_str("    jint status = (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6);\n");
+        out.push_str("    if (status == JNI_EDETACHED) {\n");
+        out.push_str(
+            "        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return NULL;\n",
+        );
+        out.push_str("        *detach = true;\n");
+        out.push_str("    } else if (status != JNI_OK) {\n");
+        out.push_str("        return NULL;\n");
         out.push_str("    }\n");
+        out.push_str("    return env;\n");
+        out.push_str("}\n");
+        out.push_str("static void flux__android_release_env(bool detach) {\n");
+        out.push_str("    if (detach && flux__android_activity != NULL) {\n");
+        out.push_str("        JavaVM *vm = flux__android_activity->vm;\n");
+        out.push_str("        (*vm)->DetachCurrentThread(vm);\n");
+        out.push_str("    }\n");
+        out.push_str("}\n");
+    }
+    if uses_android_open_url {
+        out.push_str(
+            "static jstring flux__android_utf8_string(JNIEnv *env, const char *value) {\n",
+        );
+        out.push_str("    if (value == NULL) return NULL;\n");
+        out.push_str("    size_t length = strlen(value);\n");
+        out.push_str("    if (length > INT32_MAX) return NULL;\n");
+        out.push_str("    jbyteArray bytes = (*env)->NewByteArray(env, (jsize)length);\n");
+        out.push_str("    if (bytes == NULL) return NULL;\n");
+        out.push_str(
+            "    (*env)->SetByteArrayRegion(env, bytes, 0, (jsize)length, (const jbyte *)value);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, bytes); return NULL; }\n");
+        out.push_str("    jclass string_class = (*env)->FindClass(env, \"java/lang/String\");\n");
+        out.push_str("    if (string_class == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, bytes); return NULL; }\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, string_class, \"<init>\", \"([BLjava/lang/String;)V\");\n");
+        out.push_str("    jstring charset = (*env)->NewStringUTF(env, \"UTF-8\");\n");
+        out.push_str("    jstring result = NULL;\n");
+        out.push_str("    if (ctor != NULL && charset != NULL) result = (jstring)(*env)->NewObject(env, string_class, ctor, bytes, charset);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); result = NULL; }\n");
+        out.push_str("    if (charset != NULL) (*env)->DeleteLocalRef(env, charset);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, string_class);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
+        out.push_str("    return result;\n");
+        out.push_str("}\n");
+    }
+    if uses_android_vibrate {
+        out.push_str("static void flux__android_vibrate(int64_t duration_ms) {\n");
+        out.push_str("    if (duration_ms <= 0 || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
         out.push_str("    jobject activity = flux__android_activity->clazz;\n");
         out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
         out.push_str("    if (activity_class == NULL) goto done;\n");
@@ -318,16 +367,8 @@ fn emit_runtime_prelude(
         out.push_str("        jclass vibrator_class = (*env)->GetObjectClass(env, vibrator);\n");
         out.push_str("        if (vibrator_class != NULL) {\n");
         out.push_str("            jmethodID vibrate = (*env)->GetMethodID(env, vibrator_class, \"vibrate\", \"(J)V\");\n");
-        out.push_str("            if (vibrate != NULL) {\n");
-        out.push_str(
-            "                (*env)->CallVoidMethod(env, vibrator, vibrate, (jlong)duration_ms);\n",
-        );
-        out.push_str(
-            "                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n",
-        );
-        out.push_str("            } else if ((*env)->ExceptionCheck(env)) {\n");
-        out.push_str("                (*env)->ExceptionClear(env);\n");
-        out.push_str("            }\n");
+        out.push_str("            if (vibrate != NULL) (*env)->CallVoidMethod(env, vibrator, vibrate, (jlong)duration_ms);\n");
+        out.push_str("            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
         out.push_str("            (*env)->DeleteLocalRef(env, vibrator_class);\n");
         out.push_str("        }\n");
         out.push_str("        (*env)->DeleteLocalRef(env, vibrator);\n");
@@ -336,7 +377,56 @@ fn emit_runtime_prelude(
         out.push_str("done_activity_class:\n");
         out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
         out.push_str("done:\n");
-        out.push_str("    if (detach) (*vm)->DetachCurrentThread(vm);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_open_url {
+        out.push_str("static void flux__android_open_url(const char *url) {\n");
+        out.push_str("    if (url == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass uri_class = NULL; jclass intent_class = NULL; jclass activity_class = NULL;\n");
+        out.push_str("    jstring url_string = NULL; jstring action = NULL;\n");
+        out.push_str("    jobject uri = NULL; jobject intent = NULL;\n");
+        out.push_str("    uri_class = (*env)->FindClass(env, \"android/net/Uri\");\n");
+        out.push_str("    if (uri_class == NULL) goto done;\n");
+        out.push_str("    jmethodID parse = (*env)->GetStaticMethodID(env, uri_class, \"parse\", \"(Ljava/lang/String;)Landroid/net/Uri;\");\n");
+        out.push_str("    if (parse == NULL) goto done;\n");
+        out.push_str("    url_string = flux__android_utf8_string(env, url);\n");
+        out.push_str("    if (url_string == NULL) goto done;\n");
+        out.push_str(
+            "    uri = (*env)->CallStaticObjectMethod(env, uri_class, parse, url_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || uri == NULL) goto done;\n");
+        out.push_str("    intent_class = (*env)->FindClass(env, \"android/content/Intent\");\n");
+        out.push_str("    if (intent_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;Landroid/net/Uri;)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    action = (*env)->NewStringUTF(env, \"android.intent.action.VIEW\");\n");
+        out.push_str("    if (action == NULL) goto done;\n");
+        out.push_str("    intent = (*env)->NewObject(env, intent_class, ctor, action, uri);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || intent == NULL) goto done;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID start_activity = (*env)->GetMethodID(env, activity_class, \"startActivity\", \"(Landroid/content/Intent;)V\");\n");
+        out.push_str("    if (start_activity == NULL) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, start_activity, intent);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    if (intent != NULL) (*env)->DeleteLocalRef(env, intent);\n");
+        out.push_str("    if (action != NULL) (*env)->DeleteLocalRef(env, action);\n");
+        out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
+        out.push_str("    if (uri != NULL) (*env)->DeleteLocalRef(env, uri);\n");
+        out.push_str("    if (url_string != NULL) (*env)->DeleteLocalRef(env, url_string);\n");
+        out.push_str("    if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
 
@@ -8115,18 +8205,24 @@ fn emit_qualified_call(
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
     if namespace == "android" {
-        if name != "vibrate" || args.len() != 1 || !named_args.is_empty() {
+        if args.len() != 1 || !named_args.is_empty() {
             return Err(diag(
                 span,
                 "invalid android platform call reached code generation",
             ));
         }
-        let duration = emit_expr(&args[0], env, signatures)?;
-        return Ok((
-            format!("flux__android_vibrate({})", duration.code),
-            Vec::new(),
-            None,
-        ));
+        let value = emit_expr(&args[0], env, signatures)?;
+        let code = match name {
+            "vibrate" => format!("flux__android_vibrate({})", value.code),
+            "open_url" => format!("flux__android_open_url({})", value.code),
+            _ => {
+                return Err(diag(
+                    span,
+                    "unknown android platform call reached code generation",
+                ));
+            }
+        };
+        return Ok((code, Vec::new(), None));
     }
     if let Some(definition) = signatures.enum_type(namespace) {
         let variant = definition

@@ -4664,6 +4664,17 @@ fn check_qualified_call(
                 )?;
                 return Ok(Vec::new());
             }
+            "open_url" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("android.open_url expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &actual, "android.open_url url")?;
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,

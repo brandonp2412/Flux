@@ -9748,6 +9748,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
         root.join("src/main.flux"),
         r#"fn started() -> void {
     android.vibrate(25)
+    android.open_url("https://example.com")
     print("started")
 }
 fn exiting() -> void {
@@ -9773,6 +9774,10 @@ app Screen(on_start: started, on_exit: exiting)
     assert!(generated.contains("static void flux__android_vibrate(int64_t duration_ms)"));
     assert!(generated.contains("getSystemService"));
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
+    assert!(generated.contains("static void flux__android_open_url(const char *url)"));
+    assert!(generated.contains("android.intent.action.VIEW"));
+    assert!(generated.contains("startActivity"));
+    assert!(generated.contains("flux__android_utf8_string"));
     assert!(generated.contains("flux__fn_exiting();"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("GtkApplication"));
@@ -9791,16 +9796,32 @@ fn main() -> i64 {
             .contains("android.* platform APIs require the Android target")
     );
 
-    let invalid = r#"
+    let tree_shaken = r#"
+fn android_only() -> void {
+    android.open_url("https://example.com")
+}
 fn main() -> i64 {
-    android.vibrate("long")
     return 0
 }
 "#;
-    let errors = check_source_all(invalid).expect_err("android.vibrate requires i64 milliseconds");
+    let generated = compile_to_c(tree_shaken)
+        .expect("unreachable platform-specific code should not poison another target");
+    assert!(!generated.contains("flux__android_open_url"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    android.vibrate("long")
+    android.open_url(42)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("Android intrinsics require typed arguments");
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate duration_ms")
             && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.open_url url") && error.message.contains("expected str")
     }));
 
     let _ = fs::remove_dir_all(&root);

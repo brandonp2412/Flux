@@ -1145,6 +1145,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn android.vibrate(duration_ms: i64) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "open_url",
+            3,
+            "fn android.open_url(url: str) -> void",
+        );
         return true;
     }
     if let Some(definition) = program
@@ -1949,13 +1956,26 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
-        if namespace == "android" && member == "vibrate" {
-            return Some(signature_help_for_builtin(
-                "android.vibrate",
-                &["duration_ms: i64"],
-                "void",
-                active_parameter,
-            ));
+        if namespace == "android" {
+            match member {
+                "vibrate" => {
+                    return Some(signature_help_for_builtin(
+                        "android.vibrate",
+                        &["duration_ms: i64"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "open_url" => {
+                    return Some(signature_help_for_builtin(
+                        "android.open_url",
+                        &["url: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
         }
         if let Some(definition) = database.signatures().enum_type(namespace)
             && let Some(variant) = definition.variant(member)
@@ -4765,6 +4785,8 @@ mod tests {
         .to_json();
         assert!(android_items.contains("\"label\":\"vibrate\""));
         assert!(android_items.contains("fn android.vibrate(duration_ms: i64) -> void"));
+        assert!(android_items.contains("\"label\":\"open_url\""));
+        assert!(android_items.contains("fn android.open_url(url: str) -> void"));
     }
 
     #[test]
@@ -5208,6 +5230,38 @@ mod tests {
         assert!(fold_help.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
         let reduce_help = help_for("reduce(");
         assert!(reduce_help.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
+    }
+
+    #[test]
+    fn signature_help_supports_android_platform_calls() {
+        let uri = "file:///tmp/android-platform-signatures.flux";
+        let source = "fn main() -> i64 {\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "android.vibrate(",
+                "fn android.vibrate(duration_ms: i64) -> void",
+            ),
+            ("android.open_url(", "fn android.open_url(url: str) -> void"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("platform call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("platform call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]
