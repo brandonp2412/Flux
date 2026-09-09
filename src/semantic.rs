@@ -5,6 +5,7 @@ use crate::ast::{
     Type,
 };
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
+use crate::ir::ControlFlowGraph;
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
 
@@ -46,6 +47,7 @@ pub struct SemanticDatabase {
     program: Program,
     signatures: Signatures,
     symbols: Vec<SemanticSymbol>,
+    control_flow_graphs: Vec<ControlFlowGraph>,
 }
 
 impl SemanticDatabase {
@@ -232,10 +234,16 @@ impl SemanticDatabase {
             }
             collect_block_symbols(&function.body, &mut symbols, &signatures);
         }
+        let control_flow_graphs = program
+            .functions
+            .iter()
+            .map(ControlFlowGraph::from_function)
+            .collect();
         Self {
             program,
             signatures,
             symbols,
+            control_flow_graphs,
         }
     }
 
@@ -253,6 +261,16 @@ impl SemanticDatabase {
 
     pub fn symbols(&self) -> &[SemanticSymbol] {
         &self.symbols
+    }
+
+    pub fn control_flow_graphs(&self) -> &[ControlFlowGraph] {
+        &self.control_flow_graphs
+    }
+
+    pub fn control_flow_graph(&self, name: &str) -> Option<&ControlFlowGraph> {
+        self.control_flow_graphs
+            .iter()
+            .find(|graph| graph.function() == name)
     }
 
     pub fn symbols_named(&self, name: &str) -> impl Iterator<Item = &SemanticSymbol> {

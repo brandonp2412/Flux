@@ -3,6 +3,7 @@ pub mod cli;
 pub mod codegen;
 pub mod diagnostic;
 pub mod formatter;
+pub mod ir;
 pub mod lsp;
 pub mod parser;
 pub mod project;

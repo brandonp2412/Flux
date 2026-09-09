@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use fluxc::ir::{ControlFlowEdgeKind, ControlFlowNodeKind};
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
     compile_to_c, diagnostics_to_json,
@@ -4841,6 +4842,141 @@ fn formatter_is_deterministic_without_comments() {
     let second =
         fluxc::formatter::format_source(&formatted).expect("formatted source should parse");
     assert_eq!(second, formatted, "formatting should be idempotent");
+}
+
+#[test]
+fn semantic_database_exposes_structural_control_flow_graphs_with_source_spans() {
+    let source_id = SourceId::new(1305);
+    let source = r#"
+fn route(flag: bool) -> i64 {
+    let value: i64 = 1
+    while flag:
+        if value == 1:
+            break
+        continue
+    return value
+}
+
+fn main() -> i64 {
+    return route(false)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, source_id)
+        .expect("valid control flow should analyze");
+    let graph = database
+        .control_flow_graph("route")
+        .expect("semantic database should expose a graph for every function");
+
+    assert_eq!(graph.function(), "route");
+    assert_eq!(graph.parameters().len(), 1);
+    assert_eq!(graph.parameters()[0].name, "flag");
+    assert_eq!(graph.parameters()[0].ty, fluxc::ast::Type::Bool);
+    assert_eq!(graph.returns(), &[fluxc::ast::Type::I64]);
+    assert_eq!(database.control_flow_graphs().len(), 2);
+    assert!(
+        graph
+            .nodes()
+            .iter()
+            .all(|node| node.span.source_id == source_id)
+    );
+    assert!(graph.nodes().iter().any(|node| matches!(
+        &node.kind,
+        ControlFlowNodeKind::Binding { name, ty, mutable: false }
+            if name == "value" && *ty == fluxc::ast::Type::I64
+    )));
+    for expected in [
+        ControlFlowNodeKind::Loop,
+        ControlFlowNodeKind::Conditional,
+        ControlFlowNodeKind::Break,
+        ControlFlowNodeKind::Continue,
+        ControlFlowNodeKind::Return,
+    ] {
+        assert!(
+            graph
+                .nodes()
+                .iter()
+                .any(|node| std::mem::discriminant(&node.kind) == std::mem::discriminant(&expected)),
+            "missing control-flow node {expected:?}"
+        );
+    }
+    for expected in [
+        ControlFlowEdgeKind::True,
+        ControlFlowEdgeKind::False,
+        ControlFlowEdgeKind::Break,
+        ControlFlowEdgeKind::Continue,
+        ControlFlowEdgeKind::Return,
+    ] {
+        assert!(
+            graph.edges().iter().any(|edge| edge.kind == expected),
+            "missing control-flow edge {expected:?}"
+        );
+    }
+    let loop_node = graph
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind, ControlFlowNodeKind::Loop))
+        .expect("loop node should exist");
+    assert!(
+        graph
+            .outgoing(loop_node.id)
+            .any(|edge| edge.kind == ControlFlowEdgeKind::True)
+    );
+    assert!(
+        graph
+            .outgoing(loop_node.id)
+            .any(|edge| edge.kind == ControlFlowEdgeKind::False)
+    );
+    let continue_edge = graph
+        .edges()
+        .iter()
+        .find(|edge| edge.kind == ControlFlowEdgeKind::Continue)
+        .expect("continue edge should exist");
+    assert_eq!(continue_edge.to, loop_node.id);
+
+    let propagation = r#"
+fn load(path: str) -> (str, error) {
+    if path == "":
+        return "", error("missing")
+    return path, nil
+}
+
+fn loadConfig(path: str) -> (str, error) {
+    let data: str, err: error = load(path) else return
+    print(data)
+    return data, nil
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let propagation_database =
+        fluxc::semantic::SemanticDatabase::analyze(propagation, SourceId::new(1306))
+            .expect("explicit error propagation should analyze");
+    let propagation_graph = propagation_database
+        .control_flow_graph("loadConfig")
+        .expect("error-propagating function should have a graph");
+    let destructure = propagation_graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                node.kind,
+                ControlFlowNodeKind::Destructure {
+                    propagates_error: true
+                }
+            )
+        })
+        .expect("else-return destructuring should be explicit in the graph");
+    let outgoing = propagation_graph
+        .outgoing(destructure.id)
+        .map(|edge| edge.kind)
+        .collect::<Vec<_>>();
+    assert!(outgoing.contains(&ControlFlowEdgeKind::Success));
+    assert!(outgoing.contains(&ControlFlowEdgeKind::Error));
+    assert!(propagation_graph.outgoing(destructure.id).any(|edge| {
+        edge.kind == ControlFlowEdgeKind::Error && edge.to == propagation_graph.exit()
+    }));
 }
 
 #[test]

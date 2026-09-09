@@ -748,6 +748,8 @@ Flux source
 
 The typed IR must retain source spans, ownership facts, and debug locations so the same semantic model can support the compiler, LSP, debugger, and profiler.
 
+The semantic database now also builds a deterministic structural control-flow graph for every checked function as the first IR foundation. CFG nodes retain Flux source spans and typed binding declarations, while edges make sequential flow, `if` branches, loop back-edges, `break`, `continue`, `return`, match-arm dispatch, and explicit `else return` success/error exits visible to later analyses. This graph is deliberately not yet the full typed value IR: expressions still live in the checked AST and bootstrap C code generation still lowers from that AST. Ownership and optimization passes should migrate onto normalized CFG/IR facts rather than adding more syntax-shaped special cases to the bootstrap checker.
+
 ## Application entry and bootstrap Linux GUI
 
 A GUI executable may select one zero-parameter root view with an application declaration instead of defining `fn main() -> i64`:
