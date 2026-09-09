@@ -294,7 +294,9 @@ fn emit_runtime_prelude(
 
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
-    let uses_android_platform_api = uses_android_vibrate || uses_android_open_url;
+    let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
+    let uses_android_platform_api =
+        uses_android_vibrate || uses_android_open_url || uses_android_share;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
@@ -322,7 +324,7 @@ fn emit_runtime_prelude(
         out.push_str("    }\n");
         out.push_str("}\n");
     }
-    if uses_android_open_url {
+    if uses_android_open_url || uses_android_share {
         out.push_str(
             "static jstring flux__android_utf8_string(JNIEnv *env, const char *value) {\n",
         );
@@ -378,6 +380,71 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
         out.push_str("done:\n");
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_share {
+        out.push_str("static void flux__android_share(const char *text) {\n");
+        out.push_str("    if (text == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass intent_class = NULL; jclass activity_class = NULL;\n");
+        out.push_str("    jstring action = NULL; jstring mime = NULL; jstring extra_key = NULL; jstring text_string = NULL;\n");
+        out.push_str(
+            "    jobject intent = NULL; jobject chooser = NULL; jobject chained = NULL;\n",
+        );
+        out.push_str("    intent_class = (*env)->FindClass(env, \"android/content/Intent\");\n");
+        out.push_str("    if (intent_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    action = (*env)->NewStringUTF(env, \"android.intent.action.SEND\");\n");
+        out.push_str("    if (action == NULL) goto done;\n");
+        out.push_str("    intent = (*env)->NewObject(env, intent_class, ctor, action);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || intent == NULL) goto done;\n");
+        out.push_str("    jmethodID set_type = (*env)->GetMethodID(env, intent_class, \"setType\", \"(Ljava/lang/String;)Landroid/content/Intent;\");\n");
+        out.push_str("    if (set_type == NULL) goto done;\n");
+        out.push_str("    mime = (*env)->NewStringUTF(env, \"text/plain\");\n");
+        out.push_str("    if (mime == NULL) goto done;\n");
+        out.push_str("    chained = (*env)->CallObjectMethod(env, intent, set_type, mime);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    jmethodID put_extra = (*env)->GetMethodID(env, intent_class, \"putExtra\", \"(Ljava/lang/String;Ljava/lang/CharSequence;)Landroid/content/Intent;\");\n");
+        out.push_str("    if (put_extra == NULL) goto done;\n");
+        out.push_str("    extra_key = (*env)->NewStringUTF(env, \"android.intent.extra.TEXT\");\n");
+        out.push_str("    text_string = flux__android_utf8_string(env, text);\n");
+        out.push_str("    if (extra_key == NULL || text_string == NULL) goto done;\n");
+        out.push_str("    chained = (*env)->CallObjectMethod(env, intent, put_extra, extra_key, text_string);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    jmethodID create_chooser = (*env)->GetStaticMethodID(env, intent_class, \"createChooser\", \"(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;\");\n");
+        out.push_str("    if (create_chooser == NULL) goto done;\n");
+        out.push_str("    chooser = (*env)->CallStaticObjectMethod(env, intent_class, create_chooser, intent, NULL);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || chooser == NULL) goto done;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID start_activity = (*env)->GetMethodID(env, activity_class, \"startActivity\", \"(Landroid/content/Intent;)V\");\n");
+        out.push_str("    if (start_activity == NULL) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, start_activity, chooser);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (chained != NULL) (*env)->DeleteLocalRef(env, chained);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    if (chooser != NULL) (*env)->DeleteLocalRef(env, chooser);\n");
+        out.push_str("    if (intent != NULL) (*env)->DeleteLocalRef(env, intent);\n");
+        out.push_str("    if (text_string != NULL) (*env)->DeleteLocalRef(env, text_string);\n");
+        out.push_str("    if (extra_key != NULL) (*env)->DeleteLocalRef(env, extra_key);\n");
+        out.push_str("    if (mime != NULL) (*env)->DeleteLocalRef(env, mime);\n");
+        out.push_str("    if (action != NULL) (*env)->DeleteLocalRef(env, action);\n");
+        out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
@@ -8265,6 +8332,7 @@ fn emit_qualified_call(
         let code = match name {
             "vibrate" => format!("flux__android_vibrate({})", value.code),
             "open_url" => format!("flux__android_open_url({})", value.code),
+            "share" => format!("flux__android_share({})", value.code),
             _ => {
                 return Err(diag(
                     span,

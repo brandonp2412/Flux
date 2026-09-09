@@ -9763,6 +9763,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
         r#"fn started() -> void {
     android.vibrate(25)
     android.open_url("https://example.com")
+    android.share("hello from Flux")
     print("started")
 }
 fn resumed() -> void {
@@ -9806,6 +9807,10 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
     assert!(generated.contains("static void flux__android_open_url(const char *url)"));
     assert!(generated.contains("android.intent.action.VIEW"));
+    assert!(generated.contains("static void flux__android_share(const char *text)"));
+    assert!(generated.contains("android.intent.action.SEND"));
+    assert!(generated.contains("android.intent.extra.TEXT"));
+    assert!(generated.contains("createChooser"));
     assert!(generated.contains("startActivity"));
     assert!(generated.contains("flux__android_utf8_string"));
     assert!(generated.contains("flux__fn_exiting();"));
@@ -9842,6 +9847,7 @@ fn main() -> i64 {
 fn main() -> i64 {
     android.vibrate("long")
     android.open_url(42)
+    android.share(42)
     return 0
 }
 "#;
@@ -9852,6 +9858,9 @@ fn main() -> i64 {
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.open_url url") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.share text") && error.message.contains("expected str")
     }));
 
     let _ = fs::remove_dir_all(&root);

@@ -359,6 +359,7 @@ struct AndroidBuildResult {
     artifact: PathBuf,
     application_id: String,
     kind: AndroidArtifactKind,
+    abi: AndroidAbi,
 }
 
 fn build_android_command(
@@ -458,7 +459,74 @@ fn build_android_command(
         artifact: output,
         application_id: manifest.android.application_id,
         kind: options.kind,
+        abi: options.abi,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AndroidRunTarget {
+    Adb(String),
+    Waydroid,
+}
+
+fn select_android_run_target(
+    build_abi: AndroidAbi,
+    ready_devices: &[(AdbDevice, Option<AndroidAbi>)],
+    waydroid_is_running: bool,
+    waydroid_abi: Option<AndroidAbi>,
+) -> Result<AndroidRunTarget, String> {
+    let matching_adb = ready_devices
+        .iter()
+        .filter(|(_, abi)| *abi == Some(build_abi))
+        .collect::<Vec<_>>();
+    if let [entry] = matching_adb.as_slice() {
+        return Ok(AndroidRunTarget::Adb(entry.0.serial.clone()));
+    }
+    if matching_adb.len() > 1 {
+        return Err(format!(
+            "multiple adb Android devices match ABI {} ({}); disconnect extras until explicit device selection is supported",
+            build_abi.name(),
+            matching_adb
+                .iter()
+                .map(|(device, _)| device.serial.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if waydroid_is_running && waydroid_abi == Some(build_abi) {
+        return Ok(AndroidRunTarget::Waydroid);
+    }
+    if ready_devices.len() == 1 && ready_devices[0].1.is_none() && !waydroid_is_running {
+        return Ok(AndroidRunTarget::Adb(ready_devices[0].0.serial.clone()));
+    }
+    if ready_devices.is_empty() && waydroid_is_running && waydroid_abi.is_none() {
+        return Ok(AndroidRunTarget::Waydroid);
+    }
+
+    let mut available = ready_devices
+        .iter()
+        .map(|(device, abi)| match abi {
+            Some(abi) => format!("adb {} ({})", device.serial, abi.name()),
+            None => format!("adb {} (unknown ABI)", device.serial),
+        })
+        .collect::<Vec<_>>();
+    if waydroid_is_running {
+        available.push(match waydroid_abi {
+            Some(abi) => format!("Waydroid ({})", abi.name()),
+            None => "Waydroid (unknown ABI)".to_string(),
+        });
+    }
+    if available.is_empty() {
+        return Err(
+            "no runnable Android device found; connect one through adb or start Waydroid"
+                .to_string(),
+        );
+    }
+    Err(format!(
+        "Android artifact ABI {} does not match an available runtime: {}",
+        build_abi.name(),
+        available.join(", ")
+    ))
 }
 
 fn run_android_apk(build: &AndroidBuildResult) -> Result<(), CliError> {
@@ -467,22 +535,18 @@ fn run_android_apk(build: &AndroidBuildResult) -> Result<(), CliError> {
         .unwrap_or_default()
         .into_iter()
         .filter(|device| device.status == "device")
+        .map(|device| {
+            let abi = adb_device_abi(&device.serial);
+            (device, abi)
+        })
         .collect::<Vec<_>>();
-    match ready_devices.as_slice() {
-        [device] => run_android_apk_adb(build, &device.serial),
-        [] if waydroid_running().unwrap_or(false) => run_android_apk_waydroid(build),
-        [] => Err(CliError::Message(
-            "no runnable Android device found; connect one through adb or start Waydroid"
-                .to_string(),
-        )),
-        _ => Err(CliError::Message(format!(
-            "multiple adb Android devices are ready ({}); disconnect extras until explicit device selection is supported",
-            ready_devices
-                .iter()
-                .map(|device| device.serial.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
+    let waydroid_is_running = waydroid_running().unwrap_or(false);
+    let waydroid_abi = waydroid_is_running.then(waydroid_runtime_abi).flatten();
+    match select_android_run_target(build.abi, &ready_devices, waydroid_is_running, waydroid_abi)
+        .map_err(CliError::Message)?
+    {
+        AndroidRunTarget::Adb(serial) => run_android_apk_adb(build, &serial),
+        AndroidRunTarget::Waydroid => run_android_apk_waydroid(build),
     }
 }
 
@@ -1372,37 +1436,45 @@ fn android_abi_from_runtime(value: &str) -> Option<AndroidAbi> {
     }
 }
 
+fn adb_device_abi(serial: &str) -> Option<AndroidAbi> {
+    let output = Command::new(adb_path())
+        .args(["-s", serial, "shell", "getprop", "ro.product.cpu.abi"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
+
+fn waydroid_runtime_abi() -> Option<AndroidAbi> {
+    let output = Command::new("waydroid")
+        .args(["prop", "get", "ro.product.cpu.abi"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
+
 fn detect_android_run_abi() -> Option<AndroidAbi> {
     let ready = adb_devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|device| device.status == "device")
         .collect::<Vec<_>>();
-    if let [device] = ready.as_slice() {
-        let output = Command::new(adb_path())
-            .args([
-                "-s",
-                &device.serial,
-                "shell",
-                "getprop",
-                "ro.product.cpu.abi",
-            ])
-            .output()
-            .ok()?;
-        if output.status.success()
-            && let Some(abi) = android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout))
-        {
-            return Some(abi);
-        }
+    if let [device] = ready.as_slice()
+        && let Some(abi) = adb_device_abi(&device.serial)
+    {
+        return Some(abi);
     }
-    if waydroid_running().unwrap_or(false) {
-        let output = Command::new("waydroid")
-            .args(["prop", "get", "ro.product.cpu.abi"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            return android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout));
-        }
+    if waydroid_running().unwrap_or(false)
+        && let Some(abi) = waydroid_runtime_abi()
+    {
+        return Some(abi);
     }
     None
 }
@@ -2277,9 +2349,9 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdbDevice, AndroidAbi, AndroidArtifactKind, BuildMode, android_abi_from_runtime,
-        android_build_options, android_manifest_xml, build_options, parse_adb_devices,
-        waydroid_status_is_running,
+        AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
+        android_abi_from_runtime, android_build_options, android_manifest_xml, build_options,
+        parse_adb_devices, select_android_run_target, waydroid_status_is_running,
     };
 
     #[test]
@@ -2404,6 +2476,55 @@ mod tests {
             Some(AndroidAbi::ArmeabiV7a)
         );
         assert_eq!(android_abi_from_runtime("x86"), None);
+    }
+
+    #[test]
+    fn android_run_target_matches_built_abi_across_adb_and_waydroid() {
+        let arm_phone = AdbDevice {
+            serial: "phone".to_string(),
+            status: "device".to_string(),
+            description: String::new(),
+        };
+        let x86_emulator = AdbDevice {
+            serial: "emulator".to_string(),
+            status: "device".to_string(),
+            description: String::new(),
+        };
+
+        let target = select_android_run_target(
+            AndroidAbi::X86_64,
+            &[(arm_phone, Some(AndroidAbi::Arm64V8a))],
+            true,
+            Some(AndroidAbi::X86_64),
+        )
+        .expect("x86_64 artifact should prefer matching Waydroid over arm64 adb");
+        assert_eq!(target, AndroidRunTarget::Waydroid);
+
+        let target = select_android_run_target(
+            AndroidAbi::X86_64,
+            &[(x86_emulator, Some(AndroidAbi::X86_64))],
+            true,
+            Some(AndroidAbi::X86_64),
+        )
+        .expect("matching adb device should remain the first runtime choice");
+        assert_eq!(target, AndroidRunTarget::Adb("emulator".to_string()));
+
+        let mismatch = select_android_run_target(
+            AndroidAbi::X86_64,
+            &[(
+                (AdbDevice {
+                    serial: "phone".to_string(),
+                    status: "device".to_string(),
+                    description: String::new(),
+                }),
+                Some(AndroidAbi::Arm64V8a),
+            )],
+            false,
+            None,
+        )
+        .expect_err("known ABI mismatch should fail before adb install");
+        assert!(mismatch.contains("does not match an available runtime"));
+        assert!(mismatch.contains("phone (arm64-v8a)"));
     }
 
     #[test]

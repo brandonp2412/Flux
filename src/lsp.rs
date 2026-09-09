@@ -1152,6 +1152,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn android.open_url(url: str) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "share",
+            3,
+            "fn android.share(text: str) -> void",
+        );
         return true;
     }
     if let Some(definition) = program
@@ -1970,6 +1977,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.open_url",
                         &["url: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "share" => {
+                    return Some(signature_help_for_builtin(
+                        "android.share",
+                        &["text: str"],
                         "void",
                         active_parameter,
                     ));
@@ -4787,6 +4802,7 @@ mod tests {
         assert!(android_items.contains("fn android.vibrate(duration_ms: i64) -> void"));
         assert!(android_items.contains("\"label\":\"open_url\""));
         assert!(android_items.contains("fn android.open_url(url: str) -> void"));
+        assert!(android_items.contains("fn android.share(text: str) -> void"));
     }
 
     #[test]
@@ -5235,7 +5251,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -5243,6 +5259,7 @@ mod tests {
                 "fn android.vibrate(duration_ms: i64) -> void",
             ),
             ("android.open_url(", "fn android.open_url(url: str) -> void"),
+            ("android.share(", "fn android.share(text: str) -> void"),
         ] {
             let line_index = source
                 .lines()

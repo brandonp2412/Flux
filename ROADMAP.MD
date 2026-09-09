@@ -612,7 +612,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] `flux build android`.
   - [x] Manifest-backed packages build directly through the installed SDK/NDK with `--abi`, `--mode`, and optional `-o`; no Gradle project, Kotlin application, method channel, or user-authored JNI shim is generated.
 - [x] `flux run android`.
-  - [x] The command builds the selected ABI, installs the resulting APK, and launches its exported MAIN/LAUNCHER activity. A sole ready ADB device is selected explicitly by serial; when no ADB device is available, a running Waydroid session is a first-class local transport. Omitting `--abi` on `flux run android` probes the selected runtime ABI, so Nox automatically builds x86_64 for its Waydroid container. The default command has been exercised end to end on Nox through build → install → launch.
+  - [x] The command builds the selected ABI, installs the resulting APK, and launches its exported MAIN/LAUNCHER activity. Runtime selection is ABI-aware: matching ADB devices are preferred, but a running matching Waydroid container is selected instead of attempting an incompatible ADB install; known mismatches fail before installation. Omitting `--abi` probes the selected runtime ABI. The command has been exercised end to end on Nox through build → install → launch, including an x86_64 Waydroid run while an arm64 ADB device was connected.
 - [x] APK output.
   - [x] Bootstrap packaging generates the binary manifest, bundles `lib/<abi>/libflux.so`, zip-aligns the artifact, signs it, and verifies the final APK. Nox validation confirmed v1/v2/v3 signatures, minSdk/targetSdk metadata, the NativeActivity launcher, native ABI declaration, and the packaged Flux shared library.
 - [x] AAB output.
@@ -632,9 +632,9 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Activity/window integration hidden behind Flux application APIs.
   - [x] The generated manifest and native entry use framework `android.app.NativeActivity`; Flux source continues to declare only `app ViewName(...)`, with no Activity subclass or JNI bootstrap in application code. Native Android view rendering/input on that window remains the separate rendering-backend item below.
 - [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.
-  - [x] Framework-bound intrinsics now share one compiler-emitted JNI attachment boundary: `android.vibrate(duration_ms)` calls the vibrator service and `android.open_url(url)` constructs/launches an Android `ACTION_VIEW` intent, including compiler-owned UTF-8→Java string conversion. No application JNI/Kotlin/Java bridge source or serialized method-channel protocol is generated. Non-Android native builds reject reachable `android.*` calls during code generation while unreachable platform-only functions can be tree-shaken safely.
+  - [x] Framework-bound intrinsics share one compiler-emitted JNI attachment boundary: `android.vibrate(duration_ms)` calls the vibrator service, `android.open_url(url)` constructs/launches an Android `ACTION_VIEW` intent, and `android.share(text)` constructs a native `ACTION_SEND` chooser, including compiler-owned UTF-8→Java string conversion. No application JNI/Kotlin/Java bridge source or serialized method-channel protocol is generated. Non-Android native builds reject reachable `android.*` calls during code generation while unreachable platform-only functions can be tree-shaken safely.
 - [ ] First-class target-specific `android.*` Flux modules generated/maintained from stable platform bindings where practical, with compile-time API-level/target checks and no reflection-based runtime dispatch requirement.
-  - [x] Bootstrap `android` platform namespace participates in ordinary static checking plus LSP qualified completion/signature help; current members are `android.vibrate(i64) -> void` and `android.open_url(str) -> void`. Broader module generation, API-level availability metadata, and nested platform namespaces remain pending.
+  - [x] Bootstrap `android` platform namespace participates in ordinary static checking plus LSP qualified completion/signature help; current members are `android.vibrate(i64) -> void`, `android.open_url(str) -> void`, and `android.share(str) -> void`. Broader module generation, API-level availability metadata, and nested platform namespaces remain pending.
 - [ ] Native rendering/input backend.
 - [ ] Accessibility/semantics bridge.
 - [ ] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.
@@ -643,7 +643,8 @@ Android is the first application-platform target. Android integration must feel 
   - [x] `android.vibrate(duration_ms)` works from ordinary Flux code, tree-shakes its JNI helper when unused, automatically adds `android.permission.VIBRATE` only when reachable, and has been compiled into signed APK/AAB artifacts on Nox; the APK also installs/launches in Waydroid without application-authored bridge code.
 - [ ] Intents/deep links.
   - [x] Outbound URL intents: `android.open_url(url)` directly creates an `ACTION_VIEW` intent from Flux through compiler-generated JNI with full UTF-8 conversion and no application bridge code. Inbound deep-link manifest declarations/routing and richer explicit intent APIs remain pending.
-- [ ] Share sheet.
+- [x] Share sheet.
+  - [x] `android.share(text)` opens the native Android chooser with an `ACTION_SEND` `text/plain` intent and compiler-owned UTF-8/JNI glue; Flux application code contains no Kotlin/Java/JNI bridge code.
 - [ ] Permissions.
 - [ ] Background services/tasks where allowed.
 - [ ] Camera.
