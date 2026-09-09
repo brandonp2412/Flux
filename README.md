@@ -1,25 +1,49 @@
+<div align="center">
+
 # Flux
 
-Flux is an experimental compiled language for building native applications and services from one codebase without a widget-emulation runtime. The long-term target is maximally optimized platform-native binaries for desktop, server, and other supported targets, with Rust-class safety and Rust-class native performance as non-negotiable release goals.
+### Python-like syntax. Rust-class performance. Native apps everywhere.
 
-## Language direction
+[![Performance](https://github.com/brandonp2412/Flux/actions/workflows/performance.yml/badge.svg)](https://github.com/brandonp2412/Flux/actions/workflows/performance.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-- Python-like readability and low ceremony.
-- Function bodies are delimited by `{}`.
-- Control-flow bodies use indentation (`if`, `for`, etc.).
-- Strict static typing; implicit type coercions are deliberately minimized, unused bindings are compile errors, and Flux has no warning-only lint tier.
-- Flux source naming is lower camelCase for values, functions, built-ins, properties, events, and environment bindings (`requestCount`, `onPress`, `windowHeight`). Type-like names remain PascalCase. Tooling emits camelCase only; ordinary user-defined identifiers may still parse in legacy snake_case for compatibility, but language-owned names use the camelCase spelling.
-- No comment syntax and no ternary/conditional expression syntax.
-- Function-first architecture built from data, functions, and interfaces rather than classes, inheritance, mixins, or widget/controller object hierarchies.
-- No generics in the Flux language.
-- No exception / try-catch model. Recoverable failures are represented explicitly in return values.
-- Rust-class memory-safety goals: ownership, borrowing, lifetime validation, and no unchecked dangling references in safe Flux.
-- Rust-class native performance is a language contract: release builds should stay in the C/C++/Rust performance class without a mandatory VM, garbage collector, interpreter, or framework runtime tax.
-- Native ahead-of-time compilation, with zero-cost abstractions as the default: high-level Flux constructs should compile away when their semantics do not require runtime work, and provably redundant safety checks should be eliminated.
-- A flat, HTML-like declarative UI surface with grid-first layout rather than deeply nested widget trees; the bootstrap parser now supports top-level `view` declarations with sibling grid placement syntax.
-- Tooling is part of the language product: LSP, debugger, and profiler are first-class deliverables.
+**Flux is a statically typed, ahead-of-time compiled language for building fast, beautiful native software without dragging an object-oriented framework runtime along for the ride.**
 
-## Current bootstrap milestone
+</div>
+
+## What Flux does
+
+| | Flux is built for |
+| --- | --- |
+| 🐍 **Python-like syntax** | Readable, low-ceremony code with indentation-based control flow, comprehensions, slicing, pattern matching, and concise function-first APIs. |
+| ⚡ **Rust-class performance** | Native ahead-of-time compilation, no mandatory VM or garbage collector, aggressive optimization, zero-cost abstractions, and continuous comparison against optimized Rust/C baselines. |
+| 🌍 **Compile to any platform** | Flux source is designed to stay platform-independent while backends produce target-specific code. Linux native is the bootstrap target today; desktop, mobile, web, and server targets are part of the language architecture rather than separate app frameworks. |
+| ✨ **Make beautiful apps** | A flat declarative UI model, native platform controls, grid-first layout, responsive state, typed events, and no giant widget/controller object tree. |
+| 🎯 **Dart-inspired language features** | Named/default parameters, collection spreads and `if` elements, comprehensions, exhaustive patterns, first-class functions, functional value updates, and other high-level ergonomics without Dart's class hierarchy. |
+
+Flux is **strictly statically typed**. Implicit coercions are deliberately minimized, unused bindings are compile errors, and there is no warning-only lint tier. Values/functions use lower camelCase, types use PascalCase, and tooling emits canonical Flux style automatically.
+
+The language is designed around data, functions, interfaces, ownership, and explicit control flow. High-level constructs should compile away whenever their semantics do not require runtime work, while required safety checks stay intact.
+
+## What Flux deliberately does not do
+
+| 🚫 | Not in Flux |
+| --- | --- |
+| **Generics** | No user-facing generic type system. Flux prefers concrete types and compiler-known zero-cost operations. |
+| **Any OOP** | No classes, inheritance, mixins, constructors-as-architecture, hidden receivers, or object-oriented widget trees. Composition is through values, functions, interfaces, and flat views. |
+| **`try` / `catch` / `finally`** | Recoverable failures are explicit return values. No exception hierarchy, unwinding model, or invisible error control flow. |
+| **Ternaries** | No `condition ? a : b` expression syntax. Use clear control flow or exhaustive value-producing `match` expressions instead. |
+| **Heavily nested layout** | UI is flat and grid-first. Sibling elements declare placement directly instead of building deeply nested layout/widget trees. |
+
+## Language shape
+
+- Function bodies use `{}` while `if`, `for`, `while`, and `match` bodies use indentation.
+- Ownership and borrowing aim for Rust-class memory safety without requiring Rust-style source syntax everywhere.
+- Interfaces provide explicit typed capabilities without classes or vtables as a source-language object model.
+- Tooling is part of the product: formatter, LSP, debugger, profiler, testing, packaging, and performance validation are first-class language work.
+
+<details>
+<summary><strong>Current bootstrap compiler capabilities</strong></summary>
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
@@ -43,8 +67,10 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - CLI commands for checking, deterministic formatting, emitting C, building native executables, automatically running/rebuilding development targets, and serving bootstrap LSP diagnostics over stdio, including package-root/`flux.toml` targets;
 - primitive constant folding for `i64`, `bool`, and `str`: top-level constants support forward references with no runtime global storage, while pure literal/constant subexpressions in ordinary code and static UI/application metadata collapse before native emission with checked arithmetic and boolean short-circuiting preserved;
 - the first ownership slice: one alias-aware structural `Copy` classification shared by semantic validation, direct local transfers that move non-copy values with use-after-move rejection, and a semantic-CFG fixed-point move analysis with deterministic move origins, branch/loop reachability, and compile-time impossible-edge pruning, plus non-consuming immutable list/view reads and parameters; borrow regions, partial moves, drops, lifetimes, consuming calls/returns, and field ownership remain pending;
-- conservative whole-program function tree shaking: native lowering retains `main`, public exports, interface implementation mappings, application/view callbacks, and their transitive private callees while omitting provably unreachable private function prototypes/bodies and anonymous functions; value-type/helper/resource pruning remains a later typed-IR/backend step;
+- whole-program tree shaking and interface specialization driven increasingly by typed IR: native lowering prunes unreachable private functions, value types, helpers, unused interface implementations/targets, and redundant single-target interface dispatch while preserving public/open boundaries conservatively;
 - compiler tests and runnable native examples, including typed shell-style call flow, local immutable lists/indexing/slicing/comprehensions, nested structs, struct destructuring, zero-cost type aliases, folded constants, payload enums, exhaustive matching, named/default parameters, named/capture-free anonymous higher-order functions, explicit mutation/`while`, flat-grid UI syntax, typed built-in UI properties, parameterized view composition, and native GTK4/Wayland Text/Button/TextInput/Image/Toggle/Radio controls with typed callback dispatch, live text-change/submit callbacks, hover/leave/focus events, button keyboard shortcuts, autofocus, password masking, maximum input length, file-backed images, tooltips, accessible labels/descriptions, Pango-backed family/slant/decoration/spacing typography, static or state-driven transforms, and read-only window/orientation/display-scale bindings for responsive property expressions.
+
+</details>
 
 The C backend is a bootstrap implementation, not the final backend architecture. The intended next backend milestone is a direct typed IR suitable for LLVM-class optimization and target-specific lowering. Flux's performance target is safe Rust-class native code: the compiler should not preserve abstraction overhead that can be proven unnecessary, while retaining required safety semantics when they cannot be optimized away.
 
