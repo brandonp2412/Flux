@@ -124,6 +124,7 @@ struct AndroidBuildOptions {
     output: Option<PathBuf>,
     mode: BuildMode,
     abi: AndroidAbi,
+    abi_explicit: bool,
     kind: AndroidArtifactKind,
 }
 
@@ -365,7 +366,10 @@ fn build_android_command(
     default_mode: BuildMode,
     for_run: bool,
 ) -> Result<AndroidBuildResult, CliError> {
-    let options = android_build_options(args, default_mode)?;
+    let mut options = android_build_options(args, default_mode)?;
+    if for_run && !options.abi_explicit {
+        options.abi = detect_android_run_abi().unwrap_or(options.abi);
+    }
     if for_run && options.kind != AndroidArtifactKind::Apk {
         return Err(CliError::Message(
             "flux run android requires '--format apk'; AAB files are publishing artifacts and cannot be installed directly"
@@ -459,20 +463,46 @@ fn build_android_command(
 
 fn run_android_apk(build: &AndroidBuildResult) -> Result<(), CliError> {
     debug_assert_eq!(build.kind, AndroidArtifactKind::Apk);
+    let ready_devices = adb_devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|device| device.status == "device")
+        .collect::<Vec<_>>();
+    match ready_devices.as_slice() {
+        [device] => run_android_apk_adb(build, &device.serial),
+        [] if waydroid_running().unwrap_or(false) => run_android_apk_waydroid(build),
+        [] => Err(CliError::Message(
+            "no runnable Android device found; connect one through adb or start Waydroid"
+                .to_string(),
+        )),
+        _ => Err(CliError::Message(format!(
+            "multiple adb Android devices are ready ({}); disconnect extras until explicit device selection is supported",
+            ready_devices
+                .iter()
+                .map(|device| device.serial.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn run_android_apk_adb(build: &AndroidBuildResult, serial: &str) -> Result<(), CliError> {
     let adb = adb_path();
     let install = Command::new(&adb)
-        .args(["install", "-r"])
+        .args(["-s", serial, "install", "-r"])
         .arg(&build.artifact)
         .output()
         .map_err(|error| format!("failed to launch adb: {error}"))?;
     if !install.status.success() {
         return Err(CliError::Message(format!(
-            "adb install failed:\n{}",
+            "adb install failed for {serial}:\n{}",
             String::from_utf8_lossy(&install.stderr)
         )));
     }
     let launch = Command::new(&adb)
         .args([
+            "-s",
+            serial,
             "shell",
             "am",
             "start",
@@ -487,11 +517,31 @@ fn run_android_apk(build: &AndroidBuildResult) -> Result<(), CliError> {
         .map_err(|error| format!("failed to launch Android application through adb: {error}"))?;
     if !launch.status.success() {
         return Err(CliError::Message(format!(
-            "adb launch failed:\n{}",
+            "adb launch failed for {serial}:\n{}",
             String::from_utf8_lossy(&launch.stderr)
         )));
     }
-    println!("launched Android app: {}", build.application_id);
+    println!(
+        "launched Android app on adb device {serial}: {}",
+        build.application_id
+    );
+    Ok(())
+}
+
+fn run_android_apk_waydroid(build: &AndroidBuildResult) -> Result<(), CliError> {
+    run_checked(
+        Command::new("waydroid")
+            .args(["app", "install"])
+            .arg(&build.artifact),
+        "Waydroid install",
+    )?;
+    run_checked(
+        Command::new("waydroid")
+            .args(["app", "launch"])
+            .arg(&build.application_id),
+        "Waydroid launch",
+    )?;
+    println!("launched Android app on Waydroid: {}", build.application_id);
     Ok(())
 }
 
@@ -1192,6 +1242,31 @@ fn analysis_json_mode(command: &str, args: &[String]) -> Result<bool, String> {
     }
 }
 
+fn waydroid_running() -> Result<bool, String> {
+    let output = Command::new("waydroid")
+        .arg("status")
+        .output()
+        .map_err(|error| format!("Waydroid unavailable ({error})"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    Ok(waydroid_status_is_running(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn waydroid_status_is_running(output: &str) -> bool {
+    let session_running = output.lines().any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, value)| name.trim() == "Session" && value.trim() == "RUNNING")
+    });
+    let container_running = output.lines().any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, value)| name.trim() == "Container" && value.trim() == "RUNNING")
+    });
+    session_running && container_running
+}
+
 fn run_devices() -> Result<(), CliError> {
     println!("Flux devices");
     if cfg!(target_os = "linux") {
@@ -1205,7 +1280,11 @@ fn run_devices() -> Result<(), CliError> {
         println!("  linux-desktop  {status:11} GTK4 · {display}");
     }
 
+    let waydroid = waydroid_running().unwrap_or(false);
     match adb_devices() {
+        Ok(devices) if devices.is_empty() && waydroid => {
+            println!("  android        ready       waydroid · local container");
+        }
         Ok(devices) if devices.is_empty() => {
             println!("  android        unavailable no connected adb device");
         }
@@ -1222,6 +1301,12 @@ fn run_devices() -> Result<(), CliError> {
                     }
                 );
             }
+            if waydroid {
+                println!("  android        ready       waydroid · local container");
+            }
+        }
+        Err(message) if waydroid => {
+            println!("  android        ready       waydroid · local container ({message})");
         }
         Err(message) => println!("  android        unavailable {message}"),
     }
@@ -1276,6 +1361,50 @@ fn adb_path() -> PathBuf {
     env::var_os("FLUX_ADB")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("adb"))
+}
+
+fn android_abi_from_runtime(value: &str) -> Option<AndroidAbi> {
+    match value.trim() {
+        "arm64-v8a" => Some(AndroidAbi::Arm64V8a),
+        "x86_64" => Some(AndroidAbi::X86_64),
+        "armeabi-v7a" | "armeabi" => Some(AndroidAbi::ArmeabiV7a),
+        _ => None,
+    }
+}
+
+fn detect_android_run_abi() -> Option<AndroidAbi> {
+    let ready = adb_devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|device| device.status == "device")
+        .collect::<Vec<_>>();
+    if let [device] = ready.as_slice() {
+        let output = Command::new(adb_path())
+            .args([
+                "-s",
+                &device.serial,
+                "shell",
+                "getprop",
+                "ro.product.cpu.abi",
+            ])
+            .output()
+            .ok()?;
+        if output.status.success()
+            && let Some(abi) = android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout))
+        {
+            return Some(abi);
+        }
+    }
+    if waydroid_running().unwrap_or(false) {
+        let output = Command::new("waydroid")
+            .args(["prop", "get", "ro.product.cpu.abi"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            return android_abi_from_runtime(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+    None
 }
 
 fn clean_target(target: &Path) -> Result<(), CliError> {
@@ -1356,6 +1485,11 @@ fn run_doctor() -> Result<(), CliError> {
     match command_first_line(adb_path().to_string_lossy().as_ref(), &["version"]) {
         Ok(version) => println!("  [ok] adb: {version}"),
         Err(message) => println!("  [warn] adb: {message}"),
+    }
+    if waydroid_running().unwrap_or(false) {
+        println!("  [ok] Waydroid: session and container running");
+    } else {
+        println!("  [info] Waydroid: not running (optional Android device transport)");
     }
 
     match command_first_line("nvim", &["--version"]) {
@@ -1498,6 +1632,7 @@ fn android_build_options(
         output,
         mode,
         abi,
+        abi_explicit: abi_seen,
         kind,
     })
 }
@@ -2142,8 +2277,9 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdbDevice, AndroidAbi, AndroidArtifactKind, BuildMode, android_build_options,
-        android_manifest_xml, build_options, parse_adb_devices,
+        AdbDevice, AndroidAbi, AndroidArtifactKind, BuildMode, android_abi_from_runtime,
+        android_build_options, android_manifest_xml, build_options, parse_adb_devices,
+        waydroid_status_is_running,
     };
 
     #[test]
@@ -2204,6 +2340,7 @@ mod tests {
         );
         assert_eq!(options.mode, BuildMode::Profile);
         assert_eq!(options.abi, AndroidAbi::X86_64);
+        assert!(options.abi_explicit);
         assert_eq!(options.kind, AndroidArtifactKind::Apk);
 
         let aab = android_build_options(
@@ -2221,6 +2358,7 @@ mod tests {
             .expect("Android defaults should parse");
         assert_eq!(defaults.mode, BuildMode::Debug);
         assert_eq!(defaults.abi, AndroidAbi::Arm64V8a);
+        assert!(!defaults.abi_explicit);
         assert_eq!(defaults.kind, AndroidArtifactKind::Apk);
         assert!(defaults.output.is_none());
     }
@@ -2252,6 +2390,33 @@ mod tests {
             "static void f(void) { flux__android_vibrate(25); }",
         );
         assert!(vibrating.contains("android.permission.VIBRATE"));
+    }
+
+    #[test]
+    fn android_runtime_abi_names_map_to_supported_build_abis() {
+        assert_eq!(
+            android_abi_from_runtime("arm64-v8a\n"),
+            Some(AndroidAbi::Arm64V8a)
+        );
+        assert_eq!(android_abi_from_runtime("x86_64"), Some(AndroidAbi::X86_64));
+        assert_eq!(
+            android_abi_from_runtime("armeabi-v7a"),
+            Some(AndroidAbi::ArmeabiV7a)
+        );
+        assert_eq!(android_abi_from_runtime("x86"), None);
+    }
+
+    #[test]
+    fn waydroid_status_requires_running_session_and_container() {
+        assert!(waydroid_status_is_running(
+            "Session: RUNNING\nContainer: RUNNING\nVendor type: MAINLINE\n"
+        ));
+        assert!(!waydroid_status_is_running(
+            "Session: STOPPED\nContainer: RUNNING\n"
+        ));
+        assert!(!waydroid_status_is_running(
+            "Session: RUNNING\nContainer: STOPPED\n"
+        ));
     }
 
     #[test]

@@ -150,7 +150,7 @@ Inspect the currently runnable Flux target, verify native GUI prerequisites, and
 ./tools/flux clean examples/package
 ```
 
-`flux devices` reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready, and Android devices visible through ADB including offline/unauthorized state. `flux doctor` reports both Linux prerequisites and any Android SDK/NDK/build-tools it can discover. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
+`flux devices` reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready, Android devices visible through ADB including offline/unauthorized state, and a running local Waydroid container. `flux doctor` reports Linux prerequisites, Android SDK/NDK/build-tools/ADB, and Waydroid readiness. `flux run android` selects the sole connected ADB device when available; otherwise it can install/launch directly through a running Waydroid session and auto-selects the device ABI when `--abi` is omitted. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
 

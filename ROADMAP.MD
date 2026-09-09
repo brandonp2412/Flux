@@ -612,7 +612,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] `flux build android`.
   - [x] Manifest-backed packages build directly through the installed SDK/NDK with `--abi`, `--mode`, and optional `-o`; no Gradle project, Kotlin application, method channel, or user-authored JNI shim is generated.
 - [x] `flux run android`.
-  - [x] The command builds the selected ABI, installs the resulting APK with ADB, and launches its exported MAIN/LAUNCHER activity. The same generated x86_64 APK has also been installed and launched in Nox's Waydroid runtime; Nox currently has no ADB-visible hardware/device for exercising the command's ADB transport end to end.
+  - [x] The command builds the selected ABI, installs the resulting APK, and launches its exported MAIN/LAUNCHER activity. A sole ready ADB device is selected explicitly by serial; when no ADB device is available, a running Waydroid session is a first-class local transport. Omitting `--abi` on `flux run android` probes the selected runtime ABI, so Nox automatically builds x86_64 for its Waydroid container. The default command has been exercised end to end on Nox through build → install → launch.
 - [x] APK output.
   - [x] Bootstrap packaging generates the binary manifest, bundles `lib/<abi>/libflux.so`, zip-aligns the artifact, signs it, and verifies the final APK. Nox validation confirmed v1/v2/v3 signatures, minSdk/targetSdk metadata, the NativeActivity launcher, native ABI declaration, and the packaged Flux shared library.
 - [x] AAB output.
@@ -861,8 +861,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux test`: user-facing native integration-test discovery/execution for direct `.flux` tests and package `tests/*.flux`, with debug/profile/release mode selection and real exit-status reporting.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
-- [x] `flux devices`: the bootstrap CLI reports the currently runnable Linux desktop target and whether an active Wayland/X11 display makes it launch-ready, without pretending unsupported mobile/desktop backends are devices yet.
-- [x] `flux doctor`: bootstrap Linux doctor reports host support, Clang, GTK4, optional Neovim dogfood availability, and the active Wayland/X11 display before native app testing.
+- [x] `flux devices`: the CLI reports Linux desktop display readiness, connected ADB Android devices with their real transport states, and a running local Waydroid container as a runnable Android target.
+- [x] `flux doctor`: doctor reports Linux host/Clang/GTK/display readiness plus Android SDK, NDK, build-tools, ADB, and optional Waydroid readiness; Neovim dogfood availability remains reported separately.
 - [x] `flux clean`: target-aware cleanup removes the default native build artifact plus the runner's last-known development-status artifact and is safely idempotent when nothing exists.
 - [x] Bootstrap `flux package`: manifest-backed packages build into a deterministic host-labelled bundle directory containing the package-named native executable plus the exact `flux.toml`; release is the default, build modes are supported, existing outputs are never overwritten, and raw source files are rejected rather than silently treated as distributable packages. Archive formats, dependency vendoring, platform metadata, signing, and store packaging remain in the distribution/platform tracks.
 - [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
