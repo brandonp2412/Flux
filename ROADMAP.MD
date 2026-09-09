@@ -208,12 +208,12 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [x] Safe `firstOrDefault(list, fallback)` / `lastOrDefault(list, fallback)` forms for possibly empty lists; the fallback must match the element type and composes through typed pipelines.
 - [x] Full Python-style list slices/ranges: `[start:end]` and `[start:end:step]`, omitted/negative bounds, positive or negative steps, `[::-1]` reversal, clipping, and explicit zero-step rejection. Native slices remain zero-copy through strided list views.
 - [x] Typed list iteration with `for value in list:` and indexed `for index, value in list:` forms; the source is evaluated once and the index is `i64`.
-- [x] Typed `map(list, callback)`, `filter(list, predicate)`, and `where` alias with exact concrete callback signatures, strided-source support, pipeline composition, and stack-backed bootstrap results.
+- [x] Typed `map(list, callback)`, `filter(list, predicate)`, and `where` alias with exact concrete callback signatures, strided-source support, pipeline composition, and stack-backed bootstrap results; chained transforms fuse into one source loop and one final result buffer.
 - [ ] Related collection-producing functional sequence operations beyond map/filter/where.
 - [x] Typed `fold(list, initial, reducer)` and `reduce(list, reducer)` scalar reductions with concrete callback signatures, strided-view support, pipeline composition, and explicit empty-list rejection for `reduce`.
 - [x] `any(bool[])` / `every(bool[])` boolean aggregation with Python/Dart-style empty-sequence identities (`false` / `true`), designed to combine with boolean comprehensions and typed pipelines.
 - [x] Zero-copy `take(list, count)` / `skip(list, count)` sequence views, designed to compose naturally through typed pipelines such as `values | skip 1 | take 3`; counts are `i64`, oversized counts clamp, and negative counts fail explicitly at runtime.
-- [ ] Lazy iteration where it avoids needless allocations.
+- [x] Lazy pipeline fusion where it avoids needless allocations: chained `map`/`filter`/`where` stages share one loop and terminal `fold`/`reduce` consumes the transformed stream directly without an intermediate list.
 
 `first`, `last`, etc. may use property-like syntax on compiler-known collection types while lowering to ordinary functions. This is syntax ergonomics, not an object model.
 

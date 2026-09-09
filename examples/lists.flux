@@ -74,6 +74,7 @@ fn main() -> i64 {
     let selected: i64[] = values | where greaterThanTwo
     let mappedFiltered: i64[] = values | map double | filter greaterThanTwo
     let mappedTotal: i64 = values | map double | reduce add
+    let filteredTotal: i64 = values | map double | filter greaterThanTwo | reduce add
     print mapped.first
     print mapped.last
     print filtered.length
@@ -84,6 +85,7 @@ fn main() -> i64 {
     print mappedFiltered.first
     print mappedFiltered.last
     print mappedTotal
+    print filteredTotal
     for value in middle:
         print value
     for index, value in middle:

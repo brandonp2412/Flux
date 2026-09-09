@@ -1443,6 +1443,46 @@ fn main() -> i64 {
 }
 
 #[test]
+fn fuses_map_filter_pipelines_and_terminal_reductions() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn greaterThanFour(value: i64) -> bool {
+    return value > 4
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3, 4]
+    let chained: i64[] = values | map double | filter greaterThanFour
+    let total: i64 = values | map double | filter greaterThanFour | reduce add
+    let seeded: i64 = values | map double | filter greaterThanFour | fold 10 add
+    print chained.length
+    print total
+    print seeded
+    return 0
+}
+"#;
+
+    check_source(source).expect("fused sequence pipelines should typecheck");
+    let generated = compile_to_c(source).expect("fused sequence pipelines should lower natively");
+    assert_eq!(
+        generated.matches("int64_t flux__transform_buffer_").count(),
+        1,
+        "only the collection-producing chain should allocate a result buffer"
+    );
+    assert!(generated.contains("flux__fn_double(flux__transform_item_"));
+    assert!(generated.contains("if (!flux__fn_greaterThanFour(flux__transform_value_"));
+    assert!(generated.contains("flux__fn_add(flux__local_total, flux__transform_value_"));
+    assert!(generated.contains("flux__fn_add(flux__local_seeded, flux__transform_value_"));
+}
+
+#[test]
 fn rejects_invalid_map_filter_and_where_calls() {
     let non_list = r#"
 fn double(value: i64) -> i64 {

@@ -2740,6 +2740,93 @@ fn emit_sequence_transform_binding(
     Ok(())
 }
 
+fn collect_sequence_transform_chain<'a>(expr: &'a Expr, stages: &mut Vec<&'a Expr>) -> &'a Expr {
+    let Some(transform) = sequence_transform(expr) else {
+        return expr;
+    };
+    let list = match transform {
+        SequenceTransform::Map { list, .. } | SequenceTransform::Filter { list, .. } => list,
+    };
+    let source = collect_sequence_transform_chain(list, stages);
+    stages.push(expr);
+    source
+}
+
+fn emit_sequence_transform_stages(
+    out: &mut String,
+    pad: &str,
+    stages: &[&Expr],
+    mut value_name: String,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(String, Type), Diagnostic> {
+    let first_stage = stages
+        .first()
+        .expect("sequence transform stages are non-empty");
+    let first_transform = sequence_transform(first_stage).ok_or_else(|| {
+        diag(
+            first_stage.span,
+            "invalid sequence transform stage reached code generation",
+        )
+    })?;
+    let first_list = match first_transform {
+        SequenceTransform::Map { list, .. } | SequenceTransform::Filter { list, .. } => list,
+    };
+    let first_list_ty = signatures.canonical_type(&type_of_expr(first_list, env, signatures)?);
+    let Type::List(first_element) = first_list_ty else {
+        return Err(diag(
+            first_stage.span,
+            "sequence transform stage requires a list source",
+        ));
+    };
+    let mut value_ty = (*first_element).clone();
+    for stage in stages {
+        let transform = sequence_transform(stage).ok_or_else(|| {
+            diag(
+                stage.span,
+                "invalid sequence transform stage reached code generation",
+            )
+        })?;
+        let (callback_expr, filter) = match transform {
+            SequenceTransform::Map { callback, .. } => (callback, false),
+            SequenceTransform::Filter { callback, .. } => (callback, true),
+        };
+        let callback = emit_expr(callback_expr, env, signatures)?;
+        let Type::Function { .. } = callback.ty else {
+            return Err(diag(
+                stage.span,
+                "sequence transform requires a function callback",
+            ));
+        };
+        if filter {
+            out.push_str(&format!(
+                "{pad}if (!{}({value_name})) continue;\n",
+                callback.code
+            ));
+            continue;
+        }
+        let stage_ty = signatures.canonical_type(&type_of_expr(stage, env, signatures)?);
+        let Type::List(output_element) = stage_ty else {
+            return Err(diag(
+                stage.span,
+                "sequence transform stage must produce a list",
+            ));
+        };
+        let next_name = format!("flux__transform_value_{}", *temp_counter);
+        *temp_counter += 1;
+        let output_ty = (*output_element).clone();
+        out.push_str(&format!(
+            "{pad}{} {next_name} = {}({value_name});\n",
+            c_type(&output_ty, signatures),
+            callback.code
+        ));
+        value_name = next_name;
+        value_ty = output_ty;
+    }
+    Ok((value_name, value_ty))
+}
+
 fn emit_sequence_transform_value(
     out: &mut String,
     pad: &str,
@@ -2748,21 +2835,15 @@ fn emit_sequence_transform_value(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
-    let transform = sequence_transform(expr).ok_or_else(|| {
-        diag(
+    let mut stages = Vec::new();
+    let source_expr = collect_sequence_transform_chain(expr, &mut stages);
+    if stages.is_empty() {
+        return Err(diag(
             expr.span,
             "invalid sequence transform reached code generation",
-        )
-    })?;
-    let (list_expr, callback_expr, filter) = match transform {
-        SequenceTransform::Map { list, callback } => (list, callback, false),
-        SequenceTransform::Filter { list, callback } => (list, callback, true),
-    };
-    let source = if sequence_transform(list_expr).is_some() {
-        emit_sequence_transform_value(out, pad, list_expr, env, signatures, temp_counter)?
-    } else {
-        emit_expr(list_expr, env, signatures)?
-    };
+        ));
+    }
+    let source = emit_expr(source_expr, env, signatures)?;
     let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence transform requires a list source"));
     };
@@ -2771,13 +2852,6 @@ fn emit_sequence_transform_value(
         return Err(diag(
             expr.span,
             "sequence transform result must have a list type",
-        ));
-    };
-    let callback = emit_expr(callback_expr, env, signatures)?;
-    let Type::Function { .. } = callback.ty else {
-        return Err(diag(
-            expr.span,
-            "sequence transform requires a function callback",
         ));
     };
     let source_name = format!("flux__transform_source_{}", *temp_counter);
@@ -2808,17 +2882,25 @@ fn emit_sequence_transform_value(
     out.push_str(&format!(
         "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({input_c})));\n"
     ));
-    if filter {
-        out.push_str(&format!(
-            "{pad}    if ({}({item_name})) {buffer_name}[{count_name}++] = {item_name};\n",
-            callback.code
-        ));
-    } else {
-        out.push_str(&format!(
-            "{pad}    {buffer_name}[{count_name}++] = {}({item_name});\n",
-            callback.code
+    let body_pad = format!("{pad}    ");
+    let (value_name, value_ty) = emit_sequence_transform_stages(
+        out,
+        &body_pad,
+        &stages,
+        item_name,
+        env,
+        signatures,
+        temp_counter,
+    )?;
+    if value_ty != **output_element {
+        return Err(diag(
+            expr.span,
+            "sequence transform fused value type mismatch reached code generation",
         ));
     }
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {value_name};\n"
+    ));
     out.push_str(&format!("{pad}}}\n"));
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({output_c}) }};\n"
@@ -2905,13 +2987,18 @@ fn emit_sequence_reduction_binding(
         } => (list, Some(initial), reducer, false),
         SequenceReduction::Reduce { list, reducer } => (list, None, reducer, true),
     };
-    let list = if sequence_transform(list_expr).is_some() {
-        emit_sequence_transform_value(out, pad, list_expr, env, signatures, temp_counter)?
-    } else {
-        emit_expr(list_expr, env, signatures)?
-    };
-    let Type::List(element) = signatures.canonical_type(&list.ty) else {
+    let mut stages = Vec::new();
+    let source_expr = collect_sequence_transform_chain(list_expr, &mut stages);
+    let source = emit_expr(source_expr, env, signatures)?;
+    let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
+    };
+    let list_ty = signatures.canonical_type(&type_of_expr(list_expr, env, signatures)?);
+    let Type::List(element) = list_ty else {
+        return Err(diag(
+            expr.span,
+            "sequence reduction input must remain a list",
+        ));
     };
     let reducer = emit_expr(reducer_expr, env, signatures)?;
     let Type::Function { .. } = reducer.ty else {
@@ -2927,22 +3014,19 @@ fn emit_sequence_reduction_binding(
     let item_name = format!("flux__reduce_item_{}", *temp_counter);
     *temp_counter += 1;
     let target_name = local_c_name(name);
-    let element_c = c_type(&element, signatures);
+    let source_element_c = c_type(&source_element, signatures);
     out.push_str(&format!(
         "{pad}struct flux__list {source_name} = {};\n",
-        list.code
+        source.code
     ));
-    if reduce {
+    let has_value_name = if reduce {
+        let has_value_name = format!("flux__reduce_has_value_{}", *temp_counter);
+        *temp_counter += 1;
         out.push_str(&format!(
-            "{pad}if ({source_name}.len == 0) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }}\n"
-        ));
-        out.push_str(&format!(
-            "{pad}{} {target_name} = *(({element_c} *)flux_list_at({source_name}, INT64_C(0), sizeof({element_c})));\n",
+            "{pad}{} {target_name};\n{pad}bool {has_value_name} = false;\n",
             c_type(declared_ty, signatures)
         ));
-        out.push_str(&format!(
-            "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n"
-        ));
+        Some(has_value_name)
     } else {
         let initial = emit_expr(
             initial.expect("fold reduction has an initial value"),
@@ -2954,18 +3038,51 @@ fn emit_sequence_reduction_binding(
             c_type(declared_ty, signatures),
             initial.code
         ));
-        out.push_str(&format!(
-            "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+        None
+    };
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {source_element_c} {item_name} = *(({source_element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({source_element_c})));\n"
+    ));
+    let body_pad = format!("{pad}    ");
+    let (value_name, value_ty) = if stages.is_empty() {
+        (item_name, (*source_element).clone())
+    } else {
+        emit_sequence_transform_stages(
+            out,
+            &body_pad,
+            &stages,
+            item_name,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    };
+    if value_ty != *element {
+        return Err(diag(
+            expr.span,
+            "sequence reduction fused value type mismatch reached code generation",
         ));
     }
-    out.push_str(&format!(
-        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at({source_name}, (int64_t){index_name}, sizeof({element_c})));\n"
-    ));
-    out.push_str(&format!(
-        "{pad}    {target_name} = {}({target_name}, {item_name});\n",
-        reducer.code
-    ));
+    if let Some(has_value_name) = &has_value_name {
+        out.push_str(&format!(
+            "{pad}    if (!{has_value_name}) {{ {target_name} = {value_name}; {has_value_name} = true; }} else {{ {target_name} = {}({target_name}, {value_name}); }}\n",
+            reducer.code
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}    {target_name} = {}({target_name}, {value_name});\n",
+            reducer.code
+        ));
+    }
     out.push_str(&format!("{pad}}}\n"));
+    if let Some(has_value_name) = has_value_name {
+        out.push_str(&format!(
+            "{pad}if (!{has_value_name}) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }}\n"
+        ));
+    }
     env.insert(name.to_string(), signatures.canonical_type(declared_ty));
     Ok(())
 }
