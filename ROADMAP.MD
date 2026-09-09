@@ -374,6 +374,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Typed Flux IR with source spans.
   - [x] Bootstrap per-function semantic CFG nodes retain original source spans, function parameter/return types, and explicit typed local-binding metadata while expressions remain in the checked AST.
 - [ ] Ownership facts represented in IR.
+  - [x] Bootstrap CFG statement nodes carry deterministic binding-read sets plus explicit source/destination/span facts for the direct non-copy local moves already enforced by the ownership checker.
+  - [ ] Move path-state, borrow regions, partial moves, drops, and lifetime facts onto normalized CFG/IR analysis.
 - [ ] Explicit control-flow graph.
   - [x] The semantic database exposes deterministic per-function structural CFGs for sequential statements, `if`, loops/back-edges, `break`, `continue`, `return`, match-arm dispatch, and `else return` success/error exits.
   - [ ] Normalize expression/guard evaluation and ownership facts onto CFG/IR nodes so later analyses no longer depend on syntax-shaped AST traversal.

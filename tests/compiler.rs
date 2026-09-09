@@ -4977,6 +4977,41 @@ fn main() -> i64 {
     assert!(propagation_graph.outgoing(destructure.id).any(|edge| {
         edge.kind == ControlFlowEdgeKind::Error && edge.to == propagation_graph.exit()
     }));
+
+    let ownership_source = r#"
+fn consume() -> i64 {
+    let source: i64[] = [1, 2]
+    let destination: i64[] = source
+    print(destination.first)
+    return 0
+}
+
+fn main() -> i64 {
+    return consume()
+}
+"#;
+    let ownership_database =
+        fluxc::semantic::SemanticDatabase::analyze(ownership_source, SourceId::new(1307))
+            .expect("direct ownership transfer should analyze");
+    let ownership_graph = ownership_database
+        .control_flow_graph("consume")
+        .expect("ownership function should have a graph");
+    let destination = ownership_graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.kind,
+                ControlFlowNodeKind::Binding { name, .. } if name == "destination"
+            )
+        })
+        .expect("destination binding should be explicit in the graph");
+    assert_eq!(destination.ownership.reads, vec!["source"]);
+    assert_eq!(destination.ownership.moves.len(), 1);
+    let ownership_move = &destination.ownership.moves[0];
+    assert_eq!(ownership_move.source, "source");
+    assert_eq!(ownership_move.destination, "destination");
+    assert_eq!(ownership_move.span.source_id, SourceId::new(1307));
 }
 
 #[test]

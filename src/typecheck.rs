@@ -2269,7 +2269,7 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
     }
 }
 
-fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
+pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
     match &expr.kind {
         ExprKind::Var(name) => {
             reads.insert(name.clone());

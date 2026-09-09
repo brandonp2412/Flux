@@ -237,7 +237,7 @@ impl SemanticDatabase {
         let control_flow_graphs = program
             .functions
             .iter()
-            .map(ControlFlowGraph::from_function)
+            .map(|function| ControlFlowGraph::from_function(function, &signatures))
             .collect();
         Self {
             program,
