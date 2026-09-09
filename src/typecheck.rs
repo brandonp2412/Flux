@@ -187,6 +187,46 @@ impl Signatures {
         }
     }
 
+    pub fn is_copy_type(&self, ty: &Type) -> bool {
+        self.is_copy_type_inner(ty, &mut HashSet::new())
+    }
+
+    fn is_copy_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
+        match self.canonical_type(ty) {
+            Type::I64 | Type::Bool | Type::Str | Type::Error => true,
+            Type::Void | Type::List(_) => false,
+            Type::Function { .. } => true,
+            Type::Named(name) => {
+                if self.interface(&name).is_some() {
+                    return true;
+                }
+                if !visiting.insert(name.clone()) {
+                    // Recursive by-value aggregates are rejected by the dedicated cycle check.
+                    // Treat the in-progress edge as provisionally copyable here so generic
+                    // ownership gating does not replace that more precise diagnostic.
+                    return true;
+                }
+                let copyable = if let Some(definition) = self.struct_type(&name) {
+                    definition
+                        .fields
+                        .iter()
+                        .all(|field| self.is_copy_type_inner(&field.ty, visiting))
+                } else if let Some(definition) = self.enum_type(&name) {
+                    definition.variants.iter().all(|variant| {
+                        variant
+                            .payloads
+                            .iter()
+                            .all(|payload| self.is_copy_type_inner(payload, visiting))
+                    })
+                } else {
+                    false
+                };
+                visiting.remove(&name);
+                copyable
+            }
+        }
+    }
+
     fn contains_function(&self, name: &str) -> bool {
         self.functions.contains_key(name)
     }
@@ -1881,6 +1921,7 @@ fn check_function_all(
 ) {
     let mut env = HashMap::new();
     let mut mutable = HashSet::new();
+    let mut moved = HashSet::new();
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
@@ -1898,6 +1939,7 @@ fn check_function_all(
         &return_types,
         signatures,
         diagnostics,
+        &mut moved,
         0,
     );
     if diagnostics.len() == diagnostics_before_body {
@@ -2379,9 +2421,29 @@ fn check_block_all(
     return_types: &[Type],
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
+    moved: &mut HashSet<String>,
     loop_depth: usize,
 ) {
     for stmt in body {
+        let mut reads = HashSet::new();
+        collect_block_reads(std::slice::from_ref(stmt), &mut reads);
+        let mut moved_reads = reads.intersection(moved).cloned().collect::<Vec<_>>();
+        moved_reads.sort();
+        if !moved_reads.is_empty() {
+            diagnostics.push(diag(
+                stmt.span,
+                &format!(
+                    "use of moved non-copy binding{} {}",
+                    if moved_reads.len() == 1 { "" } else { "s" },
+                    moved_reads
+                        .iter()
+                        .map(|name| format!("'{name}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+            continue;
+        }
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -2400,13 +2462,16 @@ fn check_block_all(
                 if let Err(diagnostic) = require_known_type(*type_span, ty, signatures) {
                     diagnostics.push(diagnostic);
                 }
-                if matches!(stmt.kind, StmtKind::Var { .. })
-                    && matches!(signatures.canonical_type(ty), Type::List(_))
-                {
-                    diagnostics.push(diag(
-                        *type_span,
-                        "list bindings are currently immutable local values; use 'let' until collection ownership is implemented",
-                    ));
+                if matches!(stmt.kind, StmtKind::Var { .. }) && !signatures.is_copy_type(ty) {
+                    let message = if matches!(signatures.canonical_type(ty), Type::List(_)) {
+                        "list bindings are currently immutable local values; use 'let' until collection ownership is implemented".to_string()
+                    } else {
+                        format!(
+                            "non-copy value type '{}' cannot be mutable until move/borrow semantics are implemented",
+                            signatures.canonical_type(ty).name()
+                        )
+                    };
+                    diagnostics.push(diag(*type_span, &message));
                 }
                 let duplicate = env.contains_key(name);
                 if duplicate {
@@ -2415,16 +2480,40 @@ fn check_block_all(
                         &format!("'{name}' is already defined in this scope"),
                     ));
                 }
-                match type_of_expr(expr, env, signatures) {
+                let binding_matches = match type_of_expr(expr, env, signatures) {
                     Ok(actual) => {
                         let declared = signatures.canonical_type(ty);
                         if let Err(diagnostic) =
                             require_type(expr.span, &declared, &actual, "binding")
                         {
                             diagnostics.push(diagnostic);
+                            false
+                        } else {
+                            true
                         }
                     }
-                    Err(diagnostic) => diagnostics.push(diagnostic),
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        false
+                    }
+                };
+                if !duplicate
+                    && binding_matches
+                    && matches!(stmt.kind, StmtKind::Let { .. })
+                    && !signatures.is_copy_type(ty)
+                    && let ExprKind::Var(source) = &expr.kind
+                    && env.contains_key(source)
+                {
+                    if loop_depth > 0 {
+                        diagnostics.push(diag(
+                            expr.span,
+                            &format!(
+                                "moving non-copy binding '{source}' inside a loop is not supported until control-flow ownership checking is implemented"
+                            ),
+                        ));
+                    } else {
+                        moved.insert(source.clone());
+                    }
                 }
                 if !duplicate {
                     env.insert(name.clone(), signatures.canonical_type(ty));
@@ -2815,6 +2904,7 @@ fn check_block_all(
                 }
                 let mut then_env = env.clone();
                 let mut then_mutable = mutable.clone();
+                let mut then_moved = moved.clone();
                 check_block_all(
                     body,
                     &mut then_env,
@@ -2822,10 +2912,12 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    &mut then_moved,
                     loop_depth,
                 );
                 let mut else_env = env.clone();
                 let mut else_mutable = mutable.clone();
+                let mut else_moved = moved.clone();
                 check_block_all(
                     else_body,
                     &mut else_env,
@@ -2833,8 +2925,11 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    &mut else_moved,
                     loop_depth,
                 );
+                merge_child_moves(moved, &then_moved, env);
+                merge_child_moves(moved, &else_moved, env);
             }
             StmtKind::ForRange {
                 name,
@@ -2872,6 +2967,7 @@ fn check_block_all(
                 }
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
+                let mut nested_moved = moved.clone();
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
                 }
@@ -2882,8 +2978,10 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    &mut nested_moved,
                     loop_depth + 1,
                 );
+                merge_child_moves(moved, &nested_moved, env);
             }
             StmtKind::ForEach {
                 index_name,
@@ -2910,6 +3008,7 @@ fn check_block_all(
                 };
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
+                let mut nested_moved = moved.clone();
                 if let Some(index_name) = index_name {
                     if env.contains_key(index_name) {
                         diagnostics.push(diag(
@@ -2935,8 +3034,10 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    &mut nested_moved,
                     loop_depth + 1,
                 );
+                merge_child_moves(moved, &nested_moved, env);
             }
             StmtKind::While { cond, body } => {
                 match type_of_expr(cond, env, signatures) {
@@ -2951,6 +3052,7 @@ fn check_block_all(
                 }
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
+                let mut nested_moved = moved.clone();
                 check_block_all(
                     body,
                     &mut nested,
@@ -2958,8 +3060,10 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
+                    &mut nested_moved,
                     loop_depth + 1,
                 );
+                merge_child_moves(moved, &nested_moved, env);
             }
             StmtKind::Match { value, arms } => {
                 let value_ty = match type_of_expr(value, env, signatures) {
@@ -2984,6 +3088,7 @@ fn check_block_all(
                     continue;
                 };
                 let mut covered = HashSet::new();
+                let mut post_match_moved = moved.clone();
                 for arm in arms {
                     if arm.enum_name != enum_name {
                         diagnostics.push(diag(
@@ -3106,6 +3211,7 @@ fn check_block_all(
                         covered.insert(arm.variant.as_str());
                     }
                     let mut nested_mutable = mutable.clone();
+                    let mut nested_moved = moved.clone();
                     check_block_all(
                         &arm.body,
                         &mut nested,
@@ -3113,9 +3219,12 @@ fn check_block_all(
                         return_types,
                         signatures,
                         diagnostics,
+                        &mut nested_moved,
                         loop_depth,
                     );
+                    merge_child_moves(&mut post_match_moved, &nested_moved, env);
                 }
+                merge_child_moves(moved, &post_match_moved, env);
                 let missing = definition
                     .variants
                     .iter()
@@ -3157,6 +3266,7 @@ fn check_block_all(
                     diagnostics.push(diagnostic);
                 }
                 if let Some(element_ty) = element_ty {
+                    let mut post_match_moved = moved.clone();
                     for arm in arms {
                         let mut nested = env.clone();
                         if let Err(diagnostic) =
@@ -3180,6 +3290,7 @@ fn check_block_all(
                             }
                         }
                         let mut nested_mutable = mutable.clone();
+                        let mut nested_moved = moved.clone();
                         check_block_all(
                             &arm.body,
                             &mut nested,
@@ -3187,13 +3298,29 @@ fn check_block_all(
                             return_types,
                             signatures,
                             diagnostics,
+                            &mut nested_moved,
                             loop_depth,
                         );
+                        merge_child_moves(&mut post_match_moved, &nested_moved, env);
                     }
+                    merge_child_moves(moved, &post_match_moved, env);
                 }
             }
         }
     }
+}
+
+fn merge_child_moves(
+    moved: &mut HashSet<String>,
+    child: &HashSet<String>,
+    parent_env: &HashMap<String, Type>,
+) {
+    moved.extend(
+        child
+            .iter()
+            .filter(|name| parent_env.contains_key(name.as_str()))
+            .cloned(),
+    );
 }
 
 fn bind_list_match_pattern(
@@ -5327,11 +5454,17 @@ fn require_storable_value_type(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     require_known_type(span, ty, signatures)?;
-    if matches!(signatures.canonical_type(ty), Type::List(_)) {
-        return Err(diag(
-            span,
-            "list values are currently local-only and cannot be stored inside structs or enums",
-        ));
+    if !signatures.is_copy_type(ty) {
+        let message = if matches!(signatures.canonical_type(ty), Type::List(_)) {
+            "list values are currently local-only and cannot be stored inside structs or enums"
+                .to_string()
+        } else {
+            format!(
+                "non-copy value type '{}' cannot be stored inside structs or enums until ownership is implemented",
+                signatures.canonical_type(ty).name()
+            )
+        };
+        return Err(diag(span, &message));
     }
     if let Type::Named(name) = signatures.canonical_type(ty)
         && signatures.interface(&name).is_some()

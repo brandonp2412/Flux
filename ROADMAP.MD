@@ -309,12 +309,20 @@ Adapt the convenience of Dart's async language features while preserving Flux's 
 
 # Milestone 4 — Ownership and memory safety
 
-- [ ] Define copyable primitive/value types.
+The ownership track now has an explicit compiler-level copyability classification rather than relying on ad-hoc list checks. Bootstrap scalar handles (`i64`, `bool`, `str`, `error`), function values, closed interface values, and recursively copyable structs/enums are `Copy`; `void` is not a value and local list/view types are deliberately non-copy until owned collection storage and move/borrow rules exist. Existing mutable-binding and aggregate-storage safety gates now query that classification, so future non-copy value types inherit the conservative ownership restrictions automatically.
+
+- [x] Define copyable primitive/value types with alias-aware structural classification shared by semantic validation.
 - [ ] Move semantics for non-copy values.
+  - [x] Bootstrap direct local transfers (`let destination: T = source`) move non-copy values, preserve ordinary reuse for `Copy` types, and conservatively merge moves across `if`/exhaustive `match` branches.
+  - [ ] General move analysis across calls, returns, aggregate fields, loops, and owned resource types after normalized control-flow ownership facts exist; direct non-copy transfers inside loops are rejected rather than guessed today.
 - [ ] Immutable borrows.
+  - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
+  - [ ] First-class borrow/reference types and inferred borrow lifetimes for owned values.
 - [ ] Exclusive mutable borrows.
 - [ ] Lifetime inference.
 - [ ] Prevent use-after-move.
+  - [x] Reject later reads of a non-copy local after a direct bootstrap move, including conservative post-branch invalidation.
+  - [ ] CFG/IR-wide move-state analysis for loops, calls, partial moves, and future owned aggregates.
 - [ ] Prevent dangling borrows.
 - [ ] Prevent aliasing violations.
 - [ ] Deterministic destruction/resource release.
@@ -330,7 +338,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Owned string type plus immutable string views/slices.
 - [ ] Arrays/lists.
   - [x] Bootstrap immutable local `T[]` lists with literals, checked indexing, zero-copy slicing, and filtered comprehensions.
-  - [ ] Owned/escaping list storage, list parameters/returns, aggregate fields, mutation, and lifetime/ownership integration.
+  - [ ] Owned/escaping list storage, owned list argument/return transfer, aggregate fields, mutation, and lifetime/ownership integration; current list parameters are immutable borrowed views.
 - [ ] Maps.
 - [ ] Sets.
 - [ ] Byte buffers.

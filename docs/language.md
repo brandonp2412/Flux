@@ -617,7 +617,7 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 
 `chunked(list, size)` splits a list into consecutive `T[]` views and returns them as `T[][]`. The size is an `i64` and must be greater than zero; a literal zero is rejected statically and dynamic non-positive sizes fail with an explicit Flux runtime error. Chunk descriptors are stack-backed but their elements remain zero-copy views into the original list, preserving positive or negative source stride. The final chunk may be shorter, an empty source produces zero chunks, and pipelines such as `values[::-1] | chunked 2 | flatten` preserve logical order.
 
-This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
+This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters are permitted as non-consuming immutable borrowed views of caller-local storage; owned argument/return transfer, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 
 ## Dart-inspired ergonomics direction
 
@@ -640,7 +640,13 @@ The planned safe memory model borrows the useful properties of Rust while aiming
 - reference-counting is not the default ownership model;
 - tracing garbage collection is not required for ordinary safe code.
 
-The first borrow checker should be implemented after structs and a typed intermediate representation exist, so ownership rules are checked over normalized semantics rather than parser syntax.
+The compiler now has an explicit alias-aware `Copy` classification as the first ownership primitive. In the current bootstrap, `i64`, `bool`, immutable `str`/`error` handles, function values, closed interface values, and structs/enums whose complete payload graph is copyable are `Copy`. `void` is not a value, and `T[]` list/view values are non-copy until owned collection storage and move/borrow checking land. Mutable-binding and aggregate-storage validation use this shared classification instead of assuming that lists are the only future non-copy type.
+
+Direct local transfer now exercises that distinction: `let destination: T = source` moves `source` when `T` is non-copy, and a later read of `source` is a compile error. `Copy` values remain reusable. Moves performed in one `if` or exhaustive `match` branch conservatively invalidate the outer binding afterward. Direct non-copy moves inside loops are currently rejected rather than pretending a single syntax-tree pass can prove iteration-safe ownership.
+
+Existing list/view operations model the bootstrap's first immutable-borrow behavior: reading, indexing, slicing, iteration, matching, sequence transforms, and passing `T[]` to a function do not consume the local list owner. These are compiler-enforced local views, not yet first-class source-level borrow/reference types, and they cannot escape through list returns or aggregate storage.
+
+The first full borrow checker should operate over normalized typed semantics/IR rather than parser syntax. General moves across calls/returns/fields, first-class immutable and exclusive mutable borrows, lifetime inference, partial-move analysis, and deterministic destruction remain subsequent ownership milestones.
 
 ## Primitive bootstrap types
 

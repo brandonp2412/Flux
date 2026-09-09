@@ -2488,6 +2488,148 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_copy_classification_is_structural_and_alias_aware() {
+    let source = r#"
+struct Pair {
+    count: i64
+    label: str
+}
+
+enum Choice {
+    PairValue(Pair)
+    Missing
+}
+
+type PairAlias = Pair
+
+interface Readable {
+    fn read(value: i64) -> i64
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1204))
+        .expect("copyable value declarations should analyze");
+    let signatures = database.signatures();
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::I64));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Bool));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Str));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Error));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Named("Pair".to_string())));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Named("PairAlias".to_string())));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Named("Choice".to_string())));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Named("Readable".to_string())));
+    assert!(signatures.is_copy_type(&fluxc::ast::Type::Function {
+        params: vec![fluxc::ast::Type::I64],
+        returns: vec![fluxc::ast::Type::Bool],
+    }));
+    assert!(!signatures.is_copy_type(&fluxc::ast::Type::Void));
+    assert!(!signatures.is_copy_type(&fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64,))));
+}
+
+#[test]
+fn direct_non_copy_transfers_move_locals_and_reject_use_after_move() {
+    let moved = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20]
+    let destination: i64[] = source
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(moved).expect("a direct non-copy local transfer should move the source");
+    compile_to_c(moved).expect("a valid non-copy local move should lower natively");
+
+    let use_after_move = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20]
+    let destination: i64[] = source
+    print(destination[0])
+    print(source[1])
+    return 0
+}
+"#;
+    let errors = check_source_all(use_after_move).expect_err("using a moved list must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
+    }));
+
+    let copy_values = r#"
+fn main() -> i64 {
+    let source: i64 = 7
+    let destination: i64 = source
+    print(source)
+    print(destination)
+    return 0
+}
+"#;
+    check_source(copy_values).expect("copy values must remain reusable after assignment");
+}
+
+#[test]
+fn non_copy_list_reads_and_parameters_are_immutable_borrows() {
+    let source = r#"
+fn firstValue(values: i64[]) -> i64 {
+    return values.first
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 4]
+    print(firstValue(values))
+    print(values[1])
+    let tail: i64[] = values[1:]
+    print(tail.first)
+    print(values.first)
+    return 0
+}
+"#;
+
+    check_source(source).expect("list reads, slices, and parameters should not consume the owner");
+}
+
+#[test]
+fn branch_moves_are_conservative_and_loop_moves_are_rejected() {
+    let branch = r#"
+fn main() -> i64 {
+    let source: i64[] = [1]
+    if true:
+        let destination: i64[] = source
+        print(destination.first)
+    print(source.first)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(branch).expect_err("a move on one branch must invalidate later use");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
+    }));
+
+    let loop_move = r#"
+fn main() -> i64 {
+    let source: i64[] = [1]
+    for index in 0..1:
+        let destination: i64[] = source
+        print(destination[index])
+    return 0
+}
+"#;
+    let errors = check_source_all(loop_move).expect_err("loop moves need CFG ownership checking");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("moving non-copy binding 'source' inside a loop is not supported")
+    }));
+}
+
+#[test]
 fn rejects_invalid_concise_single_expression_functions() {
     let void_body = r#"
 fn log(value: str) -> void { print(value) }
