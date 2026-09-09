@@ -54,7 +54,10 @@ Bindings are explicitly typed and immutable by default:
 let count: i64 = 4
 let enabled: bool = true
 let label: str = "Flux"
+let pattern: str = r"\d+\w+"
 ```
+
+Raw strings use `r"..."`. Backslashes are literal rather than escape introducers, so paths and regular-expression-like text do not require doubled backslashes. The closing `"` still terminates the literal, so the bootstrap raw form does not embed a double quote. Raw and ordinary literals have the same `str` type and runtime representation; canonical formatting normalizes raw literals to the equivalent escaped ordinary string.
 
 Local mutation must be declared explicitly with `var`. Reassignment preserves the declared static type, and immutable `let` bindings, parameters, destructured bindings, and `for` loop variables cannot be assigned to:
 

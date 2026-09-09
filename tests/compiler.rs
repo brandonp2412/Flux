@@ -2875,6 +2875,42 @@ fn rejects_flux_comments() {
 }
 
 #[test]
+fn accepts_raw_string_literals_and_canonicalizes_them() {
+    let source = r#"
+fn main() -> i64 {
+    let path: str = r"C:\Flux\bin\"
+    let pattern: str = r"\d+\w+"
+    print(path)
+    print(pattern)
+    return 0
+}
+"#;
+
+    check_source(source).expect("raw strings should typecheck as str");
+    let generated = compile_to_c(source).expect("raw strings should lower as ordinary strings");
+    assert!(generated.contains("C:\\\\Flux\\\\bin\\\\"));
+    assert!(generated.contains("\\\\d+\\\\w+"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("raw strings should format");
+    assert!(formatted.contains("let path: str = \"C:\\\\Flux\\\\bin\\\\\""));
+    assert!(formatted.contains("let pattern: str = \"\\\\d+\\\\w+\""));
+    assert!(!formatted.contains("r\""));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("canonical strings should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let escaped = r#"
+fn main() -> i64 {
+    let pattern: str = "\d"
+    print(pattern)
+    return 0
+}
+"#;
+    let error = check_source(escaped).expect_err("ordinary strings should still validate escapes");
+    assert!(error.message.contains("unsupported escape '\\d'"));
+}
+
+#[test]
 fn formatter_refuses_ternary_syntax() {
     let source = "fn main()->i64 {\n let value:i64=1 if true else 2\n return value\n}\n";
     let diagnostics = fluxc::formatter::format_source(source)

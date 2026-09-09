@@ -2225,11 +2225,17 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     let mut stack = Vec::<usize>::new();
     let mut index = 0usize;
     let mut in_string = false;
+    let mut raw_string = false;
     let mut escaped = false;
     while index < bytes.len() {
         let byte = bytes[index];
         if in_string {
-            if escaped {
+            if raw_string {
+                if byte == b'"' {
+                    in_string = false;
+                    raw_string = false;
+                }
+            } else if escaped {
                 escaped = false;
             } else if byte == b'\\' {
                 escaped = true;
@@ -2239,8 +2245,17 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
             index += 1;
             continue;
         }
+        if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            in_string = true;
+            raw_string = true;
+            index += 2;
+            continue;
+        }
         match byte {
-            b'"' => in_string = true,
+            b'"' => {
+                in_string = true;
+                raw_string = false;
+            }
             b'(' => stack.push(index),
             b')' => {
                 stack.pop();
@@ -2268,11 +2283,17 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     let mut commas = 0usize;
     let mut index = open + 1;
     let mut in_string = false;
+    let mut raw_string = false;
     let mut escaped = false;
     while index < bytes.len() {
         let byte = bytes[index];
         if in_string {
-            if escaped {
+            if raw_string {
+                if byte == b'"' {
+                    in_string = false;
+                    raw_string = false;
+                }
+            } else if escaped {
                 escaped = false;
             } else if byte == b'\\' {
                 escaped = true;
@@ -2282,8 +2303,17 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
             index += 1;
             continue;
         }
+        if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            in_string = true;
+            raw_string = true;
+            index += 2;
+            continue;
+        }
         match byte {
-            b'"' => in_string = true,
+            b'"' => {
+                in_string = true;
+                raw_string = false;
+            }
             b'(' => depth += 1,
             b')' if depth > 0 => depth -= 1,
             b',' if depth == 0 => commas += 1,
@@ -2473,6 +2503,27 @@ fn tokenize_semantic_line(
         let byte = bytes[index];
         if byte.is_ascii_whitespace() {
             index += 1;
+            continue;
+        }
+        if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            let start = index;
+            index += 2;
+            while index < bytes.len() {
+                let current = bytes[index];
+                index += 1;
+                if current == b'"' {
+                    break;
+                }
+            }
+            push_semantic_token(
+                tokens,
+                line,
+                line_index,
+                start,
+                index,
+                SemanticTokenKind::String,
+                encoding,
+            );
             continue;
         }
         if byte == b'"' {
@@ -3306,6 +3357,16 @@ fn identifier_occurrences(source: &str, name: &str) -> Vec<SourceSpan> {
         let mut index = 0usize;
         while index < bytes.len() {
             match bytes[index] {
+                b'r' if bytes.get(index + 1) == Some(&b'"') => {
+                    index += 2;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        index += 1;
+                        if byte == b'"' {
+                            break;
+                        }
+                    }
+                }
                 b'"' => {
                     index += 1;
                     let mut escaped = false;
@@ -5710,8 +5771,13 @@ mod tests {
 
     #[test]
     fn semantic_tokens_mix_lexical_and_typed_categories() {
-        let source =
-            "fn double(value: i64) -> i64 { value * 2 }\nfn main() -> i64 { double(21) }\n";
+        let source = r#"fn double(value: i64) -> i64 { value * 2 }
+fn main() -> i64 {
+    let path: str = r"C:\Flux\"
+    print(path)
+    return double(21)
+}
+"#;
         crate::semantic::SemanticDatabase::analyze(source, SourceId::new(1))
             .expect("semantic-token fixture should analyze");
         let data = semantic_tokens("file:///tmp/tokens.flux", source, PositionEncoding::Utf8);
@@ -5734,6 +5800,7 @@ mod tests {
         assert!(kinds.contains(&(SemanticTokenKind::Parameter as i64)));
         assert!(kinds.contains(&(SemanticTokenKind::Type as i64)));
         assert!(kinds.contains(&(SemanticTokenKind::Number as i64)));
+        assert!(kinds.contains(&(SemanticTokenKind::String as i64)));
         assert!(kinds.contains(&(SemanticTokenKind::Operator as i64)));
     }
 }

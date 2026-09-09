@@ -3866,7 +3866,38 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
         }
 
         let start = index;
-        let kind = if byte.is_ascii_digit() {
+        let kind = if byte == b'r' && bytes.get(index + 1) == Some(&b'"') {
+            index += 2;
+            let mut value = String::new();
+            let mut closed = false;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'"' => {
+                        index += 1;
+                        closed = true;
+                        break;
+                    }
+                    other if other.is_ascii() => {
+                        value.push(other as char);
+                        index += 1;
+                    }
+                    _ => {
+                        let rest = &input[index..];
+                        let ch = rest.chars().next().expect("non-empty unicode tail");
+                        value.push(ch);
+                        index += ch.len_utf8();
+                    }
+                }
+            }
+            if !closed {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    SourceSpan::new(line, column + start, input.len() - start),
+                    "unterminated raw string literal",
+                ));
+            }
+            TokenKind::Str(value)
+        } else if byte.is_ascii_digit() {
             while index < bytes.len() && bytes[index].is_ascii_digit() {
                 index += 1;
             }

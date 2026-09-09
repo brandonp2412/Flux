@@ -271,7 +271,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
   - [x] Trailing `&` detached background execution for call/pipeline statements; the current native bootstrap lowers this through POSIX process primitives only when a program actually uses background execution.
 - [ ] String interpolation. Runtime interpolation is sequenced after owned-string/buffer semantics: the bootstrap `str` currently lowers to borrowed native string pointers, so Flux must not introduce hidden scratch-buffer allocation/lifetime behavior merely for interpolation syntax. Compile-time interpolation may arrive earlier only if it shares the eventual syntax and semantics cleanly.
 - [ ] Multiline strings.
-- [ ] Raw strings.
+- [x] Raw strings with Python-like `r"..."` syntax: backslashes are literal, the value remains ordinary `str`, semantic highlighting treats the whole literal as a string, and canonical formatting normalizes it to equivalent escaped ordinary-string syntax.
 - [x] No ternary expression form: Python-style `a if condition else b` and C-style `?:` are intentionally absent; use statement control flow or `match` values.
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
 - [x] Concise inclusive integer ranges with `start..=end` alongside exclusive `start..end`, including single-evaluation bounds and overflow-safe native iteration.

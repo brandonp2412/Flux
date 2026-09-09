@@ -25,7 +25,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive `start..end` and inclusive `start..=end` integer range `for` loops, indentation-based `while` loops, statically scoped `break` / `continue`, and bootstrap `app ViewName` GUI entry declarations;
 - immutable `let` bindings by default plus explicit typed local mutation through `var` and statically checked assignment;
 - explicit multi-value function returns and strictly typed destructuring bindings;
-- static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, transparent concrete type aliases, and compile-time constants;
+- static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, transparent concrete type aliases, and compile-time constants, with ordinary escaped and `r"..."` raw string literals sharing the same `str` representation;
 - struct literals, field access, `Type { ..base, field: value }` functional updates, and struct destructuring patterns with inferred field types and single-evaluation native lowering;
 - namespace-qualified enum construction such as `Outcome.Ok(42)`, with typed payload validation and native tag/union representation;
 - exhaustive enum `match` statements with typed payload bindings, guaranteed-return analysis, and single-evaluation native `switch` lowering;
