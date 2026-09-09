@@ -1921,7 +1921,7 @@ fn check_function_all(
 ) {
     let mut env = HashMap::new();
     let mut mutable = HashSet::new();
-    let mut moved = HashSet::new();
+    let mut ownership = OwnershipState::default();
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
@@ -1939,8 +1939,7 @@ fn check_function_all(
         &return_types,
         signatures,
         diagnostics,
-        &mut moved,
-        0,
+        &mut ownership,
     );
     if diagnostics.len() == diagnostics_before_body {
         check_unused_function_bindings(function, diagnostics);
@@ -2414,6 +2413,12 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
     }
 }
 
+#[derive(Clone, Default)]
+struct OwnershipState {
+    moved: HashMap<String, SourceSpan>,
+    loop_depth: usize,
+}
+
 fn check_block_all(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
@@ -2421,16 +2426,19 @@ fn check_block_all(
     return_types: &[Type],
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
-    moved: &mut HashSet<String>,
-    loop_depth: usize,
+    ownership: &mut OwnershipState,
 ) {
     for stmt in body {
         let mut reads = HashSet::new();
         collect_block_reads(std::slice::from_ref(stmt), &mut reads);
-        let mut moved_reads = reads.intersection(moved).cloned().collect::<Vec<_>>();
+        let mut moved_reads = reads
+            .iter()
+            .filter(|name| ownership.moved.contains_key(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         moved_reads.sort();
         if !moved_reads.is_empty() {
-            diagnostics.push(diag(
+            let mut diagnostic = diag(
                 stmt.span,
                 &format!(
                     "use of moved non-copy binding{} {}",
@@ -2441,7 +2449,13 @@ fn check_block_all(
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-            ));
+            );
+            for name in &moved_reads {
+                if let Some(move_span) = ownership.moved.get(name) {
+                    diagnostic = diagnostic.with_label(*move_span, format!("'{name}' moved here"));
+                }
+            }
+            diagnostics.push(diagnostic);
             continue;
         }
         match &stmt.kind {
@@ -2504,7 +2518,7 @@ fn check_block_all(
                     && let ExprKind::Var(source) = &expr.kind
                     && env.contains_key(source)
                 {
-                    if loop_depth > 0 {
+                    if ownership.loop_depth > 0 {
                         diagnostics.push(diag(
                             expr.span,
                             &format!(
@@ -2512,7 +2526,7 @@ fn check_block_all(
                             ),
                         ));
                     } else {
-                        moved.insert(source.clone());
+                        ownership.moved.insert(source.clone(), expr.span);
                     }
                 }
                 if !duplicate {
@@ -2837,7 +2851,7 @@ fn check_block_all(
                 }
             }
             StmtKind::Break => {
-                if loop_depth == 0 {
+                if ownership.loop_depth == 0 {
                     diagnostics.push(diag(
                         stmt.keyword_span,
                         "'break' is only valid inside a loop",
@@ -2845,7 +2859,7 @@ fn check_block_all(
                 }
             }
             StmtKind::Continue => {
-                if loop_depth == 0 {
+                if ownership.loop_depth == 0 {
                     diagnostics.push(diag(
                         stmt.keyword_span,
                         "'continue' is only valid inside a loop",
@@ -2904,7 +2918,7 @@ fn check_block_all(
                 }
                 let mut then_env = env.clone();
                 let mut then_mutable = mutable.clone();
-                let mut then_moved = moved.clone();
+                let mut then_ownership = ownership.clone();
                 check_block_all(
                     body,
                     &mut then_env,
@@ -2912,12 +2926,11 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
-                    &mut then_moved,
-                    loop_depth,
+                    &mut then_ownership,
                 );
                 let mut else_env = env.clone();
                 let mut else_mutable = mutable.clone();
-                let mut else_moved = moved.clone();
+                let mut else_ownership = ownership.clone();
                 check_block_all(
                     else_body,
                     &mut else_env,
@@ -2925,11 +2938,10 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
-                    &mut else_moved,
-                    loop_depth,
+                    &mut else_ownership,
                 );
-                merge_child_moves(moved, &then_moved, env);
-                merge_child_moves(moved, &else_moved, env);
+                merge_child_moves(ownership, &then_ownership, env);
+                merge_child_moves(ownership, &else_ownership, env);
             }
             StmtKind::ForRange {
                 name,
@@ -2967,7 +2979,8 @@ fn check_block_all(
                 }
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
-                let mut nested_moved = moved.clone();
+                let mut nested_ownership = ownership.clone();
+                nested_ownership.loop_depth += 1;
                 if !shadows {
                     nested.insert(name.clone(), Type::I64);
                 }
@@ -2978,10 +2991,9 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
-                    &mut nested_moved,
-                    loop_depth + 1,
+                    &mut nested_ownership,
                 );
-                merge_child_moves(moved, &nested_moved, env);
+                merge_child_moves(ownership, &nested_ownership, env);
             }
             StmtKind::ForEach {
                 index_name,
@@ -3008,7 +3020,8 @@ fn check_block_all(
                 };
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
-                let mut nested_moved = moved.clone();
+                let mut nested_ownership = ownership.clone();
+                nested_ownership.loop_depth += 1;
                 if let Some(index_name) = index_name {
                     if env.contains_key(index_name) {
                         diagnostics.push(diag(
@@ -3034,10 +3047,9 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
-                    &mut nested_moved,
-                    loop_depth + 1,
+                    &mut nested_ownership,
                 );
-                merge_child_moves(moved, &nested_moved, env);
+                merge_child_moves(ownership, &nested_ownership, env);
             }
             StmtKind::While { cond, body } => {
                 match type_of_expr(cond, env, signatures) {
@@ -3052,7 +3064,8 @@ fn check_block_all(
                 }
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
-                let mut nested_moved = moved.clone();
+                let mut nested_ownership = ownership.clone();
+                nested_ownership.loop_depth += 1;
                 check_block_all(
                     body,
                     &mut nested,
@@ -3060,10 +3073,9 @@ fn check_block_all(
                     return_types,
                     signatures,
                     diagnostics,
-                    &mut nested_moved,
-                    loop_depth + 1,
+                    &mut nested_ownership,
                 );
-                merge_child_moves(moved, &nested_moved, env);
+                merge_child_moves(ownership, &nested_ownership, env);
             }
             StmtKind::Match { value, arms } => {
                 let value_ty = match type_of_expr(value, env, signatures) {
@@ -3088,7 +3100,7 @@ fn check_block_all(
                     continue;
                 };
                 let mut covered = HashSet::new();
-                let mut post_match_moved = moved.clone();
+                let mut post_match_ownership = ownership.clone();
                 for arm in arms {
                     if arm.enum_name != enum_name {
                         diagnostics.push(diag(
@@ -3211,7 +3223,7 @@ fn check_block_all(
                         covered.insert(arm.variant.as_str());
                     }
                     let mut nested_mutable = mutable.clone();
-                    let mut nested_moved = moved.clone();
+                    let mut nested_ownership = ownership.clone();
                     check_block_all(
                         &arm.body,
                         &mut nested,
@@ -3219,12 +3231,11 @@ fn check_block_all(
                         return_types,
                         signatures,
                         diagnostics,
-                        &mut nested_moved,
-                        loop_depth,
+                        &mut nested_ownership,
                     );
-                    merge_child_moves(&mut post_match_moved, &nested_moved, env);
+                    merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
                 }
-                merge_child_moves(moved, &post_match_moved, env);
+                merge_child_moves(ownership, &post_match_ownership, env);
                 let missing = definition
                     .variants
                     .iter()
@@ -3266,7 +3277,7 @@ fn check_block_all(
                     diagnostics.push(diagnostic);
                 }
                 if let Some(element_ty) = element_ty {
-                    let mut post_match_moved = moved.clone();
+                    let mut post_match_ownership = ownership.clone();
                     for arm in arms {
                         let mut nested = env.clone();
                         if let Err(diagnostic) =
@@ -3290,7 +3301,7 @@ fn check_block_all(
                             }
                         }
                         let mut nested_mutable = mutable.clone();
-                        let mut nested_moved = moved.clone();
+                        let mut nested_ownership = ownership.clone();
                         check_block_all(
                             &arm.body,
                             &mut nested,
@@ -3298,12 +3309,11 @@ fn check_block_all(
                             return_types,
                             signatures,
                             diagnostics,
-                            &mut nested_moved,
-                            loop_depth,
+                            &mut nested_ownership,
                         );
-                        merge_child_moves(&mut post_match_moved, &nested_moved, env);
+                        merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
                     }
-                    merge_child_moves(moved, &post_match_moved, env);
+                    merge_child_moves(ownership, &post_match_ownership, env);
                 }
             }
         }
@@ -3311,15 +3321,16 @@ fn check_block_all(
 }
 
 fn merge_child_moves(
-    moved: &mut HashSet<String>,
-    child: &HashSet<String>,
+    ownership: &mut OwnershipState,
+    child: &OwnershipState,
     parent_env: &HashMap<String, Type>,
 ) {
-    moved.extend(
+    ownership.moved.extend(
         child
+            .moved
             .iter()
-            .filter(|name| parent_env.contains_key(name.as_str()))
-            .cloned(),
+            .filter(|(name, _)| parent_env.contains_key(name.as_str()))
+            .map(|(name, span)| (name.clone(), *span)),
     );
 }
 

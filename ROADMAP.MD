@@ -309,7 +309,7 @@ Adapt the convenience of Dart's async language features while preserving Flux's 
 
 # Milestone 4 — Ownership and memory safety
 
-The ownership track now has an explicit compiler-level copyability classification rather than relying on ad-hoc list checks. Bootstrap scalar handles (`i64`, `bool`, `str`, `error`), function values, closed interface values, and recursively copyable structs/enums are `Copy`; `void` is not a value and local list/view types are deliberately non-copy until owned collection storage and move/borrow rules exist. Existing mutable-binding and aggregate-storage safety gates now query that classification, so future non-copy value types inherit the conservative ownership restrictions automatically.
+The ownership track now has an explicit compiler-level copyability classification rather than relying on ad-hoc list checks. Bootstrap scalar handles (`i64`, `bool`, `str`, `error`), function values, closed interface values, and recursively copyable structs/enums are `Copy`; `void` is not a value and local list/view types are deliberately non-copy until owned collection storage and move/borrow rules exist. Existing mutable-binding and aggregate-storage safety gates now query that classification, so future non-copy value types inherit the conservative ownership restrictions automatically. Per-function ownership flow is tracked in one explicit state object carrying moved-value origins and loop depth, so bootstrap use-after-move diagnostics can point back to the consuming transfer while later CFG/borrow analysis has a single extension point.
 
 - [x] Define copyable primitive/value types with alias-aware structural classification shared by semantic validation.
 - [ ] Move semantics for non-copy values.

@@ -2553,11 +2553,20 @@ fn main() -> i64 {
 }
 "#;
     let errors = check_source_all(use_after_move).expect_err("using a moved list must fail");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("use of moved non-copy binding 'source'")
-    }));
+    let moved_error = errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("use of moved non-copy binding 'source'")
+        })
+        .expect("use-after-move should identify the consumed binding");
+    assert!(
+        moved_error
+            .labels
+            .iter()
+            .any(|label| label.message.contains("'source' moved here"))
+    );
 
     let copy_values = r#"
 fn main() -> i64 {
