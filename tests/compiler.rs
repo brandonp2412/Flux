@@ -2634,7 +2634,7 @@ fn main() -> i64 {
         check_source_all(loop_move).expect_err("fallthrough loop moves must remain rejected");
     assert!(errors.iter().any(|error| {
         error.message.contains(
-            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break before another iteration",
+            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
         )
     }));
 
@@ -2666,9 +2666,50 @@ fn main() -> i64 {
         .expect_err("a move followed by continue could consume the same value twice");
     assert!(errors.iter().any(|error| {
         error.message.contains(
-            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break before another iteration",
+            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
         )
     }));
+}
+
+#[test]
+fn return_terminated_move_paths_do_not_poison_reachable_ownership_state() {
+    let branch_return = r#"
+fn consumeOrRead(flag: bool) -> i64 {
+    let source: i64[] = [7, 8]
+    if flag:
+        let destination: i64[] = source
+        print(destination.first)
+        return 1
+    print(source.last)
+    return 0
+}
+
+fn main() -> i64 {
+    return consumeOrRead(false)
+}
+"#;
+    check_source(branch_return)
+        .expect("a move on a returning branch must not invalidate the surviving branch");
+    compile_to_c(branch_return).expect("return-separated ownership paths should lower natively");
+
+    let loop_return = r#"
+fn consumeOrRead(flag: bool) -> i64 {
+    let source: i64[] = [7, 8]
+    while flag:
+        let destination: i64[] = source
+        print(destination.first)
+        return 1
+    print(source.last)
+    return 0
+}
+
+fn main() -> i64 {
+    return consumeOrRead(false)
+}
+"#;
+    check_source(loop_return)
+        .expect("a loop move followed by return cannot be consumed on another iteration");
+    compile_to_c(loop_return).expect("return-terminated loop moves should lower natively");
 }
 
 #[test]

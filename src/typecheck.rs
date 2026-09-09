@@ -2519,12 +2519,12 @@ fn check_block_all(
                     && env.contains_key(source)
                 {
                     if ownership.loop_depth > 0
-                        && !block_guarantees_loop_break(&body[stmt_index + 1..])
+                        && !block_guarantees_loop_exit(&body[stmt_index + 1..])
                     {
                         diagnostics.push(diag(
                             expr.span,
                             &format!(
-                                "moving non-copy binding '{source}' inside a loop requires every remaining path in this loop block to break before another iteration"
+                                "moving non-copy binding '{source}' inside a loop requires every remaining path in this loop block to break or return before another iteration"
                             ),
                         ));
                     } else {
@@ -2942,8 +2942,12 @@ fn check_block_all(
                     diagnostics,
                     &mut else_ownership,
                 );
-                merge_child_moves(ownership, &then_ownership, env);
-                merge_child_moves(ownership, &else_ownership, env);
+                if !block_guarantees_return(body) {
+                    merge_child_moves(ownership, &then_ownership, env);
+                }
+                if !block_guarantees_return(else_body) {
+                    merge_child_moves(ownership, &else_ownership, env);
+                }
             }
             StmtKind::ForRange {
                 name,
@@ -2995,7 +2999,9 @@ fn check_block_all(
                     diagnostics,
                     &mut nested_ownership,
                 );
-                merge_child_moves(ownership, &nested_ownership, env);
+                if !block_guarantees_return(body) {
+                    merge_child_moves(ownership, &nested_ownership, env);
+                }
             }
             StmtKind::ForEach {
                 index_name,
@@ -3051,7 +3057,9 @@ fn check_block_all(
                     diagnostics,
                     &mut nested_ownership,
                 );
-                merge_child_moves(ownership, &nested_ownership, env);
+                if !block_guarantees_return(body) {
+                    merge_child_moves(ownership, &nested_ownership, env);
+                }
             }
             StmtKind::While { cond, body } => {
                 match type_of_expr(cond, env, signatures) {
@@ -3077,7 +3085,9 @@ fn check_block_all(
                     diagnostics,
                     &mut nested_ownership,
                 );
-                merge_child_moves(ownership, &nested_ownership, env);
+                if !block_guarantees_return(body) {
+                    merge_child_moves(ownership, &nested_ownership, env);
+                }
             }
             StmtKind::Match { value, arms } => {
                 let value_ty = match type_of_expr(value, env, signatures) {
@@ -3235,7 +3245,9 @@ fn check_block_all(
                         diagnostics,
                         &mut nested_ownership,
                     );
-                    merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
+                    if !block_guarantees_return(&arm.body) {
+                        merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
+                    }
                 }
                 merge_child_moves(ownership, &post_match_ownership, env);
                 let missing = definition
@@ -3313,7 +3325,9 @@ fn check_block_all(
                             diagnostics,
                             &mut nested_ownership,
                         );
-                        merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
+                        if !block_guarantees_return(&arm.body) {
+                            merge_child_moves(&mut post_match_ownership, &nested_ownership, env);
+                        }
                     }
                     merge_child_moves(ownership, &post_match_ownership, env);
                 }
@@ -4965,22 +4979,22 @@ fn check_declared_call(
     Ok(signature.returns.clone())
 }
 
-fn block_guarantees_loop_break(body: &[Stmt]) -> bool {
+fn block_guarantees_loop_exit(body: &[Stmt]) -> bool {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Break => return true,
+            StmtKind::Break | StmtKind::Return(_) => return true,
             StmtKind::If {
                 body, else_body, ..
             } if !else_body.is_empty()
-                && block_guarantees_loop_break(body)
-                && block_guarantees_loop_break(else_body) =>
+                && block_guarantees_loop_exit(body)
+                && block_guarantees_loop_exit(else_body) =>
             {
                 return true;
             }
             StmtKind::Match { arms, .. }
                 if !arms.is_empty()
                     && arms.iter().all(|arm| {
-                        arm.guard.is_none() && block_guarantees_loop_break(&arm.body)
+                        arm.guard.is_none() && block_guarantees_loop_exit(&arm.body)
                     }) =>
             {
                 return true;
@@ -4988,13 +5002,12 @@ fn block_guarantees_loop_break(body: &[Stmt]) -> bool {
             StmtKind::ListMatch { arms, .. }
                 if !arms.is_empty()
                     && arms.iter().all(|arm| {
-                        arm.guard.is_none() && block_guarantees_loop_break(&arm.body)
+                        arm.guard.is_none() && block_guarantees_loop_exit(&arm.body)
                     }) =>
             {
                 return true;
             }
-            StmtKind::Return(_)
-            | StmtKind::Continue
+            StmtKind::Continue
             | StmtKind::ForRange { .. }
             | StmtKind::ForEach { .. }
             | StmtKind::While { .. }

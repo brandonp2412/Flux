@@ -314,15 +314,16 @@ The ownership track now has an explicit compiler-level copyability classificatio
 - [x] Define copyable primitive/value types with alias-aware structural classification shared by semantic validation.
 - [ ] Move semantics for non-copy values.
   - [x] Bootstrap direct local transfers (`let destination: T = source`) move non-copy values, preserve ordinary reuse for `Copy` types, and conservatively merge moves across `if`/exhaustive `match` branches.
-  - [x] Bootstrap loop control-flow recognizes iteration-safe direct moves when every remaining path in the current loop block is guaranteed to `break`; fallthrough and `continue` paths remain compile errors because they could consume the same non-copy value again.
-  - [ ] General move analysis across calls, returns, aggregate fields, arbitrary nested loop exits, and owned resource types after normalized control-flow ownership facts exist.
+  - [x] Bootstrap loop control-flow recognizes iteration-safe direct moves when every remaining path in the current loop block is guaranteed to `break` or `return`; fallthrough and `continue` paths remain compile errors because they could consume the same non-copy value again.
+  - [x] Return-terminated ownership paths do not poison reachable sibling/post-loop state: `if`/`match` branches that definitely return are excluded from move merging, and loop bodies whose moved path necessarily returns preserve zero-iteration fallthrough ownership.
+  - [ ] General move analysis across calls, aggregate fields, arbitrary nested loop exits, and owned resource types after normalized control-flow ownership facts exist.
 - [ ] Immutable borrows.
   - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
   - [ ] First-class borrow/reference types and inferred borrow lifetimes for owned values.
 - [ ] Exclusive mutable borrows.
 - [ ] Lifetime inference.
 - [ ] Prevent use-after-move.
-  - [x] Reject later reads of a non-copy local after a direct bootstrap move, including conservative post-branch invalidation.
+  - [x] Reject later reads of a non-copy local after a direct bootstrap move, including conservative post-branch invalidation for paths that can rejoin later code.
   - [ ] CFG/IR-wide move-state analysis for loops, calls, partial moves, and future owned aggregates.
 - [ ] Prevent dangling borrows.
 - [ ] Prevent aliasing violations.
