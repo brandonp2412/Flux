@@ -5229,7 +5229,7 @@ fn evaluate_constant_expr(
     }
 }
 
-fn evaluate_constant_binary(
+pub(crate) fn evaluate_constant_binary(
     span: SourceSpan,
     op: BinOp,
     left: ConstantValue,

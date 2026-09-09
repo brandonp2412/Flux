@@ -288,6 +288,7 @@ pub struct ControlFlowGraph {
     edges: Vec<ControlFlowEdge>,
     values: Vec<ControlFlowValue>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
+    definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     move_states_before: Vec<ControlFlowMoveState>,
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
@@ -354,6 +355,10 @@ impl ControlFlowGraph {
                 .and_then(|definitions| definitions.get(index))
                 .map(|definition| definition.name.as_str()),
         }
+    }
+
+    pub fn definition_value(&self, id: ControlFlowDefinitionId) -> Option<ControlFlowValueId> {
+        self.definition_values.get(&id).copied()
     }
 
     pub fn definition_span(&self, id: ControlFlowDefinitionId) -> Option<SourceSpan> {
@@ -455,12 +460,23 @@ impl<'a> ControlFlowBuilder<'a> {
     }
 
     fn finish(mut self) -> ControlFlowGraph {
+        let definition_values = compute_definition_values(&self.nodes, &self.edges);
+        loop {
+            let reaching_definitions = compute_reaching_definitions(
+                &self.nodes,
+                &self.edges,
+                &self.parameters,
+                self.entry,
+            );
+            resolve_name_read_definitions(&mut self.values, &reaching_definitions);
+            propagate_definition_constants(&mut self.values, &definition_values);
+            if !prune_constant_control_edges(&self.nodes, &mut self.edges, &self.values) {
+                break;
+            }
+        }
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
-        let reaching_definitions =
-            compute_reaching_definitions(&self.nodes, &self.edges, &self.parameters, self.entry);
-        resolve_name_read_definitions(&mut self.values, &reaching_definitions);
         ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
@@ -471,6 +487,7 @@ impl<'a> ControlFlowBuilder<'a> {
             edges: self.edges,
             values: self.values,
             scoped_definitions: self.scoped_definitions,
+            definition_values,
             move_states_before,
             live_before,
             live_after,
@@ -2078,6 +2095,185 @@ fn bind_list_match_pattern(
     }
 }
 
+fn compute_definition_values(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+) -> BTreeMap<ControlFlowDefinitionId, ControlFlowValueId> {
+    let mut values = BTreeMap::new();
+    for node in nodes {
+        if node.definitions.len() != 1
+            || !matches!(
+                node.kind,
+                ControlFlowNodeKind::Binding { .. } | ControlFlowNodeKind::Assignment { .. }
+            )
+        {
+            continue;
+        }
+        let source_value = edges
+            .iter()
+            .filter(|edge| edge.to == node.id && edge.kind == ControlFlowEdgeKind::Next)
+            .find_map(|edge| {
+                let source = nodes.get(edge.from.0)?;
+                match source.kind {
+                    ControlFlowNodeKind::Evaluation(
+                        ControlFlowEvaluationKind::BindingInitializer
+                        | ControlFlowEvaluationKind::AssignmentValue,
+                    ) => source.values.first().copied(),
+                    _ => None,
+                }
+            });
+        if let Some(value) = source_value {
+            values.insert(
+                ControlFlowDefinitionId::Node {
+                    node: node.id,
+                    index: 0,
+                },
+                value,
+            );
+        }
+    }
+    values
+}
+
+fn propagate_definition_constants(
+    values: &mut [ControlFlowValue],
+    definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+) {
+    loop {
+        let constants = values
+            .iter()
+            .map(|value| value.constant.clone())
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for value in values.iter_mut().filter(|value| value.constant.is_none()) {
+            if let Some(constant) = propagated_ir_constant(value, &constants, definition_values) {
+                value.constant = Some(constant);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn propagated_ir_constant(
+    value: &ControlFlowValue,
+    constants: &[Option<ConstantValue>],
+    definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+) -> Option<ConstantValue> {
+    match &value.kind {
+        ControlFlowValueKind::NameRead { definitions, .. } => {
+            let mut resolved = None::<ConstantValue>;
+            if definitions.is_empty() {
+                return None;
+            }
+            for definition in definitions {
+                let source = definition_values.get(definition)?;
+                let constant = constants.get(source.0)?.clone()?;
+                if resolved
+                    .as_ref()
+                    .is_some_and(|existing| existing != &constant)
+                {
+                    return None;
+                }
+                resolved = Some(constant);
+            }
+            resolved
+        }
+        ControlFlowValueKind::Unary { op, operand } => {
+            let operand = constants.get(operand.0)?.clone()?;
+            match (op, operand) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    value.checked_neg().map(ConstantValue::I64)
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => Some(ConstantValue::Bool(!value)),
+                _ => None,
+            }
+        }
+        ControlFlowValueKind::Binary { op, left, right } => {
+            let left_constant = constants.get(left.0)?.clone();
+            let right_constant = constants.get(right.0)?.clone();
+            match (op, left_constant.as_ref(), right_constant.as_ref()) {
+                (BinOp::And, Some(ConstantValue::Bool(false)), _)
+                | (BinOp::And, _, Some(ConstantValue::Bool(false))) => {
+                    Some(ConstantValue::Bool(false))
+                }
+                (BinOp::Or, Some(ConstantValue::Bool(true)), _)
+                | (BinOp::Or, _, Some(ConstantValue::Bool(true))) => {
+                    Some(ConstantValue::Bool(true))
+                }
+                _ => typecheck::evaluate_constant_binary(
+                    value.span,
+                    *op,
+                    left_constant?,
+                    right_constant?,
+                )
+                .ok(),
+            }
+        }
+        ControlFlowValueKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => match constants.get(condition.0)?.as_ref()? {
+            ConstantValue::Bool(true) => constants.get(then_value.0)?.clone(),
+            ConstantValue::Bool(false) => constants.get(else_value.0)?.clone(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn prune_constant_control_edges(
+    nodes: &[ControlFlowNode],
+    edges: &mut Vec<ControlFlowEdge>,
+    values: &[ControlFlowValue],
+) -> bool {
+    let mut decisions = BTreeMap::<ControlFlowNodeId, bool>::new();
+    for evaluation in nodes {
+        if !matches!(
+            evaluation.kind,
+            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::Condition)
+        ) {
+            continue;
+        }
+        let Some(ConstantValue::Bool(condition)) = evaluation
+            .values
+            .first()
+            .and_then(|id| values.get(id.0))
+            .and_then(|value| value.constant.as_ref())
+        else {
+            continue;
+        };
+        for edge in edges.iter().filter(|edge| edge.from == evaluation.id) {
+            if nodes.get(edge.to.0).is_some_and(|node| {
+                matches!(
+                    node.kind,
+                    ControlFlowNodeKind::Conditional | ControlFlowNodeKind::Loop
+                )
+            }) {
+                decisions.insert(edge.to, *condition);
+            }
+        }
+    }
+    if decisions.is_empty() {
+        return false;
+    }
+    let old_len = edges.len();
+    edges.retain(|edge| {
+        let Some(condition) = decisions.get(&edge.from) else {
+            return true;
+        };
+        match edge.kind {
+            ControlFlowEdgeKind::True => *condition,
+            ControlFlowEdgeKind::False => !*condition,
+            _ => true,
+        }
+    });
+    edges.len() != old_len
+}
+
 type ReachingDefinitionMap = BTreeMap<String, BTreeSet<ControlFlowDefinitionId>>;
 
 fn compute_reaching_definitions(
@@ -2146,7 +2342,10 @@ fn resolve_name_read_definitions(
         let ControlFlowValueKind::NameRead { name, definitions } = &mut value.kind else {
             continue;
         };
-        if !definitions.is_empty() {
+        if definitions
+            .iter()
+            .any(|definition| matches!(definition, ControlFlowDefinitionId::Scoped { .. }))
+        {
             continue;
         }
         *definitions = reaching_definitions

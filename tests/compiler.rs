@@ -6009,7 +6009,85 @@ fn main() -> i64 {
     assert!(return_read.iter().all(|definition| {
         graph.definition_name(*definition) == Some("current")
             && graph.definition_span(*definition).is_some()
+            && graph
+                .definition_value(*definition)
+                .and_then(|value| graph.value(value))
+                .is_some_and(|value| {
+                    matches!(
+                        value.constant,
+                        Some(fluxc::typecheck::ConstantValue::I64(10 | 20))
+                    )
+                })
     }));
+}
+
+#[test]
+fn semantic_cfg_propagates_local_constants_into_control_flow() {
+    let source = r#"
+fn live() -> i64 {
+    return 1
+}
+
+fn dead() -> i64 {
+    return 2
+}
+
+fn main() -> i64 {
+    let base: i64 = 20
+    let half: i64 = base / 2
+    let enabled: bool = half == 10
+    if enabled:
+        print(live())
+    else:
+        print(dead())
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1315))
+        .expect("local constant control flow should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let condition = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                node.kind,
+                ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::Condition)
+            )
+        })
+        .expect("if condition should be explicit");
+    let condition_value = graph
+        .value(condition.values[0])
+        .expect("condition should retain its typed value");
+    assert_eq!(
+        condition_value.constant,
+        Some(fluxc::typecheck::ConstantValue::Bool(true))
+    );
+    let branch = graph
+        .outgoing(condition.id)
+        .find(|edge| {
+            graph
+                .node(edge.to)
+                .is_some_and(|node| matches!(node.kind, ControlFlowNodeKind::Conditional))
+        })
+        .expect("condition evaluation should feed an if branch");
+    let outgoing = graph.outgoing(branch.to).collect::<Vec<_>>();
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.kind == ControlFlowEdgeKind::True)
+    );
+    assert!(
+        !outgoing
+            .iter()
+            .any(|edge| edge.kind == ControlFlowEdgeKind::False)
+    );
+
+    let generated = compile_to_c(source).expect("locally constant branch should lower");
+    assert!(generated.contains("flux__fn_live"));
+    assert!(!generated.contains("flux__fn_dead"));
 }
 
 #[test]
