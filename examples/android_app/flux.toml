@@ -1,0 +1,9 @@
+[package]
+name = "flux-android-example"
+version = "0.1.0"
+entry = "src/main.flux"
+
+[android]
+application_id = "app.flux.example"
+min_sdk = 23
+target_sdk = 35

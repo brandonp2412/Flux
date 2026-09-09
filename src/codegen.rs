@@ -7,6 +7,12 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeTarget {
+    Linux,
+    Android,
+}
+
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     emit_c_with_source_paths(program, signatures, &HashMap::new())
 }
@@ -15,6 +21,15 @@ pub fn emit_c_with_source_paths(
     program: &Program,
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
+) -> Result<String, Diagnostic> {
+    emit_c_for_target_with_source_paths(program, signatures, source_paths, NativeTarget::Linux)
+}
+
+pub fn emit_c_for_target_with_source_paths(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+    target: NativeTarget,
 ) -> Result<String, Diagnostic> {
     let function_ir = build_function_ir_cache(program, signatures);
     let mut reachable_interfaces = HashSet::new();
@@ -101,7 +116,14 @@ pub fn emit_c_with_source_paths(
     }
     let mut application_body = String::new();
     if program.application.is_some() {
-        emit_linux_gtk_application(&mut application_body, program, signatures)?;
+        match target {
+            NativeTarget::Linux => {
+                emit_linux_gtk_application(&mut application_body, program, signatures)?
+            }
+            NativeTarget::Android => {
+                emit_android_native_application(&mut application_body, program, signatures)?
+            }
+        }
     }
     let runtime_usage = format!("{generated_body}{application_body}");
 
@@ -110,7 +132,8 @@ pub fn emit_c_with_source_paths(
         &mut out,
         &runtime_usage,
         program_uses_background(program, &reachable_functions, &function_ir),
-        program.application.is_some(),
+        program.application.is_some() && target == NativeTarget::Linux,
+        program.application.is_some() && target == NativeTarget::Android,
     );
 
     for definition in &program.structs {
@@ -241,6 +264,7 @@ fn emit_runtime_prelude(
     runtime_usage: &str,
     uses_background: bool,
     uses_gtk: bool,
+    uses_android: bool,
 ) {
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
@@ -256,6 +280,9 @@ fn emit_runtime_prelude(
     }
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
+    }
+    if uses_android {
+        out.push_str("#include <android/native_activity.h>\n");
     }
     out.push('\n');
 
@@ -380,6 +407,43 @@ fn emit_runtime_prelude(
         out.push_str("}\n");
     }
     out.push('\n');
+}
+
+fn emit_android_native_application(
+    out: &mut String,
+    program: &Program,
+    _signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let application = program
+        .application
+        .as_ref()
+        .expect("application lowering requires app declaration");
+    if program
+        .views
+        .iter()
+        .all(|view| view.name != application.view_name)
+    {
+        return Err(diag(
+            application.view_span,
+            "app root view was not found during Android codegen",
+        ));
+    }
+
+    if let Some(function) = application_metadata_function(application, "on_exit") {
+        out.push_str(&format!(
+            "static void flux__android_on_destroy(ANativeActivity *activity) {{ (void)activity; {}(); }}\n\n",
+            function_c_name(function),
+        ));
+    }
+    out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    (void)saved_state;\n    (void)saved_state_size;\n");
+    if application_metadata_function(application, "on_exit").is_some() {
+        out.push_str("    activity->callbacks->onDestroy = flux__android_on_destroy;\n");
+    }
+    if let Some(function) = application_metadata_function(application, "on_start") {
+        out.push_str(&format!("    {}();\n", function_c_name(function)));
+    }
+    out.push_str("}\n");
+    Ok(())
 }
 
 fn emit_linux_gtk_application(

@@ -17,7 +17,7 @@
 | --- | --- |
 | 🐍 **Python-like syntax** | Readable, low-ceremony code with indentation-based control flow, comprehensions, slicing, pattern matching, and concise function-first APIs. |
 | ⚡ **Rust-class performance** | Native ahead-of-time compilation, no mandatory VM or garbage collector, aggressive optimization, zero-cost abstractions, and continuous comparison against optimized Rust/C baselines. |
-| 🌍 **Compile to any platform** | Portable Flux stays portable where useful, while target-specific Flux can call real OS capabilities directly. Backends produce native target code and compiler-owned interop instead of making apps maintain Flutter-style method channels or bridge layers. Linux native is the bootstrap target today; desktop, mobile, web, and server targets share the same language architecture. |
+| 🌍 **Compile to any platform** | Portable Flux stays portable where useful, while target-specific Flux can call real OS capabilities directly. Backends produce native target code and compiler-owned interop instead of making apps maintain Flutter-style method channels or bridge layers. Linux/GTK is the first rendered bootstrap backend; Android now has a compiler-owned NDK/NativeActivity APK bootstrap, with native Android rendering and platform modules still being built out. |
 | ✨ **Make beautiful apps** | A flat declarative UI model, native platform controls, grid-first layout, responsive state, typed events, and no giant widget/controller object tree. |
 | 🎯 **Dart-inspired language features** | Named/default parameters, collection spreads and `if` elements, comprehensions, exhaustive patterns, first-class functions, functional value updates, and other high-level ergonomics without Dart's class hierarchy. |
 
@@ -62,7 +62,7 @@ The repository currently contains a dependency-free Rust bootstrap compiler with
 - structured parse/type/codegen diagnostics with stable source IDs, reusable source-span metadata, and safe multi-error parser/type-checker recovery;
 - terminal diagnostics that show the offending source, exact carets, related declaration labels and suggested fixes, automatically colorize interactive terminals, and wrap/crop to the current terminal width;
 - parser recovery that reports syntax errors from later malformed functions instead of stopping at the first one;
-- a native bootstrap backend that emits C and invokes Clang with optimization enabled;
+- target-aware native bootstrap code generation: Linux applications lower to GTK4, while Android application builds lower to a Java-free NDK `NativeActivity` shared library with compiler-owned lifecycle entry points and no application-authored JNI/method-channel bridge;
 - checked `i64` arithmetic at runtime: addition, subtraction, multiplication, negation, and division fail explicitly on overflow or invalid division instead of relying on C signed-overflow behavior;
 - CLI commands for checking, deterministic formatting, emitting C, building native executables, automatically running/rebuilding development targets, and serving bootstrap LSP diagnostics over stdio, including package-root/`flux.toml` targets;
 - primitive constant folding for `i64`, `bool`, and `str`: top-level constants support forward references with no runtime global storage, while pure literal/constant subexpressions in ordinary code and static UI/application metadata collapse before native emission with checked arithmetic and boolean short-circuiting preserved;
@@ -150,7 +150,7 @@ Inspect the currently runnable Flux target, verify native GUI prerequisites, and
 ./tools/flux clean examples/package
 ```
 
-`flux devices` currently reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
+`flux devices` reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready, and Android devices visible through ADB including offline/unauthorized state. `flux doctor` reports both Linux prerequisites and any Android SDK/NDK/build-tools it can discover. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
 
@@ -182,7 +182,23 @@ Packages can select their entry source with `flux.toml`:
 name = "package-example"
 version = "0.1.0"
 entry = "src/main.flux"
+
+[android]
+application_id = "nz.example.package"
+min_sdk = 23
+target_sdk = 35
 ```
+
+The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<package>` application ID and currently defaults to minSdk 23 / targetSdk 35. Android builds require an `app` root and use the installed Android SDK/NDK directly; `examples/android_app` is a checked-in package for this path:
+
+```sh
+./tools/flux build android examples/android_app --mode debug --abi arm64-v8a
+./tools/flux build android examples/android_app --mode release --abi x86_64
+./tools/flux build android examples/android_app --mode release --format aab
+./tools/flux run android examples/android_app --abi arm64-v8a
+```
+
+APK builds emit one aligned, signed artifact containing `lib/<abi>/libflux.so` and a generated `NativeActivity` manifest. AAB builds compile all supported ABIs into one signed App Bundle and use bundletool to validate the Play publishing structure. Development signing is compiler-managed; configurable release signing, native Android rendering/input, and the remaining Play Store release pipeline remain roadmap work.
 
 The package directory or manifest can then be passed directly to project-aware commands:
 

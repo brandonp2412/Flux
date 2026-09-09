@@ -607,18 +607,30 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 Android is the first application-platform target. Android integration must feel like programming Android in Flux, not embedding a second Kotlin/Java application beside it: Flux code can directly use Android-specific modules for capabilities such as notifications, WorkManager/background work, vibration, intents, services, media, and sensors. The backend should prefer direct NDK/native APIs when Android provides them; for JVM/AndroidX-only framework APIs it generates the necessary Kotlin/Java bytecode/classes and JNI/native entry thunks automatically. No method-channel equivalent, hand-written JNI shim, serialized plugin call protocol, or user-maintained bridge package is required in ordinary Flux application code.
 
-- [ ] Android target triple/backend.
-- [ ] `flux build android`.
-- [ ] `flux run android`.
-- [ ] APK output.
-- [ ] AAB output.
-- [ ] Debug/profile/release variants.
-- [ ] Android manifest generation.
-- [ ] Package/application ID configuration.
-- [ ] minSdk/targetSdk configuration.
+- [x] Android target triple/backend.
+  - [x] Bootstrap target-aware codegen can lower a Flux `app` to a Java-free NDK `NativeActivity` shared library for `arm64-v8a`, `x86_64`, or `armeabi-v7a`; ABI + minSdk select the matching NDK Clang target and Android builds do not pull in the Linux/GTK backend. A real arm64 debug APK, x86_64 release APK, and armeabi-v7a profile APK have all been produced on Nox, and the release library exports `ANativeActivity_onCreate` as the framework entry point.
+- [x] `flux build android`.
+  - [x] Manifest-backed packages build directly through the installed SDK/NDK with `--abi`, `--mode`, and optional `-o`; no Gradle project, Kotlin application, method channel, or user-authored JNI shim is generated.
+- [x] `flux run android`.
+  - [x] The command builds the selected ABI, installs the resulting APK with ADB, and launches its exported MAIN/LAUNCHER activity. The same generated x86_64 APK has also been installed and launched in Nox's Waydroid runtime; Nox currently has no ADB-visible hardware/device for exercising the command's ADB transport end to end.
+- [x] APK output.
+  - [x] Bootstrap packaging generates the binary manifest, bundles `lib/<abi>/libflux.so`, zip-aligns the artifact, signs it, and verifies the final APK. Nox validation confirmed v1/v2/v3 signatures, minSdk/targetSdk metadata, the NativeActivity launcher, native ABI declaration, and the packaged Flux shared library.
+- [x] AAB output.
+  - [x] `flux build android ... --format aab` compiles all supported ABIs, converts the generated manifest/resource table to protobuf form with `aapt2`, assembles a valid base module with bundletool, signs the resulting App Bundle with the compiler-managed development key, and verifies the bundle. Nox validation confirmed bundletool accepts the release AAB and sees arm64-v8a, x86_64, and armeabi-v7a native libraries.
+- [x] Debug/profile/release variants.
+  - [x] Android uses the same explicit optimization contracts as native builds: debug (`-O0`, full debug), profile (`-O2`, debug/frame pointers), and release (`-O3`, LTO). All three modes have produced Android artifacts on Nox.
+- [x] Android manifest generation.
+  - [x] Flux generates the package/version/SDK/application/NativeActivity launcher metadata itself rather than requiring an application-authored Android manifest.
+- [x] Package/application ID configuration.
+  - [x] Optional `[android].application_id` accepts a validated lowercase reverse-DNS identifier; otherwise Flux derives a deterministic `app.flux.<package>` ID from the package name.
+- [x] minSdk/targetSdk configuration.
+  - [x] Optional integer `[android].min_sdk` / `target_sdk` fields are validated (`minSdk >= 21`, target >= min) and drive both NDK compiler selection and generated APK metadata; bootstrap defaults are 23 / 35.
 - [ ] Signing configuration.
+  - [x] Bootstrap developer signing is compiler-owned: Flux creates/reuses its own debug keystore, signs aligned APKs with `apksigner`, and verifies the result. User/release keystores, credential handling, Play App Signing, and CI-safe release configuration remain pending.
 - [ ] Android lifecycle integration.
-- [ ] Activity/window integration hidden behind Flux application APIs.
+  - [x] Bootstrap `NativeActivity` creation calls the existing typed Flux `app on_start` callback directly and installs a native `onDestroy` callback that invokes `on_exit`, with no JVM bridge. Pause/resume/start/stop/save-state/configuration callbacks remain pending.
+- [x] Activity/window integration hidden behind Flux application APIs.
+  - [x] The generated manifest and native entry use framework `android.app.NativeActivity`; Flux source continues to declare only `app ViewName(...)`, with no Activity subclass or JNI bootstrap in application code. Native Android view rendering/input on that window remains the separate rendering-backend item below.
 - [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.
 - [ ] First-class target-specific `android.*` Flux modules generated/maintained from stable platform bindings where practical, with compile-time API-level/target checks and no reflection-based runtime dispatch requirement.
 - [ ] Native rendering/input backend.

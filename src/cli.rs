@@ -57,6 +57,76 @@ struct BuildOptions {
     mode: BuildMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AndroidAbi {
+    Arm64V8a,
+    X86_64,
+    ArmeabiV7a,
+}
+
+impl AndroidAbi {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "arm64-v8a" => Ok(Self::Arm64V8a),
+            "x86_64" => Ok(Self::X86_64),
+            "armeabi-v7a" => Ok(Self::ArmeabiV7a),
+            _ => Err(format!(
+                "unknown Android ABI '{value}'; expected arm64-v8a, x86_64, or armeabi-v7a"
+            )),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Arm64V8a => "arm64-v8a",
+            Self::X86_64 => "x86_64",
+            Self::ArmeabiV7a => "armeabi-v7a",
+        }
+    }
+
+    fn clang_name(self, api: u32) -> String {
+        match self {
+            Self::Arm64V8a => format!("aarch64-linux-android{api}-clang"),
+            Self::X86_64 => format!("x86_64-linux-android{api}-clang"),
+            Self::ArmeabiV7a => format!("armv7a-linux-androideabi{api}-clang"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AndroidArtifactKind {
+    Apk,
+    Aab,
+}
+
+impl AndroidArtifactKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "apk" => Ok(Self::Apk),
+            "aab" => Ok(Self::Aab),
+            _ => Err(format!(
+                "unknown Android artifact format '{value}'; expected apk or aab"
+            )),
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Apk => "apk",
+            Self::Aab => "aab",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AndroidBuildOptions {
+    target: PathBuf,
+    output: Option<PathBuf>,
+    mode: BuildMode,
+    abi: AndroidAbi,
+    kind: AndroidArtifactKind,
+}
+
 impl From<String> for CliError {
     fn from(message: String) -> Self {
         Self::Message(message)
@@ -192,6 +262,9 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         "build" => {
+            if args.get(1).is_some_and(|value| value == "android") {
+                return build_android_command(&args[2..], BuildMode::Release, false).map(|_| ());
+            }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Release)?;
             let sources = validate_project(path)?;
@@ -224,6 +297,10 @@ fn run() -> Result<(), CliError> {
             package_target(path, options)
         }
         "run" => {
+            if args.get(1).is_some_and(|value| value == "android") {
+                let built = build_android_command(&args[2..], BuildMode::Debug, true)?;
+                return run_android_apk(&built);
+            }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Debug)?;
             if options.output.is_some() {
@@ -274,6 +351,148 @@ fn run() -> Result<(), CliError> {
         }
         _ => Err(CliError::Message(usage())),
     }
+}
+
+#[derive(Debug)]
+struct AndroidBuildResult {
+    artifact: PathBuf,
+    application_id: String,
+    kind: AndroidArtifactKind,
+}
+
+fn build_android_command(
+    args: &[String],
+    default_mode: BuildMode,
+    for_run: bool,
+) -> Result<AndroidBuildResult, CliError> {
+    let options = android_build_options(args, default_mode)?;
+    if for_run && options.kind != AndroidArtifactKind::Apk {
+        return Err(CliError::Message(
+            "flux run android requires '--format apk'; AAB files are publishing artifacts and cannot be installed directly"
+                .to_string(),
+        ));
+    }
+    let manifest_path = if options.target.is_dir() {
+        options.target.join("flux.toml")
+    } else if options.target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        options.target.clone()
+    } else {
+        return Err(CliError::Message(
+            "Android builds require a manifest-backed package directory or flux.toml".to_string(),
+        ));
+    };
+    let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let package_root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest has a parent");
+    let analysis = fluxc::project::analyze(&manifest.path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    if analysis.program.application.is_none() {
+        return Err(CliError::Message(
+            "Android application builds require an 'app' declaration".to_string(),
+        ));
+    }
+    let generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .map_err(|diagnostic| diagnostic.to_string())?;
+    let output = options.output.unwrap_or_else(|| {
+        let file_name = match options.kind {
+            AndroidArtifactKind::Apk => format!(
+                "{}-{}.{}",
+                manifest.name,
+                options.abi.name(),
+                options.kind.extension()
+            ),
+            AndroidArtifactKind::Aab => {
+                format!(
+                    "{}-{}.{}",
+                    manifest.name,
+                    options.mode.name(),
+                    options.kind.extension()
+                )
+            }
+        };
+        package_root
+            .join("build")
+            .join("android")
+            .join(options.mode.name())
+            .join(file_name)
+    });
+    match options.kind {
+        AndroidArtifactKind::Apk => {
+            build_android_apk(&generated, &manifest, &output, options.mode, options.abi)?
+        }
+        AndroidArtifactKind::Aab => {
+            build_android_aab(&generated, &manifest, &output, options.mode)?
+        }
+    }
+    let target = if options.kind == AndroidArtifactKind::Apk {
+        options.abi.name()
+    } else {
+        "all ABIs"
+    };
+    println!(
+        "built Android {} {} {}: {}",
+        options.kind.extension().to_uppercase(),
+        target,
+        options.mode.name(),
+        output.display()
+    );
+    Ok(AndroidBuildResult {
+        artifact: output,
+        application_id: manifest.android.application_id,
+        kind: options.kind,
+    })
+}
+
+fn run_android_apk(build: &AndroidBuildResult) -> Result<(), CliError> {
+    debug_assert_eq!(build.kind, AndroidArtifactKind::Apk);
+    let adb = adb_path();
+    let install = Command::new(&adb)
+        .args(["install", "-r"])
+        .arg(&build.artifact)
+        .output()
+        .map_err(|error| format!("failed to launch adb: {error}"))?;
+    if !install.status.success() {
+        return Err(CliError::Message(format!(
+            "adb install failed:\n{}",
+            String::from_utf8_lossy(&install.stderr)
+        )));
+    }
+    let launch = Command::new(&adb)
+        .args([
+            "shell",
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "-p",
+            &build.application_id,
+        ])
+        .output()
+        .map_err(|error| format!("failed to launch Android application through adb: {error}"))?;
+    if !launch.status.success() {
+        return Err(CliError::Message(format!(
+            "adb launch failed:\n{}",
+            String::from_utf8_lossy(&launch.stderr)
+        )));
+    }
+    println!("launched Android app: {}", build.application_id);
+    Ok(())
 }
 
 fn package_target(target: &Path, options: BuildOptions) -> Result<(), CliError> {
@@ -975,20 +1194,88 @@ fn analysis_json_mode(command: &str, args: &[String]) -> Result<bool, String> {
 
 fn run_devices() -> Result<(), CliError> {
     println!("Flux devices");
-    if !cfg!(target_os = "linux") {
-        println!("  no runnable devices: the current bootstrap application backend targets Linux");
-        return Ok(());
+    if cfg!(target_os = "linux") {
+        let (display, status) = if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
+            (format!("Wayland ({})", display.to_string_lossy()), "ready")
+        } else if let Some(display) = env::var_os("DISPLAY") {
+            (format!("X11 ({})", display.to_string_lossy()), "ready")
+        } else {
+            ("no active graphical display".to_string(), "unavailable")
+        };
+        println!("  linux-desktop  {status:11} GTK4 · {display}");
     }
 
-    let (display, status) = if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
-        (format!("Wayland ({})", display.to_string_lossy()), "ready")
-    } else if let Some(display) = env::var_os("DISPLAY") {
-        (format!("X11 ({})", display.to_string_lossy()), "ready")
-    } else {
-        ("no active graphical display".to_string(), "unavailable")
-    };
-    println!("  linux-desktop  {status:11} GTK4 · {display}");
+    match adb_devices() {
+        Ok(devices) if devices.is_empty() => {
+            println!("  android        unavailable no connected adb device");
+        }
+        Ok(devices) => {
+            for device in devices {
+                println!(
+                    "  android        {:11} {}{}",
+                    device.status,
+                    device.serial,
+                    if device.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", device.description)
+                    }
+                );
+            }
+        }
+        Err(message) => println!("  android        unavailable {message}"),
+    }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdbDevice {
+    serial: String,
+    status: String,
+    description: String,
+}
+
+fn adb_devices() -> Result<Vec<AdbDevice>, String> {
+    let output = Command::new(adb_path())
+        .args(["devices", "-l"])
+        .output()
+        .map_err(|error| format!("adb unavailable ({error})"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .next()
+            .unwrap_or("adb devices failed")
+            .trim()
+            .to_string();
+        return Err(detail);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_adb_devices(&stdout))
+}
+
+fn parse_adb_devices(output: &str) -> Vec<AdbDevice> {
+    output
+        .lines()
+        .skip_while(|line| !line.starts_with("List of devices"))
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let serial = fields.next()?;
+            let status = fields.next()?;
+            let description = fields.collect::<Vec<_>>().join(" ");
+            Some(AdbDevice {
+                serial: serial.to_string(),
+                status: status.to_string(),
+                description,
+            })
+        })
+        .collect()
+}
+
+fn adb_path() -> PathBuf {
+    env::var_os("FLUX_ADB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("adb"))
 }
 
 fn clean_target(target: &Path) -> Result<(), CliError> {
@@ -1045,6 +1332,30 @@ fn run_doctor() -> Result<(), CliError> {
             println!("  [fail] GTK4: {message}");
             required_ok = false;
         }
+    }
+
+    match find_android_sdk() {
+        Ok(sdk) => {
+            println!("  [ok] Android SDK: {}", sdk.display());
+            match find_android_ndk(&sdk) {
+                Ok(ndk) => println!("  [ok] Android NDK: {}", ndk.display()),
+                Err(CliError::Message(message)) => println!("  [warn] Android NDK: {message}"),
+                Err(CliError::Reported) => unreachable!(),
+            }
+            match find_android_build_tools(&sdk) {
+                Ok(tools) => println!("  [ok] Android build-tools: {}", tools.display()),
+                Err(CliError::Message(message)) => {
+                    println!("  [warn] Android build-tools: {message}")
+                }
+                Err(CliError::Reported) => unreachable!(),
+            }
+        }
+        Err(CliError::Message(message)) => println!("  [warn] Android SDK: {message}"),
+        Err(CliError::Reported) => unreachable!(),
+    }
+    match command_first_line(adb_path().to_string_lossy().as_ref(), &["version"]) {
+        Ok(version) => println!("  [ok] adb: {version}"),
+        Err(message) => println!("  [warn] adb: {message}"),
     }
 
     match command_first_line("nvim", &["--version"]) {
@@ -1112,6 +1423,85 @@ fn output_path(args: &[String]) -> Result<Option<PathBuf>, String> {
     Err("output syntax is '-o <path>'".to_string())
 }
 
+fn android_build_options(
+    args: &[String],
+    default_mode: BuildMode,
+) -> Result<AndroidBuildOptions, String> {
+    let Some(target) = args.first() else {
+        return Err(
+            "Android build syntax is 'build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab]'"
+                .to_string(),
+        );
+    };
+    let mut output = None;
+    let mut mode = default_mode;
+    let mut mode_seen = false;
+    let mut abi = AndroidAbi::Arm64V8a;
+    let mut abi_seen = false;
+    let mut kind = AndroidArtifactKind::Apk;
+    let mut format_seen = false;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("output path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'-o' requires an output path".to_string());
+                };
+                output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--mode" => {
+                if mode_seen {
+                    return Err("build mode may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--mode' requires debug, profile, or release".to_string());
+                };
+                mode = BuildMode::parse(value)?;
+                mode_seen = true;
+                index += 2;
+            }
+            "--abi" => {
+                if abi_seen {
+                    return Err("Android ABI may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--abi' requires an Android ABI".to_string());
+                };
+                abi = AndroidAbi::parse(value)?;
+                abi_seen = true;
+                index += 2;
+            }
+            "--format" => {
+                if format_seen {
+                    return Err("Android artifact format may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--format' requires apk or aab".to_string());
+                };
+                kind = AndroidArtifactKind::parse(value)?;
+                format_seen = true;
+                index += 2;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown Android build option '{flag}'; expected '-o', '--mode', '--abi', or '--format'"
+                ));
+            }
+        }
+    }
+    Ok(AndroidBuildOptions {
+        target: PathBuf::from(target),
+        output,
+        mode,
+        abi,
+        kind,
+    })
+}
+
 fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
     let mut output = None;
     let mut mode = default_mode;
@@ -1148,6 +1538,468 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
         }
     }
     Ok(BuildOptions { output, mode })
+}
+
+#[derive(Debug)]
+struct AndroidToolchain {
+    ndk: PathBuf,
+    build_tools: PathBuf,
+    android_jar: PathBuf,
+}
+
+fn android_toolchain(
+    manifest: &fluxc::project::PackageManifest,
+) -> Result<AndroidToolchain, CliError> {
+    let sdk = find_android_sdk()?;
+    let ndk = find_android_ndk(&sdk)?;
+    let build_tools = find_android_build_tools(&sdk)?;
+    let android_jar = sdk
+        .join("platforms")
+        .join(format!("android-{}", manifest.android.target_sdk))
+        .join("android.jar");
+    if !android_jar.is_file() {
+        return Err(CliError::Message(format!(
+            "Android platform {} is not installed under '{}'",
+            manifest.android.target_sdk,
+            sdk.display()
+        )));
+    }
+    Ok(AndroidToolchain {
+        ndk,
+        build_tools,
+        android_jar,
+    })
+}
+
+fn android_staging_dir() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    env::temp_dir().join(format!("flux-android-{}-{nonce}", std::process::id()))
+}
+
+fn compile_android_native_library(
+    c_source: &str,
+    manifest: &fluxc::project::PackageManifest,
+    mode: BuildMode,
+    abi: AndroidAbi,
+    ndk: &Path,
+    staging: &Path,
+) -> Result<PathBuf, CliError> {
+    let clang = ndk
+        .join("toolchains/llvm/prebuilt/linux-x86_64/bin")
+        .join(abi.clang_name(manifest.android.min_sdk));
+    if !clang.is_file() {
+        return Err(CliError::Message(format!(
+            "Android NDK compiler '{}' is unavailable; check min_sdk and NDK installation",
+            clang.display()
+        )));
+    }
+    let lib_dir = staging.join("lib").join(abi.name());
+    fs::create_dir_all(&lib_dir)
+        .map_err(|error| format!("failed to create Android staging directory: {error}"))?;
+    let source = staging.join(format!("app-{}.c", abi.name()));
+    fs::write(&source, c_source)
+        .map_err(|error| format!("failed to write generated Android C: {error}"))?;
+    let native_library = lib_dir.join("libflux.so");
+    let mut clang_command = Command::new(&clang);
+    clang_command
+        .args(["-std=c17", "-fwrapv", "-shared", "-fPIC"])
+        .args(mode.clang_args())
+        .arg(&source)
+        .args(["-landroid", "-llog", "-Wl,-soname,libflux.so", "-o"])
+        .arg(&native_library);
+    let native = clang_command
+        .output()
+        .map_err(|error| format!("failed to launch Android NDK clang: {error}"))?;
+    if !native.status.success() {
+        return Err(CliError::Message(format!(
+            "Android native backend failed for {}:\n{}",
+            abi.name(),
+            String::from_utf8_lossy(&native.stderr)
+        )));
+    }
+    Ok(native_library)
+}
+
+fn ensure_parent_directory(output: &Path) -> Result<(), CliError> {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create Android output directory: {error}"))?;
+    }
+    Ok(())
+}
+
+fn build_android_aab(
+    c_source: &str,
+    manifest: &fluxc::project::PackageManifest,
+    output: &Path,
+    mode: BuildMode,
+) -> Result<(), CliError> {
+    let toolchain = android_toolchain(manifest)?;
+    let bundletool = find_android_bundletool()?;
+    let staging = android_staging_dir();
+    let base = staging.join("base");
+    fs::create_dir_all(base.join("manifest")).map_err(|error| {
+        format!("failed to create Android App Bundle staging directory: {error}")
+    })?;
+
+    for abi in [
+        AndroidAbi::Arm64V8a,
+        AndroidAbi::X86_64,
+        AndroidAbi::ArmeabiV7a,
+    ] {
+        compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &base)?;
+        let _ = fs::remove_file(base.join(format!("app-{}.c", abi.name())));
+    }
+
+    let manifest_path = staging.join("AndroidManifest.xml");
+    fs::write(&manifest_path, android_manifest_xml(manifest, mode))
+        .map_err(|error| format!("failed to write Android manifest: {error}"))?;
+    let proto_apk = staging.join("manifest-proto.apk");
+    run_checked(
+        Command::new(toolchain.build_tools.join("aapt2"))
+            .arg("link")
+            .arg("--proto-format")
+            .arg("-o")
+            .arg(&proto_apk)
+            .arg("-I")
+            .arg(&toolchain.android_jar)
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .arg("--min-sdk-version")
+            .arg(manifest.android.min_sdk.to_string())
+            .arg("--target-sdk-version")
+            .arg(manifest.android.target_sdk.to_string()),
+        "aapt2 App Bundle manifest link",
+    )?;
+
+    let proto_contents = staging.join("proto-contents");
+    run_checked(
+        Command::new("unzip")
+            .args(["-q"])
+            .arg(&proto_apk)
+            .arg("-d")
+            .arg(&proto_contents),
+        "unzip App Bundle manifest",
+    )?;
+    fs::copy(
+        proto_contents.join("AndroidManifest.xml"),
+        base.join("manifest/AndroidManifest.xml"),
+    )
+    .map_err(|error| format!("failed to stage protobuf Android manifest: {error}"))?;
+    let resources = proto_contents.join("resources.pb");
+    if resources.is_file() {
+        fs::copy(&resources, base.join("resources.pb"))
+            .map_err(|error| format!("failed to stage Android resource table: {error}"))?;
+    }
+
+    let base_zip = staging.join("base.zip");
+    run_checked(
+        Command::new("zip")
+            .current_dir(&base)
+            .args(["-q", "-r"])
+            .arg(&base_zip)
+            .arg("."),
+        "zip Android App Bundle base module",
+    )?;
+    let unsigned = staging.join("unsigned.aab");
+    run_checked(
+        Command::new("java")
+            .arg("-jar")
+            .arg(&bundletool)
+            .arg("build-bundle")
+            .arg(format!("--modules={}", base_zip.display()))
+            .arg(format!("--output={}", unsigned.display()))
+            .arg("--overwrite"),
+        "bundletool build-bundle",
+    )?;
+
+    ensure_parent_directory(output)?;
+    fs::copy(&unsigned, output)
+        .map_err(|error| format!("failed to write Android App Bundle: {error}"))?;
+    let key = android_debug_keystore()?;
+    run_checked(
+        Command::new("jarsigner")
+            .args(["-storepass", "android", "-keypass", "android"])
+            .arg("-keystore")
+            .arg(&key)
+            .arg(output)
+            .arg("flux"),
+        "jarsigner",
+    )?;
+    run_checked(
+        Command::new("jarsigner").arg("-verify").arg(output),
+        "jarsigner verify",
+    )?;
+    let _ = fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+fn build_android_apk(
+    c_source: &str,
+    manifest: &fluxc::project::PackageManifest,
+    output: &Path,
+    mode: BuildMode,
+    abi: AndroidAbi,
+) -> Result<(), CliError> {
+    let toolchain = android_toolchain(manifest)?;
+    let staging = android_staging_dir();
+    compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &staging)?;
+
+    let manifest_xml = android_manifest_xml(manifest, mode);
+    let manifest_path = staging.join("AndroidManifest.xml");
+    fs::write(&manifest_path, manifest_xml)
+        .map_err(|error| format!("failed to write Android manifest: {error}"))?;
+    let unsigned = staging.join("unsigned.apk");
+    let aapt2 = toolchain.build_tools.join("aapt2");
+    run_checked(
+        Command::new(&aapt2)
+            .arg("link")
+            .arg("-o")
+            .arg(&unsigned)
+            .arg("-I")
+            .arg(&toolchain.android_jar)
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .arg("--min-sdk-version")
+            .arg(manifest.android.min_sdk.to_string())
+            .arg("--target-sdk-version")
+            .arg(manifest.android.target_sdk.to_string()),
+        "aapt2 link",
+    )?;
+    run_checked(
+        Command::new("zip")
+            .current_dir(&staging)
+            .args(["-q", "-r"])
+            .arg(&unsigned)
+            .arg("lib"),
+        "zip native Android library",
+    )?;
+    let aligned = staging.join("aligned.apk");
+    run_checked(
+        Command::new(toolchain.build_tools.join("zipalign"))
+            .args(["-f", "4"])
+            .arg(&unsigned)
+            .arg(&aligned),
+        "zipalign",
+    )?;
+    let key = android_debug_keystore()?;
+    ensure_parent_directory(output)?;
+    run_checked(
+        Command::new(toolchain.build_tools.join("apksigner"))
+            .arg("sign")
+            .args(["--ks-pass", "pass:android", "--key-pass", "pass:android"])
+            .arg("--ks")
+            .arg(&key)
+            .arg("--out")
+            .arg(output)
+            .arg(&aligned),
+        "apksigner",
+    )?;
+    run_checked(
+        Command::new(toolchain.build_tools.join("apksigner"))
+            .arg("verify")
+            .arg(output),
+        "apksigner verify",
+    )?;
+    let _ = fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+fn android_manifest_xml(manifest: &fluxc::project::PackageManifest, mode: BuildMode) -> String {
+    let application_id = xml_escape(&manifest.android.application_id);
+    let label = xml_escape(&manifest.name);
+    let version = xml_escape(manifest.version.as_deref().unwrap_or("0.0.0"));
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        manifest.android.min_sdk,
+        manifest.android.target_sdk,
+        if mode == BuildMode::Debug {
+            "true"
+        } else {
+            "false"
+        },
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn find_android_sdk() -> Result<PathBuf, CliError> {
+    for variable in ["FLUX_ANDROID_SDK", "ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+        if let Some(path) = env::var_os(variable).map(PathBuf::from)
+            && path.join("platforms").is_dir()
+            && path.join("build-tools").is_dir()
+        {
+            return Ok(path);
+        }
+    }
+    let fallback = PathBuf::from("/opt/android-sdk");
+    if fallback.join("platforms").is_dir() && fallback.join("build-tools").is_dir() {
+        return Ok(fallback);
+    }
+    Err(CliError::Message(
+        "Android SDK not found; set FLUX_ANDROID_SDK or ANDROID_SDK_ROOT".to_string(),
+    ))
+}
+
+fn find_android_ndk(sdk: &Path) -> Result<PathBuf, CliError> {
+    for variable in ["FLUX_ANDROID_NDK", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"] {
+        if let Some(path) = env::var_os(variable).map(PathBuf::from)
+            && path
+                .join("toolchains/llvm/prebuilt/linux-x86_64/bin")
+                .is_dir()
+        {
+            return Ok(path);
+        }
+    }
+    let mut roots = vec![sdk.join("ndk")];
+    if let Some(home) = env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".config/android/ndk"));
+    }
+    for root in roots {
+        if let Some(path) = latest_directory_matching(&root, |path| {
+            path.join("toolchains/llvm/prebuilt/linux-x86_64/bin")
+                .is_dir()
+        }) {
+            return Ok(path);
+        }
+    }
+    Err(CliError::Message(
+        "Android NDK not found; set FLUX_ANDROID_NDK or ANDROID_NDK_HOME".to_string(),
+    ))
+}
+
+fn find_android_build_tools(sdk: &Path) -> Result<PathBuf, CliError> {
+    latest_directory_matching(&sdk.join("build-tools"), |path| {
+        path.join("aapt2").is_file()
+            && path.join("zipalign").is_file()
+            && path.join("apksigner").is_file()
+    })
+    .ok_or_else(|| {
+        CliError::Message(
+            "Android build-tools with aapt2/zipalign/apksigner were not found".to_string(),
+        )
+    })
+}
+
+fn find_android_bundletool() -> Result<PathBuf, CliError> {
+    for variable in ["FLUX_ANDROID_BUNDLETOOL", "BUNDLETOOL_JAR"] {
+        if let Some(path) = env::var_os(variable).map(PathBuf::from)
+            && path.is_file()
+        {
+            return Ok(path);
+        }
+    }
+    let mut roots = Vec::new();
+    if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
+        roots.push(PathBuf::from(data_home).join("flux"));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".local/share/flux"));
+    }
+    for root in roots {
+        if let Some(path) = latest_file_matching(&root, |path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("bundletool") && name.ends_with(".jar"))
+        }) {
+            return Ok(path);
+        }
+    }
+    Err(CliError::Message(
+        "Android AAB builds require bundletool; set FLUX_ANDROID_BUNDLETOOL to bundletool-all-<version>.jar"
+            .to_string(),
+    ))
+}
+
+fn latest_directory_matching(root: &Path, predicate: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && predicate(path))
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.pop()
+}
+
+fn latest_file_matching(root: &Path, predicate: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && predicate(path))
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.pop()
+}
+
+fn android_debug_keystore() -> Result<PathBuf, CliError> {
+    let root = native_build_cache_dir()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("android");
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("failed to create Android signing cache: {error}"))?;
+    let path = root.join("debug.keystore");
+    if path.is_file() {
+        return Ok(path);
+    }
+    run_checked(
+        Command::new("keytool")
+            .args([
+                "-genkeypair",
+                "-storepass",
+                "android",
+                "-keypass",
+                "android",
+                "-alias",
+                "flux",
+                "-keyalg",
+                "RSA",
+                "-keysize",
+                "2048",
+                "-validity",
+                "10000",
+                "-dname",
+                "CN=Flux Development,O=Flux,C=NZ",
+            ])
+            .arg("-keystore")
+            .arg(&path),
+        "keytool",
+    )?;
+    Ok(path)
+}
+
+fn run_checked(command: &mut Command, label: &str) -> Result<(), CliError> {
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to launch {label}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(CliError::Message(format!(
+        "{label} failed:\n{}{}",
+        stderr,
+        if stdout.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\n{stdout}")
+        }
+    )))
 }
 
 fn default_binary_path(source: &Path) -> PathBuf {
@@ -1271,13 +2123,16 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BuildMode, build_options};
+    use super::{
+        AdbDevice, AndroidAbi, AndroidArtifactKind, BuildMode, android_build_options,
+        build_options, parse_adb_devices,
+    };
 
     #[test]
     fn build_modes_have_distinct_native_optimization_profiles() {
@@ -1315,5 +2170,73 @@ mod tests {
         let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
+    }
+
+    #[test]
+    fn android_build_options_parse_target_mode_output_and_abi() {
+        let args = vec![
+            "package".to_string(),
+            "--abi".to_string(),
+            "x86_64".to_string(),
+            "-o".to_string(),
+            "app.apk".to_string(),
+            "--mode".to_string(),
+            "profile".to_string(),
+        ];
+        let options =
+            android_build_options(&args, BuildMode::Release).expect("Android options should parse");
+        assert_eq!(options.target, std::path::Path::new("package"));
+        assert_eq!(
+            options.output.as_deref(),
+            Some(std::path::Path::new("app.apk"))
+        );
+        assert_eq!(options.mode, BuildMode::Profile);
+        assert_eq!(options.abi, AndroidAbi::X86_64);
+        assert_eq!(options.kind, AndroidArtifactKind::Apk);
+
+        let aab = android_build_options(
+            &[
+                "package".to_string(),
+                "--format".to_string(),
+                "aab".to_string(),
+            ],
+            BuildMode::Release,
+        )
+        .expect("AAB format should parse");
+        assert_eq!(aab.kind, AndroidArtifactKind::Aab);
+
+        let defaults = android_build_options(&["package".to_string()], BuildMode::Debug)
+            .expect("Android defaults should parse");
+        assert_eq!(defaults.mode, BuildMode::Debug);
+        assert_eq!(defaults.abi, AndroidAbi::Arm64V8a);
+        assert_eq!(defaults.kind, AndroidArtifactKind::Apk);
+        assert!(defaults.output.is_none());
+    }
+
+    #[test]
+    fn adb_device_parser_preserves_connection_state_and_details() {
+        let devices = parse_adb_devices(
+            "List of devices attached\nemulator-5554 device product:sdk model:Pixel transport_id:1\nphone offline usb:1-1\nunauth unauthorized usb:2-1\n\n",
+        );
+        assert_eq!(
+            devices,
+            vec![
+                AdbDevice {
+                    serial: "emulator-5554".to_string(),
+                    status: "device".to_string(),
+                    description: "product:sdk model:Pixel transport_id:1".to_string(),
+                },
+                AdbDevice {
+                    serial: "phone".to_string(),
+                    status: "offline".to_string(),
+                    description: "usb:1-1".to_string(),
+                },
+                AdbDevice {
+                    serial: "unauth".to_string(),
+                    status: "unauthorized".to_string(),
+                    description: "usb:2-1".to_string(),
+                },
+            ]
+        );
     }
 }

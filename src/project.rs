@@ -23,12 +23,21 @@ pub struct ProjectAnalysis {
 
 impl ProjectAnalysis {
     pub fn emit_c(&self) -> Result<String, Diagnostic> {
+        self.emit_c_for_target(codegen::NativeTarget::Linux)
+    }
+
+    pub fn emit_c_for_target(&self, target: codegen::NativeTarget) -> Result<String, Diagnostic> {
         let source_paths = self
             .sources
             .iter()
             .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
             .collect::<HashMap<_, _>>();
-        codegen::emit_c_with_source_paths(&self.program, &self.signatures, &source_paths)
+        codegen::emit_c_for_target_with_source_paths(
+            &self.program,
+            &self.signatures,
+            &source_paths,
+            target,
+        )
     }
 }
 
@@ -162,11 +171,19 @@ impl ProjectAnalysisCache {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndroidPackageConfig {
+    pub application_id: String,
+    pub min_sdk: u32,
+    pub target_sdk: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
     pub name: String,
     pub version: Option<String>,
     pub entry: PathBuf,
     pub path: PathBuf,
+    pub android: AndroidPackageConfig,
 }
 
 fn cache_target_key(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -390,6 +407,9 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut name = None::<String>;
     let mut version = None::<String>;
     let mut entry = None::<String>;
+    let mut android_application_id = None::<String>;
+    let mut android_min_sdk = None::<u32>;
+    let mut android_target_sdk = None::<u32>;
     let mut diagnostics = Vec::new();
 
     for (index, raw_line) in source.lines().enumerate() {
@@ -408,7 +428,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 continue;
             }
             let table = line[1..line.len() - 1].trim();
-            if table != "package" {
+            if !matches!(table, "package" | "android") {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
                     line_number,
@@ -418,49 +438,95 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             section = Some(table.to_string());
             continue;
         }
-        if section.as_deref() != Some("package") {
-            diagnostics.push(manifest_diagnostic(
-                source_id,
-                line_number,
-                "manifest fields must be declared inside [package]",
-            ));
-            continue;
-        }
         let Some((key, raw_value)) = line.split_once('=') else {
             diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields use 'key = \"value\"' syntax",
+                "manifest fields use 'key = value' syntax",
             ));
             continue;
         };
         let key = key.trim();
-        let value = match parse_manifest_string(raw_value.trim()) {
-            Ok(value) => value,
-            Err(message) => {
-                diagnostics.push(manifest_diagnostic(source_id, line_number, message));
-                continue;
+        let raw_value = raw_value.trim();
+        match section.as_deref() {
+            Some("package") => {
+                let value = match parse_manifest_string(raw_value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                        continue;
+                    }
+                };
+                let slot = match key {
+                    "name" => &mut name,
+                    "version" => &mut version,
+                    "entry" => &mut entry,
+                    _ => {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("unknown [package] field '{key}'"),
+                        ));
+                        continue;
+                    }
+                };
+                if slot.replace(value).is_some() {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!("duplicate [package] field '{key}'"),
+                    ));
+                }
             }
-        };
-        let slot = match key {
-            "name" => &mut name,
-            "version" => &mut version,
-            "entry" => &mut entry,
-            _ => {
-                diagnostics.push(manifest_diagnostic(
+            Some("android") => match key {
+                "application_id" => {
+                    let value = match parse_manifest_string(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    if android_application_id.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            "duplicate [android] field 'application_id'",
+                        ));
+                    }
+                }
+                "min_sdk" | "target_sdk" => {
+                    let value = match parse_manifest_u32(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    let slot = if key == "min_sdk" {
+                        &mut android_min_sdk
+                    } else {
+                        &mut android_target_sdk
+                    };
+                    if slot.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("duplicate [android] field '{key}'"),
+                        ));
+                    }
+                }
+                _ => diagnostics.push(manifest_diagnostic(
                     source_id,
                     line_number,
-                    format!("unknown [package] field '{key}'"),
-                ));
-                continue;
-            }
-        };
-        if slot.replace(value).is_some() {
-            diagnostics.push(manifest_diagnostic(
+                    format!("unknown [android] field '{key}'"),
+                )),
+            },
+            _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                format!("duplicate [package] field '{key}'"),
-            ));
+                "manifest fields must be declared inside [package] or [android]",
+            )),
         }
     }
 
@@ -474,6 +540,34 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
             "[package].version cannot be empty",
+        ));
+    }
+    if let Some(application_id) = android_application_id.as_deref()
+        && !valid_android_application_id(application_id)
+    {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].application_id must be a lowercase reverse-DNS identifier such as 'nz.example.app'",
+        ));
+    }
+    if android_min_sdk.is_some_and(|value| value < 21) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].min_sdk must be at least 21",
+        ));
+    }
+    if android_target_sdk.is_some_and(|value| value < 21) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].target_sdk must be at least 21",
+        ));
+    }
+    if let (Some(min_sdk), Some(target_sdk)) = (android_min_sdk, android_target_sdk)
+        && target_sdk < min_sdk
+    {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].target_sdk must be greater than or equal to min_sdk",
         ));
     }
     let Some(entry_value) = entry.filter(|entry| !entry.is_empty()) else {
@@ -511,8 +605,17 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         )]);
     }
 
+    let name = name.expect("validated package name");
+    let min_sdk = android_min_sdk.unwrap_or(23);
+    let target_sdk = android_target_sdk.unwrap_or(35);
     Ok(PackageManifest {
-        name: name.expect("validated package name"),
+        android: AndroidPackageConfig {
+            application_id: android_application_id
+                .unwrap_or_else(|| default_android_application_id(&name)),
+            min_sdk,
+            target_sdk,
+        },
+        name,
         version,
         entry: canonical_entry,
         path: canonical_manifest,
@@ -526,6 +629,59 @@ fn canonical_source(path: &Path, kind: &str) -> Result<PathBuf, Vec<Diagnostic>>
             format!("failed to read {kind} '{}': {error}", path.display()),
         )]
     })
+}
+
+fn parse_manifest_u32(text: &str) -> Result<u32, String> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("manifest integer values must contain only decimal digits".to_string());
+    }
+    text.parse::<u32>()
+        .map_err(|_| "manifest integer value is out of range".to_string())
+}
+
+fn valid_android_application_id(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(second) = parts.next() else {
+        return false;
+    };
+    valid_android_id_segment(first)
+        && valid_android_id_segment(second)
+        && parts.all(valid_android_id_segment)
+}
+
+fn valid_android_id_segment(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|ch| ch.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn default_android_application_id(package_name: &str) -> String {
+    let mut segment = package_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' {
+                ch
+            } else if ch.is_ascii_uppercase() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while segment
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_ascii_lowercase())
+    {
+        segment.remove(0);
+    }
+    if segment.is_empty() {
+        segment.push_str("app");
+    }
+    format!("app.flux.{segment}")
 }
 
 fn parse_manifest_string(text: &str) -> Result<String, String> {

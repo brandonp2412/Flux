@@ -7934,6 +7934,9 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     assert_eq!(parsed.name, "sample");
     assert_eq!(parsed.version.as_deref(), Some("0.1.0"));
     assert_eq!(parsed.entry, fs::canonicalize(&entry).unwrap());
+    assert_eq!(parsed.android.application_id, "app.flux.sample");
+    assert_eq!(parsed.android.min_sdk, 23);
+    assert_eq!(parsed.android.target_sdk, 35);
     assert_eq!(
         fluxc::project::resolve_entry(&root).expect("directory should resolve through flux.toml"),
         parsed.entry
@@ -8020,6 +8023,56 @@ fn package_manifest_rejects_invalid_schema_and_escaping_entries() {
         error
             .message
             .contains("must remain inside the package root")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_manifest_accepts_and_validates_android_configuration() {
+    let root = std::env::temp_dir().join(format!("flux-android-manifest-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary Android package should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nmin_sdk = 26\ntarget_sdk = 35\n",
+    )
+    .expect("Android manifest should be writable");
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("Android config should parse");
+    assert_eq!(parsed.android.application_id, "nz.flux.sample");
+    assert_eq!(parsed.android.min_sdk, 26);
+    assert_eq!(parsed.android.target_sdk, 35);
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nmin_sdk = 19\ntarget_sdk = 18\n",
+    )
+    .expect("invalid Android manifest should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("invalid Android configuration must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("reverse-DNS identifier"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("min_sdk must be at least 21"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("target_sdk must be at least 21"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("target_sdk must be greater than or equal to min_sdk")
     }));
 
     let _ = fs::remove_dir_all(&root);
@@ -9679,6 +9732,48 @@ app Screen(on_start: bad)
         error.message.contains("application on_start callback")
             && error.message.contains("expected fn() -> void")
     }));
+}
+
+#[test]
+fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
+    let root = std::env::temp_dir().join(format!("flux-android-codegen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("Android codegen fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"native-app\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android codegen manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r#"fn started() -> void {
+    print("started")
+}
+fn exiting() -> void {
+    print("exiting")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(on_start: started, on_exit: exiting)
+"#,
+    )
+    .expect("Android codegen source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("Android app should analyze");
+    let generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android app should lower to target C");
+    assert!(generated.contains("#include <android/native_activity.h>"));
+    assert!(generated.contains("ANativeActivity_onCreate"));
+    assert!(generated.contains("activity->callbacks->onDestroy = flux__android_on_destroy"));
+    assert!(generated.contains("flux__fn_started();"));
+    assert!(generated.contains("flux__fn_exiting();"));
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+    assert!(!generated.contains("GtkApplication"));
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
