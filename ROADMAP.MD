@@ -319,7 +319,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Bootstrap loop control-flow recognizes iteration-safe direct moves through CFG back-edges: fallthrough and `continue` paths expose the moved source on a later iteration and fail, while paths that leave the loop through `break`/`return` do not create a repeated read.
   - [x] Return-terminated ownership paths do not poison reachable sibling/post-loop state because move facts propagate only over actual CFG successors; zero-iteration loop exits likewise preserve the pre-loop state where appropriate.
   - [x] Nested direct-move loop analysis follows composed CFG edges across `if`/`match`, nested loops, branch-specific `break`, and `continue`, removing the former syntax-shaped loop-exit ownership bookkeeping.
-  - [x] Bootstrap direct-local move path-state is computed to a fixed point on the semantic CFG with deterministic move origins and reachability facts.
+  - [x] Bootstrap direct-local move path-state is computed to a fixed point on the semantic CFG with deterministic move origins and reachability facts; compile-time primitive conditions and statically empty integer ranges remove impossible CFG edges before ownership propagation so dead moves do not poison live owners.
   - [ ] General move analysis across calls, aggregate fields, partial moves, and owned resource types after normalized control-flow ownership facts exist.
 - [ ] Immutable borrows.
   - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
@@ -385,7 +385,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
   - [ ] Add borrow regions, partial moves, drops, lifetimes, and consuming-call ownership facts to normalized CFG/IR analysis.
 - [ ] Explicit control-flow graph.
   - [x] The semantic database exposes deterministic per-function structural CFGs for sequential statements, `if`, loops/back-edges, `break`, `continue`, `return`, match-arm dispatch, and `else return` success/error exits.
-  - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly.
+  - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly, while compile-time primitive conditions and statically empty integer ranges omit impossible branch/body edges.
   - [ ] Normalize nested expression evaluation/value production into typed IR values so later optimization no longer depends on checked-AST expression trees.
 - [ ] SSA or equivalent optimization-friendly value representation.
 - [x] Preserve debug locations through lowering: generated C emits source-aware `#line` directives for named/anonymous functions and every Flux statement, project builds retain canonical module paths, and Clang debug/profile DWARF line tables resolve native instructions back to the original `.flux` files and lines.

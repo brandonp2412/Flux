@@ -2582,6 +2582,50 @@ fn main() -> i64 {
 }
 
 #[test]
+fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
+    let source = r#"
+const NEVER: bool = 2 > 3
+
+fn main() -> i64 {
+    let source: i64[] = [10, 20]
+    if NEVER:
+        let _branchMove: i64[] = source
+    while false:
+        let _loopMove: i64[] = source
+    for _i in 4..4:
+        let _rangeMove: i64[] = source
+    return source.first
+}
+"#;
+
+    check_source(source)
+        .expect("statically unreachable moves must not make a live owner appear moved");
+    compile_to_c(source).expect("constant-unreachable ownership paths should lower natively");
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1205))
+        .expect("constant-aware CFG should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    for moved_name in ["_branchMove", "_loopMove", "_rangeMove"] {
+        let node = graph
+            .nodes()
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind,
+                    ControlFlowNodeKind::Binding { name, .. } if name == moved_name
+                )
+            })
+            .expect("dead move binding should remain represented structurally");
+        assert!(
+            !graph.is_reachable(node.id),
+            "{moved_name} should be unreachable"
+        );
+    }
+}
+
+#[test]
 fn non_copy_list_reads_and_parameters_are_immutable_borrows() {
     let source = r#"
 fn firstValue(values: i64[]) -> i64 {

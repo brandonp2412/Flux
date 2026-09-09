@@ -405,12 +405,26 @@ impl<'a> ControlFlowBuilder<'a> {
                 let node = self.node(ControlFlowNodeKind::Conditional, stmt.span);
                 let then_entry = self.build_block(body, successor, loop_targets);
                 let else_entry = self.build_block(else_body, successor, loop_targets);
-                self.edge(node, then_entry, ControlFlowEdgeKind::True);
-                self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                match typecheck::constant_primitive_value(cond, self.signatures) {
+                    Some(typecheck::ConstantValue::Bool(true)) => {
+                        self.edge(node, then_entry, ControlFlowEdgeKind::True);
+                    }
+                    Some(typecheck::ConstantValue::Bool(false)) => {
+                        self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                    }
+                    _ => {
+                        self.edge(node, then_entry, ControlFlowEdgeKind::True);
+                        self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                    }
+                }
                 self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node)
             }
             StmtKind::ForRange {
-                start, end, body, ..
+                start,
+                end,
+                inclusive,
+                body,
+                ..
             } => {
                 let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
                 let body_entry = self.build_block(
@@ -421,7 +435,25 @@ impl<'a> ControlFlowBuilder<'a> {
                         continue_target: node,
                     }),
                 );
-                self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                let statically_empty = match (
+                    typecheck::constant_primitive_value(start, self.signatures),
+                    typecheck::constant_primitive_value(end, self.signatures),
+                ) {
+                    (
+                        Some(typecheck::ConstantValue::I64(start_value)),
+                        Some(typecheck::ConstantValue::I64(end_value)),
+                    ) => {
+                        if *inclusive {
+                            start_value > end_value
+                        } else {
+                            start_value >= end_value
+                        }
+                    }
+                    _ => false,
+                };
+                if !statically_empty {
+                    self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                }
                 self.edge(node, successor, ControlFlowEdgeKind::False);
                 let end_entry =
                     self.evaluation_node(ControlFlowEvaluationKind::RangeEnd, end, node);
@@ -457,8 +489,18 @@ impl<'a> ControlFlowBuilder<'a> {
                         continue_target: condition,
                     }),
                 );
-                self.edge(node, body_entry, ControlFlowEdgeKind::True);
-                self.edge(node, successor, ControlFlowEdgeKind::False);
+                match typecheck::constant_primitive_value(cond, self.signatures) {
+                    Some(typecheck::ConstantValue::Bool(true)) => {
+                        self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                    }
+                    Some(typecheck::ConstantValue::Bool(false)) => {
+                        self.edge(node, successor, ControlFlowEdgeKind::False);
+                    }
+                    _ => {
+                        self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                        self.edge(node, successor, ControlFlowEdgeKind::False);
+                    }
+                }
                 condition
             }
             StmtKind::Match { value, arms } => {

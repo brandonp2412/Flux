@@ -4975,6 +4975,13 @@ fn return_types_name(types: &[Type]) -> String {
     }
 }
 
+pub(crate) fn constant_primitive_value(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Option<ConstantValue> {
+    evaluate_default_expr(expr, signatures).ok()
+}
+
 fn evaluate_default_expr(
     expr: &Expr,
     signatures: &Signatures,
