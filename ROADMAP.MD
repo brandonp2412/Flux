@@ -60,6 +60,8 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [ ] Zero-cost abstractions by default: high-level language/library/UI constructs must compile away when their semantics require no runtime work, and redundant bounds/safety/dynamic-dispatch checks should be eliminated when statically proven unnecessary.
 - [ ] Native AOT output for application and server targets.
 - [ ] Portable source should lower to real platform implementations rather than a browser/VM/widget-emulation wrapper.
+- [ ] **No user-written platform bridges:** Flux source must be able to call platform capabilities directly. The compiler/toolchain owns any ABI/JNI/JVM/Objective-C/Win32 glue required by the target; application developers should not write Flutter-style method channels, serialization shims, plugin registries, or hand-maintained bridge code merely to reach an OS API.
+- [ ] **Native-first platform lowering:** use direct native/NDK/C/OS APIs where the platform exposes them, and generate the thinnest target-required interop when it does not. Generated glue is an implementation detail and must remain optimizable/tree-shakeable rather than becoming a mandatory framework runtime.
 - [ ] The LSP, debugger, profiler, formatter, test runner, package tooling, and hot reload are first-class parts of the language product.
 
 ## Current compiler baseline
@@ -152,7 +154,7 @@ The interface/capability foundation is complete for the bootstrap compiler: decl
 - [x] Efficient bootstrap interface/dynamic dispatch for runtime polymorphism: interface values are closed-world tagged by-value unions and `Interface.capability(interfaceValue, ...)` lowers to a tag switch calling the mapped free function, with no heap allocation, vtable, reflection, or object identity. Cross-module/stable ABI refinement remains part of later IR/ABI work.
 - [x] Interface values usable as function arguments and return values via explicit `Interface(concrete)` packing; bindings, statement-level conditional selection, scalar returns, named capability arguments, and multi-value dynamic dispatch are supported. Struct/enum embedding remains intentionally blocked until ownership/layout ABI rules mature.
 - [x] Interface composition without class inheritance using `interface Child: ParentA, ParentB { ... }`; compatible capabilities flatten into one contract for implementation/static/dynamic dispatch, while unknown parents, cycles, duplicate parents, and conflicting inherited signatures are rejected.
-- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Modules/imports now exist; this is blocked on the first real platform backend. Do not invent placeholder platform APIs before one exists.
+- [ ] Platform capabilities expressed through interfaces so portable code does not import Android/iOS/etc APIs directly. Target-specific Flux code may also import first-class platform modules such as `android.*` directly when it intentionally needs Android-only functionality. In both cases the compiler owns native interop; user-written bridge layers are not part of the programming model. Modules/imports now exist; this is blocked on the first real platform backend. Do not invent placeholder platform APIs before one exists.
 
 ## Functions
 
@@ -602,7 +604,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 # Milestone 15 — Android target
 
-Android is the first application-platform target.
+Android is the first application-platform target. Android integration must feel like programming Android in Flux, not embedding a second Kotlin/Java application beside it: Flux code can directly use Android-specific modules for capabilities such as notifications, WorkManager/background work, vibration, intents, services, media, and sensors. The backend should prefer direct NDK/native APIs when Android provides them; for JVM/AndroidX-only framework APIs it generates the necessary Kotlin/Java bytecode/classes and JNI/native entry thunks automatically. No method-channel equivalent, hand-written JNI shim, serialized plugin call protocol, or user-maintained bridge package is required in ordinary Flux application code.
 
 - [ ] Android target triple/backend.
 - [ ] `flux build android`.
@@ -616,9 +618,13 @@ Android is the first application-platform target.
 - [ ] Signing configuration.
 - [ ] Android lifecycle integration.
 - [ ] Activity/window integration hidden behind Flux application APIs.
+- [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.
+- [ ] First-class target-specific `android.*` Flux modules generated/maintained from stable platform bindings where practical, with compile-time API-level/target checks and no reflection-based runtime dispatch requirement.
 - [ ] Native rendering/input backend.
 - [ ] Accessibility/semantics bridge.
-- [ ] Notifications.
+- [ ] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.
+- [ ] WorkManager/background-job integration callable directly from Flux; generate required `Worker`/`ListenableWorker` JVM entry classes and route execution into compiled Flux without user-authored Kotlin/Java glue.
+- [ ] Device vibration/haptics callable directly from Flux through the appropriate Android native/framework API for the configured API level.
 - [ ] Intents/deep links.
 - [ ] Share sheet.
 - [ ] Permissions.
@@ -629,7 +635,8 @@ Android is the first application-platform target.
 - [ ] Secure storage.
 - [ ] Files/media picker.
 - [ ] Android keyboard/IME.
-- [ ] Platform FFI/bindings to Kotlin/Java/NDK where needed.
+- [ ] Platform FFI/bindings to Kotlin/Java/NDK where needed, generated or compiler-owned for normal platform access rather than exposed as application bridge boilerplate.
+- [ ] Verify generated Android glue is tree-shakeable and zero/near-zero overhead beyond boundaries Android itself requires; no mandatory Flutter-style channel serialization or plugin registry.
 - [ ] Play Store-ready release pipeline.
 - [ ] First real production-style Flux Android app built and tested on physical hardware.
 
@@ -692,8 +699,8 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [ ] Stable C FFI.
 - [ ] Generated C header/binding support.
-- [ ] Android Kotlin/Java/NDK bindings.
-- [ ] Apple Swift/Objective-C bindings.
+- [ ] Android Kotlin/Java/NDK bindings, with compiler-generated glue sufficient for ordinary platform API use directly from Flux; manual FFI remains an advanced escape hatch for third-party/native libraries, not the default Android programming model.
+- [ ] Apple Swift/Objective-C bindings following the same no-user-written-bridge principle where platform ABI/runtime constraints allow it.
 - [ ] Windows native API bindings.
 - [ ] Linux native library bindings.
 - [ ] Callbacks from native code into Flux.
