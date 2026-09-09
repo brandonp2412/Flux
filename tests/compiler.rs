@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fluxc::ir::{ControlFlowEdgeKind, ControlFlowNodeKind};
+use fluxc::ir::{ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind};
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
     compile_to_c, diagnostics_to_json,
@@ -2634,9 +2634,9 @@ fn main() -> i64 {
     let errors =
         check_source_all(loop_move).expect_err("fallthrough loop moves must remain rejected");
     assert!(errors.iter().any(|error| {
-        error.message.contains(
-            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
-        )
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
     }));
 
     let break_after_move = r#"
@@ -2666,9 +2666,9 @@ fn main() -> i64 {
     let errors = check_source_all(continue_after_move)
         .expect_err("a move followed by continue could consume the same value twice");
     assert!(errors.iter().any(|error| {
-        error.message.contains(
-            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
-        )
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
     }));
 }
 
@@ -2760,9 +2760,9 @@ fn main() -> i64 {
     let errors = check_source_all(unsafe_nested_loops)
         .expect_err("an inner-loop move must not be reused by another enclosing-loop iteration");
     assert!(errors.iter().any(|error| {
-        error.message.contains(
-            "moving non-copy binding 'source' through a nested loop requires the enclosing loop to break or return before another iteration",
-        )
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
     }));
 
     let conditional_break = r#"
@@ -2829,9 +2829,9 @@ fn main() -> i64 {
     let errors = check_source_all(unsafe_nested_if)
         .expect_err("nested moves must still fail when the enclosing loop can repeat");
     assert!(errors.iter().any(|error| {
-        error.message.contains(
-            "moving non-copy binding 'source' inside a loop requires every remaining path in this loop block to break or return before another iteration",
-        )
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
     }));
 }
 
@@ -4931,7 +4931,18 @@ fn main() -> i64 {
         .iter()
         .find(|edge| edge.kind == ControlFlowEdgeKind::Continue)
         .expect("continue edge should exist");
-    assert_eq!(continue_edge.to, loop_node.id);
+    let condition = graph
+        .node(continue_edge.to)
+        .expect("continue should target condition re-evaluation");
+    assert!(matches!(
+        condition.kind,
+        ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::Condition)
+    ));
+    assert!(
+        graph
+            .outgoing(condition.id)
+            .any(|edge| edge.kind == ControlFlowEdgeKind::Next && edge.to == loop_node.id)
+    );
 
     let propagation = r#"
 fn load(path: str) -> (str, error) {
@@ -5006,12 +5017,123 @@ fn main() -> i64 {
             )
         })
         .expect("destination binding should be explicit in the graph");
-    assert_eq!(destination.ownership.reads, vec!["source"]);
+    assert!(destination.ownership.reads.is_empty());
     assert_eq!(destination.ownership.moves.len(), 1);
     let ownership_move = &destination.ownership.moves[0];
     assert_eq!(ownership_move.source, "source");
     assert_eq!(ownership_move.destination, "destination");
     assert_eq!(ownership_move.span.source_id, SourceId::new(1307));
+
+    let source_evaluation = ownership_graph
+        .incoming(destination.id)
+        .find_map(|edge| ownership_graph.node(edge.from))
+        .expect("binding initializer evaluation should precede the move");
+    assert!(matches!(
+        source_evaluation.kind,
+        ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::BindingInitializer)
+    ));
+    assert_eq!(source_evaluation.ownership.reads, vec!["source"]);
+    assert!(source_evaluation.ownership.moves.is_empty());
+
+    let destination_read = ownership_graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.ownership
+                .reads
+                .iter()
+                .any(|read| read == "destination")
+        })
+        .expect("later expression evaluation should retain its binding reads");
+    let moved_before_read = ownership_graph
+        .move_state_before(destination_read.id)
+        .expect("every graph node should have a move-state slot");
+    assert!(moved_before_read.reachable());
+    assert!(moved_before_read.is_moved("source"));
+    assert_eq!(
+        moved_before_read.origin("source"),
+        Some(ownership_move.span)
+    );
+}
+
+#[test]
+fn semantic_cfg_normalizes_match_guard_evaluation() {
+    let source = r#"
+enum Choice {
+    Value(i64)
+    Missing
+}
+
+fn classify(choice: Choice, allow: bool) -> i64 {
+    match choice:
+        Choice.Value(value) if allow:
+            return value
+        Choice.Value(value):
+            return value + 1
+        Choice.Missing():
+            return 0
+}
+
+fn main() -> i64 {
+    return classify(Choice.Value(4), true)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1308))
+        .expect("guarded match should analyze");
+    let graph = database
+        .control_flow_graph("classify")
+        .expect("guarded match should have a graph");
+    let match_node = graph
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind, ControlFlowNodeKind::Match))
+        .expect("match dispatch should be explicit");
+    let value_evaluation = graph
+        .incoming(match_node.id)
+        .find_map(|edge| graph.node(edge.from))
+        .expect("match scrutinee evaluation should precede dispatch");
+    assert!(matches!(
+        value_evaluation.kind,
+        ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchValue)
+    ));
+    assert_eq!(value_evaluation.ownership.reads, vec!["choice"]);
+
+    let guard = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                node.kind,
+                ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchGuard(0))
+            )
+        })
+        .expect("guard evaluation should be explicit");
+    assert_eq!(guard.ownership.reads, vec!["allow"]);
+    assert!(
+        graph
+            .outgoing(guard.id)
+            .any(|edge| edge.kind == ControlFlowEdgeKind::GuardTrue)
+    );
+    assert!(
+        graph
+            .outgoing(guard.id)
+            .any(|edge| edge.kind == ControlFlowEdgeKind::GuardFalse)
+    );
+}
+
+#[test]
+fn performance_benchmark_flux_sources_stay_compiler_valid() {
+    for (name, source) in [
+        ("compute", include_str!("../benchmarks/perf/compute.flux")),
+        (
+            "collections",
+            include_str!("../benchmarks/perf/collections.flux"),
+        ),
+        ("dispatch", include_str!("../benchmarks/perf/dispatch.flux")),
+    ] {
+        check_source(source)
+            .unwrap_or_else(|error| panic!("{name} benchmark must compile: {error:?}"));
+    }
 }
 
 #[test]

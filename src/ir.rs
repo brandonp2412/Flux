@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use crate::ast::{ExprKind, Function, Stmt, StmtKind, Type};
+use crate::ast::{Expr, ExprKind, Function, Stmt, StmtKind, Type};
 use crate::diagnostic::SourceSpan;
 use crate::typecheck::{self, Signatures};
 
@@ -14,10 +14,28 @@ pub struct ControlFlowParameter {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlowEvaluationKind {
+    BindingInitializer,
+    AssignmentValue,
+    DestructureValue,
+    ReturnValue(usize),
+    ExpressionStatement,
+    ShellValue,
+    RedirectPath,
+    Condition,
+    RangeStart,
+    RangeEnd,
+    Iterable,
+    MatchValue,
+    MatchGuard(usize),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlFlowNodeKind {
     Entry,
     Exit,
+    Evaluation(ControlFlowEvaluationKind),
     Binding {
         name: String,
         ty: Type,
@@ -52,6 +70,39 @@ pub struct ControlFlowOwnership {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipMovedBinding {
+    pub name: String,
+    pub origin: SourceSpan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControlFlowMoveState {
+    reachable: bool,
+    moved: Vec<OwnershipMovedBinding>,
+}
+
+impl ControlFlowMoveState {
+    pub fn reachable(&self) -> bool {
+        self.reachable
+    }
+
+    pub fn moved(&self) -> &[OwnershipMovedBinding] {
+        &self.moved
+    }
+
+    pub fn is_moved(&self, name: &str) -> bool {
+        self.origin(name).is_some()
+    }
+
+    pub fn origin(&self, name: &str) -> Option<SourceSpan> {
+        self.moved
+            .iter()
+            .find(|binding| binding.name == name)
+            .map(|binding| binding.origin)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowNode {
     pub id: ControlFlowNodeId,
     pub kind: ControlFlowNodeKind,
@@ -64,6 +115,8 @@ pub enum ControlFlowEdgeKind {
     Next,
     True,
     False,
+    GuardTrue,
+    GuardFalse,
     MatchArm(usize),
     Success,
     Error,
@@ -88,6 +141,7 @@ pub struct ControlFlowGraph {
     exit: ControlFlowNodeId,
     nodes: Vec<ControlFlowNode>,
     edges: Vec<ControlFlowEdge>,
+    move_states_before: Vec<ControlFlowMoveState>,
 }
 
 impl ControlFlowGraph {
@@ -132,6 +186,19 @@ impl ControlFlowGraph {
 
     pub fn outgoing(&self, id: ControlFlowNodeId) -> impl Iterator<Item = &ControlFlowEdge> {
         self.edges.iter().filter(move |edge| edge.from == id)
+    }
+
+    pub fn incoming(&self, id: ControlFlowNodeId) -> impl Iterator<Item = &ControlFlowEdge> {
+        self.edges.iter().filter(move |edge| edge.to == id)
+    }
+
+    pub fn move_state_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowMoveState> {
+        self.move_states_before.get(id.0)
+    }
+
+    pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
+        self.move_state_before(id)
+            .is_some_and(ControlFlowMoveState::reachable)
     }
 }
 
@@ -178,6 +245,7 @@ impl<'a> ControlFlowBuilder<'a> {
     }
 
     fn finish(self) -> ControlFlowGraph {
+        let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
@@ -186,6 +254,7 @@ impl<'a> ControlFlowBuilder<'a> {
             exit: self.exit,
             nodes: self.nodes,
             edges: self.edges,
+            move_states_before,
         }
     }
 
@@ -232,42 +301,53 @@ impl<'a> ControlFlowBuilder<'a> {
         successor: ControlFlowNodeId,
         loop_targets: Option<LoopTargets>,
     ) -> ControlFlowNodeId {
-        let ownership = self.ownership_for_stmt(stmt);
         match &stmt.kind {
-            StmtKind::Let { name, ty, .. } => self.linear_node(
-                ControlFlowNodeKind::Binding {
-                    name: name.clone(),
-                    ty: ty.clone(),
-                    mutable: false,
-                },
-                stmt.span,
-                successor,
-                ownership,
-            ),
-            StmtKind::Var { name, ty, .. } => self.linear_node(
-                ControlFlowNodeKind::Binding {
-                    name: name.clone(),
-                    ty: ty.clone(),
-                    mutable: true,
-                },
-                stmt.span,
-                successor,
-                ownership,
-            ),
-            StmtKind::Assign { name, .. } => self.linear_node(
-                ControlFlowNodeKind::Assignment { name: name.clone() },
-                stmt.span,
-                successor,
-                ownership,
-            ),
-            StmtKind::LetDestructure { else_return, .. }
-            | StmtKind::LetMultiDestructure { else_return, .. } => {
-                let node = self.node_with_ownership(
+            StmtKind::Let { name, ty, expr, .. } => {
+                let binding = self.linear_node(
+                    ControlFlowNodeKind::Binding {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        mutable: false,
+                    },
+                    stmt.span,
+                    successor,
+                    self.binding_move_ownership(name, ty, expr),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::BindingInitializer, expr, binding)
+            }
+            StmtKind::Var { name, ty, expr, .. } => {
+                let binding = self.linear_node(
+                    ControlFlowNodeKind::Binding {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        mutable: true,
+                    },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::BindingInitializer, expr, binding)
+            }
+            StmtKind::Assign { name, expr, .. } => {
+                let assignment = self.linear_node(
+                    ControlFlowNodeKind::Assignment { name: name.clone() },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, assignment)
+            }
+            StmtKind::LetDestructure {
+                expr, else_return, ..
+            }
+            | StmtKind::LetMultiDestructure {
+                expr, else_return, ..
+            } => {
+                let node = self.node(
                     ControlFlowNodeKind::Destructure {
                         propagates_error: *else_return,
                     },
                     stmt.span,
-                    ownership,
                 );
                 if *else_return {
                     self.edge(node, successor, ControlFlowEdgeKind::Success);
@@ -275,13 +355,30 @@ impl<'a> ControlFlowBuilder<'a> {
                 } else {
                     self.edge(node, successor, ControlFlowEdgeKind::Next);
                 }
-                node
+                self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
             }
-            StmtKind::Return(_) => {
-                let node =
-                    self.node_with_ownership(ControlFlowNodeKind::Return, stmt.span, ownership);
+            StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Statement,
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::DestructureValue, expr, node)
+            }
+            StmtKind::Return(values) => {
+                let node = self.node(ControlFlowNodeKind::Return, stmt.span);
                 self.edge(node, self.exit, ControlFlowEdgeKind::Return);
-                node
+                let mut entry = node;
+                for (index, value) in values.iter().enumerate().rev() {
+                    entry = self.evaluation_node(
+                        ControlFlowEvaluationKind::ReturnValue(index),
+                        value,
+                        entry,
+                    );
+                }
+                entry
             }
             StmtKind::Break => {
                 let node = self.node(ControlFlowNodeKind::Break, stmt.span);
@@ -300,24 +397,22 @@ impl<'a> ControlFlowBuilder<'a> {
                 node
             }
             StmtKind::If {
-                body, else_body, ..
+                cond,
+                body,
+                else_body,
+                ..
             } => {
-                let node = self.node_with_ownership(
-                    ControlFlowNodeKind::Conditional,
-                    stmt.span,
-                    ownership,
-                );
+                let node = self.node(ControlFlowNodeKind::Conditional, stmt.span);
                 let then_entry = self.build_block(body, successor, loop_targets);
                 let else_entry = self.build_block(else_body, successor, loop_targets);
                 self.edge(node, then_entry, ControlFlowEdgeKind::True);
                 self.edge(node, else_entry, ControlFlowEdgeKind::False);
-                node
+                self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node)
             }
-            StmtKind::ForRange { body, .. }
-            | StmtKind::ForEach { body, .. }
-            | StmtKind::While { body, .. } => {
-                let node =
-                    self.node_with_ownership(ControlFlowNodeKind::Loop, stmt.span, ownership);
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
                 let body_entry = self.build_block(
                     body,
                     node,
@@ -328,35 +423,113 @@ impl<'a> ControlFlowBuilder<'a> {
                 );
                 self.edge(node, body_entry, ControlFlowEdgeKind::True);
                 self.edge(node, successor, ControlFlowEdgeKind::False);
-                node
+                let end_entry =
+                    self.evaluation_node(ControlFlowEvaluationKind::RangeEnd, end, node);
+                self.evaluation_node(ControlFlowEvaluationKind::RangeStart, start, end_entry)
             }
-            StmtKind::Match { arms, .. } => {
-                let node =
-                    self.node_with_ownership(ControlFlowNodeKind::Match, stmt.span, ownership);
+            StmtKind::ForEach { iterable, body, .. } => {
+                let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
+                let body_entry = self.build_block(
+                    body,
+                    node,
+                    Some(LoopTargets {
+                        break_target: successor,
+                        continue_target: node,
+                    }),
+                );
+                self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                self.edge(node, successor, ControlFlowEdgeKind::False);
+                self.evaluation_node(ControlFlowEvaluationKind::Iterable, iterable, node)
+            }
+            StmtKind::While { cond, body } => {
+                let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
+                let condition = self.node_with_ownership(
+                    ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::Condition),
+                    cond.span,
+                    self.ownership_for_expr(cond),
+                );
+                self.edge(condition, node, ControlFlowEdgeKind::Next);
+                let body_entry = self.build_block(
+                    body,
+                    condition,
+                    Some(LoopTargets {
+                        break_target: successor,
+                        continue_target: condition,
+                    }),
+                );
+                self.edge(node, body_entry, ControlFlowEdgeKind::True);
+                self.edge(node, successor, ControlFlowEdgeKind::False);
+                condition
+            }
+            StmtKind::Match { value, arms } => {
+                let node = self.node(ControlFlowNodeKind::Match, stmt.span);
                 for (index, arm) in arms.iter().enumerate() {
                     let arm_entry = self.build_block(&arm.body, successor, loop_targets);
-                    self.edge(node, arm_entry, ControlFlowEdgeKind::MatchArm(index));
+                    let dispatch_target = if let Some(guard) = &arm.guard {
+                        let guard_node = self.node_with_ownership(
+                            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchGuard(
+                                index,
+                            )),
+                            guard.span,
+                            self.ownership_for_expr(guard),
+                        );
+                        self.edge(guard_node, arm_entry, ControlFlowEdgeKind::GuardTrue);
+                        self.edge(guard_node, successor, ControlFlowEdgeKind::GuardFalse);
+                        guard_node
+                    } else {
+                        arm_entry
+                    };
+                    self.edge(node, dispatch_target, ControlFlowEdgeKind::MatchArm(index));
                 }
-                node
+                self.evaluation_node(ControlFlowEvaluationKind::MatchValue, value, node)
             }
-            StmtKind::ListMatch { arms, .. } => {
-                let node =
-                    self.node_with_ownership(ControlFlowNodeKind::Match, stmt.span, ownership);
+            StmtKind::ListMatch { value, arms } => {
+                let node = self.node(ControlFlowNodeKind::Match, stmt.span);
                 for (index, arm) in arms.iter().enumerate() {
                     let arm_entry = self.build_block(&arm.body, successor, loop_targets);
-                    self.edge(node, arm_entry, ControlFlowEdgeKind::MatchArm(index));
+                    let dispatch_target = if let Some(guard) = &arm.guard {
+                        let guard_node = self.node_with_ownership(
+                            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::MatchGuard(
+                                index,
+                            )),
+                            guard.span,
+                            self.ownership_for_expr(guard),
+                        );
+                        self.edge(guard_node, arm_entry, ControlFlowEdgeKind::GuardTrue);
+                        self.edge(guard_node, successor, ControlFlowEdgeKind::GuardFalse);
+                        guard_node
+                    } else {
+                        arm_entry
+                    };
+                    self.edge(node, dispatch_target, ControlFlowEdgeKind::MatchArm(index));
                 }
-                node
+                self.evaluation_node(ControlFlowEvaluationKind::MatchValue, value, node)
             }
-            StmtKind::LetListDestructure { .. }
-            | StmtKind::LetStructDestructure { .. }
-            | StmtKind::Expr(_)
-            | StmtKind::Shell { .. } => self.linear_node(
-                ControlFlowNodeKind::Statement,
-                stmt.span,
-                successor,
-                ownership,
-            ),
+            StmtKind::Expr(expr) => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Statement,
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::ExpressionStatement, expr, node)
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Statement,
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                let redirect_entry = redirect.as_ref().map_or(node, |redirect| {
+                    self.evaluation_node(
+                        ControlFlowEvaluationKind::RedirectPath,
+                        &redirect.path,
+                        node,
+                    )
+                });
+                self.evaluation_node(ControlFlowEvaluationKind::ShellValue, expr, redirect_entry)
+            }
         }
     }
 
@@ -372,59 +545,126 @@ impl<'a> ControlFlowBuilder<'a> {
         node
     }
 
-    fn ownership_for_stmt(&self, stmt: &Stmt) -> ControlFlowOwnership {
+    fn evaluation_node(
+        &mut self,
+        kind: ControlFlowEvaluationKind,
+        expr: &Expr,
+        successor: ControlFlowNodeId,
+    ) -> ControlFlowNodeId {
+        let node = self.node_with_ownership(
+            ControlFlowNodeKind::Evaluation(kind),
+            expr.span,
+            self.ownership_for_expr(expr),
+        );
+        self.edge(node, successor, ControlFlowEdgeKind::Next);
+        node
+    }
+
+    fn ownership_for_expr(&self, expr: &Expr) -> ControlFlowOwnership {
         let mut reads = HashSet::new();
-        let mut moves = Vec::new();
-        match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } => {
-                typecheck::collect_expr_reads(expr, &mut reads);
-                if !self.signatures.is_copy_type(ty)
-                    && let ExprKind::Var(source) = &expr.kind
-                {
-                    moves.push(OwnershipMove {
-                        source: source.clone(),
-                        destination: name.clone(),
-                        span: expr.span,
-                    });
-                }
-            }
-            StmtKind::Var { expr, .. }
-            | StmtKind::Assign { expr, .. }
-            | StmtKind::LetDestructure { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. } => {
-                typecheck::collect_expr_reads(expr, &mut reads);
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    typecheck::collect_expr_reads(value, &mut reads);
-                }
-            }
-            StmtKind::Expr(expr) => typecheck::collect_expr_reads(expr, &mut reads),
-            StmtKind::Shell { expr, redirect, .. } => {
-                typecheck::collect_expr_reads(expr, &mut reads);
-                if let Some(redirect) = redirect {
-                    typecheck::collect_expr_reads(&redirect.path, &mut reads);
-                }
-            }
-            StmtKind::If { cond, .. } | StmtKind::While { cond, .. } => {
-                typecheck::collect_expr_reads(cond, &mut reads);
-            }
-            StmtKind::ForRange { start, end, .. } => {
-                typecheck::collect_expr_reads(start, &mut reads);
-                typecheck::collect_expr_reads(end, &mut reads);
-            }
-            StmtKind::ForEach { iterable, .. } => {
-                typecheck::collect_expr_reads(iterable, &mut reads);
-            }
-            StmtKind::Match { value, .. } | StmtKind::ListMatch { value, .. } => {
-                typecheck::collect_expr_reads(value, &mut reads);
-            }
-            StmtKind::Break | StmtKind::Continue => {}
-        }
+        typecheck::collect_expr_reads(expr, &mut reads);
         let mut reads = reads.into_iter().collect::<Vec<_>>();
         reads.sort();
-        ControlFlowOwnership { reads, moves }
+        ControlFlowOwnership {
+            reads,
+            moves: Vec::new(),
+        }
     }
+
+    fn binding_move_ownership(&self, name: &str, ty: &Type, expr: &Expr) -> ControlFlowOwnership {
+        let moves = if !self.signatures.is_copy_type(ty)
+            && let ExprKind::Var(source) = &expr.kind
+        {
+            vec![OwnershipMove {
+                source: source.clone(),
+                destination: name.to_string(),
+                span: expr.span,
+            }]
+        } else {
+            Vec::new()
+        };
+        ControlFlowOwnership {
+            reads: Vec::new(),
+            moves,
+        }
+    }
+}
+
+fn compute_move_states(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+    entry: ControlFlowNodeId,
+) -> Vec<ControlFlowMoveState> {
+    let mut states = vec![None::<BTreeMap<String, SourceSpan>>; nodes.len()];
+    states[entry.0] = Some(BTreeMap::new());
+    let mut queue = VecDeque::from([entry]);
+
+    while let Some(id) = queue.pop_front() {
+        let Some(mut outgoing_state) = states[id.0].clone() else {
+            continue;
+        };
+        for movement in &nodes[id.0].ownership.moves {
+            outgoing_state
+                .entry(movement.source.clone())
+                .and_modify(|origin| {
+                    if span_key(movement.span) < span_key(*origin) {
+                        *origin = movement.span;
+                    }
+                })
+                .or_insert(movement.span);
+        }
+
+        for edge in edges.iter().filter(|edge| edge.from == id) {
+            let target = edge.to.0;
+            let changed = match states[target].as_mut() {
+                Some(existing) => merge_move_state(existing, &outgoing_state),
+                None => {
+                    states[target] = Some(outgoing_state.clone());
+                    true
+                }
+            };
+            if changed {
+                queue.push_back(edge.to);
+            }
+        }
+    }
+
+    states
+        .into_iter()
+        .map(|state| match state {
+            Some(moved) => ControlFlowMoveState {
+                reachable: true,
+                moved: moved
+                    .into_iter()
+                    .map(|(name, origin)| OwnershipMovedBinding { name, origin })
+                    .collect(),
+            },
+            None => ControlFlowMoveState::default(),
+        })
+        .collect()
+}
+
+fn merge_move_state(
+    target: &mut BTreeMap<String, SourceSpan>,
+    incoming: &BTreeMap<String, SourceSpan>,
+) -> bool {
+    let mut changed = false;
+    for (name, origin) in incoming {
+        match target.get_mut(name) {
+            Some(existing) if span_key(*origin) < span_key(*existing) => {
+                *existing = *origin;
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                target.insert(name.clone(), *origin);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
+    (span.source_id.value(), span.line, span.column, span.length)
 }

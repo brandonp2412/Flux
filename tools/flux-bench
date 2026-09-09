@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+BENCHMARKS = ROOT / "benchmarks" / "perf"
+OUTPUT = ROOT / "target" / "flux-bench"
+WORKLOADS = ("compute", "collections", "dispatch")
+
+
+def run(command, *, capture=False):
+    result = subprocess.run(
+        [str(part) for part in command],
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+    )
+    if result.returncode != 0:
+        if capture:
+            sys.stderr.write(result.stdout)
+            sys.stderr.write(result.stderr)
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(map(str, command))}")
+    return result
+
+
+def compile_workload(name, flux):
+    paths = {
+        "flux": OUTPUT / f"{name}-flux",
+        "c": OUTPUT / f"{name}-c",
+        "rust": OUTPUT / f"{name}-rust",
+    }
+    run([flux, "build", BENCHMARKS / f"{name}.flux", "-o", paths["flux"], "--mode", "release"])
+    run([
+        "clang",
+        "-std=c17",
+        "-O3",
+        "-flto",
+        "-DNDEBUG",
+        BENCHMARKS / f"{name}.c",
+        "-o",
+        paths["c"],
+    ])
+    run([
+        "rustc",
+        "--edition=2024",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "lto=fat",
+        "-C",
+        "codegen-units=1",
+        "-C",
+        "overflow-checks=yes",
+        BENCHMARKS / f"{name}.rs",
+        "-o",
+        paths["rust"],
+    ])
+    return paths
+
+
+def output_of(path):
+    return run([path], capture=True).stdout.strip()
+
+
+def timed_run(path):
+    start = time.perf_counter_ns()
+    result = run([path], capture=True)
+    elapsed = time.perf_counter_ns() - start
+    return elapsed / 1_000_000_000, result.stdout.strip()
+
+
+def benchmark(name, paths, runs):
+    expected = output_of(paths["c"])
+    outputs = {language: output_of(path) for language, path in paths.items()}
+    if any(value != expected for value in outputs.values()):
+        raise RuntimeError(f"{name}: output mismatch: {outputs}")
+
+    for path in paths.values():
+        output_of(path)
+
+    samples = {language: [] for language in paths}
+    languages = tuple(paths)
+    for iteration in range(runs):
+        shift = iteration % len(languages)
+        order = languages[shift:] + languages[:shift]
+        for language in order:
+            elapsed, output = timed_run(paths[language])
+            if output != expected:
+                raise RuntimeError(f"{name}: {language} output changed during timed run")
+            samples[language].append(elapsed)
+
+    medians = {language: statistics.median(values) for language, values in samples.items()}
+    sizes = {language: paths[language].stat().st_size for language in paths}
+    best_native = min(medians["c"], medians["rust"])
+    return {
+        "output": expected,
+        "seconds": medians,
+        "binary_bytes": sizes,
+        "flux_vs_c": medians["flux"] / medians["c"],
+        "flux_vs_rust": medians["flux"] / medians["rust"],
+        "flux_vs_best_native": medians["flux"] / best_native,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Benchmark optimized Flux against safe C and Rust baselines")
+    parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument(
+        "--max-ratio",
+        type=float,
+        default=float(os.environ.get("FLUX_PERF_MAX_RATIO", "1.25")),
+        help="maximum Flux median / overflow-safe Rust median before failure (default: 1.25)",
+    )
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--no-fail", action="store_true")
+    args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+    if args.max_ratio <= 0:
+        parser.error("--max-ratio must be positive")
+
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    run(["cargo", "build", "--release", "--bin", "flux"])
+    flux = ROOT / "target" / "release" / "flux"
+
+    results = {}
+    failures = []
+    for name in WORKLOADS:
+        paths = compile_workload(name, flux)
+        result = benchmark(name, paths, args.runs)
+        results[name] = result
+        if result["flux_vs_rust"] > args.max_ratio:
+            failures.append(name)
+
+    report = {
+        "runs": args.runs,
+        "max_ratio": args.max_ratio,
+        "workloads": results,
+        "passed": not failures,
+        "failures": failures,
+    }
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Flux performance gate: {args.runs} runs, max checked-Rust ratio {args.max_ratio:.2f}x")
+        for name, result in results.items():
+            seconds = result["seconds"]
+            sizes = result["binary_bytes"]
+            print(
+                f"{name:12} flux {seconds['flux']:.6f}s  rust {seconds['rust']:.6f}s  "
+                f"c {seconds['c']:.6f}s  rust-ratio {result['flux_vs_rust']:.3f}x  "
+                f"best-ratio {result['flux_vs_best_native']:.3f}x"
+            )
+            print(
+                f"{'':12} size flux {sizes['flux']}  rust {sizes['rust']}  c {sizes['c']} bytes"
+            )
+        if failures:
+            print(f"FAILED: {', '.join(failures)} exceeded {args.max_ratio:.2f}x checked Rust")
+        else:
+            print("PASS")
+
+    if failures and not args.no_fail:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

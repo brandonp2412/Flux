@@ -86,6 +86,13 @@ Build it:
 
 Build modes are explicit and predictable: `flux build` defaults to `release`, while `--mode debug`, `--mode profile`, and `--mode release` select no-optimization/full-debug, optimized-with-debug/frame-pointers, and aggressive optimization/LTO profiles respectively. `flux run` defaults to `debug` for development but accepts the same `--mode` override.
 
+Optimized native performance is continuously compared with overflow-safe C and Rust baselines. `./tools/flux-bench` builds the compiler and the compute, collection-pipeline, and interface-dispatch workloads in `benchmarks/perf`, validates identical output, reports median runtime plus binary size against both baselines, and fails when Flux exceeds the configured checked-Rust ratio (1.25× by default; override with `--max-ratio` or `FLUX_PERF_MAX_RATIO`). C remains reported as the lower-level optimization reference. The same gate runs on pushes to `main` and pull requests.
+
+```sh
+./tools/flux-bench --runs 7
+./tools/flux-bench --runs 7 --json
+```
+
 Run in development mode with automatic save detection:
 
 ```sh
