@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowValueKind,
+    ControlFlowValueKind, ControlFlowValueUseKind,
 };
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
@@ -2991,9 +2991,42 @@ fn main() -> i64 {
     let generated =
         compile_to_c(source).expect("function values should lower to function pointers");
     assert!(generated.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
+    assert!(generated.contains("int64_t flux__fn_double(int64_t flux__local_value);"));
+    assert!(generated.contains("int64_t flux__fn_increment(int64_t flux__local_value);"));
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_mapper = flux__fn_double;"));
     assert!(generated.contains("return flux__local_transform(flux__local_value);"));
     assert!(generated.contains("return flux__fn_increment;"));
+}
+
+#[test]
+fn tree_shakes_named_function_values_from_statically_unreachable_control_flow() {
+    let source = r#"
+fn live(value: i64) -> i64 {
+    return value + 1
+}
+
+fn dead(value: i64) -> i64 {
+    return value + 100
+}
+
+fn apply(mapper: fn(i64) -> i64, value: i64) -> i64 {
+    return mapper(value)
+}
+
+fn main() -> i64 {
+    let mapper: fn(i64) -> i64 = live
+    print(apply(mapper, 1))
+    if false:
+        let hidden: fn(i64) -> i64 = dead
+        print(apply(hidden, 1))
+    return 0
+}
+"#;
+
+    check_source(source).expect("function-value reachability fixture should typecheck");
+    let generated = compile_to_c(source).expect("function-value reachability fixture should lower");
+    assert!(generated.contains("flux__fn_live"));
+    assert!(!generated.contains("flux__fn_dead"));
 }
 
 #[test]
@@ -4440,6 +4473,23 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tree_shakes_background_runtime_from_statically_unreachable_control_flow() {
+    let source = r#"
+fn main() -> i64 {
+    if false:
+        print 1 &
+    return 0
+}
+"#;
+
+    check_source(source).expect("dead background-process fixture should typecheck");
+    let generated = compile_to_c(source).expect("dead background-process fixture should lower");
+    assert!(!generated.contains("#include <unistd.h>"));
+    assert!(!generated.contains("fork()"));
+    assert!(!generated.contains("waitpid("));
+}
+
+#[test]
 fn tree_shakes_unreachable_value_types_helpers_typedefs_and_background_runtime() {
     let source = r#"
 type DeadCallback = fn(i64) -> i64
@@ -4926,6 +4976,73 @@ fn main() -> i64 {
 
     check_source(source).expect("enum helper tree-shaking fixture should typecheck");
     let generated = compile_to_c(source).expect("enum helper tree-shaking fixture should lower");
+    assert!(generated.contains("flux__tag_Choice_Used"));
+    assert!(generated.contains("flux__tag_Choice_Unused"));
+    assert!(generated.contains("flux__variant_Choice_Used"));
+    assert!(!generated.contains("flux__variant_Choice_Unused"));
+}
+
+#[test]
+fn tree_shakes_anonymous_functions_from_statically_unselected_nested_values() {
+    let source = r#"
+fn apply(mapper: fn(i64) -> i64, value: i64) -> i64 {
+    return mapper(value)
+}
+
+fn main() -> i64 {
+    let values: i64[] = [if true: apply(fn(value: i64) { value + 1 }, 1) else: apply(fn(value: i64) { value + 100 }, 1)]
+    return values.first
+}
+"#;
+
+    check_source(source).expect("nested anonymous-function tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("nested anonymous-function fixture should lower");
+    assert!(generated.contains("INT64_C(1)"));
+    assert!(!generated.contains("INT64_C(100)"));
+}
+
+#[test]
+fn tree_shakes_struct_update_helpers_from_statically_unselected_nested_values() {
+    let source = r#"
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn main() -> i64 {
+    let base: Point = Point { x: 1, y: 2 }
+    let values: Point[] = [if true: Point { ..base, x: 3 } else: Point { ..base, y: 4 }]
+    return values.first.x
+}
+"#;
+
+    check_source(source).expect("nested struct-update tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("nested struct-update fixture should lower");
+    assert!(generated.contains("flux__update_Point__x"));
+    assert!(!generated.contains("flux__update_Point__y"));
+}
+
+#[test]
+fn tree_shakes_enum_helpers_from_statically_unselected_nested_values() {
+    let source = r#"
+enum Choice {
+    Used(i64)
+    Unused(i64)
+}
+
+fn main() -> i64 {
+    let values: Choice[] = [if true: Choice.Used(7) else: Choice.Unused(9)]
+    let value: Choice = values.first
+    match value:
+        Choice.Used(item):
+            return item
+        Choice.Unused(item):
+            return item
+}
+"#;
+
+    check_source(source).expect("nested enum helper tree-shaking fixture should typecheck");
+    let generated = compile_to_c(source).expect("nested enum helper fixture should lower");
     assert!(generated.contains("flux__tag_Choice_Used"));
     assert!(generated.contains("flux__tag_Choice_Unused"));
     assert!(generated.contains("flux__variant_Choice_Used"));
@@ -5918,6 +6035,153 @@ fn main() -> i64 {
                 .value(id)
                 .is_some_and(|value| value.producer == evaluation.id))
     );
+}
+
+#[test]
+fn semantic_cfg_tracks_control_dependent_value_uses_and_prunes_short_circuit_rhs() {
+    let source = r#"
+fn dead() -> bool {
+    return true
+}
+
+fn main() -> i64 {
+    if false && dead():
+        return 1
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1316))
+        .expect("short-circuit expression should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let root = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                value.kind,
+                ControlFlowValueKind::Binary {
+                    op: fluxc::ast::BinOp::And,
+                    ..
+                }
+            ) && value.result_index == Some(0)
+        })
+        .expect("condition should expose a typed short-circuit root");
+    let ControlFlowValueKind::Binary { left, right, .. } = root.kind else {
+        unreachable!();
+    };
+    assert!(graph.is_value_reachable(root.id));
+    assert!(graph.is_value_reachable(left));
+    assert!(!graph.is_value_reachable(right));
+    assert!(graph.uses_from(root.id).any(|usage| {
+        usage.value == right && usage.kind == ControlFlowValueUseKind::ShortCircuitRight
+    }));
+    assert!(graph.uses_of(right).any(|usage| usage.user == root.id));
+
+    let generated = compile_to_c(source).expect("short-circuit program should lower natively");
+    assert!(!generated.contains("flux__fn_dead"));
+}
+
+#[test]
+fn semantic_cfg_prunes_statically_unselected_list_control_values() {
+    let source = r#"
+fn live() -> i64 {
+    return 1
+}
+
+fn dead() -> i64 {
+    return 2
+}
+
+fn main() -> i64 {
+    let values: i64[] = [if true: live() else: dead()]
+    return values.first
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1317))
+        .expect("static list control should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let list_if = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::ListIf { .. }))
+        .expect("list control item should have typed IR");
+    let ControlFlowValueKind::ListIf {
+        condition,
+        value,
+        else_value: Some(else_value),
+    } = list_if.kind
+    else {
+        panic!("list control item should retain both source branches");
+    };
+    assert!(graph.is_value_reachable(list_if.id));
+    assert!(graph.is_value_reachable(condition));
+    assert!(graph.is_value_reachable(value));
+    assert!(!graph.is_value_reachable(else_value));
+    assert!(graph.uses_from(list_if.id).any(|usage| {
+        usage.value == value && usage.kind == ControlFlowValueUseKind::BranchThen
+    }));
+    assert!(graph.uses_from(list_if.id).any(|usage| {
+        usage.value == else_value && usage.kind == ControlFlowValueUseKind::BranchElse
+    }));
+
+    let generated = compile_to_c(source).expect("static list control should lower natively");
+    assert!(generated.contains("flux__fn_live"));
+    assert!(!generated.contains("flux__fn_dead"));
+}
+
+#[test]
+fn propagated_constants_do_not_prune_nested_values_before_backend_ir_lowering() {
+    let source = r#"
+fn live() -> i64 {
+    return 1
+}
+
+fn dead() -> i64 {
+    return 2
+}
+
+fn main() -> i64 {
+    let enabled: bool = true
+    let values: i64[] = [if enabled: live() else: dead()]
+    return values.first
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1318))
+        .expect("propagated list-control condition should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let list_if = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::ListIf { .. }))
+        .expect("list control item should retain typed IR");
+    let ControlFlowValueKind::ListIf {
+        condition,
+        else_value: Some(else_value),
+        ..
+    } = list_if.kind
+    else {
+        panic!("list control item should retain its else branch");
+    };
+    let condition = graph
+        .value(condition)
+        .expect("list condition should retain its typed value");
+    assert_eq!(condition.source_constant, None);
+    assert_eq!(
+        condition.constant,
+        Some(fluxc::typecheck::ConstantValue::Bool(true))
+    );
+    assert!(graph.is_value_reachable(else_value));
+
+    let generated =
+        compile_to_c(source).expect("backend should keep emitted nested references valid");
+    assert!(generated.contains("flux__fn_live"));
+    assert!(generated.contains("flux__fn_dead"));
 }
 
 #[test]

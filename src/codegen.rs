@@ -74,8 +74,9 @@ pub fn emit_c_with_source_paths(
         interface_pack_facts = next_pack_facts;
     }
     let reachable_enum_variants =
-        reachable_enum_variant_helpers(program, signatures, &reachable_functions);
-    let anonymous_functions = collect_anonymous_functions(program, &reachable_functions);
+        reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
+    let anonymous_functions =
+        collect_anonymous_functions(program, &reachable_functions, &function_ir);
     let mut generated_body = String::new();
     for function in &anonymous_functions {
         emit_anonymous_function(&mut generated_body, function, signatures, source_paths)?;
@@ -108,7 +109,7 @@ pub fn emit_c_with_source_paths(
     emit_runtime_prelude(
         &mut out,
         &runtime_usage,
-        program_uses_background(program, &reachable_functions),
+        program_uses_background(program, &reachable_functions, &function_ir),
         program.application.is_some(),
     );
 
@@ -137,6 +138,7 @@ pub fn emit_c_with_source_paths(
         &reachable_functions,
         &reachable_value_types,
         &reachable_interfaces,
+        &function_ir,
     )?;
 
     for definition in value_type_emit_order(program, signatures)? {
@@ -180,6 +182,7 @@ pub fn emit_c_with_source_paths(
         program,
         signatures,
         &reachable_functions,
+        &function_ir,
     ));
 
     for function in &program.functions {
@@ -2429,7 +2432,7 @@ fn collect_interface_names_from_ir(
     for value in cfg
         .values()
         .iter()
-        .filter(|value| cfg.is_reachable(value.producer))
+        .filter(|value| cfg.is_value_reachable(value.id))
     {
         collect_interface_names_from_type(&value.ty, signatures, reachable, pending);
         if let crate::ir::ControlFlowValueKind::InterfaceDispatch { interface, .. } = &value.kind {
@@ -2786,6 +2789,7 @@ fn reachable_enum_variant_helpers(
     program: &Program,
     signatures: &Signatures,
     reachable_functions: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> HashSet<(String, String)> {
     let mut variants = HashSet::new();
     if let Some(application) = &program.application {
@@ -2820,85 +2824,23 @@ fn reachable_enum_variant_helpers(
                 collect_enum_variant_refs_from_expr(default, signatures, &mut variants);
             }
         }
-        collect_enum_variant_refs_from_block(&function.body, signatures, &mut variants);
-    }
-    variants
-}
-
-fn collect_enum_variant_refs_from_block(
-    body: &[Stmt],
-    signatures: &Signatures,
-    variants: &mut HashSet<(String, String)>,
-) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Let { expr, .. }
-            | StmtKind::Var { expr, .. }
-            | StmtKind::Assign { expr, .. }
-            | StmtKind::LetDestructure { expr, .. }
-            | StmtKind::LetMultiDestructure { expr, .. }
-            | StmtKind::LetListDestructure { expr, .. }
-            | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => {
-                collect_enum_variant_refs_from_expr(expr, signatures, variants)
-            }
-            StmtKind::Return(values) => {
-                for value in values {
-                    collect_enum_variant_refs_from_expr(value, signatures, variants);
+        if let Some(cfg) = function_ir.get(&function.name) {
+            for value in cfg
+                .values()
+                .iter()
+                .filter(|value| cfg.is_value_reachable(value.id))
+            {
+                if let crate::ir::ControlFlowValueKind::QualifiedCall {
+                    namespace, name, ..
+                } = &value.kind
+                    && signatures.enum_type(namespace).is_some()
+                {
+                    variants.insert((namespace.clone(), name.clone()));
                 }
             }
-            StmtKind::Shell { expr, redirect, .. } => {
-                collect_enum_variant_refs_from_expr(expr, signatures, variants);
-                if let Some(redirect) = redirect {
-                    collect_enum_variant_refs_from_expr(&redirect.path, signatures, variants);
-                }
-            }
-            StmtKind::If {
-                cond,
-                body,
-                else_body,
-                ..
-            } => {
-                collect_enum_variant_refs_from_expr(cond, signatures, variants);
-                collect_enum_variant_refs_from_block(body, signatures, variants);
-                collect_enum_variant_refs_from_block(else_body, signatures, variants);
-            }
-            StmtKind::ForRange {
-                start, end, body, ..
-            } => {
-                collect_enum_variant_refs_from_expr(start, signatures, variants);
-                collect_enum_variant_refs_from_expr(end, signatures, variants);
-                collect_enum_variant_refs_from_block(body, signatures, variants);
-            }
-            StmtKind::ForEach { iterable, body, .. } => {
-                collect_enum_variant_refs_from_expr(iterable, signatures, variants);
-                collect_enum_variant_refs_from_block(body, signatures, variants);
-            }
-            StmtKind::While { cond, body } => {
-                collect_enum_variant_refs_from_expr(cond, signatures, variants);
-                collect_enum_variant_refs_from_block(body, signatures, variants);
-            }
-            StmtKind::Match { value, arms } => {
-                collect_enum_variant_refs_from_expr(value, signatures, variants);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_enum_variant_refs_from_expr(guard, signatures, variants);
-                    }
-                    collect_enum_variant_refs_from_block(&arm.body, signatures, variants);
-                }
-            }
-            StmtKind::ListMatch { value, arms } => {
-                collect_enum_variant_refs_from_expr(value, signatures, variants);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_enum_variant_refs_from_expr(guard, signatures, variants);
-                    }
-                    collect_enum_variant_refs_from_block(&arm.body, signatures, variants);
-                }
-            }
-            StmtKind::Break | StmtKind::Continue => {}
         }
     }
+    variants
 }
 
 fn collect_enum_variant_refs_from_expr(
@@ -3070,7 +3012,7 @@ fn collect_value_type_names_from_ir(
     for value in cfg
         .values()
         .iter()
-        .filter(|value| cfg.is_reachable(value.producer))
+        .filter(|value| cfg.is_value_reachable(value.id))
     {
         collect_value_type_names_from_type(&value.ty, signatures, known, reachable, pending);
     }
@@ -3622,7 +3564,7 @@ impl InterfacePackFacts {
             for value in cfg
                 .values()
                 .iter()
-                .filter(|value| cfg.is_reachable(value.producer))
+                .filter(|value| cfg.is_value_reachable(value.id))
             {
                 if let crate::ir::ControlFlowValueKind::InterfacePack {
                     interface, target, ..
@@ -3847,9 +3789,14 @@ fn collect_function_reachability_from_ir(
     for value in cfg
         .values()
         .iter()
-        .filter(|value| cfg.is_reachable(value.producer))
+        .filter(|value| cfg.is_value_reachable(value.id))
     {
         match &value.kind {
+            crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+                if definitions.is_empty() && known_functions.contains(name) =>
+            {
+                direct_functions.insert(name.clone());
+            }
             crate::ir::ControlFlowValueKind::Call { callee, .. }
                 if known_functions.contains(callee) =>
             {
@@ -4555,12 +4502,36 @@ fn collect_named_function_refs_from_expr(
 fn collect_anonymous_functions<'a>(
     program: &'a Program,
     reachable_functions: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> Vec<&'a Expr> {
     let mut functions = Vec::new();
     for function in &program.functions {
-        if reachable_functions.contains(&function.name) {
-            collect_anonymous_functions_from_block(&function.body, &mut functions);
+        if !reachable_functions.contains(&function.name) {
+            continue;
         }
+        let mut candidates = Vec::new();
+        collect_anonymous_functions_from_block(&function.body, &mut candidates);
+        let Some(cfg) = function_ir.get(&function.name) else {
+            functions.extend(candidates);
+            continue;
+        };
+        let reachable_spans = cfg
+            .values()
+            .iter()
+            .filter(|value| cfg.is_value_reachable(value.id))
+            .filter(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
+                )
+            })
+            .map(|value| source_span_key(value.span))
+            .collect::<HashSet<_>>();
+        functions.extend(
+            candidates
+                .into_iter()
+                .filter(|expr| reachable_spans.contains(&source_span_key(expr.span))),
+        );
     }
     functions
 }
@@ -7223,6 +7194,26 @@ fn emit_list_builder_binding(
                 else_value,
                 ..
             } => {
+                if let Some(ConstantValue::Bool(condition)) =
+                    fold_primitive_expr(condition, env, signatures)?
+                {
+                    let selected = if condition {
+                        Some(value.as_ref())
+                    } else {
+                        else_value.as_deref()
+                    };
+                    if let Some(selected) = selected {
+                        let selected = emit_expr(selected, env, signatures)?;
+                        let value_name = format!("flux__list_build_value_{}", *temp_counter);
+                        *temp_counter += 1;
+                        out.push_str(&format!(
+                            "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
+                            selected.code
+                        ));
+                        buffered_items.push(BufferedListItem::Scalar(value_name));
+                    }
+                    continue;
+                }
                 let condition = emit_expr(condition, env, signatures)?;
                 let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
                 *temp_counter += 1;
@@ -8647,6 +8638,7 @@ fn emit_function_type_typedefs(
     reachable_functions: &HashSet<String>,
     reachable_value_types: &HashSet<String>,
     reachable_interfaces: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> Result<(), Diagnostic> {
     let mut types = HashSet::new();
     for definition in &program.structs {
@@ -8701,7 +8693,20 @@ fn emit_function_type_typedefs(
         for ty in &function.returns {
             collect_function_type(ty, signatures, &mut types);
         }
-        collect_function_types_from_block(&function.body, signatures, &mut types);
+        if let Some(cfg) = function_ir.get(&function.name) {
+            for node in cfg.nodes().iter().filter(|node| cfg.is_reachable(node.id)) {
+                for definition in &node.definitions {
+                    collect_function_type(&definition.ty, signatures, &mut types);
+                }
+            }
+            for value in cfg
+                .values()
+                .iter()
+                .filter(|value| cfg.is_value_reachable(value.id))
+            {
+                collect_function_type(&value.ty, signatures, &mut types);
+            }
+        }
     }
 
     let mut types = types.into_iter().collect::<Vec<_>>();
@@ -8754,74 +8759,56 @@ fn collect_function_type(ty: &Type, signatures: &Signatures, types: &mut HashSet
     }
 }
 
-fn program_uses_background(program: &Program, reachable_functions: &HashSet<String>) -> bool {
+fn program_uses_background(
+    program: &Program,
+    reachable_functions: &HashSet<String>,
+    function_ir: &FunctionIrCache,
+) -> bool {
     program.functions.iter().any(|function| {
-        reachable_functions.contains(&function.name) && block_uses_background(&function.body)
+        if !reachable_functions.contains(&function.name) {
+            return false;
+        }
+        let Some(cfg) = function_ir.get(&function.name) else {
+            return block_uses_background(&function.body, None);
+        };
+        let reachable_spans = cfg
+            .nodes()
+            .iter()
+            .filter(|node| cfg.is_reachable(node.id))
+            .map(|node| source_span_key(node.span))
+            .collect::<HashSet<_>>();
+        block_uses_background(&function.body, Some(&reachable_spans))
     })
 }
 
-fn block_uses_background(body: &[Stmt]) -> bool {
-    body.iter().any(|stmt| match &stmt.kind {
-        StmtKind::Shell { background, .. } => *background,
-        StmtKind::If {
-            body, else_body, ..
-        } => block_uses_background(body) || block_uses_background(else_body),
-        StmtKind::ForRange { body, .. }
-        | StmtKind::ForEach { body, .. }
-        | StmtKind::While { body, .. } => block_uses_background(body),
-        StmtKind::Match { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
-        StmtKind::ListMatch { arms, .. } => arms.iter().any(|arm| block_uses_background(&arm.body)),
-        _ => false,
-    })
-}
-
-fn collect_function_types_from_block(
+fn block_uses_background(
     body: &[Stmt],
-    signatures: &Signatures,
-    types: &mut HashSet<Type>,
-) {
-    for stmt in body {
+    reachable_spans: Option<&HashSet<(u32, usize, usize, usize)>>,
+) -> bool {
+    body.iter().any(|stmt| {
+        if reachable_spans.is_some_and(|spans| !spans.contains(&source_span_key(stmt.span))) {
+            return false;
+        }
         match &stmt.kind {
-            StmtKind::Let { ty, .. } | StmtKind::Var { ty, .. } => {
-                collect_function_type(ty, signatures, types)
-            }
-            StmtKind::LetDestructure { bindings, .. } => {
-                for binding in bindings {
-                    collect_function_type(&binding.ty, signatures, types);
-                }
-            }
-            StmtKind::LetMultiDestructure { .. }
-            | StmtKind::LetListDestructure { .. }
-            | StmtKind::LetStructDestructure { .. }
-            | StmtKind::Assign { .. }
-            | StmtKind::Return(_)
-            | StmtKind::Break
-            | StmtKind::Continue
-            | StmtKind::Expr(_)
-            | StmtKind::Shell { .. } => {}
+            StmtKind::Shell { background, .. } => *background,
             StmtKind::If {
                 body, else_body, ..
             } => {
-                collect_function_types_from_block(body, signatures, types);
-                collect_function_types_from_block(else_body, signatures, types);
+                block_uses_background(body, reachable_spans)
+                    || block_uses_background(else_body, reachable_spans)
             }
             StmtKind::ForRange { body, .. }
             | StmtKind::ForEach { body, .. }
-            | StmtKind::While { body, .. } => {
-                collect_function_types_from_block(body, signatures, types);
-            }
-            StmtKind::Match { arms, .. } => {
-                for arm in arms {
-                    collect_function_types_from_block(&arm.body, signatures, types);
-                }
-            }
-            StmtKind::ListMatch { arms, .. } => {
-                for arm in arms {
-                    collect_function_types_from_block(&arm.body, signatures, types);
-                }
-            }
+            | StmtKind::While { body, .. } => block_uses_background(body, reachable_spans),
+            StmtKind::Match { arms, .. } => arms
+                .iter()
+                .any(|arm| block_uses_background(&arm.body, reachable_spans)),
+            StmtKind::ListMatch { arms, .. } => arms
+                .iter()
+                .any(|arm| block_uses_background(&arm.body, reachable_spans)),
+            _ => false,
         }
-    }
+    })
 }
 
 fn function_type_depth(ty: &Type) -> usize {
@@ -8862,9 +8849,49 @@ fn struct_update_helpers(
     program: &Program,
     signatures: &Signatures,
     reachable_functions: &HashSet<String>,
+    function_ir: &FunctionIrCache,
 ) -> String {
+    let mut all_helpers = HashSet::new();
+    let mut ignored = String::new();
+    let mut reachable_helpers = HashSet::new();
+    for function in &program.functions {
+        if !reachable_functions.contains(&function.name) {
+            continue;
+        }
+        collect_update_helpers_from_block(
+            &function.body,
+            signatures,
+            &mut all_helpers,
+            &mut ignored,
+        );
+        let Some(cfg) = function_ir.get(&function.name) else {
+            reachable_helpers.extend(all_helpers.iter().cloned());
+            continue;
+        };
+        for value in cfg
+            .values()
+            .iter()
+            .filter(|value| cfg.is_value_reachable(value.id))
+        {
+            if let crate::ir::ControlFlowValueKind::StructLiteral {
+                name,
+                base: Some(_),
+                fields,
+            } = &value.kind
+            {
+                reachable_helpers.insert(struct_update_helper_name_from_names(
+                    name,
+                    fields.iter().map(|(name, _)| name.as_str()),
+                ));
+            }
+        }
+    }
+
     let mut helpers = String::new();
-    let mut emitted = HashSet::new();
+    let mut emitted = all_helpers
+        .difference(&reachable_helpers)
+        .cloned()
+        .collect::<HashSet<_>>();
     for function in &program.functions {
         if reachable_functions.contains(&function.name) {
             collect_update_helpers_from_block(
@@ -9137,14 +9164,18 @@ fn collect_update_helpers_from_expr(
 }
 
 fn struct_update_helper_name(name: &str, fields: &[crate::ast::StructLiteralField]) -> String {
+    struct_update_helper_name_from_names(name, fields.iter().map(|field| field.name.as_str()))
+}
+
+fn struct_update_helper_name_from_names<'a>(
+    name: &str,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let fields = fields.into_iter().collect::<Vec<_>>();
     let suffix = if fields.is_empty() {
         "copy".to_string()
     } else {
-        fields
-            .iter()
-            .map(|field| field.name.as_str())
-            .collect::<Vec<_>>()
-            .join("__")
+        fields.join("__")
     };
     format!("flux__update_{name}__{suffix}")
 }
