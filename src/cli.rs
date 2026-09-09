@@ -362,6 +362,15 @@ struct AndroidBuildResult {
     abi: AndroidAbi,
 }
 
+#[derive(Debug)]
+struct AndroidSigningConfig {
+    keystore: PathBuf,
+    key_alias: String,
+    store_password: std::ffi::OsString,
+    key_password: std::ffi::OsString,
+    release: bool,
+}
+
 fn build_android_command(
     args: &[String],
     default_mode: BuildMode,
@@ -1931,16 +1940,25 @@ fn build_android_aab(
     ensure_parent_directory(output)?;
     fs::copy(&unsigned, output)
         .map_err(|error| format!("failed to write Android App Bundle: {error}"))?;
-    let key = android_debug_keystore()?;
-    run_checked(
-        Command::new("jarsigner")
-            .args(["-storepass", "android", "-keypass", "android"])
-            .arg("-keystore")
-            .arg(&key)
-            .arg(output)
-            .arg("flux"),
-        "jarsigner",
-    )?;
+    let signing = android_signing_config(manifest, mode)?;
+    let mut signer = Command::new("jarsigner");
+    if signing.release {
+        signer
+            .arg("-storepass:env")
+            .arg("FLUX_ANDROID_KEYSTORE_PASSWORD")
+            .arg("-keypass:env")
+            .arg("FLUX_ANDROID_KEY_PASSWORD")
+            .env("FLUX_ANDROID_KEYSTORE_PASSWORD", &signing.store_password)
+            .env("FLUX_ANDROID_KEY_PASSWORD", &signing.key_password);
+    } else {
+        signer.args(["-storepass", "android", "-keypass", "android"]);
+    }
+    signer
+        .arg("-keystore")
+        .arg(&signing.keystore)
+        .arg(output)
+        .arg(&signing.key_alias);
+    run_checked(&mut signer, "jarsigner")?;
     run_checked(
         Command::new("jarsigner").arg("-verify").arg(output),
         "jarsigner verify",
@@ -1997,19 +2015,30 @@ fn build_android_apk(
             .arg(&aligned),
         "zipalign",
     )?;
-    let key = android_debug_keystore()?;
+    let signing = android_signing_config(manifest, mode)?;
     ensure_parent_directory(output)?;
-    run_checked(
-        Command::new(toolchain.build_tools.join("apksigner"))
-            .arg("sign")
-            .args(["--ks-pass", "pass:android", "--key-pass", "pass:android"])
-            .arg("--ks")
-            .arg(&key)
-            .arg("--out")
-            .arg(output)
-            .arg(&aligned),
-        "apksigner",
-    )?;
+    let mut signer = Command::new(toolchain.build_tools.join("apksigner"));
+    signer
+        .arg("sign")
+        .arg("--ks")
+        .arg(&signing.keystore)
+        .arg("--ks-key-alias")
+        .arg(&signing.key_alias);
+    if signing.release {
+        signer
+            .args([
+                "--ks-pass",
+                "env:FLUX_ANDROID_KEYSTORE_PASSWORD",
+                "--key-pass",
+                "env:FLUX_ANDROID_KEY_PASSWORD",
+            ])
+            .env("FLUX_ANDROID_KEYSTORE_PASSWORD", &signing.store_password)
+            .env("FLUX_ANDROID_KEY_PASSWORD", &signing.key_password);
+    } else {
+        signer.args(["--ks-pass", "pass:android", "--key-pass", "pass:android"]);
+    }
+    signer.arg("--out").arg(output).arg(&aligned);
+    run_checked(&mut signer, "apksigner")?;
     run_checked(
         Command::new(toolchain.build_tools.join("apksigner"))
             .arg("verify")
@@ -2162,6 +2191,48 @@ fn latest_file_matching(root: &Path, predicate: impl Fn(&Path) -> bool) -> Optio
         .collect::<Vec<_>>();
     entries.sort();
     entries.pop()
+}
+
+fn android_signing_config(
+    manifest: &fluxc::project::PackageManifest,
+    mode: BuildMode,
+) -> Result<AndroidSigningConfig, CliError> {
+    if mode == BuildMode::Release
+        && let (Some(keystore), Some(key_alias)) = (
+            manifest.android.keystore.as_ref(),
+            manifest.android.key_alias.as_ref(),
+        )
+    {
+        if !keystore.is_file() {
+            return Err(CliError::Message(format!(
+                "Android release keystore '{}' does not exist or is not a file",
+                keystore.display()
+            )));
+        }
+        let store_password = env::var_os("FLUX_ANDROID_KEYSTORE_PASSWORD").ok_or_else(|| {
+            CliError::Message(
+                "Android release signing requires FLUX_ANDROID_KEYSTORE_PASSWORD; signing credentials are not stored in flux.toml"
+                    .to_string(),
+            )
+        })?;
+        let key_password =
+            env::var_os("FLUX_ANDROID_KEY_PASSWORD").unwrap_or_else(|| store_password.clone());
+        return Ok(AndroidSigningConfig {
+            keystore: keystore.clone(),
+            key_alias: key_alias.clone(),
+            store_password,
+            key_password,
+            release: true,
+        });
+    }
+
+    Ok(AndroidSigningConfig {
+        keystore: android_debug_keystore()?,
+        key_alias: "flux".to_string(),
+        store_password: std::ffi::OsString::from("android"),
+        key_password: std::ffi::OsString::from("android"),
+        release: false,
+    })
 }
 
 fn android_debug_keystore() -> Result<PathBuf, CliError> {
@@ -2446,6 +2517,8 @@ mod tests {
                 application_id: "app.flux.example".to_string(),
                 min_sdk: 23,
                 target_sdk: 35,
+                keystore: None,
+                key_alias: None,
             },
         };
 

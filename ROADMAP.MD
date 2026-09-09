@@ -625,8 +625,9 @@ Android is the first application-platform target. Android integration must feel 
   - [x] Optional `[android].application_id` accepts a validated lowercase reverse-DNS identifier; otherwise Flux derives a deterministic `app.flux.<package>` ID from the package name.
 - [x] minSdk/targetSdk configuration.
   - [x] Optional integer `[android].min_sdk` / `target_sdk` fields are validated (`minSdk >= 21`, target >= min) and drive both NDK compiler selection and generated APK metadata; bootstrap defaults are 23 / 35.
-- [ ] Signing configuration.
-  - [x] Bootstrap developer signing is compiler-owned: Flux creates/reuses its own debug keystore, signs aligned APKs with `apksigner`, and verifies the result. User/release keystores, credential handling, Play App Signing, and CI-safe release configuration remain pending.
+- [x] Signing configuration.
+  - [x] Development signing is compiler-owned: Flux creates/reuses its own debug keystore, signs aligned APKs with `apksigner`, signs AABs with `jarsigner`, and verifies the results.
+  - [x] Release builds may configure `[android].keystore` plus `[android].key_alias`; relative keystore paths resolve from the package root, while passwords stay out of source and are supplied through `FLUX_ANDROID_KEYSTORE_PASSWORD` with optional `FLUX_ANDROID_KEY_PASSWORD` override. APK signing uses apksigner environment-password sources and AAB signing uses jarsigner environment-password sources so credentials do not appear in command arguments. Fresh-key Nox E2E builds verified both release formats against the configured signing certificate; unsigned/missing-key and missing-credential paths fail explicitly. Play App Signing can consume the resulting signed upload AAB without requiring a Flux-specific credential store.
 - [ ] Android lifecycle integration.
   - [x] Bootstrap `NativeActivity` creation wires typed Flux `app` `on_start`, `on_resume`, `on_pause`, `on_stop`, and `on_exit` callbacks directly through `ANativeActivityCallbacks`, with no JVM bridge; destruction also clears the compiler-owned activity handle. Saved-state and configuration callbacks remain pending.
 - [x] Activity/window integration hidden behind Flux application APIs.

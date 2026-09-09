@@ -175,6 +175,8 @@ pub struct AndroidPackageConfig {
     pub application_id: String,
     pub min_sdk: u32,
     pub target_sdk: u32,
+    pub keystore: Option<PathBuf>,
+    pub key_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +412,8 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_application_id = None::<String>;
     let mut android_min_sdk = None::<u32>;
     let mut android_target_sdk = None::<u32>;
+    let mut android_keystore = None::<String>;
+    let mut android_key_alias = None::<String>;
     let mut diagnostics = Vec::new();
 
     for (index, raw_line) in source.lines().enumerate() {
@@ -479,7 +483,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 }
             }
             Some("android") => match key {
-                "application_id" => {
+                "application_id" | "keystore" | "key_alias" => {
                     let value = match parse_manifest_string(raw_value) {
                         Ok(value) => value,
                         Err(message) => {
@@ -487,11 +491,17 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                             continue;
                         }
                     };
-                    if android_application_id.replace(value).is_some() {
+                    let slot = match key {
+                        "application_id" => &mut android_application_id,
+                        "keystore" => &mut android_keystore,
+                        "key_alias" => &mut android_key_alias,
+                        _ => unreachable!(),
+                    };
+                    if slot.replace(value).is_some() {
                         diagnostics.push(manifest_diagnostic(
                             source_id,
                             line_number,
-                            "duplicate [android] field 'application_id'",
+                            format!("duplicate [android] field '{key}'"),
                         ));
                     }
                 }
@@ -570,6 +580,24 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[android].target_sdk must be greater than or equal to min_sdk",
         ));
     }
+    if android_keystore.as_deref().is_some_and(str::is_empty) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].keystore cannot be empty",
+        ));
+    }
+    if android_key_alias.as_deref().is_some_and(str::is_empty) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].key_alias cannot be empty",
+        ));
+    }
+    if android_keystore.is_some() != android_key_alias.is_some() {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].keystore and [android].key_alias must be configured together",
+        ));
+    }
     let Some(entry_value) = entry.filter(|entry| !entry.is_empty()) else {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
@@ -608,12 +636,22 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let name = name.expect("validated package name");
     let min_sdk = android_min_sdk.unwrap_or(23);
     let target_sdk = android_target_sdk.unwrap_or(35);
+    let keystore = android_keystore.map(|path| {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            package_root.join(path)
+        }
+    });
     Ok(PackageManifest {
         android: AndroidPackageConfig {
             application_id: android_application_id
                 .unwrap_or_else(|| default_android_application_id(&name)),
             min_sdk,
             target_sdk,
+            keystore,
+            key_alias: android_key_alias,
         },
         name,
         version,

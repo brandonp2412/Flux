@@ -150,7 +150,7 @@ Inspect the currently runnable Flux target, verify native GUI prerequisites, and
 ./tools/flux clean examples/package
 ```
 
-`flux devices` reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready, Android devices visible through ADB including offline/unauthorized state, and a running local Waydroid container. `flux doctor` reports Linux prerequisites, Android SDK/NDK/build-tools/ADB, and Waydroid readiness. `flux run android` selects the sole connected ADB device when available; otherwise it can install/launch directly through a running Waydroid session and auto-selects the device ABI when `--abi` is omitted. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
+`flux devices` reports the honest bootstrap device surface: Linux desktop plus whether the active Wayland/X11 session is launch-ready, Android devices visible through ADB including offline/unauthorized state, and a running local Waydroid container. `flux doctor` reports Linux prerequisites, Android SDK/NDK/build-tools/ADB, and Waydroid readiness. `flux run android` selects a runtime whose ABI matches the built APK: a matching ADB device is preferred, otherwise a matching running Waydroid container is used, and known ABI mismatches fail before installation. When `--abi` is omitted Flux probes the available runtime ABI before building. `flux clean` removes the target's default native binary and last-known development-run status and is safe to run repeatedly.
 
 Human diagnostics use the terminal width (`COLUMNS` when supplied, otherwise the interactive terminal width) and enable ANSI color only for an appropriate terminal. `NO_COLOR` disables color; `FORCE_COLOR=1` can force it. Long source lines and paths are cropped around the relevant span instead of overflowing, while diagnostic messages, labels, notes, and fixes wrap to fit.
 
@@ -187,9 +187,11 @@ entry = "src/main.flux"
 application_id = "nz.example.package"
 min_sdk = 23
 target_sdk = 35
+keystore = "signing/release.jks"
+key_alias = "release"
 ```
 
-The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<package>` application ID and currently defaults to minSdk 23 / targetSdk 35. Android builds require an `app` root and use the installed Android SDK/NDK directly; `examples/android_app` is a checked-in package for this path:
+The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<package>` application ID and currently defaults to minSdk 23 / targetSdk 35. `keystore` and `key_alias` are optional but must be configured together; a relative keystore path is resolved from the package root. Release-signing passwords are never stored in `flux.toml`: set `FLUX_ANDROID_KEYSTORE_PASSWORD`, and optionally `FLUX_ANDROID_KEY_PASSWORD` when the private-key password differs. Without release signing configuration Flux uses its compiler-managed development key. Android builds require an `app` root and use the installed Android SDK/NDK directly; `examples/android_app` is a checked-in package for this path:
 
 ```sh
 ./tools/flux build android examples/android_app --mode debug --abi arm64-v8a
@@ -198,9 +200,9 @@ The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<
 ./tools/flux run android examples/android_app --abi arm64-v8a
 ```
 
-APK builds emit one aligned, signed artifact containing `lib/<abi>/libflux.so` and a generated `NativeActivity` manifest. AAB builds compile all supported ABIs into one signed App Bundle and use bundletool to validate the Play publishing structure. Development signing is compiler-managed; configurable release signing, native Android rendering/input, and the remaining Play Store release pipeline remain roadmap work.
+APK builds emit one aligned, signed artifact containing `lib/<abi>/libflux.so` and a generated `NativeActivity` manifest. AAB builds compile all supported ABIs into one signed App Bundle and use bundletool to validate the Play publishing structure. Development signing is compiler-managed; configured release APKs/AABs use the package keystore and environment-supplied credentials, suitable for an upload key used with Play App Signing. Native Android rendering/input and the remaining Play Store release pipeline remain roadmap work.
 
-Android-specific framework functionality is exposed directly as compiler-owned Flux APIs rather than method channels or application-written JNI. `android.vibrate(duration_ms)` lowers to Android's vibrator service and automatically adds `android.permission.VIBRATE` only when reachable. `android.open_url(url)` emits an `ACTION_VIEW` intent directly through the generated JNI boundary, including correct UTF-8 string conversion. Both are statically typed, appear in LSP completion/signature help, and reachable Android calls are rejected when building for a non-Android target; unreachable platform-only code can still be tree-shaken from another target.
+Android-specific framework functionality is exposed directly as compiler-owned Flux APIs rather than method channels or application-written JNI. `android.vibrate(duration_ms)` lowers to Android's vibrator service and automatically adds `android.permission.VIBRATE` only when reachable. `android.open_url(url)` emits an `ACTION_VIEW` intent, while `android.share(text)` opens the native `ACTION_SEND` chooser. These APIs share compiler-owned JNI/UTF-8 glue, are statically typed, appear in LSP completion/signature help, and reachable Android calls are rejected when building for a non-Android target; unreachable platform-only code can still be tree-shaken from another target.
 
 The package directory or manifest can then be passed directly to project-aware commands:
 

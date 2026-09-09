@@ -8038,7 +8038,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nmin_sdk = 26\ntarget_sdk = 35\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nmin_sdk = 26\ntarget_sdk = 35\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
     )
     .expect("Android manifest should be writable");
 
@@ -8046,6 +8046,11 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     assert_eq!(parsed.android.application_id, "nz.flux.sample");
     assert_eq!(parsed.android.min_sdk, 26);
     assert_eq!(parsed.android.target_sdk, 35);
+    assert_eq!(
+        parsed.android.keystore.as_deref(),
+        Some(root.join("signing/release.jks").as_path())
+    );
+    assert_eq!(parsed.android.key_alias.as_deref(), Some("release"));
 
     fs::write(
         &manifest,
@@ -8073,6 +8078,19 @@ fn package_manifest_accepts_and_validates_android_configuration() {
         error
             .message
             .contains("target_sdk must be greater than or equal to min_sdk")
+    }));
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\nkeystore = \"release.jks\"\n",
+    )
+    .expect("incomplete signing config should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("release keystore and alias must be configured together");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("keystore and [android].key_alias must be configured together")
     }));
 
     let _ = fs::remove_dir_all(&root);
