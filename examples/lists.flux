@@ -19,6 +19,9 @@ fn main() -> i64 {
     let middle: i64[] = values[1:4]
     let evens: i64[] = values[::2]
     let reversed: i64[] = values[::-1]
+    let [reverseFirst, _, _, _, reverseLast] = reversed
+    print reverseFirst
+    print reverseLast
     let reverseMiddle: i64[] = values[3:0:-2]
     let chained: i64[] = values[::-1][1:4:2]
     let reverseWindow: i64[] = values[::-1] | skip 1 | take 2

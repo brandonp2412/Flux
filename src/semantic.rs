@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ast::{Expr, ExprKind, MatchPattern, Program, Stmt, StmtKind, StructPatternField, Type};
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
 use crate::parser;
@@ -511,6 +513,41 @@ fn collect_block_symbols(
                         span: binding.name_span,
                     });
                 }
+            }
+            StmtKind::LetListDestructure { bindings, expr } => {
+                let env = symbols
+                    .iter()
+                    .filter(|symbol| {
+                        matches!(
+                            symbol.kind,
+                            SymbolKind::Parameter
+                                | SymbolKind::Binding
+                                | SymbolKind::MutableBinding
+                                | SymbolKind::PatternBinding
+                                | SymbolKind::LoopVariable
+                        )
+                    })
+                    .filter_map(|symbol| symbol.ty.clone().map(|ty| (symbol.name.clone(), ty)))
+                    .collect::<HashMap<_, _>>();
+                let element_ty = typecheck::type_of_expr(expr, &env, signatures)
+                    .ok()
+                    .map(|ty| signatures.canonical_type(&ty))
+                    .and_then(|ty| match ty {
+                        Type::List(element) => Some(*element),
+                        _ => None,
+                    });
+                for binding in bindings {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    symbols.push(SemanticSymbol {
+                        name: binding.name.clone(),
+                        kind: SymbolKind::Binding,
+                        ty: element_ty.clone(),
+                        span: binding.span,
+                    });
+                }
+                collect_expr_pattern_symbols(expr, symbols, signatures);
             }
             StmtKind::LetStructDestructure {
                 struct_name,

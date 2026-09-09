@@ -1957,6 +1957,17 @@ fn collect_binding_declarations(
                     declarations.push((binding.name.clone(), binding.name_span, "binding"));
                 }
             }
+            StmtKind::LetListDestructure { bindings, .. } => {
+                for binding in bindings {
+                    if binding.name != "_" {
+                        declarations.push((
+                            binding.name.clone(),
+                            binding.span,
+                            "destructured binding",
+                        ));
+                    }
+                }
+            }
             StmtKind::LetStructDestructure { fields, .. } => {
                 collect_struct_pattern_declarations(fields, declarations);
             }
@@ -2039,6 +2050,7 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
             StmtKind::Let { expr, .. }
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => collect_expr_reads(expr, reads),
             StmtKind::LetDestructure {
                 bindings,
@@ -2398,6 +2410,42 @@ fn check_block_all(
                                 return_types_name(actuals)
                             ),
                         ));
+                    }
+                }
+            }
+            StmtKind::LetListDestructure { bindings, expr } => {
+                let element_ty = match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => match signatures.canonical_type(&actual) {
+                        Type::List(element) => Some(*element),
+                        other => {
+                            diagnostics.push(diag(
+                                expr.span,
+                                &format!(
+                                    "list destructuring requires a list value, got {}",
+                                    other.name()
+                                ),
+                            ));
+                            None
+                        }
+                    },
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                if let Some(element_ty) = element_ty {
+                    for binding in bindings {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        if env.contains_key(&binding.name) {
+                            diagnostics.push(diag(
+                                binding.span,
+                                &format!("'{}' is already defined in this scope", binding.name),
+                            ));
+                        } else {
+                            env.insert(binding.name.clone(), element_ty.clone());
+                        }
                     }
                 }
             }
@@ -4273,6 +4321,7 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::Var { .. }
             | StmtKind::Assign { .. }
             | StmtKind::LetDestructure { .. }
+            | StmtKind::LetListDestructure { .. }
             | StmtKind::LetStructDestructure { .. }
             | StmtKind::Break
             | StmtKind::Continue

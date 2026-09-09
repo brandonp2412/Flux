@@ -449,6 +449,10 @@ pub enum StmtKind {
         expr: Expr,
         else_return: bool,
     },
+    LetListDestructure {
+        bindings: Vec<PatternBinding>,
+        expr: Expr,
+    },
     LetStructDestructure {
         struct_name: String,
         struct_span: SourceSpan,

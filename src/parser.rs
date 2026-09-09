@@ -503,6 +503,12 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 }
                 attach_expr_source(expr, source_id);
             }
+            StmtKind::LetListDestructure { bindings, expr } => {
+                for binding in bindings {
+                    binding.span = binding.span.with_source(source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
             StmtKind::LetStructDestructure {
                 struct_span,
                 fields,
@@ -3125,6 +3131,22 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
             } else {
                 (trimmed_expr, false)
             };
+        if let Some(bindings) = parse_list_destructure_pattern(binding_src, line, span.column + 4)?
+        {
+            if else_return {
+                return Err(diag(
+                    line,
+                    "'else return' is only valid on multi-value call destructuring",
+                ));
+            }
+            let expr = parse_expression_at(expr_src, line, expr_column)?;
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetListDestructure { bindings, expr },
+            });
+        }
         if let Some((struct_name, struct_span, fields)) =
             parse_struct_destructure_pattern(binding_src, line, span.column + 4)?
         {
@@ -3425,6 +3447,58 @@ fn attach_struct_pattern_field_source(field: &mut StructPatternField, source_id:
             attach_struct_pattern_field_source(field, source_id);
         }
     }
+}
+
+fn parse_list_destructure_pattern(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<Option<Vec<PatternBinding>>, Diagnostic> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('[') {
+        return Ok(None);
+    }
+    let Some(inner) = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return Err(diag(
+            line,
+            "list destructuring uses 'let [first, second] = expression' syntax",
+        ));
+    };
+    if inner.trim().is_empty() {
+        return Err(diag(
+            line,
+            "list destructuring requires at least one binding",
+        ));
+    }
+    let leading = input.len() - input.trim_start().len();
+    let pattern_column = column + leading;
+    let mut bindings = Vec::new();
+    for (raw_binding, offset) in split_top_level_commas_with_offsets(inner) {
+        let entry_column = pattern_column + 1 + offset;
+        let (name, name_column) = trim_with_column(raw_binding, entry_column);
+        if name.is_empty() {
+            return Err(diag(line, "list destructuring contains an empty binding"));
+        }
+        validate_identifier(name, line)?;
+        if name != "_"
+            && bindings
+                .iter()
+                .any(|existing: &PatternBinding| existing.name == name)
+        {
+            return Err(diag(
+                line,
+                &format!("duplicate list pattern binding '{name}'"),
+            ));
+        }
+        bindings.push(PatternBinding {
+            name: name.to_string(),
+            span: SourceSpan::new(line, name_column, name.len()),
+        });
+    }
+    Ok(Some(bindings))
 }
 
 fn parse_struct_destructure_pattern(

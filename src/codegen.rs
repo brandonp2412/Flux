@@ -2239,6 +2239,37 @@ fn emit_block(
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                 }
             }
+            StmtKind::LetListDestructure { bindings, expr } => {
+                let value = emit_expr(expr, env, signatures)?;
+                let Type::List(element) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "list destructuring code generation requires a list value",
+                    ));
+                };
+                let temp = format!("flux__list_pattern_{}", *temp_counter);
+                *temp_counter += 1;
+                let element_c = c_type(element, signatures);
+                out.push_str(&format!(
+                    "{pad}struct flux__list {temp} = {};\n",
+                    value.code
+                ));
+                out.push_str(&format!(
+                    "{pad}if ({temp}.len != {}) {{ fputs(\"Flux runtime error: list pattern requires exactly {} elements\\n\", stderr); abort(); }}\n",
+                    bindings.len(),
+                    bindings.len()
+                ));
+                for (index, binding) in bindings.iter().enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    out.push_str(&format!(
+                        "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, INT64_C({index}), sizeof({element_c})));\n",
+                        local_c_name(&binding.name)
+                    ));
+                    env.insert(binding.name.clone(), (**element).clone());
+                }
+            }
             StmtKind::LetStructDestructure { fields, expr, .. } => {
                 let value = emit_expr(expr, env, signatures)?;
                 let Type::Named(struct_name) = &value.ty else {
@@ -5206,7 +5237,8 @@ fn collect_function_types_from_block(
                     collect_function_type(&binding.ty, signatures, types);
                 }
             }
-            StmtKind::LetStructDestructure { .. }
+            StmtKind::LetListDestructure { .. }
+            | StmtKind::LetStructDestructure { .. }
             | StmtKind::Assign { .. }
             | StmtKind::Return(_)
             | StmtKind::Break
@@ -5291,6 +5323,7 @@ fn collect_update_helpers_from_block(
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
             | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => {
                 collect_update_helpers_from_expr(expr, signatures, emitted, helpers);
             }

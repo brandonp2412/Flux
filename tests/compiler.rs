@@ -1362,6 +1362,91 @@ fn main() -> i64 {
 }
 
 #[test]
+fn list_destructuring_patterns_infer_types_and_lower_strided_views() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let reversed: i64[] = values[::-1]
+    let [first, _, last] = reversed
+    print first
+    print last
+    return 0
+}
+"#;
+
+    check_source(source).expect("exact list destructuring should typecheck");
+    let generated = compile_to_c(source).expect("list destructuring should lower natively");
+    assert!(generated.contains("flux__list_pattern_"));
+    assert!(generated.contains(".len != 3"));
+    assert!(generated.contains("Flux runtime error: list pattern requires exactly 3 elements"));
+    assert!(generated.contains("INT64_C(0), sizeof(int64_t)"));
+    assert!(generated.contains("INT64_C(2), sizeof(int64_t)"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("list pattern should format");
+    assert!(formatted.contains("let [first, _, last] = reversed"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted list pattern should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(741))
+        .expect("list pattern should analyze semantically");
+    for name in ["first", "last"] {
+        let symbol = database
+            .symbols_named(name)
+            .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Binding)
+            .expect("list pattern binding should be indexed");
+        assert_eq!(symbol.ty, Some(fluxc::ast::Type::I64));
+    }
+    assert!(database.symbols_named("_").next().is_none());
+}
+
+#[test]
+fn rejects_invalid_list_destructuring_patterns() {
+    let non_list = r#"
+fn main() -> i64 {
+    let [value] = 7
+    print value
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("list pattern source should require a list");
+    assert!(
+        error
+            .message
+            .contains("list destructuring requires a list value, got i64")
+    );
+
+    let duplicate = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let [value, value] = values
+    print value
+    return 0
+}
+"#;
+    let error = check_source(duplicate).expect_err("duplicate list pattern bindings should fail");
+    assert!(
+        error
+            .message
+            .contains("duplicate list pattern binding 'value'")
+    );
+
+    let empty = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let [] = values
+    return 0
+}
+"#;
+    let error = check_source(empty).expect_err("empty list patterns should fail");
+    assert!(
+        error
+            .message
+            .contains("list destructuring requires at least one binding")
+    );
+}
+
+#[test]
 fn rejects_invalid_slice_steps() {
     let bad_type = r#"
 fn main() -> i64 {
