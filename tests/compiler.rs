@@ -1201,6 +1201,10 @@ fn main() -> i64 {
     let reverse_middle: i64[] = values[3:0:-2]
     let chained: i64[] = values[::-1][1:4:2]
     let reverse_window: i64[] = values[::-1] | skip 1 | take 2
+    let spread_values: i64[] = [0, ...middle, ...reversed[::2], 9]
+    print spread_values.length
+    print spread_values.first
+    print spread_values.last
     print evens.first
     print evens.last
     print reversed.first
@@ -1259,6 +1263,9 @@ fn main() -> i64 {
     assert!(generated.contains("Flux runtime error: list.single requires exactly one element"));
     assert!(generated.contains("flux_list_skip("));
     assert!(generated.contains("flux_list_take("));
+    assert!(generated.contains("flux__spread_capacity_"));
+    assert!(generated.contains("flux__spread_source_"));
+    assert!(generated.contains("Flux runtime error: spread list is too large"));
     assert!(generated.contains("Flux runtime error: list count must be non-negative"));
     assert!(generated.contains("flux_list_any_bool"));
     assert!(generated.contains("flux_list_every_bool"));
@@ -1272,6 +1279,7 @@ fn main() -> i64 {
     assert!(formatted.contains("let reverse_middle: i64[] = values[3:0:-2]"));
     assert!(formatted.contains("let chained: i64[] = values[::-1][1:4:2]"));
     assert!(formatted.contains("let reverse_window: i64[] = values[::-1] | skip 1 | take 2"));
+    assert!(formatted.contains("let spread_values: i64[] = [0, ...middle, ...reversed[::2], 9]"));
     assert!(formatted.contains("[value * 2 for value in values if value > 2]"));
     assert!(formatted.contains("let window: i64[] = values | skip 1 | take 3"));
     assert!(formatted.contains("let has_large: bool = checks | any"));
@@ -1279,6 +1287,38 @@ fn main() -> i64 {
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted lists should reparse");
     assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_list_spreads() {
+    let non_list = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, ...2]
+    print values.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("spread source should require a list");
+    assert!(
+        error
+            .message
+            .contains("list spread expression must be a list")
+    );
+
+    let wrong_element = r#"
+fn main() -> i64 {
+    let checks: bool[] = [true, false]
+    let values: i64[] = [1, ...checks]
+    print values.length
+    return 0
+}
+"#;
+    let error = check_source(wrong_element).expect_err("spread elements must match the list type");
+    assert!(
+        error
+            .message
+            .contains("list element: expected i64, got bool")
+    );
 }
 
 #[test]

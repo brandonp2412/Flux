@@ -630,6 +630,10 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(item, source_id);
             }
         }
+        ExprKind::ListSpread { value, spread_span } => {
+            *spread_span = spread_span.with_source(source_id);
+            attach_expr_source(value, source_id);
+        }
         ExprKind::Index { base, index } => {
             attach_expr_source(base, source_id);
             attach_expr_source(index, source_id);
@@ -897,6 +901,10 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             for item in items {
                 shift_expr_columns(item, offset);
             }
+        }
+        ExprKind::ListSpread { value, spread_span } => {
+            spread_span.column += offset;
+            shift_expr_columns(value, offset);
         }
         ExprKind::Index { base, index } => {
             shift_expr_columns(base, offset);
@@ -4733,6 +4741,40 @@ impl ExprParser<'_> {
         }
     }
 
+    fn parse_list_item(&mut self) -> Result<Expr, Diagnostic> {
+        let is_spread = matches!(
+            (
+                self.tokens.get(self.index).map(|token| &token.kind),
+                self.tokens.get(self.index + 1).map(|token| &token.kind),
+                self.tokens.get(self.index + 2).map(|token| &token.kind),
+            ),
+            (
+                Some(TokenKind::Dot),
+                Some(TokenKind::Dot),
+                Some(TokenKind::Dot)
+            )
+        );
+        if !is_spread {
+            return self.parse_conditional();
+        }
+
+        let spread_span = self.tokens[self.index].span;
+        self.index += 3;
+        let value = self.parse_conditional()?;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(
+                self.line,
+                spread_span.column,
+                value.span.column + value.span.length - spread_span.column,
+            ),
+            kind: ExprKind::ListSpread {
+                value: Box::new(value),
+                spread_span: SourceSpan::new(self.line, spread_span.column, 3),
+            },
+        })
+    }
+
     fn parse_list_literal(&mut self, open_span: SourceSpan) -> Result<Expr, Diagnostic> {
         if matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
@@ -4751,11 +4793,13 @@ impl ExprParser<'_> {
             });
         }
 
-        let first = self.parse_conditional()?;
-        if matches!(
-            self.tokens.get(self.index).map(|token| &token.kind),
-            Some(TokenKind::For)
-        ) {
+        let first = self.parse_list_item()?;
+        if !matches!(first.kind, ExprKind::ListSpread { .. })
+            && matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::For)
+            )
+        {
             self.index += 1;
             let Some(binding_token) = self.tokens.get(self.index).cloned() else {
                 return Err(diag(
@@ -4831,7 +4875,7 @@ impl ExprParser<'_> {
                     ) {
                         break;
                     }
-                    items.push(self.parse_conditional()?);
+                    items.push(self.parse_list_item()?);
                 }
                 Some(TokenKind::RBracket) => break,
                 _ => return Err(diag(self.line, "expected ',' or ']' in list literal")),

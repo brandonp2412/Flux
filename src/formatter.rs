@@ -720,6 +720,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ExprKind::ListSpread { value, .. } => format!("...{}", format_expr(value, 0)),
         ExprKind::Index { base, index } => {
             format!("{}[{}]", format_expr(base, 7), format_expr(index, 0))
         }

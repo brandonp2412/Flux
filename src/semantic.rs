@@ -383,6 +383,9 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(item, symbols, signatures);
             }
         }
+        ExprKind::ListSpread { value, .. } => {
+            collect_expr_pattern_symbols(value, symbols, signatures);
+        }
         ExprKind::Index { base, index } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
             collect_expr_pattern_symbols(index, symbols, signatures);

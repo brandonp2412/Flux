@@ -2144,6 +2144,17 @@ fn emit_block(
                     temp_counter,
                 )?;
             }
+            StmtKind::Let { name, ty, expr, .. } if list_literal_has_spread(expr) => {
+                emit_list_spread_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. }
                 if matches!(expr.kind, ExprKind::ListComprehension { .. }) =>
             {
@@ -3748,6 +3759,95 @@ fn emit_sequence_reduction_binding(
     Ok(())
 }
 
+fn list_literal_has_spread(expr: &Expr) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::List(items)
+            if items
+                .iter()
+                .any(|item| matches!(item.kind, ExprKind::ListSpread { .. }))
+    )
+}
+
+fn emit_list_spread_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let ExprKind::List(items) = &expr.kind else {
+        unreachable!()
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    let Type::List(element) = &result_ty else {
+        return Err(diag(expr.span, "spread list binding requires a list type"));
+    };
+    let element_c = c_type(element, signatures);
+    let capacity_name = format!("flux__spread_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__spread_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__spread_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__spread_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let mut value_names = Vec::with_capacity(items.len());
+
+    out.push_str(&format!("{pad}size_t {capacity_name} = 0;\n"));
+    for item in items {
+        match &item.kind {
+            ExprKind::ListSpread { value, .. } => {
+                let spread = emit_expr(value, env, signatures)?;
+                let source_name = format!("flux__spread_source_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}struct flux__list {source_name} = {};\n",
+                    spread.code
+                ));
+                out.push_str(&format!(
+                    "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: spread list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
+                ));
+                value_names.push((true, source_name));
+            }
+            _ => {
+                let value = emit_expr(item, env, signatures)?;
+                let value_name = format!("flux__spread_value_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: spread list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
+                    value.code
+                ));
+                value_names.push((false, value_name));
+            }
+        }
+    }
+
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    for (is_spread, value_name) in value_names {
+        if is_spread {
+            out.push_str(&format!(
+                "{pad}for (size_t {index_name} = 0; {index_name} < {value_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at({value_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}{buffer_name}[{count_name}++] = {value_name};\n"
+            ));
+        }
+    }
+    out.push_str(&format!(
+        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n",
+        local_c_name(name)
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
 fn emit_list_comprehension_binding(
     out: &mut String,
     pad: &str,
@@ -3937,6 +4037,15 @@ fn emit_expr(
             return emit_expr(&call, env, signatures);
         }
         ExprKind::List(items) => {
+            if items
+                .iter()
+                .any(|item| matches!(item.kind, ExprKind::ListSpread { .. }))
+            {
+                return Err(diag(
+                    expr.span,
+                    "list literals with spread currently lower only when bound directly to an immutable local value",
+                ));
+            }
             let result_ty = type_of_expr(expr, env, signatures)?;
             let Type::List(element) = &result_ty else {
                 unreachable!()
@@ -3954,6 +4063,12 @@ fn emit_expr(
                 ),
                 ty: result_ty,
             }
+        }
+        ExprKind::ListSpread { .. } => {
+            return Err(diag(
+                expr.span,
+                "list spread syntax is only valid inside a list literal",
+            ));
         }
         ExprKind::Index { base, index } => {
             let base = emit_expr(base, env, signatures)?;
@@ -5228,6 +5343,9 @@ fn collect_update_helpers_from_expr(
             for item in items {
                 collect_update_helpers_from_expr(item, signatures, emitted, helpers);
             }
+        }
+        ExprKind::ListSpread { value, .. } => {
+            collect_update_helpers_from_expr(value, signatures, emitted, helpers);
         }
         ExprKind::Index { base, index } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);

@@ -2090,6 +2090,7 @@ fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(item, reads);
             }
         }
+        ExprKind::ListSpread { value, .. } => collect_expr_reads(value, reads),
         ExprKind::Index { base, index } => {
             collect_expr_reads(base, reads);
             collect_expr_reads(index, reads);
@@ -2903,7 +2904,19 @@ pub fn type_of_expr(
                     "empty list literals cannot infer an element type yet",
                 ));
             };
-            let element_ty = type_of_expr(first, env, signatures)?;
+            let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
+                if let ExprKind::ListSpread { value, .. } = &item.kind {
+                    let spread_ty =
+                        signatures.canonical_type(&type_of_expr(value, env, signatures)?);
+                    let Type::List(element) = spread_ty else {
+                        return Err(diag(value.span, "list spread expression must be a list"));
+                    };
+                    Ok(*element)
+                } else {
+                    type_of_expr(item, env, signatures)
+                }
+            };
+            let element_ty = item_element_type(first)?;
             if matches!(element_ty, Type::Void | Type::Function { .. }) {
                 return Err(diag(
                     first.span,
@@ -2911,11 +2924,15 @@ pub fn type_of_expr(
                 ));
             }
             for item in items.iter().skip(1) {
-                let actual = type_of_expr(item, env, signatures)?;
+                let actual = item_element_type(item)?;
                 require_type(item.span, &element_ty, &actual, "list element")?;
             }
             Ok(Type::List(Box::new(element_ty)))
         }
+        ExprKind::ListSpread { .. } => Err(diag(
+            expr.span,
+            "list spread syntax is only valid inside a list literal",
+        )),
         ExprKind::Index { base, index } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
             let Type::List(element) = base_ty else {
@@ -4271,6 +4288,7 @@ fn evaluate_default_expr(
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
+        | ExprKind::ListSpread { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }
@@ -4415,6 +4433,7 @@ fn evaluate_constant_expr(
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
+        | ExprKind::ListSpread { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }

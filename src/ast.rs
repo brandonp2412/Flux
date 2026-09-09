@@ -578,6 +578,10 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     List(Vec<Expr>),
+    ListSpread {
+        value: Box<Expr>,
+        spread_span: SourceSpan,
+    },
     Index {
         base: Box<Expr>,
         index: Box<Expr>,

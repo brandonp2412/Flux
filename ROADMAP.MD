@@ -237,7 +237,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 - [x] List literals with homogeneous static element typing and concrete `T[]` source spelling (no source generics).
 - [ ] Set literals.
 - [ ] Map literals.
-- [ ] Spread elements analogous to Dart `...`.
+- [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
 - [ ] Optional-aware spread analogous to Dart `...?`.
 - [ ] Null/optional-aware collection elements analogous to modern Dart `?element`.
 - [ ] `if` / `else` elements inside collection literals.
