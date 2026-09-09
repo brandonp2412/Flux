@@ -7,7 +7,7 @@
 [![Performance](https://github.com/brandonp2412/Flux/actions/workflows/performance.yml/badge.svg)](https://github.com/brandonp2412/Flux/actions/workflows/performance.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Flux is a statically typed, ahead-of-time compiled language for building fast, beautiful native software without dragging an object-oriented framework runtime along for the ride.**
+**Flux is a statically typed, ahead-of-time compiled language for building fast, beautiful native software with no classes, no OOP, and no mandatory language runtime.**
 
 </div>
 
@@ -30,7 +30,7 @@ The language is designed around data, functions, interfaces, ownership, and expl
 | 🚫 | Not in Flux |
 | --- | --- |
 | **Generics** | No user-facing generic type system. Flux prefers concrete types and compiler-known zero-cost operations. |
-| **Any OOP** | No classes, inheritance, mixins, constructors-as-architecture, hidden receivers, or object-oriented widget trees. Composition is through values, functions, interfaces, and flat views. |
+| **Any OOP** | Classes do not exist in Flux. No inheritance, mixins, methods, hidden receivers, class constructors, or object-oriented widget trees. Composition is through values, functions, interfaces, and flat views. |
 | **`try` / `catch` / `finally`** | Recoverable failures are explicit return values. No exception hierarchy, unwinding model, or invisible error control flow. |
 | **Ternaries** | No `condition ? a : b` expression syntax. Use clear control flow or exhaustive value-producing `match` expressions instead. |
 | **Heavily nested layout** | UI is flat and grid-first. Sibling elements declare placement directly instead of building deeply nested layout/widget trees. |
@@ -39,7 +39,7 @@ The language is designed around data, functions, interfaces, ownership, and expl
 
 - Function bodies use `{}` while `if`, `for`, `while`, and `match` bodies use indentation.
 - Ownership and borrowing aim for Rust-class memory safety without requiring Rust-style source syntax everywhere.
-- Interfaces provide explicit typed capabilities without classes or vtables as a source-language object model.
+- Interfaces are explicit typed capability contracts, not objects or classes. Flux has no class type or class system.
 - Tooling is part of the product: formatter, LSP, debugger, profiler, testing, packaging, and performance validation are first-class language work.
 
 <details>
