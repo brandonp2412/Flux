@@ -67,6 +67,7 @@ Implemented on `main`:
 - [x] Rust bootstrap compiler.
 - [x] Functions and explicit return types.
 - [x] Primitive `i64`, `bool`, `str`, `error`, and `void` types.
+- [x] Checked `i64` arithmetic semantics: addition, subtraction, multiplication, unary negation, and division lower through explicit overflow/invalid-operation guards; constant/default evaluation diagnoses the same failures at compile time.
 - [x] Strict typed bindings.
 - [x] Expressions and function calls.
 - [x] Indentation-based `if` / `elif` / `else`.
@@ -273,7 +274,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Multiline strings.
 - [x] Raw strings with Python-like `r"..."` syntax: backslashes are literal, the value remains ordinary `str`, semantic highlighting treats the whole literal as a string, and canonical formatting normalizes it to equivalent escaped ordinary-string syntax.
 - [x] No ternary expression form: Python-style `a if condition else b` and C-style `?:` are intentionally absent; use statement control flow or `match` values.
-- [ ] Integer truncating division equivalent to Dart `~/` if useful.
+- [x] No separate Dart-style `~/`: Flux `i64` `/` already truncates toward zero and is checked for division by zero and `i64::MIN / -1`, so a second operator would duplicate semantics.
 - [x] Concise inclusive integer ranges with `start..=end` alongside exclusive `start..end`, including single-evaluation bounds and overflow-safe native iteration.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
 - [ ] Assignment expressions only where they remain readable and analyzable. Ordinary assignment is now a statement restricted to explicitly mutable `var` bindings; do not conflate that with value-producing assignment expressions.
@@ -441,7 +442,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Local view state without `StatefulWidget`-style objects.
   - [x] Bootstrap explicit primitive view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
 - [ ] Immutable state updates by default.
-  - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer division, and conditionals.
+  - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer arithmetic/division, and conditionals.
 - [ ] Derived/computed state.
   - [x] Bootstrap native Text/Button properties can derive values from bool/i64 local state through statically typed primitive expressions and conditionals, enabling counter/toggle-style UI without a view-model object.
 - [ ] Explicit effects.

@@ -49,6 +49,10 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     out.push_str("static inline bool flux_list_every_bool(struct flux__list list) { for (size_t i = 0; i < list.len; ++i) { if (!*((bool *)flux_list_at(list, (int64_t)i, sizeof(bool)))) return false; } return true; }\n");
     out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
     out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
+    out.push_str("static inline int64_t flux_add_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_add_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer addition overflow\\n\", stderr); abort(); } return result; }\n");
+    out.push_str("static inline int64_t flux_sub_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_sub_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer subtraction overflow\\n\", stderr); abort(); } return result; }\n");
+    out.push_str("static inline int64_t flux_mul_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_mul_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer multiplication overflow\\n\", stderr); abort(); } return result; }\n");
+    out.push_str("static inline int64_t flux_neg_i64(int64_t value) { if (value == INT64_MIN) { fputs(\"Flux runtime error: integer negation overflow\\n\", stderr); abort(); } return -value; }\n");
     out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
     out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
     out.push_str("    return a / b;\n");
@@ -1269,17 +1273,19 @@ fn ui_expr_c(
         ExprKind::Unary { op, expr: inner } => {
             let inner = ui_expr_c(inner, view, signatures)?;
             Ok(match op {
-                UnaryOp::Neg => format!("(-({inner}))"),
+                UnaryOp::Neg => format!("flux_neg_i64({inner})"),
                 UnaryOp::Not => format!("(!({inner}))"),
             })
         }
         ExprKind::Binary { left, op, right } => {
             let left = ui_expr_c(left, view, signatures)?;
             let right = ui_expr_c(right, view, signatures)?;
-            if matches!(op, BinOp::Div) {
-                Ok(format!("flux_div_i64({left}, {right})"))
-            } else {
-                Ok(format!("({left} {} {right})", c_operator(*op)))
+            match op {
+                BinOp::Add => Ok(format!("flux_add_i64({left}, {right})")),
+                BinOp::Sub => Ok(format!("flux_sub_i64({left}, {right})")),
+                BinOp::Mul => Ok(format!("flux_mul_i64({left}, {right})")),
+                BinOp::Div => Ok(format!("flux_div_i64({left}, {right})")),
+                _ => Ok(format!("({left} {} {right})", c_operator(*op))),
             }
         }
         ExprKind::Conditional {
@@ -4364,14 +4370,10 @@ fn emit_expr(
         ExprKind::Unary { op, expr: inner } => {
             let inner = emit_expr(inner, env, signatures)?;
             EmittedExpr {
-                code: format!(
-                    "({}{})",
-                    match op {
-                        UnaryOp::Neg => "-",
-                        UnaryOp::Not => "!",
-                    },
-                    inner.code
-                ),
+                code: match op {
+                    UnaryOp::Neg => format!("flux_neg_i64({})", inner.code),
+                    UnaryOp::Not => format!("(!{})", inner.code),
+                },
                 ty: match op {
                     UnaryOp::Neg => Type::I64,
                     UnaryOp::Not => Type::Bool,
@@ -4382,7 +4384,13 @@ fn emit_expr(
             let left = emit_expr(left, env, signatures)?;
             let right = emit_expr(right, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let code = if matches!(op, BinOp::Div) {
+            let code = if matches!(op, BinOp::Add) {
+                format!("flux_add_i64({}, {})", left.code, right.code)
+            } else if matches!(op, BinOp::Sub) {
+                format!("flux_sub_i64({}, {})", left.code, right.code)
+            } else if matches!(op, BinOp::Mul) {
+                format!("flux_mul_i64({}, {})", left.code, right.code)
+            } else if matches!(op, BinOp::Div) {
                 format!("flux_div_i64({}, {})", left.code, right.code)
             } else if matches!(op, BinOp::Eq | BinOp::Ne) && left.ty == Type::Str {
                 let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };

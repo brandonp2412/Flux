@@ -1077,7 +1077,7 @@ fn main() -> i64 {
     check_source(source).expect("concise functions should typecheck");
     let generated = compile_to_c(source).expect("concise functions should compile");
     assert!(generated.contains("flux__fn_square"));
-    assert!(generated.contains("return (flux__local_value * flux__local_value);"));
+    assert!(generated.contains("return flux_mul_i64(flux__local_value, flux__local_value);"));
     assert!(generated.contains("flux__fn_pair"));
 
     let formatted =
@@ -3378,6 +3378,90 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_compile_time_integer_overflow() {
+    let addition = r#"
+const BAD: i64 = 9223372036854775807 + 1
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(addition).expect_err("constant addition overflow should fail");
+    assert!(
+        error
+            .message
+            .contains("constant integer addition overflows i64")
+    );
+
+    let subtraction = r#"
+const BAD: i64 = -9223372036854775807 - 2
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(subtraction).expect_err("constant subtraction overflow should fail");
+    assert!(
+        error
+            .message
+            .contains("constant integer subtraction overflows i64")
+    );
+
+    let multiplication = r#"
+const BAD: i64 = 9223372036854775807 * 2
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error =
+        check_source(multiplication).expect_err("constant multiplication overflow should fail");
+    assert!(
+        error
+            .message
+            .contains("constant integer multiplication overflows i64")
+    );
+
+    let negation = r#"
+const MIN: i64 = -9223372036854775807 - 1
+const BAD: i64 = -MIN
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(negation).expect_err("constant negation overflow should fail");
+    assert!(
+        error
+            .message
+            .contains("constant integer negation overflows i64")
+    );
+}
+
+#[test]
+fn integer_arithmetic_lowers_through_checked_helpers() {
+    let source = r#"
+fn calculate(left: i64, right: i64) -> i64 {
+    let sum: i64 = left + right
+    let difference: i64 = sum - right
+    let product: i64 = difference * right
+    return -product
+}
+
+fn main() -> i64 {
+    print(calculate(4, 3))
+    return 0
+}
+"#;
+
+    check_source(source).expect("checked integer arithmetic should typecheck");
+    let generated = compile_to_c(source).expect("checked integer arithmetic should lower");
+    assert!(generated.contains("flux_add_i64(flux__local_left, flux__local_right)"));
+    assert!(generated.contains("flux_sub_i64(flux__local_sum, flux__local_right)"));
+    assert!(generated.contains("flux_mul_i64(flux__local_difference, flux__local_right)"));
+    assert!(generated.contains("return flux_neg_i64(flux__local_product);"));
+    assert!(generated.contains("__builtin_add_overflow"));
+    assert!(generated.contains("__builtin_sub_overflow"));
+    assert!(generated.contains("__builtin_mul_overflow"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
@@ -5222,7 +5306,7 @@ app Counter
     check_source(source).expect("i64 view state transition should typecheck");
     let generated = compile_to_c(source).expect("i64 view state should lower natively");
     assert!(generated.contains("static int64_t flux__ui_state_count = INT64_C(0);"));
-    assert!(generated.contains("flux__ui_state_count + INT64_C(1)"));
+    assert!(generated.contains("flux_add_i64(flux__ui_state_count, INT64_C(1))"));
     assert!(generated.contains("flux__ui_state_count > INT64_C(0)"));
     assert!(generated.contains("gtk_label_set_text"));
     assert!(generated.contains("gtk_button_set_label"));
@@ -6132,7 +6216,10 @@ app Counter
     check_source(source).expect("i64 state and primitive derived expressions should typecheck");
     let generated = compile_to_c(source).expect("i64 state should lower natively");
     assert!(generated.contains("static int64_t flux__ui_state_count = INT64_C(0);"));
-    assert!(generated.contains("flux__ui_state_count = (flux__ui_state_count + INT64_C(1));"));
+    assert!(
+        generated
+            .contains("flux__ui_state_count = flux_add_i64(flux__ui_state_count, INT64_C(1));")
+    );
     assert!(generated.contains("flux__ui_state_count >= INT64_C(2)"));
     assert!(generated.contains("flux__ui_state_count < INT64_C(3)"));
     assert!(generated.contains("gtk_label_set_text"));
@@ -7681,7 +7768,7 @@ fn main() -> i64 {
     check_source(source).expect("explicit mutation and while should typecheck");
     let generated = compile_to_c(source).expect("explicit mutation and while should compile");
     assert!(generated.contains("while (flux__local_count < INT64_C(6))"));
-    assert!(generated.contains("flux__local_count = (flux__local_count + INT64_C(1));"));
+    assert!(generated.contains("flux__local_count = flux_add_i64(flux__local_count, INT64_C(1));"));
     assert!(generated.contains("continue;"));
     assert!(generated.contains("break;"));
 }

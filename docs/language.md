@@ -70,7 +70,7 @@ fn countTo(limit: i64) -> i64 {
 }
 ```
 
-`while` conditions must have type `bool`; `break` and `continue` use the same statically checked loop scope as `for`. Assignment is a statement, not a value-producing expression. The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions.
+`while` conditions must have type `bool`; `break` and `continue` use the same statically checked loop scope as `for`. Assignment is a statement, not a value-producing expression. The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions. `i64` arithmetic is checked: `+`, `-`, `*`, unary `-`, and `/` fail explicitly on overflow or invalid division. Integer `/` truncates toward zero, so Flux does not need a second Dart-style `~/` operator with identical `i64` semantics.
 
 ## Flat grid views
 
@@ -437,7 +437,7 @@ const ANSWER: i64 = BASE + 2
 const ENABLED: bool = ANSWER == 42
 ```
 
-The current constant evaluator supports `i64`, `bool`, and `str`, including forward constant references, primitive unary/binary operators, comparisons, equality, and boolean short-circuiting. Integer arithmetic follows Flux runtime integer semantics: addition/subtraction/multiplication wrap as signed `i64`, while division by zero and `i64::MIN / -1` are compile-time errors. Constant cycles, unknown references, type mismatches, function calls, struct values, and other runtime-only expressions are rejected.
+The current constant evaluator supports `i64`, `bool`, and `str`, including forward constant references, primitive unary/binary operators, comparisons, equality, and boolean short-circuiting. Integer arithmetic follows Flux runtime integer semantics: addition, subtraction, multiplication, and negation are checked for `i64` overflow, while division rejects zero and `i64::MIN / -1`. The same failures are compile-time diagnostics when they occur in constant/default expressions. Constant cycles, unknown references, type mismatches, function calls, struct values, and other runtime-only expressions are rejected.
 
 ## Type aliases
 

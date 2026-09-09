@@ -4273,9 +4273,10 @@ fn evaluate_default_expr(
         ExprKind::Unary { op, expr: inner } => {
             let value = evaluate_default_expr(inner, signatures)?;
             match (op, value) {
-                (UnaryOp::Neg, ConstantValue::I64(value)) => {
-                    Ok(ConstantValue::I64(value.wrapping_neg()))
-                }
+                (UnaryOp::Neg, ConstantValue::I64(value)) => value
+                    .checked_neg()
+                    .map(ConstantValue::I64)
+                    .ok_or_else(|| diag(expr.span, "constant integer negation overflows i64")),
                 (UnaryOp::Not, ConstantValue::Bool(value)) => Ok(ConstantValue::Bool(!value)),
                 (UnaryOp::Neg, actual) => Err(constant_type_error(
                     expr.span,
@@ -4416,9 +4417,10 @@ fn evaluate_constant_expr(
         ExprKind::Unary { op, expr: inner } => {
             let value = evaluate_constant_expr(inner, definitions, signatures, cache, stack)?;
             match (op, value) {
-                (UnaryOp::Neg, ConstantValue::I64(value)) => {
-                    Ok(ConstantValue::I64(value.wrapping_neg()))
-                }
+                (UnaryOp::Neg, ConstantValue::I64(value)) => value
+                    .checked_neg()
+                    .map(ConstantValue::I64)
+                    .ok_or_else(|| diag(expr.span, "constant integer negation overflows i64")),
                 (UnaryOp::Not, ConstantValue::Bool(value)) => Ok(ConstantValue::Bool(!value)),
                 (UnaryOp::Neg, actual) => Err(constant_type_error(
                     expr.span,
@@ -4470,15 +4472,18 @@ fn evaluate_constant_binary(
     right: ConstantValue,
 ) -> Result<ConstantValue, Diagnostic> {
     match (op, left, right) {
-        (BinOp::Add, ConstantValue::I64(left), ConstantValue::I64(right)) => {
-            Ok(ConstantValue::I64(left.wrapping_add(right)))
-        }
-        (BinOp::Sub, ConstantValue::I64(left), ConstantValue::I64(right)) => {
-            Ok(ConstantValue::I64(left.wrapping_sub(right)))
-        }
-        (BinOp::Mul, ConstantValue::I64(left), ConstantValue::I64(right)) => {
-            Ok(ConstantValue::I64(left.wrapping_mul(right)))
-        }
+        (BinOp::Add, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_add(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer addition overflows i64")),
+        (BinOp::Sub, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_sub(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer subtraction overflows i64")),
+        (BinOp::Mul, ConstantValue::I64(left), ConstantValue::I64(right)) => left
+            .checked_mul(right)
+            .map(ConstantValue::I64)
+            .ok_or_else(|| diag(span, "constant integer multiplication overflows i64")),
         (BinOp::Div, ConstantValue::I64(_), ConstantValue::I64(0)) => {
             Err(diag(span, "constant integer division by zero is invalid"))
         }
