@@ -1657,8 +1657,11 @@ fn build_android_aab(
     }
 
     let manifest_path = staging.join("AndroidManifest.xml");
-    fs::write(&manifest_path, android_manifest_xml(manifest, mode))
-        .map_err(|error| format!("failed to write Android manifest: {error}"))?;
+    fs::write(
+        &manifest_path,
+        android_manifest_xml(manifest, mode, c_source),
+    )
+    .map_err(|error| format!("failed to write Android manifest: {error}"))?;
     let proto_apk = staging.join("manifest-proto.apk");
     run_checked(
         Command::new(toolchain.build_tools.join("aapt2"))
@@ -1750,7 +1753,7 @@ fn build_android_apk(
     let staging = android_staging_dir();
     compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &staging)?;
 
-    let manifest_xml = android_manifest_xml(manifest, mode);
+    let manifest_xml = android_manifest_xml(manifest, mode, c_source);
     let manifest_path = staging.join("AndroidManifest.xml");
     fs::write(&manifest_path, manifest_xml)
         .map_err(|error| format!("failed to write Android manifest: {error}"))?;
@@ -1810,12 +1813,21 @@ fn build_android_apk(
     Ok(())
 }
 
-fn android_manifest_xml(manifest: &fluxc::project::PackageManifest, mode: BuildMode) -> String {
+fn android_manifest_xml(
+    manifest: &fluxc::project::PackageManifest,
+    mode: BuildMode,
+    c_source: &str,
+) -> String {
     let application_id = xml_escape(&manifest.android.application_id);
     let label = xml_escape(&manifest.name);
     let version = xml_escape(manifest.version.as_deref().unwrap_or("0.0.0"));
+    let vibrate_permission = if c_source.contains("flux__android_vibrate(") {
+        "    <uses-permission android:name=\"android.permission.VIBRATE\" />\n"
+    } else {
+        ""
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
         manifest.android.min_sdk,
         manifest.android.target_sdk,
         if mode == BuildMode::Debug {
@@ -2131,7 +2143,7 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, BuildMode, android_build_options,
-        build_options, parse_adb_devices,
+        android_manifest_xml, build_options, parse_adb_devices,
     };
 
     #[test]
@@ -2211,6 +2223,35 @@ mod tests {
         assert_eq!(defaults.abi, AndroidAbi::Arm64V8a);
         assert_eq!(defaults.kind, AndroidArtifactKind::Apk);
         assert!(defaults.output.is_none());
+    }
+
+    #[test]
+    fn android_manifest_adds_vibrate_permission_only_when_needed() {
+        let manifest = crate::project::PackageManifest {
+            name: "example".to_string(),
+            version: Some("1.0.0".to_string()),
+            entry: std::path::PathBuf::from("src/main.flux"),
+            path: std::path::PathBuf::from("flux.toml"),
+            android: crate::project::AndroidPackageConfig {
+                application_id: "app.flux.example".to_string(),
+                min_sdk: 23,
+                target_sdk: 35,
+            },
+        };
+
+        let plain = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "int main(void) { return 0; }",
+        );
+        assert!(!plain.contains("android.permission.VIBRATE"));
+
+        let vibrating = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "static void f(void) { flux__android_vibrate(25); }",
+        );
+        assert!(vibrating.contains("android.permission.VIBRATE"));
     }
 
     #[test]

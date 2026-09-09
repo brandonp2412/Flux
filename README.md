@@ -200,6 +200,8 @@ The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<
 
 APK builds emit one aligned, signed artifact containing `lib/<abi>/libflux.so` and a generated `NativeActivity` manifest. AAB builds compile all supported ABIs into one signed App Bundle and use bundletool to validate the Play publishing structure. Development signing is compiler-managed; configurable release signing, native Android rendering/input, and the remaining Play Store release pipeline remain roadmap work.
 
+Android-specific framework functionality is exposed directly as compiler-owned Flux APIs rather than method channels or application-written JNI. The first platform intrinsic is `android.vibrate(duration_ms)`: it is statically typed, lowers to generated JNI calls against Android's vibrator service, causes `android.permission.VIBRATE` to be added only when reachable, appears in LSP completion/signature help, and is rejected when building for a non-Android target.
+
 The package directory or manifest can then be passed directly to project-aware commands:
 
 ```sh

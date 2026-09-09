@@ -1,4 +1,5 @@
 fn started() -> void {
+    android.vibrate(25)
     print("Flux Android started")
 }
 

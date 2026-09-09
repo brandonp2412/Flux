@@ -126,6 +126,12 @@ pub fn emit_c_for_target_with_source_paths(
         }
     }
     let runtime_usage = format!("{generated_body}{application_body}");
+    if target != NativeTarget::Android && runtime_usage.contains("flux__android_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "android.* platform APIs require the Android target",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -286,6 +292,54 @@ fn emit_runtime_prelude(
     }
     out.push('\n');
 
+    if uses_android {
+        out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
+    }
+    if uses_android && runtime_usage.contains("flux__android_vibrate(") {
+        out.push_str("static void flux__android_vibrate(int64_t duration_ms) {\n");
+        out.push_str("    if (duration_ms <= 0 || flux__android_activity == NULL) return;\n");
+        out.push_str("    JavaVM *vm = flux__android_activity->vm;\n");
+        out.push_str("    JNIEnv *env = NULL;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {\n");
+        out.push_str("        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;\n");
+        out.push_str("        detach = true;\n");
+        out.push_str("    }\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done_activity_class;\n");
+        out.push_str("    jstring service_name = (*env)->NewStringUTF(env, \"vibrator\");\n");
+        out.push_str("    if (service_name == NULL) goto done_activity_class;\n");
+        out.push_str("    jobject vibrator = (*env)->CallObjectMethod(env, activity, get_service, service_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); vibrator = NULL; }\n");
+        out.push_str("    if (vibrator != NULL) {\n");
+        out.push_str("        jclass vibrator_class = (*env)->GetObjectClass(env, vibrator);\n");
+        out.push_str("        if (vibrator_class != NULL) {\n");
+        out.push_str("            jmethodID vibrate = (*env)->GetMethodID(env, vibrator_class, \"vibrate\", \"(J)V\");\n");
+        out.push_str("            if (vibrate != NULL) {\n");
+        out.push_str(
+            "                (*env)->CallVoidMethod(env, vibrator, vibrate, (jlong)duration_ms);\n",
+        );
+        out.push_str(
+            "                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n",
+        );
+        out.push_str("            } else if ((*env)->ExceptionCheck(env)) {\n");
+        out.push_str("                (*env)->ExceptionClear(env);\n");
+        out.push_str("            }\n");
+        out.push_str("            (*env)->DeleteLocalRef(env, vibrator_class);\n");
+        out.push_str("        }\n");
+        out.push_str("        (*env)->DeleteLocalRef(env, vibrator);\n");
+        out.push_str("    }\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str("done_activity_class:\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
+        out.push_str("done:\n");
+        out.push_str("    if (detach) (*vm)->DetachCurrentThread(vm);\n");
+        out.push_str("}\n");
+    }
+
     if runtime_usage.contains("flux_print_i64(") {
         out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
     }
@@ -435,7 +489,7 @@ fn emit_android_native_application(
             function_c_name(function),
         ));
     }
-    out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    (void)saved_state;\n    (void)saved_state_size;\n");
+    out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    (void)saved_state;\n    (void)saved_state_size;\n    flux__android_activity = activity;\n");
     if application_metadata_function(application, "on_exit").is_some() {
         out.push_str("    activity->callbacks->onDestroy = flux__android_on_destroy;\n");
     }
@@ -8060,6 +8114,20 @@ fn emit_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    if namespace == "android" {
+        if name != "vibrate" || args.len() != 1 || !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid android platform call reached code generation",
+            ));
+        }
+        let duration = emit_expr(&args[0], env, signatures)?;
+        return Ok((
+            format!("flux__android_vibrate({})", duration.code),
+            Vec::new(),
+            None,
+        ));
+    }
     if let Some(definition) = signatures.enum_type(namespace) {
         let variant = definition
             .variant(name)

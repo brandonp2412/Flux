@@ -632,12 +632,15 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Activity/window integration hidden behind Flux application APIs.
   - [x] The generated manifest and native entry use framework `android.app.NativeActivity`; Flux source continues to declare only `app ViewName(...)`, with no Activity subclass or JNI bootstrap in application code. Native Android view rendering/input on that window remains the separate rendering-backend item below.
 - [ ] Compiler-owned Android interop lowering: direct NDK/C ABI calls where available; generated JVM/DEX classes and JNI/native thunks for Java/Kotlin/AndroidX-only APIs; callbacks return directly into compiled Flux functions.
+  - [x] First real framework-bound intrinsic: reachable `android.vibrate(duration_ms)` lowers directly into compiler-emitted JNI against the NativeActivity's Android framework object, with no application JNI/Kotlin/Java bridge source and no serialized method-channel protocol. Non-Android native builds reject reachable `android.*` calls during code generation.
 - [ ] First-class target-specific `android.*` Flux modules generated/maintained from stable platform bindings where practical, with compile-time API-level/target checks and no reflection-based runtime dispatch requirement.
+  - [x] Bootstrap `android` platform namespace participates in ordinary static checking plus LSP qualified completion/signature help; `android.vibrate(i64) -> void` is the first member. Broader module generation, API-level availability metadata, and nested platform namespaces remain pending.
 - [ ] Native rendering/input backend.
 - [ ] Accessibility/semantics bridge.
 - [ ] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.
 - [ ] WorkManager/background-job integration callable directly from Flux; generate required `Worker`/`ListenableWorker` JVM entry classes and route execution into compiled Flux without user-authored Kotlin/Java glue.
-- [ ] Device vibration/haptics callable directly from Flux through the appropriate Android native/framework API for the configured API level.
+- [x] Device vibration/haptics callable directly from Flux through the appropriate Android native/framework API for the configured API level.
+  - [x] `android.vibrate(duration_ms)` works from ordinary Flux code, tree-shakes its JNI helper when unused, automatically adds `android.permission.VIBRATE` only when reachable, and has been compiled into signed APK/AAB artifacts on Nox; the APK also installs/launches in Waydroid without application-authored bridge code.
 - [ ] Intents/deep links.
 - [ ] Share sheet.
 - [ ] Permissions.

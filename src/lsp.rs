@@ -1137,6 +1137,16 @@ fn add_qualified_namespace_completions(
     namespace: &str,
     program: &crate::ast::Program,
 ) -> bool {
+    if namespace == "android" {
+        push_completion_item(
+            items,
+            seen,
+            "vibrate",
+            3,
+            "fn android.vibrate(duration_ms: i64) -> void",
+        );
+        return true;
+    }
     if let Some(definition) = program
         .enums
         .iter()
@@ -1939,6 +1949,14 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        if namespace == "android" && member == "vibrate" {
+            return Some(signature_help_for_builtin(
+                "android.vibrate",
+                &["duration_ms: i64"],
+                "void",
+                active_parameter,
+            ));
+        }
         if let Some(definition) = database.signatures().enum_type(namespace)
             && let Some(variant) = definition.variant(member)
         {
@@ -4693,7 +4711,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -4730,6 +4748,23 @@ mod tests {
         assert!(interface_items.contains("\"label\":\"load\""));
         assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
         assert!(interface_items.contains("\"label\":\"save\""));
+
+        let android_line = source
+            .lines()
+            .position(|line| line.trim() == "android.")
+            .expect("Android completion line should exist");
+        let android_source = source.lines().nth(android_line).unwrap();
+        let android_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(android_line),
+            Some(android_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(android_items.contains("\"label\":\"vibrate\""));
+        assert!(android_items.contains("fn android.vibrate(duration_ms: i64) -> void"));
     }
 
     #[test]

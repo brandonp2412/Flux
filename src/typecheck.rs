@@ -4640,6 +4640,38 @@ fn check_qualified_call(
         return Err(diag(expr.span, "expected a qualified call"));
     };
     let span = expr.span;
+    if namespace == "android" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("android.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "vibrate" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("android.vibrate expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "android.vibrate duration_ms",
+                )?;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("android module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if let Some(definition) = signatures.enum_type(namespace) {
         require_visible_declaration(
             *namespace_span,
@@ -4696,7 +4728,7 @@ fn check_qualified_call(
     let Some(interface) = signatures.interface(namespace) else {
         return Err(diag(
             *namespace_span,
-            &format!("unknown enum or interface namespace '{namespace}'"),
+            &format!("unknown enum, interface, or platform namespace '{namespace}'"),
         ));
     };
     require_visible_declaration(
