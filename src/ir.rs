@@ -17,6 +17,10 @@ pub enum ControlFlowDefinitionId {
         node: ControlFlowNodeId,
         index: usize,
     },
+    Scoped {
+        node: ControlFlowNodeId,
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +287,7 @@ pub struct ControlFlowGraph {
     nodes: Vec<ControlFlowNode>,
     edges: Vec<ControlFlowEdge>,
     values: Vec<ControlFlowValue>,
+    scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     move_states_before: Vec<ControlFlowMoveState>,
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
@@ -343,6 +348,11 @@ impl ControlFlowGraph {
                 .get(node.0)
                 .and_then(|node| node.definitions.get(index))
                 .map(|definition| definition.name.as_str()),
+            ControlFlowDefinitionId::Scoped { node, index } => self
+                .scoped_definitions
+                .get(node.0)
+                .and_then(|definitions| definitions.get(index))
+                .map(|definition| definition.name.as_str()),
         }
     }
 
@@ -355,6 +365,11 @@ impl ControlFlowGraph {
                 .nodes
                 .get(node.0)
                 .and_then(|node| node.definitions.get(index))
+                .map(|definition| definition.span),
+            ControlFlowDefinitionId::Scoped { node, index } => self
+                .scoped_definitions
+                .get(node.0)
+                .and_then(|definitions| definitions.get(index))
                 .map(|definition| definition.span),
         }
     }
@@ -405,6 +420,8 @@ struct ControlFlowBuilder<'a> {
     nodes: Vec<ControlFlowNode>,
     edges: Vec<ControlFlowEdge>,
     values: Vec<ControlFlowValue>,
+    scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
+    scoped_definition_stack: Vec<HashMap<String, ControlFlowDefinitionId>>,
     evaluation_types: Vec<(SourceSpan, Vec<Type>)>,
 }
 
@@ -428,6 +445,8 @@ impl<'a> ControlFlowBuilder<'a> {
             nodes: Vec::new(),
             edges: Vec::new(),
             values: Vec::new(),
+            scoped_definitions: Vec::new(),
+            scoped_definition_stack: Vec::new(),
             evaluation_types: collect_evaluation_types(function, signatures),
         };
         builder.entry = builder.node(ControlFlowNodeKind::Entry, function.keyword_span);
@@ -451,6 +470,7 @@ impl<'a> ControlFlowBuilder<'a> {
             nodes: self.nodes,
             edges: self.edges,
             values: self.values,
+            scoped_definitions: self.scoped_definitions,
             move_states_before,
             live_before,
             live_after,
@@ -955,6 +975,54 @@ impl<'a> ControlFlowBuilder<'a> {
         id
     }
 
+    fn add_scoped_definition(
+        &mut self,
+        producer: ControlFlowNodeId,
+        definition: ControlFlowDefinition,
+    ) -> ControlFlowDefinitionId {
+        if self.scoped_definitions.len() <= producer.0 {
+            self.scoped_definitions
+                .resize_with(producer.0 + 1, Vec::new);
+        }
+        let definitions = &mut self.scoped_definitions[producer.0];
+        let index = definitions.len();
+        definitions.push(definition);
+        ControlFlowDefinitionId::Scoped {
+            node: producer,
+            index,
+        }
+    }
+
+    fn add_scoped_definitions(
+        &mut self,
+        producer: ControlFlowNodeId,
+        definitions: Vec<ControlFlowDefinition>,
+    ) -> Vec<(String, ControlFlowDefinitionId)> {
+        definitions
+            .into_iter()
+            .map(|definition| {
+                let name = definition.name.clone();
+                let id = self.add_scoped_definition(producer, definition);
+                (name, id)
+            })
+            .collect()
+    }
+
+    fn push_scoped_definitions(
+        &mut self,
+        definitions: impl IntoIterator<Item = (String, ControlFlowDefinitionId)>,
+    ) {
+        self.scoped_definition_stack
+            .push(definitions.into_iter().collect());
+    }
+
+    fn scoped_definition_for(&self, name: &str) -> Option<ControlFlowDefinitionId> {
+        self.scoped_definition_stack
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+    }
+
     fn lower_expr_values(
         &mut self,
         producer: ControlFlowNodeId,
@@ -967,13 +1035,30 @@ impl<'a> ControlFlowBuilder<'a> {
             }
             ExprKind::Var(name) => ControlFlowValueKind::NameRead {
                 name: name.clone(),
-                definitions: Vec::new(),
+                definitions: self.scoped_definition_for(name).into_iter().collect(),
             },
-            ExprKind::AnonymousFunction { body, .. } => self
-                .lower_scalar_expr(producer, body)
-                .map_or(ControlFlowValueKind::Opaque, |body| {
+            ExprKind::AnonymousFunction { params, body, .. } => {
+                let definitions = params
+                    .iter()
+                    .map(|param| {
+                        let id = self.add_scoped_definition(
+                            producer,
+                            ControlFlowDefinition {
+                                name: param.name.clone(),
+                                ty: self.signatures.canonical_type(&param.ty),
+                                span: param.name_span,
+                            },
+                        );
+                        (param.name.clone(), id)
+                    })
+                    .collect::<Vec<_>>();
+                self.push_scoped_definitions(definitions);
+                let body = self.lower_scalar_expr(producer, body);
+                self.scoped_definition_stack.pop();
+                body.map_or(ControlFlowValueKind::Opaque, |body| {
                     ControlFlowValueKind::AnonymousFunction { body }
-                }),
+                })
+            }
             ExprKind::Call {
                 name,
                 args,
@@ -1088,16 +1173,28 @@ impl<'a> ControlFlowBuilder<'a> {
             }
             ExprKind::ListComprehension {
                 value,
+                binding,
+                binding_span,
                 iterable,
                 condition,
-                ..
             } => {
-                let iterable = self.lower_scalar_expr(producer, iterable);
+                let iterable_value = self.lower_scalar_expr(producer, iterable);
+                let definitions = match self.scalar_expression_type(iterable) {
+                    Some(Type::List(element)) => vec![ControlFlowDefinition {
+                        name: binding.clone(),
+                        ty: *element,
+                        span: *binding_span,
+                    }],
+                    _ => Vec::new(),
+                };
+                let definitions = self.add_scoped_definitions(producer, definitions);
+                self.push_scoped_definitions(definitions);
                 let condition = condition
                     .as_deref()
                     .and_then(|condition| self.lower_scalar_expr(producer, condition));
                 let value = self.lower_scalar_expr(producer, value);
-                match (iterable, value) {
+                self.scoped_definition_stack.pop();
+                match (iterable_value, value) {
                     (Some(iterable), Some(value)) => ControlFlowValueKind::ListComprehension {
                         iterable,
                         value,
@@ -1164,10 +1261,13 @@ impl<'a> ControlFlowBuilder<'a> {
                 },
             ),
             ExprKind::Match { value, arms } => {
-                let value = self.lower_scalar_expr(producer, value);
+                let matched_value = self.lower_scalar_expr(producer, value);
                 let mut guards = Vec::with_capacity(arms.len());
                 let mut arm_values = Vec::with_capacity(arms.len());
                 for arm in arms {
+                    let definitions = self.enum_match_expr_definitions(value, arm);
+                    let definitions = self.add_scoped_definitions(producer, definitions);
+                    self.push_scoped_definitions(definitions);
                     guards.push(
                         arm.guard
                             .as_ref()
@@ -1176,8 +1276,9 @@ impl<'a> ControlFlowBuilder<'a> {
                     if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
                         arm_values.push(value);
                     }
+                    self.scoped_definition_stack.pop();
                 }
-                value.map_or(ControlFlowValueKind::Opaque, |value| {
+                matched_value.map_or(ControlFlowValueKind::Opaque, |value| {
                     ControlFlowValueKind::Match {
                         value,
                         guards,
@@ -1186,10 +1287,13 @@ impl<'a> ControlFlowBuilder<'a> {
                 })
             }
             ExprKind::ListMatch { value, arms } => {
-                let value = self.lower_scalar_expr(producer, value);
+                let matched_value = self.lower_scalar_expr(producer, value);
                 let mut guards = Vec::with_capacity(arms.len());
                 let mut arm_values = Vec::with_capacity(arms.len());
                 for arm in arms {
+                    let definitions = self.list_match_definitions(value, &arm.pattern);
+                    let definitions = self.add_scoped_definitions(producer, definitions);
+                    self.push_scoped_definitions(definitions);
                     guards.push(
                         arm.guard
                             .as_ref()
@@ -1198,8 +1302,9 @@ impl<'a> ControlFlowBuilder<'a> {
                     if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
                         arm_values.push(value);
                     }
+                    self.scoped_definition_stack.pop();
                 }
-                value.map_or(ControlFlowValueKind::Opaque, |value| {
+                matched_value.map_or(ControlFlowValueKind::Opaque, |value| {
                     ControlFlowValueKind::ListMatch {
                         value,
                         guards,
@@ -1424,17 +1529,34 @@ impl<'a> ControlFlowBuilder<'a> {
         value: &Expr,
         arm: &crate::ast::MatchArm,
     ) -> Vec<ControlFlowDefinition> {
+        self.enum_match_pattern_definitions(value, &arm.variant, &arm.patterns)
+    }
+
+    fn enum_match_expr_definitions(
+        &self,
+        value: &Expr,
+        arm: &crate::ast::MatchExprArm,
+    ) -> Vec<ControlFlowDefinition> {
+        self.enum_match_pattern_definitions(value, &arm.variant, &arm.patterns)
+    }
+
+    fn enum_match_pattern_definitions(
+        &self,
+        value: &Expr,
+        variant_name: &str,
+        patterns: &[crate::ast::MatchPattern],
+    ) -> Vec<ControlFlowDefinition> {
         let Some(Type::Named(enum_name)) = self.scalar_expression_type(value) else {
             return Vec::new();
         };
         let Some(definition) = self.signatures.enum_type(&enum_name) else {
             return Vec::new();
         };
-        let Some(variant) = definition.variant(&arm.variant) else {
+        let Some(variant) = definition.variant(variant_name) else {
             return Vec::new();
         };
         let mut definitions = Vec::new();
-        for (pattern, payload) in arm.patterns.iter().zip(&variant.payloads) {
+        for (pattern, payload) in patterns.iter().zip(&variant.payloads) {
             match pattern {
                 crate::ast::MatchPattern::Binding(binding) if binding.name != "_" => {
                     definitions.push(ControlFlowDefinition {
@@ -2024,6 +2146,9 @@ fn resolve_name_read_definitions(
         let ControlFlowValueKind::NameRead { name, definitions } = &mut value.kind else {
             continue;
         };
+        if !definitions.is_empty() {
+            continue;
+        }
         *definitions = reaching_definitions
             .get(value.producer.0)
             .and_then(Option::as_ref)

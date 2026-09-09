@@ -3866,6 +3866,45 @@ fn main() -> i64 {
         .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::PatternBinding)
         .expect("list element match binding should be indexed");
     assert_eq!(first.ty, Some(fluxc::ast::Type::I64));
+
+    let graph = database
+        .control_flow_graph("main")
+        .expect("list match fixture should expose typed IR");
+    let list_match = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::ListMatch { arms, .. } if arms.len() == 3 => Some(arms),
+            _ => None,
+        })
+        .expect("value-producing list match should be normalized");
+    let body_arm = graph
+        .value(list_match[2])
+        .expect("rest-pattern arm should retain its value expression");
+    let ControlFlowValueKind::Binary { left, .. } = &body_arm.kind else {
+        panic!("rest-pattern arm should retain its body-length addition");
+    };
+    let ControlFlowValueKind::Field { base, .. } = &graph
+        .value(*left)
+        .expect("rest-pattern body length should retain its field access")
+        .kind
+    else {
+        panic!("rest-pattern expression should read the rest-list length");
+    };
+    let ControlFlowValueKind::NameRead { name, definitions } = &graph
+        .value(*base)
+        .expect("rest-pattern field should retain its binding read")
+        .kind
+    else {
+        panic!("rest-pattern field base should be a name read");
+    };
+    assert_eq!(name, "body");
+    assert_eq!(definitions.len(), 1);
+    assert!(matches!(
+        definitions[0],
+        ControlFlowDefinitionId::Scoped { .. }
+    ));
+    assert_eq!(graph.definition_name(definitions[0]), Some("body"));
 }
 
 #[test]
@@ -4720,6 +4759,28 @@ fn main() -> i64 {
     assert!(generated.contains("flux__iface_call_Tool_apply"));
     assert!(generated.contains("receiver.flux__value_Offset"));
     assert!(!generated.contains("switch (receiver.tag)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1314))
+        .expect("anonymous interface dispatch should analyze semantically");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("anonymous interface dispatch should expose typed IR");
+    let definitions = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::NameRead { name, definitions } if name == "value" => {
+                Some(definitions)
+            }
+            _ => None,
+        })
+        .expect("anonymous function body should retain its parameter read");
+    assert_eq!(definitions.len(), 1);
+    assert!(matches!(
+        definitions[0],
+        ControlFlowDefinitionId::Scoped { .. }
+    ));
+    assert_eq!(graph.definition_name(definitions[0]), Some("value"));
 }
 
 #[test]
@@ -5994,13 +6055,34 @@ fn main() -> i64 {
         graph.value(*value).map(|value| &value.kind),
         Some(ControlFlowValueKind::NameRead { name, .. }) if name == "choice"
     ));
+    let match_arm = graph
+        .value(arms[0])
+        .expect("matched payload arm should retain its value expression");
+    let ControlFlowValueKind::Binary {
+        op: fluxc::ast::BinOp::Mul,
+        left: match_binding_read,
+        ..
+    } = &match_arm.kind
+    else {
+        panic!("matched payload arm should retain its multiplication");
+    };
+    let match_binding_definitions = match &graph
+        .value(*match_binding_read)
+        .expect("match arm should retain its payload read")
+        .kind
+    {
+        ControlFlowValueKind::NameRead { name, definitions } if name == "value" => definitions,
+        _ => panic!("match payload should be a scoped name read"),
+    };
+    assert_eq!(match_binding_definitions.len(), 1);
     assert!(matches!(
-        graph.value(arms[0]).map(|value| &value.kind),
-        Some(ControlFlowValueKind::Binary {
-            op: fluxc::ast::BinOp::Mul,
-            ..
-        })
+        match_binding_definitions[0],
+        ControlFlowDefinitionId::Scoped { .. }
     ));
+    assert_eq!(
+        graph.definition_name(match_binding_definitions[0]),
+        Some("value")
+    );
     assert!(matches!(
         graph.value(arms[1]).map(|value| &value.kind),
         Some(ControlFlowValueKind::Literal)
@@ -6023,22 +6105,47 @@ fn main() -> i64 {
         graph.value(*iterable).map(|value| &value.kind),
         Some(ControlFlowValueKind::NameRead { name, .. }) if name == "values"
     ));
+    let comprehension_value = graph
+        .value(*value)
+        .expect("comprehension body should retain its value expression");
+    let ControlFlowValueKind::Binary {
+        op: fluxc::ast::BinOp::Mul,
+        left: body_binding_read,
+        ..
+    } = &comprehension_value.kind
+    else {
+        panic!("comprehension body should retain its multiplication");
+    };
+    let condition = condition
+        .and_then(|condition| graph.value(condition))
+        .expect("comprehension filter should retain its condition");
+    let ControlFlowValueKind::Binary {
+        op: fluxc::ast::BinOp::Gt,
+        left: condition_binding_read,
+        ..
+    } = &condition.kind
+    else {
+        panic!("comprehension filter should retain its comparison");
+    };
+    let scoped_binding = |id| match &graph
+        .value(id)
+        .expect("comprehension binding read should be typed")
+        .kind
+    {
+        ControlFlowValueKind::NameRead { name, definitions } if name == "value" => {
+            assert_eq!(definitions.len(), 1);
+            definitions[0]
+        }
+        _ => panic!("comprehension binding should be a scoped name read"),
+    };
+    let body_definition = scoped_binding(*body_binding_read);
+    let condition_definition = scoped_binding(*condition_binding_read);
+    assert_eq!(body_definition, condition_definition);
     assert!(matches!(
-        graph.value(*value).map(|value| &value.kind),
-        Some(ControlFlowValueKind::Binary {
-            op: fluxc::ast::BinOp::Mul,
-            ..
-        })
+        body_definition,
+        ControlFlowDefinitionId::Scoped { .. }
     ));
-    assert!(matches!(
-        condition
-            .and_then(|condition| graph.value(condition))
-            .map(|value| &value.kind),
-        Some(ControlFlowValueKind::Binary {
-            op: fluxc::ast::BinOp::Gt,
-            ..
-        })
-    ));
+    assert_eq!(graph.definition_name(body_definition), Some("value"));
 }
 
 #[test]
