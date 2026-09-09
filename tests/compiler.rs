@@ -1401,6 +1401,49 @@ fn main() -> i64 {
 }
 
 #[test]
+fn list_rest_patterns_bind_zero_copy_middle_views() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40, 50]
+    let reversed: i64[] = values[::-1]
+    let [first, ...middle, last] = reversed
+    print first
+    print middle.length
+    print middle.first
+    print middle.last
+    print last
+    return 0
+}
+"#;
+
+    check_source(source).expect("list rest destructuring should typecheck");
+    let generated = compile_to_c(source).expect("list rest destructuring should lower natively");
+    assert!(generated.contains(".len < 2"));
+    assert!(generated.contains("Flux runtime error: list pattern requires at least 2 elements"));
+    assert!(generated.contains("-INT64_C(1)"));
+    assert!(generated.contains(".len = flux__list_pattern_"));
+    assert!(generated.contains("flux_list_stride(flux__list_pattern_"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("list rest pattern should format");
+    assert!(formatted.contains("let [first, ...middle, last] = reversed"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted list rest pattern should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(742))
+        .expect("list rest pattern should analyze semantically");
+    let middle = database
+        .symbols_named("middle")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Binding)
+        .expect("rest binding should be indexed");
+    assert_eq!(
+        middle.ty,
+        Some(fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64)))
+    );
+}
+
+#[test]
 fn rejects_invalid_list_destructuring_patterns() {
     let non_list = r#"
 fn main() -> i64 {
@@ -1443,6 +1486,37 @@ fn main() -> i64 {
         error
             .message
             .contains("list destructuring requires at least one binding")
+    );
+
+    let multiple_rest = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let [...left, ...right] = values
+    print left.length
+    print right.length
+    return 0
+}
+"#;
+    let error = check_source(multiple_rest).expect_err("multiple list rest patterns should fail");
+    assert!(
+        error
+            .message
+            .contains("list destructuring allows only one rest pattern")
+    );
+
+    let bare_rest = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let [first, ...] = values
+    print first
+    return 0
+}
+"#;
+    let error = check_source(bare_rest).expect_err("bare list rest patterns should fail");
+    assert!(
+        error
+            .message
+            .contains("list rest patterns require a binding after '...'")
     );
 }
 

@@ -1957,7 +1957,7 @@ fn collect_binding_declarations(
                     declarations.push((binding.name.clone(), binding.name_span, "binding"));
                 }
             }
-            StmtKind::LetListDestructure { bindings, .. } => {
+            StmtKind::LetListDestructure { bindings, rest, .. } => {
                 for binding in bindings {
                     if binding.name != "_" {
                         declarations.push((
@@ -1966,6 +1966,15 @@ fn collect_binding_declarations(
                             "destructured binding",
                         ));
                     }
+                }
+                if let Some(rest) = rest
+                    && rest.binding.name != "_"
+                {
+                    declarations.push((
+                        rest.binding.name.clone(),
+                        rest.binding.span,
+                        "destructured binding",
+                    ));
                 }
             }
             StmtKind::LetStructDestructure { fields, .. } => {
@@ -2413,7 +2422,11 @@ fn check_block_all(
                     }
                 }
             }
-            StmtKind::LetListDestructure { bindings, expr } => {
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
                 let element_ty = match type_of_expr(expr, env, signatures) {
                     Ok(actual) => match signatures.canonical_type(&actual) {
                         Type::List(element) => Some(*element),
@@ -2445,6 +2458,21 @@ fn check_block_all(
                             ));
                         } else {
                             env.insert(binding.name.clone(), element_ty.clone());
+                        }
+                    }
+                    if let Some(rest) = rest
+                        && rest.binding.name != "_"
+                    {
+                        if env.contains_key(&rest.binding.name) {
+                            diagnostics.push(diag(
+                                rest.binding.span,
+                                &format!(
+                                    "'{}' is already defined in this scope",
+                                    rest.binding.name
+                                ),
+                            ));
+                        } else {
+                            env.insert(rest.binding.name.clone(), Type::List(Box::new(element_ty)));
                         }
                     }
                 }

@@ -514,7 +514,11 @@ fn collect_block_symbols(
                     });
                 }
             }
-            StmtKind::LetListDestructure { bindings, expr } => {
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
                 let env = symbols
                     .iter()
                     .filter(|symbol| {
@@ -545,6 +549,18 @@ fn collect_block_symbols(
                         kind: SymbolKind::Binding,
                         ty: element_ty.clone(),
                         span: binding.span,
+                    });
+                }
+                if let Some(rest) = rest
+                    && rest.binding.name != "_"
+                {
+                    symbols.push(SemanticSymbol {
+                        name: rest.binding.name.clone(),
+                        kind: SymbolKind::Binding,
+                        ty: element_ty
+                            .clone()
+                            .map(|element| Type::List(Box::new(element))),
+                        span: rest.binding.span,
                     });
                 }
                 collect_expr_pattern_symbols(expr, symbols, signatures);

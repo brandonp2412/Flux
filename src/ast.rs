@@ -451,6 +451,7 @@ pub enum StmtKind {
     },
     LetListDestructure {
         bindings: Vec<PatternBinding>,
+        rest: Option<ListRestPattern>,
         expr: Expr,
     },
     LetStructDestructure {
@@ -546,6 +547,12 @@ pub enum MatchPattern {
 pub struct PatternBinding {
     pub name: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListRestPattern {
+    pub binding: PatternBinding,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone)]

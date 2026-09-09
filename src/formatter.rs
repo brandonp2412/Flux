@@ -450,15 +450,25 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format!("{pad}let {bindings} = {}{suffix}", format_expr(expr, 0)),
                 );
             }
-            StmtKind::LetListDestructure { bindings, expr } => {
-                let bindings = bindings
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                let mut pattern = bindings
                     .iter()
-                    .map(|binding| binding.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    .map(|binding| binding.name.clone())
+                    .collect::<Vec<_>>();
+                if let Some(rest) = rest {
+                    pattern.insert(rest.index, format!("...{}", rest.binding.name));
+                }
                 lines.insert(
                     stmt.line,
-                    format!("{pad}let [{bindings}] = {}", format_expr(expr, 0)),
+                    format!(
+                        "{pad}let [{}] = {}",
+                        pattern.join(", "),
+                        format_expr(expr, 0)
+                    ),
                 );
             }
             StmtKind::LetStructDestructure {

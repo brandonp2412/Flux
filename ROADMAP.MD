@@ -125,10 +125,11 @@ Flux should be capable of modelling substantial programs without object-oriented
   - [x] Nested struct destructuring patterns with recursive type validation, formatter/semantic support, and single root-expression evaluation.
   - [x] Struct patterns inside enum `match` arms, including nested struct patterns, static payload-type validation, formatter/semantic support, and direct native field projection.
   - [x] Exact local list destructuring bindings with `let [first, _, last] = source`: bindings infer the concrete `T[]` element type, the source is evaluated once, strided views preserve logical order, `_` ignores positions, exact runtime length is checked explicitly, and formatter/semantic tooling preserve the pattern.
-  - [ ] Prefix/rest list patterns and list patterns inside `match` arms.
+  - [x] Local prefix/rest list patterns with `let [first, ...middle, last] = source`: one `...rest` binding infers `T[]`, captures the unmatched middle as a zero-copy strided view, supports `..._`, and requires only the fixed prefix/suffix arity at runtime.
+  - [ ] List patterns inside `match` arms. General `match` currently scrutinizies enums, while bootstrap lists are local-only and cannot be stored in enum payloads; sequence-pattern matching should follow the broader match/value and ownership work instead of introducing a special unreachable payload form.
   - [ ] Map/record patterns after those value types exist.
   - [ ] Multi-value patterns outside call destructuring.
-- [x] Destructuring bindings beyond multi-return calls: struct and exact list value destructuring are supported; broader rest/map/record patterns remain tracked above.
+- [x] Destructuring bindings beyond multi-return calls: struct plus exact/rest list value destructuring are supported; broader match/map/record patterns remain tracked above.
 - [x] Transparent concrete type aliases with forward/chained resolution, cycle diagnostics, formatter/tooling support, and zero runtime representation.
 - [x] Compile-time constants with forward references, constant folding, cycle diagnostics, alias-aware typing, and zero-runtime-storage lowering for `i64`, `bool`, and `str`.
 

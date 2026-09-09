@@ -2239,7 +2239,11 @@ fn emit_block(
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
                 }
             }
-            StmtKind::LetListDestructure { bindings, expr } => {
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
                 let value = emit_expr(expr, env, signatures)?;
                 let Type::List(element) = &value.ty else {
                     return Err(diag(
@@ -2254,20 +2258,54 @@ fn emit_block(
                     "{pad}struct flux__list {temp} = {};\n",
                     value.code
                 ));
-                out.push_str(&format!(
-                    "{pad}if ({temp}.len != {}) {{ fputs(\"Flux runtime error: list pattern requires exactly {} elements\\n\", stderr); abort(); }}\n",
-                    bindings.len(),
-                    bindings.len()
-                ));
+                if rest.is_some() {
+                    out.push_str(&format!(
+                        "{pad}if ({temp}.len < {}) {{ fputs(\"Flux runtime error: list pattern requires at least {} elements\\n\", stderr); abort(); }}\n",
+                        bindings.len(),
+                        bindings.len()
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}if ({temp}.len != {}) {{ fputs(\"Flux runtime error: list pattern requires exactly {} elements\\n\", stderr); abort(); }}\n",
+                        bindings.len(),
+                        bindings.len()
+                    ));
+                }
                 for (index, binding) in bindings.iter().enumerate() {
                     if binding.name == "_" {
                         continue;
                     }
+                    let index_code = if let Some(rest) = rest {
+                        if index < rest.index {
+                            format!("INT64_C({index})")
+                        } else {
+                            format!("-INT64_C({})", bindings.len() - index)
+                        }
+                    } else {
+                        format!("INT64_C({index})")
+                    };
                     out.push_str(&format!(
-                        "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, INT64_C({index}), sizeof({element_c})));\n",
+                        "{pad}{element_c} {} = *(({element_c} *)flux_list_at({temp}, {index_code}, sizeof({element_c})));\n",
                         local_c_name(&binding.name)
                     ));
                     env.insert(binding.name.clone(), (**element).clone());
+                }
+                if let Some(rest) = rest
+                    && rest.binding.name != "_"
+                {
+                    let rest_name = local_c_name(&rest.binding.name);
+                    out.push_str(&format!(
+                        "{pad}struct flux__list {rest_name} = {{ .data = {temp}.data, .len = {temp}.len - {}, .stride = flux_list_stride({temp}, sizeof({element_c})) }};\n",
+                        bindings.len()
+                    ));
+                    out.push_str(&format!(
+                        "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at({temp}, INT64_C({}), sizeof({element_c})); }}\n",
+                        rest.index
+                    ));
+                    env.insert(
+                        rest.binding.name.clone(),
+                        Type::List(Box::new((**element).clone())),
+                    );
                 }
             }
             StmtKind::LetStructDestructure { fields, expr, .. } => {
