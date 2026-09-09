@@ -2059,6 +2059,17 @@ fn emit_block(
     for stmt in body {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } if sequence_concat(expr).is_some() => {
+                emit_sequence_concat_binding(
+                    out,
+                    &pad,
+                    (name, ty),
+                    expr,
+                    env,
+                    signatures,
+                    temp_counter,
+                )?;
+            }
             StmtKind::Let { name, ty, expr, .. } if sequence_transform(expr).is_some() => {
                 emit_sequence_transform_binding(
                     out,
@@ -2712,6 +2723,132 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
     }
 }
 
+fn sequence_concat(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    match &expr.kind {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty() && name == "concat" && args.len() == 2 => {
+            Some((&args[0], &args[1]))
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if name == "concat" && args.len() == 1 => Some((input, &args[0])),
+        _ => None,
+    }
+}
+
+fn emit_sequence_list_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    if sequence_transform(expr).is_some() {
+        emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)
+    } else if sequence_concat(expr).is_some() {
+        emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)
+    } else {
+        emit_expr(expr, env, signatures)
+    }
+}
+
+fn emit_sequence_concat_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "concat binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let (left_expr, right_expr) = sequence_concat(expr)
+        .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
+    let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
+    let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let Type::List(element) = &result_ty else {
+        return Err(diag(expr.span, "concat result must have a list type"));
+    };
+    if signatures.canonical_type(&left.ty) != result_ty
+        || signatures.canonical_type(&right.ty) != result_ty
+    {
+        return Err(diag(
+            expr.span,
+            "concat input type mismatch reached code generation",
+        ));
+    }
+    let left_name = format!("flux__concat_left_{}", *temp_counter);
+    *temp_counter += 1;
+    let right_name = format!("flux__concat_right_{}", *temp_counter);
+    *temp_counter += 1;
+    let capacity_name = format!("flux__concat_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__concat_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__concat_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__concat_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {left_name} = {};\n{pad}struct flux__list {right_name} = {};\n",
+        left.code, right.code
+    ));
+    out.push_str(&format!(
+        "{pad}if (SIZE_MAX - {left_name}.len < {right_name}.len) {{ fputs(\"Flux runtime error: concatenated list is too large\\n\", stderr); abort(); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {capacity_name} = {left_name}.len + {right_name}.len;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {left_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at({left_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {right_name}.len; ++{index_name}) {{ {buffer_name}[{left_name}.len + {index_name}] = *(({element_c} *)flux_list_at({right_name}, (int64_t){index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {capacity_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
 fn emit_sequence_transform_binding(
     out: &mut String,
     pad: &str,
@@ -2843,7 +2980,7 @@ fn emit_sequence_transform_value(
             "invalid sequence transform reached code generation",
         ));
     }
-    let source = emit_expr(source_expr, env, signatures)?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence transform requires a list source"));
     };
@@ -2989,7 +3126,7 @@ fn emit_sequence_reduction_binding(
     };
     let mut stages = Vec::new();
     let source_expr = collect_sequence_transform_chain(list_expr, &mut stages);
-    let source = emit_expr(source_expr, env, signatures)?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
     };
@@ -3345,6 +3482,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
+            ));
+        }
+        ExprKind::Call { name, .. } if name == "concat" => {
+            return Err(diag(
+                expr.span,
+                "concat currently lowers only when bound directly to an immutable local value",
             ));
         }
         ExprKind::Call { name, .. } if name == "map" || name == "filter" || name == "where" => {

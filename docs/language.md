@@ -488,6 +488,8 @@ let allLarge: bool = checks | every
 let total: i64 = values | reduce add
 let positive: bool = values | fold true allPositive
 let emptyTotal: i64 = values[:0] | fold 7 add
+let joined: i64[] = values[::2] | concat values[::-1][:2]
+let joinedDoubled: i64[] = values[::2] | concat values[::-1][:2] | map double
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -509,6 +511,8 @@ Comprehension sources must be lists, the optional filter must be `bool`, and the
 `map(list, callback)`, `filter(list, predicate)`, and its readable alias `where(list, predicate)` are compiler-known collection transforms. `map` requires a concrete `fn(T) -> U` callback and produces `U[]`; `filter`/`where` require `fn(T) -> bool` and preserve `T[]`. The source is evaluated once and strided views are consumed directly. Chained transform stages fuse into one source loop and write only the final collection into one stack-backed buffer sized to the original source, avoiding intermediate list materialization. During the bootstrap collection-producing transform pipelines must be bound directly to an immutable local value, matching list comprehensions.
 
 `fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a named function or function binding with an exact concrete type: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one produced element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly, and compose through pipelines such as `values[::-1] | reduce add`. When a terminal reduction follows `map`/`filter`/`where`, those transforms are executed lazily inside the reduction loop, so no intermediate transformed list or buffer is created. During the bootstrap reductions lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
+
+`concat(left, right)` joins two lists with exactly the same concrete element type. It accepts strided inputs, preserves logical element order, checks length overflow explicitly, and produces one contiguous stack-backed local list. It composes through pipelines, for example `left | concat right | map double`. Like other collection-producing bootstrap operations, the concatenated result must remain within the supported local lifetime.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters/returns, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 

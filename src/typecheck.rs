@@ -617,6 +617,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "map"
                 | "filter"
                 | "where"
+                | "concat"
         ) {
             diagnostics.push(diag(
                 function.name_span,
@@ -3011,6 +3012,28 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "concat" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "concat does not accept named arguments"));
+            }
+            if args.len() != 2 {
+                return Err(diag(expr.span, "concat expects exactly two list arguments"));
+            }
+            let left_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let Type::List(_) = &left_ty else {
+                return Err(diag(
+                    args[0].span,
+                    "concat expects a list as its first argument",
+                ));
+            };
+            let right_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            require_type(args[1].span, &left_ty, &right_ty, "concat right list")?;
+            Ok(left_ty)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "map" || name == "filter" || name == "where" => {
             if !named_args.is_empty() {
                 return Err(diag(
@@ -3723,6 +3746,7 @@ fn value_types_of_expr(
                         | "map"
                         | "filter"
                         | "where"
+                        | "concat"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])

@@ -75,6 +75,8 @@ fn main() -> i64 {
     let mappedFiltered: i64[] = values | map double | filter greaterThanTwo
     let mappedTotal: i64 = values | map double | reduce add
     let filteredTotal: i64 = values | map double | filter greaterThanTwo | reduce add
+    let joined: i64[] = evens | concat reversed[:2]
+    let joinedDoubled: i64[] = evens | concat reversed[:2] | map double
     print mapped.first
     print mapped.last
     print filtered.length
@@ -86,6 +88,11 @@ fn main() -> i64 {
     print mappedFiltered.last
     print mappedTotal
     print filteredTotal
+    print joined.length
+    print joined.first
+    print joined.last
+    print joinedDoubled.first
+    print joinedDoubled.last
     for value in middle:
         print value
     for index, value in middle:

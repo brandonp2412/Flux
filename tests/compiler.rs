@@ -1443,6 +1443,87 @@ fn main() -> i64 {
 }
 
 #[test]
+fn concat_is_typed_strided_and_composable() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let left: i64[] = [1, 2, 3, 4][::2]
+    let right: i64[] = [5, 6, 7][::-1]
+    let joined: i64[] = left | concat right
+    let doubled: i64[] = left | concat right | map double
+    let total: i64 = left | concat right | reduce add
+    print joined.length
+    print joined.first
+    print joined.last
+    print doubled.first
+    print doubled.last
+    print total
+    return 0
+}
+"#;
+
+    check_source(source).expect("concat should typecheck for matching concrete lists");
+    let generated = compile_to_c(source).expect("concat should lower natively");
+    assert!(generated.contains("flux__concat_left_"));
+    assert!(generated.contains("flux__concat_right_"));
+    assert!(generated.contains("flux__concat_buffer_"));
+    assert!(generated.contains("Flux runtime error: concatenated list is too large"));
+    assert!(generated.contains("flux_list_at(flux__concat_left_"));
+    assert!(generated.contains("flux_list_at(flux__concat_right_"));
+    assert!(generated.contains("flux__fn_double(flux__transform_item_"));
+    assert!(generated.contains("flux__fn_add(flux__local_total"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("concat source should format");
+    assert!(formatted.contains("let joined: i64[] = left | concat right"));
+    assert!(formatted.contains("let doubled: i64[] = left | concat right | map double"));
+    assert!(formatted.contains("let total: i64 = left | concat right | reduce add"));
+    let formatted_again =
+        fluxc::formatter::format_source(&formatted).expect("formatted concat should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_concat_calls() {
+    let non_list = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let joined: i64[] = concat(7, values)
+    print joined.length
+    return 0
+}
+"#;
+    let error = check_source(non_list).expect_err("concat should require a list first argument");
+    assert!(
+        error
+            .message
+            .contains("concat expects a list as its first argument")
+    );
+
+    let mismatch = r#"
+fn main() -> i64 {
+    let numbers: i64[] = [1, 2]
+    let flags: bool[] = [true, false]
+    let joined: i64[] = numbers | concat flags
+    print joined.length
+    return 0
+}
+"#;
+    let error = check_source(mismatch).expect_err("concat list element types must match");
+    assert!(
+        error
+            .message
+            .contains("concat right list: expected i64[], got bool[]")
+    );
+}
+
+#[test]
 fn fuses_map_filter_pipelines_and_terminal_reductions() {
     let source = r#"
 fn double(value: i64) -> i64 {
