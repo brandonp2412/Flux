@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fluxc::ir::{
-    ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind, ControlFlowValueKind,
+    ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
+    ControlFlowValueKind,
 };
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
@@ -5776,7 +5777,7 @@ fn main() -> i64 {
         .expect("addition input should be typed");
     assert!(matches!(
         &input.kind,
-        ControlFlowValueKind::NameRead(name) if name == "input"
+        ControlFlowValueKind::NameRead { name, .. } if name == "input"
     ));
     assert_eq!(input.constant, None);
     assert_eq!(addition.constant, None);
@@ -5792,6 +5793,98 @@ fn main() -> i64 {
                 .value(id)
                 .is_some_and(|value| value.producer == evaluation.id))
     );
+}
+
+#[test]
+fn semantic_cfg_resolves_name_reads_to_reaching_definitions() {
+    let source = r#"
+fn choose(input: i64, flag: bool) -> i64 {
+    var current: i64 = input
+    if flag:
+        current = 10
+    else:
+        current = 20
+    return current
+}
+
+fn main() -> i64 {
+    return choose(1, true)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1313))
+        .expect("definition-use fixture should analyze");
+    let graph = database
+        .control_flow_graph("choose")
+        .expect("choose should have a control-flow graph");
+
+    let input_read = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::NameRead { name, definitions } if name == "input" => {
+                Some(definitions)
+            }
+            _ => None,
+        })
+        .expect("initializer should read the input parameter");
+    assert_eq!(input_read, &[ControlFlowDefinitionId::Parameter(0)]);
+
+    let flag_read = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::NameRead { name, definitions } if name == "flag" => {
+                Some(definitions)
+            }
+            _ => None,
+        })
+        .expect("condition should read the flag parameter");
+    assert_eq!(flag_read, &[ControlFlowDefinitionId::Parameter(1)]);
+
+    let assignment_definitions = graph
+        .nodes()
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.kind,
+                ControlFlowNodeKind::Assignment { name } if name == "current"
+            )
+        })
+        .map(|node| ControlFlowDefinitionId::Node {
+            node: node.id,
+            index: 0,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(assignment_definitions.len(), 2);
+
+    let return_read = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::NameRead { name, definitions }
+                if name == "current"
+                    && matches!(
+                        graph.node(value.producer).map(|node| &node.kind),
+                        Some(ControlFlowNodeKind::Evaluation(
+                            ControlFlowEvaluationKind::ReturnValue(0)
+                        ))
+                    ) =>
+            {
+                Some(
+                    definitions
+                        .iter()
+                        .copied()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                )
+            }
+            _ => None,
+        })
+        .expect("return should read the merged current value");
+    assert_eq!(return_read, assignment_definitions);
+    assert!(return_read.iter().all(|definition| {
+        graph.definition_name(*definition) == Some("current")
+            && graph.definition_span(*definition).is_some()
+    }));
 }
 
 #[test]
@@ -5835,7 +5928,7 @@ fn main() -> i64 {
     assert_eq!(arms.len(), 2);
     assert!(matches!(
         graph.value(*value).map(|value| &value.kind),
-        Some(ControlFlowValueKind::NameRead(name)) if name == "choice"
+        Some(ControlFlowValueKind::NameRead { name, .. }) if name == "choice"
     ));
     assert!(matches!(
         graph.value(arms[0]).map(|value| &value.kind),
@@ -5864,7 +5957,7 @@ fn main() -> i64 {
     };
     assert!(matches!(
         graph.value(*iterable).map(|value| &value.kind),
-        Some(ControlFlowValueKind::NameRead(name)) if name == "values"
+        Some(ControlFlowValueKind::NameRead { name, .. }) if name == "values"
     ));
     assert!(matches!(
         graph.value(*value).map(|value| &value.kind),
@@ -5937,7 +6030,7 @@ fn main() -> i64 {
     assert_eq!(input.ty, fluxc::ast::Type::Named("Offset".to_string()));
     assert!(matches!(
         &input.kind,
-        ControlFlowValueKind::NameRead(name) if name == "offset"
+        ControlFlowValueKind::NameRead { name, .. } if name == "offset"
     ));
 
     let dispatches = graph

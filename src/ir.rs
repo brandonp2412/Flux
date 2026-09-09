@@ -4,16 +4,28 @@ use crate::ast::{BinOp, Expr, ExprKind, Function, Stmt, StmtKind, Type, UnaryOp}
 use crate::diagnostic::SourceSpan;
 use crate::typecheck::{self, ConstantValue, Signatures};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlFlowNodeId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlFlowValueId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ControlFlowDefinitionId {
+    Parameter(usize),
+    Node {
+        node: ControlFlowNodeId,
+        index: usize,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlFlowValueKind {
     Literal,
-    NameRead(String),
+    NameRead {
+        name: String,
+        definitions: Vec<ControlFlowDefinitionId>,
+    },
     AnonymousFunction {
         body: ControlFlowValueId,
     },
@@ -320,6 +332,33 @@ impl ControlFlowGraph {
         self.values.get(id.0)
     }
 
+    pub fn definition_name(&self, id: ControlFlowDefinitionId) -> Option<&str> {
+        match id {
+            ControlFlowDefinitionId::Parameter(index) => self
+                .parameters
+                .get(index)
+                .map(|parameter| parameter.name.as_str()),
+            ControlFlowDefinitionId::Node { node, index } => self
+                .nodes
+                .get(node.0)
+                .and_then(|node| node.definitions.get(index))
+                .map(|definition| definition.name.as_str()),
+        }
+    }
+
+    pub fn definition_span(&self, id: ControlFlowDefinitionId) -> Option<SourceSpan> {
+        match id {
+            ControlFlowDefinitionId::Parameter(index) => {
+                self.parameters.get(index).map(|parameter| parameter.span)
+            }
+            ControlFlowDefinitionId::Node { node, index } => self
+                .nodes
+                .get(node.0)
+                .and_then(|node| node.definitions.get(index))
+                .map(|definition| definition.span),
+        }
+    }
+
     pub fn node(&self, id: ControlFlowNodeId) -> Option<&ControlFlowNode> {
         self.nodes.get(id.0)
     }
@@ -396,10 +435,13 @@ impl<'a> ControlFlowBuilder<'a> {
         builder
     }
 
-    fn finish(self) -> ControlFlowGraph {
+    fn finish(mut self) -> ControlFlowGraph {
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
+        let reaching_definitions =
+            compute_reaching_definitions(&self.nodes, &self.edges, &self.parameters, self.entry);
+        resolve_name_read_definitions(&mut self.values, &reaching_definitions);
         ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
@@ -923,7 +965,10 @@ impl<'a> ControlFlowBuilder<'a> {
             ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {
                 ControlFlowValueKind::Literal
             }
-            ExprKind::Var(name) => ControlFlowValueKind::NameRead(name.clone()),
+            ExprKind::Var(name) => ControlFlowValueKind::NameRead {
+                name: name.clone(),
+                definitions: Vec::new(),
+            },
             ExprKind::AnonymousFunction { body, .. } => self
                 .lower_scalar_expr(producer, body)
                 .map_or(ControlFlowValueKind::Opaque, |body| {
@@ -1908,6 +1953,83 @@ fn bind_list_match_pattern(
             rest.binding.name.clone(),
             Type::List(Box::new(element_ty.clone())),
         );
+    }
+}
+
+type ReachingDefinitionMap = BTreeMap<String, BTreeSet<ControlFlowDefinitionId>>;
+
+fn compute_reaching_definitions(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+    parameters: &[ControlFlowParameter],
+    entry: ControlFlowNodeId,
+) -> Vec<Option<ReachingDefinitionMap>> {
+    let mut initial = ReachingDefinitionMap::new();
+    for (index, parameter) in parameters.iter().enumerate() {
+        initial
+            .entry(parameter.name.clone())
+            .or_default()
+            .insert(ControlFlowDefinitionId::Parameter(index));
+    }
+
+    let mut before = vec![None; nodes.len()];
+    before[entry.0] = Some(initial);
+    let mut queue = VecDeque::from([entry]);
+    while let Some(id) = queue.pop_front() {
+        let Some(mut outgoing) = before[id.0].clone() else {
+            continue;
+        };
+        for (index, definition) in nodes[id.0].definitions.iter().enumerate() {
+            outgoing.insert(
+                definition.name.clone(),
+                BTreeSet::from([ControlFlowDefinitionId::Node { node: id, index }]),
+            );
+        }
+        for edge in edges.iter().filter(|edge| edge.from == id) {
+            let target = edge.to.0;
+            let changed = match before[target].as_mut() {
+                Some(existing) => merge_reaching_definitions(existing, &outgoing),
+                None => {
+                    before[target] = Some(outgoing.clone());
+                    true
+                }
+            };
+            if changed {
+                queue.push_back(edge.to);
+            }
+        }
+    }
+    before
+}
+
+fn merge_reaching_definitions(
+    target: &mut ReachingDefinitionMap,
+    incoming: &ReachingDefinitionMap,
+) -> bool {
+    let mut changed = false;
+    for (name, definitions) in incoming {
+        let target_definitions = target.entry(name.clone()).or_default();
+        let old_len = target_definitions.len();
+        target_definitions.extend(definitions.iter().copied());
+        changed |= target_definitions.len() != old_len;
+    }
+    changed
+}
+
+fn resolve_name_read_definitions(
+    values: &mut [ControlFlowValue],
+    reaching_definitions: &[Option<ReachingDefinitionMap>],
+) {
+    for value in values {
+        let ControlFlowValueKind::NameRead { name, definitions } = &mut value.kind else {
+            continue;
+        };
+        *definitions = reaching_definitions
+            .get(value.producer.0)
+            .and_then(Option::as_ref)
+            .and_then(|state| state.get(name))
+            .map(|definitions| definitions.iter().copied().collect())
+            .unwrap_or_default();
     }
 }
 
