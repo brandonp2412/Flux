@@ -2421,12 +2421,16 @@ fn collect_interface_names_from_ir(
     let Some(cfg) = function_ir.get(&function.name) else {
         return;
     };
-    for node in cfg.nodes() {
+    for node in cfg.nodes().iter().filter(|node| cfg.is_reachable(node.id)) {
         for definition in &node.definitions {
             collect_interface_names_from_type(&definition.ty, signatures, reachable, pending);
         }
     }
-    for value in cfg.values() {
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_reachable(value.producer))
+    {
         collect_interface_names_from_type(&value.ty, signatures, reachable, pending);
         if let crate::ir::ControlFlowValueKind::InterfaceDispatch { interface, .. } = &value.kind {
             enqueue_interface_name(interface, signatures, reachable, pending);
@@ -3052,7 +3056,7 @@ fn collect_value_type_names_from_ir(
     let Some(cfg) = function_ir.get(&function.name) else {
         return;
     };
-    for node in cfg.nodes() {
+    for node in cfg.nodes().iter().filter(|node| cfg.is_reachable(node.id)) {
         for definition in &node.definitions {
             collect_value_type_names_from_type(
                 &definition.ty,
@@ -3063,7 +3067,11 @@ fn collect_value_type_names_from_ir(
             );
         }
     }
-    for value in cfg.values() {
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_reachable(value.producer))
+    {
         collect_value_type_names_from_type(&value.ty, signatures, known, reachable, pending);
     }
 }
@@ -3611,7 +3619,11 @@ impl InterfacePackFacts {
             let Some(cfg) = function_ir.get(&function.name) else {
                 continue;
             };
-            for value in cfg.values() {
+            for value in cfg
+                .values()
+                .iter()
+                .filter(|value| cfg.is_reachable(value.producer))
+            {
                 if let crate::ir::ControlFlowValueKind::InterfacePack {
                     interface, target, ..
                 } = &value.kind
@@ -3832,7 +3844,11 @@ fn collect_function_reachability_from_ir(
     let Some(cfg) = function_ir.get(&function.name) else {
         return;
     };
-    for value in cfg.values() {
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_reachable(value.producer))
+    {
         match &value.kind {
             crate::ir::ControlFlowValueKind::Call { callee, .. }
                 if known_functions.contains(callee) =>

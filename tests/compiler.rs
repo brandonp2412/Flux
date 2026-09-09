@@ -4617,6 +4617,70 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tree_shaking_ignores_ir_values_from_statically_unreachable_branches() {
+    let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Live {
+    amount: i64
+}
+
+struct Dead {
+    amount: i64
+}
+
+fn liveApply(receiver: Live, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn deadApply(receiver: Dead, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Live {
+    apply: liveApply
+}
+
+impl Tool for Dead {
+    apply: deadApply
+}
+
+fn run(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+fn deadOnly(value: i64) -> i64 {
+    return value + 1000
+}
+
+fn main() -> i64 {
+    let live: Live = Live { amount: 2 }
+    let tool: Tool = Tool(live)
+    if false:
+        let dead: Dead = Dead { amount: 7 }
+        let deadTool: Tool = Tool(dead)
+        print(Tool.apply(deadTool, 1))
+        print(deadOnly(1))
+    return run(tool, 40)
+}
+"#;
+
+    check_source(source).expect("statically dead IR fixture should typecheck");
+    let generated = compile_to_c(source).expect("statically dead IR fixture should lower");
+    assert!(generated.contains("flux__type_Live"));
+    assert!(generated.contains("receiver.flux__value_Live"));
+    assert!(generated.contains("flux__fn_liveApply"));
+    assert!(!generated.contains("switch (receiver.tag)"));
+    assert!(!generated.contains("flux__type_Dead"));
+    assert!(!generated.contains("flux__value_Dead"));
+    assert!(!generated.contains("flux__iface_pack_Tool_Dead"));
+    assert!(!generated.contains("flux__fn_deadApply"));
+    assert!(!generated.contains("flux__fn_deadOnly"));
+}
+
+#[test]
 fn keeps_interface_dispatch_mappings_reachable_through_anonymous_ir_bodies() {
     let source = r#"
 type Runner = fn(Tool) -> i64
