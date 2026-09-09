@@ -35,7 +35,7 @@ Control flow uses indentation:
 
 ```flux
 fn main() -> i64 {
-    for i in 0..10:
+    for i in 0..=10:
         if i < 5:
             print(i)
     return 0
@@ -576,7 +576,7 @@ Currently implemented:
 - `if condition:` with an indented body;
 - `elif condition:` and `else:` attached to the preceding conditional chain;
 - exhaustive `if` / `elif` / `else` return analysis, so a fully returning chain satisfies a function's return requirement;
-- `for name in start..end:` with an exclusive integer range;
+- `for name in start..end:` with an exclusive integer range and `for name in start..=end:` with an inclusive integer range; both evaluate their bounds once, and inclusive lowering avoids signed overflow at `i64::MAX`;
 - `break` and `continue` inside loops, including through nested `if` / `match` blocks;
 - exhaustive enum `match` statements with typed positional payload bindings;
 - value-producing enum `match` expressions in bindings and returns;

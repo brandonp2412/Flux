@@ -2428,7 +2428,9 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
             if source_src.is_empty() {
                 return Err(diag(stmt_line, "for loop requires a source expression"));
             }
-            if let Some((start_raw, end_raw, range_split)) = split_range_with_offset(source_src) {
+            if let Some((start_raw, end_raw, range_split, inclusive)) =
+                split_range_with_offset(source_src)
+            {
                 if bindings.len() != 1 {
                     return Err(diag(
                         stmt_line,
@@ -2436,8 +2438,9 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                     ));
                 }
                 let (start_src, start_column) = trim_with_column(start_raw, source_column);
+                let range_width = if inclusive { 3 } else { 2 };
                 let (end_src, end_column) =
-                    trim_with_column(end_raw, source_column + range_split + 2);
+                    trim_with_column(end_raw, source_column + range_split + range_width);
                 let start = parse_expression_at(start_src, stmt_line, start_column)?;
                 let end = parse_expression_at(end_src, stmt_line, end_column)?;
                 *index += 1;
@@ -2452,6 +2455,7 @@ fn parse_block(lines: &[Line], index: &mut usize, indent: usize) -> Result<Vec<S
                         name_span,
                         start,
                         end,
+                        inclusive,
                         body: nested,
                     },
                 }
@@ -3434,7 +3438,7 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
     parts
 }
 
-fn split_range_with_offset(input: &str) -> Option<(&str, &str, usize)> {
+fn split_range_with_offset(input: &str) -> Option<(&str, &str, usize, bool)> {
     let bytes = input.as_bytes();
     let mut in_string = false;
     let mut escaped = false;
@@ -3462,7 +3466,9 @@ fn split_range_with_offset(input: &str) -> Option<(&str, &str, usize)> {
                 b'(' => depth += 1,
                 b')' => depth = depth.saturating_sub(1),
                 b'.' if depth == 0 && bytes[index + 1] == b'.' => {
-                    return Some((&input[..index], &input[index + 2..], index));
+                    let inclusive = bytes.get(index + 2) == Some(&b'=');
+                    let end_start = index + if inclusive { 3 } else { 2 };
+                    return Some((&input[..index], &input[end_start..], index, inclusive));
                 }
                 _ => {}
             }

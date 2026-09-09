@@ -70,7 +70,7 @@ Implemented on `main`:
 - [x] Strict typed bindings.
 - [x] Expressions and function calls.
 - [x] Indentation-based `if` / `elif` / `else`.
-- [x] Exclusive integer range `for` loops.
+- [x] Integer range `for` loops with exclusive `start..end` and inclusive `start..=end` forms; inclusive lowering preserves `continue` semantics and avoids signed overflow at `i64::MAX`.
 - [x] Multi-value function returns.
 - [x] Strict typed destructuring of multi-value calls.
 - [x] Exact multi-value return forwarding.
@@ -159,7 +159,7 @@ The interface track is now the active Milestone 2 subsystem. Declarations come f
 - [x] Required named parameters: named-only parameters without defaults must be supplied explicitly.
 - [x] Function type aliases through concrete `type Mapper = fn(...) -> ...` aliases; first-class function values currently support zero or one return value.
 - [ ] Partial application / ergonomic function binding if it remains predictable and allocation-free where possible.
-- [ ] Pipeline/composition syntax only if it materially improves functional code and lowers transparently.
+- [x] Typed value pipeline/composition syntax with `|`, passing the previous result as the next call's first argument; compiler-known list transforms additionally fuse where profitable without changing source semantics.
 
 ## Modules/packages
 
@@ -274,7 +274,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Raw strings.
 - [x] No ternary expression form: Python-style `a if condition else b` and C-style `?:` are intentionally absent; use statement control flow or `match` values.
 - [ ] Integer truncating division equivalent to Dart `~/` if useful.
-- [ ] Concise range syntax beyond current `start..end` where appropriate.
+- [x] Concise inclusive integer ranges with `start..=end` alongside exclusive `start..end`, including single-evaluation bounds and overflow-safe native iteration.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
 - [ ] Assignment expressions only where they remain readable and analyzable. Ordinary assignment is now a statement restricted to explicitly mutable `var` bindings; do not conflate that with value-producing assignment expressions.
 - [ ] Strong constant folding for literal/expression-heavy syntax.

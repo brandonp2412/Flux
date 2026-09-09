@@ -463,6 +463,7 @@ pub enum StmtKind {
         name_span: SourceSpan,
         start: Expr,
         end: Expr,
+        inclusive: bool,
         body: Vec<Stmt>,
     },
     ForEach {

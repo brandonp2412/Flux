@@ -2413,6 +2413,7 @@ fn emit_block(
                 name,
                 start,
                 end,
+                inclusive,
                 body,
                 ..
             } => {
@@ -2421,10 +2422,19 @@ fn emit_block(
                 let temp = format!("flux__end_{}", *temp_counter);
                 *temp_counter += 1;
                 let c_name = local_c_name(name);
-                out.push_str(&format!(
-                    "{pad}for (int64_t {c_name} = {}, {temp} = {}; {c_name} < {temp}; ++{c_name}) {{\n",
-                    start.code, end.code
-                ));
+                if *inclusive {
+                    let done = format!("flux__range_done_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}for (int64_t {c_name} = {}, {temp} = {}, {done} = 0; !{done} && {c_name} <= {temp}; {done} = ({c_name} == {temp}), {c_name} += !{done}) {{\n",
+                        start.code, end.code
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}for (int64_t {c_name} = {}, {temp} = {}; {c_name} < {temp}; ++{c_name}) {{\n",
+                        start.code, end.code
+                    ));
+                }
                 let mut nested = env.clone();
                 nested.insert(name.clone(), Type::I64);
                 emit_block(

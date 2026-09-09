@@ -22,7 +22,7 @@ Flux is an experimental compiled language for building native applications and s
 
 The repository currently contains a dependency-free Rust bootstrap compiler with:
 
-- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive range `for` loops, indentation-based `while` loops, statically scoped `break` / `continue`, and bootstrap `app ViewName` GUI entry declarations;
+- parsing for functions, structs, closed payload enums, typed bindings, calls, field access, `if` / `elif` / `else`, exclusive `start..end` and inclusive `start..=end` integer range `for` loops, indentation-based `while` loops, statically scoped `break` / `continue`, and bootstrap `app ViewName` GUI entry declarations;
 - immutable `let` bindings by default plus explicit typed local mutation through `var` and statically checked assignment;
 - explicit multi-value function returns and strictly typed destructuring bindings;
 - static checking for `i64`, `bool`, `str`, `error`, `void`, named struct value types, transparent concrete type aliases, and compile-time constants;

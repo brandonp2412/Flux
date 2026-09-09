@@ -31,6 +31,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_inclusive_integer_ranges_without_end_overflow() {
+    let source = r#"
+fn main() -> i64 {
+    var total: i64 = 0
+    var visits: i64 = 0
+    for value in 2..=4:
+        total = total + value
+    for edge in 9223372036854775807..=9223372036854775807:
+        visits = edge
+        continue
+    print(total)
+    print(visits)
+    return 0
+}
+"#;
+
+    check_source(source).expect("inclusive integer ranges should typecheck");
+    let generated = compile_to_c(source).expect("inclusive integer ranges should lower natively");
+    assert!(generated.contains("flux__range_done_"));
+    assert!(generated.contains("<= flux__end_"));
+    assert!(generated.contains("= (flux__local_value == flux__end_"));
+    assert!(generated.contains("flux__local_value += !flux__range_done_"));
+    assert!(generated.contains("flux__local_edge += !flux__range_done_"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("inclusive range source should format");
+    assert!(formatted.contains("for value in 2..=4:"));
+    assert!(formatted.contains("for edge in 9223372036854775807..=9223372036854775807:"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted inclusive ranges should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn accepts_break_and_continue_inside_nested_loop_control_flow() {
     let source = r#"
 enum Decision {

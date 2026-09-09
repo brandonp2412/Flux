@@ -528,13 +528,15 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 name,
                 start,
                 end,
+                inclusive,
                 body,
                 ..
             } => {
+                let range = if *inclusive { "..=" } else { ".." };
                 lines.insert(
                     stmt.line,
                     format!(
-                        "{pad}for {name} in {}..{}:",
+                        "{pad}for {name} in {}{range}{}:",
                         format_expr(start, 0),
                         format_expr(end, 0)
                     ),
