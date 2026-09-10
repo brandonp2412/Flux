@@ -1514,7 +1514,7 @@ fn emit_android_native_application(
         }
     }
 
-    out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n");
+    out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic float flux__ui_density = 1.0f;\n");
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -1590,14 +1590,17 @@ fn emit_android_native_application(
     out.push_str("                            if (metrics_class != NULL) {\n");
     out.push_str("                                jfieldID width_field = (*env)->GetFieldID(env, metrics_class, \"widthPixels\", \"I\");\n");
     out.push_str("                                jfieldID height_field = (*env)->GetFieldID(env, metrics_class, \"heightPixels\", \"I\");\n");
-    out.push_str("                                jfieldID density_field = (*env)->GetFieldID(env, metrics_class, \"densityDpi\", \"I\");\n");
+    out.push_str("                                jfieldID density_field = (*env)->GetFieldID(env, metrics_class, \"density\", \"F\");\n");
     out.push_str("                                if (width_field != NULL && height_field != NULL && density_field != NULL) {\n");
     out.push_str("                                    jint width = (*env)->GetIntField(env, metrics, width_field);\n");
     out.push_str("                                    jint height = (*env)->GetIntField(env, metrics, height_field);\n");
-    out.push_str("                                    jint density = (*env)->GetIntField(env, metrics, density_field);\n");
-    out.push_str("                                    if (width > 0) flux__ui_window_width = (int64_t)width;\n");
-    out.push_str("                                    if (height > 0) flux__ui_window_height = (int64_t)height;\n");
-    out.push_str("                                    flux__ui_display_scale = density >= 160 ? (int64_t)((density + 80) / 160) : INT64_C(1);\n");
+    out.push_str("                                    jfloat density = (*env)->GetFloatField(env, metrics, density_field);\n");
+    out.push_str(
+        "                                    flux__ui_density = density > 0.0f ? density : 1.0f;\n",
+    );
+    out.push_str("                                    if (width > 0) flux__ui_window_width = (int64_t)(((float)width / flux__ui_density) + 0.5f);\n");
+    out.push_str("                                    if (height > 0) flux__ui_window_height = (int64_t)(((float)height / flux__ui_density) + 0.5f);\n");
+    out.push_str("                                    flux__ui_display_scale = flux__ui_density >= 1.0f ? (int64_t)(flux__ui_density + 0.5f) : INT64_C(1);\n");
     out.push_str("                                }\n");
     out.push_str("                                (*env)->DeleteLocalRef(env, metrics_class);\n");
     out.push_str("                            }\n");
@@ -1645,7 +1648,7 @@ fn emit_android_native_application(
     ));
     let padding = view.grid.padding.unwrap_or(20);
     out.push_str(&format!(
-        "    jint grid_padding = (jint)(INT64_C({padding}) * flux__ui_display_scale);\n    (*env)->CallVoidMethod(env, grid, set_padding, grid_padding, grid_padding, grid_padding, grid_padding);\n"
+        "    jint grid_padding = (jint)(INT64_C({padding}) * flux__ui_density);\n    (*env)->CallVoidMethod(env, grid, set_padding, grid_padding, grid_padding, grid_padding, grid_padding);\n"
     ));
     out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_children, JNI_FALSE);\n");
     out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_to_padding, JNI_FALSE);\n");
@@ -1800,14 +1803,14 @@ fn emit_android_native_application(
             out.push_str("    jmethodID set_min_width = (*env)->GetMethodID(env, child_class, \"setMinimumWidth\", \"(I)V\");\n");
             out.push_str("    if (set_min_width == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_density));\n"
             ));
         }
         if let Some(min_height) = static_minimum_size(element, "min_height", signatures)? {
             out.push_str("    jmethodID set_min_height = (*env)->GetMethodID(env, child_class, \"setMinimumHeight\", \"(I)V\");\n");
             out.push_str("    if (set_min_height == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(INT64_C({min_height}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(INT64_C({min_height}) * flux__ui_density));\n"
             ));
         }
         let static_color = |property_name: &str| -> Result<Option<String>, Diagnostic> {
@@ -1962,7 +1965,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFFFFLjava/lang/String;Ljava/lang/String;FFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)(INT64_C({border_top_width}) * flux__ui_display_scale), (jint)(INT64_C({border_end_width}) * flux__ui_display_scale), (jint)(INT64_C({border_bottom_width}) * flux__ui_display_scale), (jint)(INT64_C({border_start_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_left}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_display_scale), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_display_scale), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_display_scale), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)(INT64_C({border_top_width}) * flux__ui_density), (jint)(INT64_C({border_end_width}) * flux__ui_density), (jint)(INT64_C({border_bottom_width}) * flux__ui_density), (jint)(INT64_C({border_start_width}) * flux__ui_density), (jfloat)(INT64_C({radius_top_left}) * flux__ui_density), (jfloat)(INT64_C({radius_top_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
             for name in [
@@ -1992,7 +1995,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID set_child_padding = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
             out.push_str("    if (set_child_padding == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)(INT64_C({padding_start}) * flux__ui_display_scale), (jint)(INT64_C({padding_top}) * flux__ui_display_scale), (jint)(INT64_C({padding_end}) * flux__ui_display_scale), (jint)(INT64_C({padding_bottom}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)(INT64_C({padding_start}) * flux__ui_density), (jint)(INT64_C({padding_top}) * flux__ui_density), (jint)(INT64_C({padding_end}) * flux__ui_density), (jint)(INT64_C({padding_bottom}) * flux__ui_density));\n"
             ));
         }
         if element_has_transform(element) {
@@ -2033,7 +2036,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID transform_view = (*env)->GetMethodID(env, transform_activity_class, \"transformView\", \"(Landroid/view/View;FFFFFFF)V\");\n");
             out.push_str("    if (transform_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, transform_view, child, (jfloat)(({translate_x}) * flux__ui_display_scale), (jfloat)(({translate_y}) * flux__ui_display_scale), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
+                "    (*env)->CallVoidMethod(env, activity, transform_view, child, (jfloat)(({translate_x}) * flux__ui_density), (jfloat)(({translate_y}) * flux__ui_density), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, transform_activity_class);\n");
         }
@@ -2671,7 +2674,7 @@ fn emit_android_native_application(
         let gap_half = i64::from(gap) / 2;
         if gap > 0 || margin_top > 0 || margin_bottom > 0 || margin_start > 0 || margin_end > 0 {
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale));\n",
+                "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density));\n",
                 margin_start.saturating_add(gap_half),
                 margin_top.saturating_add(gap_half),
                 margin_end.saturating_add(gap_half),
@@ -2727,7 +2730,7 @@ fn emit_android_native_application(
             let width =
                 width.saturating_add(gap.saturating_mul(element.column_span.saturating_sub(1)));
             out.push_str(&format!(
-                "    (*env)->SetIntField(env, params, width_field, (jint)(INT64_C({width}) * flux__ui_display_scale));\n"
+                "    (*env)->SetIntField(env, params, width_field, (jint)(INT64_C({width}) * flux__ui_density));\n"
             ));
         } else if column_weight.is_some() {
             out.push_str("    (*env)->SetIntField(env, params, width_field, (jint)0);\n");
@@ -2736,7 +2739,7 @@ fn emit_android_native_application(
             let height =
                 height.saturating_add(gap.saturating_mul(element.row_span.saturating_sub(1)));
             out.push_str(&format!(
-                "    (*env)->SetIntField(env, params, height_field, (jint)(INT64_C({height}) * flux__ui_display_scale));\n"
+                "    (*env)->SetIntField(env, params, height_field, (jint)(INT64_C({height}) * flux__ui_density));\n"
             ));
         } else if row_weight.is_some() {
             out.push_str("    (*env)->SetIntField(env, params, height_field, (jint)0);\n");
@@ -4341,7 +4344,7 @@ fn emit_android_ui_refresh(
             let origin_y = transform_value("transform_origin_y_percent", "50")?;
             out.push_str("                jmethodID refresh_transform = (*env)->GetMethodID(env, activity_class, \"transformView\", \"(Landroid/view/View;FFFFFFF)V\");\n");
             out.push_str(&format!(
-                "                if (refresh_transform != NULL) (*env)->CallVoidMethod(env, activity, refresh_transform, child, (jfloat)(({translate_x}) * flux__ui_display_scale), (jfloat)(({translate_y}) * flux__ui_display_scale), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
+                "                if (refresh_transform != NULL) (*env)->CallVoidMethod(env, activity, refresh_transform, child, (jfloat)(({translate_x}) * flux__ui_density), (jfloat)(({translate_y}) * flux__ui_density), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
             ));
         }
 
