@@ -8,6 +8,22 @@ fn started() -> void {
     print("Flux Android started")
 }
 
+fn configuration_changed() -> void {
+    print("Flux Android configuration changed")
+}
+
+fn low_memory() -> void {
+    print("Flux Android low memory")
+}
+
+fn save_state() -> str {
+    return "flux-android-example"
+}
+
+fn restore_state(value: str) -> void {
+    print(value)
+}
+
 view Screen {
     grid columns: 1fr
     grid rows: auto
@@ -15,4 +31,4 @@ view Screen {
         text: "Flux on Android"
 }
 
-app Screen(on_start: started)
+app Screen(on_start: started, on_configuration_changed: configuration_changed, on_low_memory: low_memory, on_save_state: save_state, on_restore_state: restore_state)

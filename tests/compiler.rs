@@ -9771,6 +9771,31 @@ app Screen(on_start: bad)
         error.message.contains("application on_start callback")
             && error.message.contains("expected fn() -> void")
     }));
+
+    let wrong_state = r#"
+fn bad_save() -> void {
+}
+fn bad_restore() -> str {
+    return "bad"
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(on_save_state: bad_save, on_restore_state: bad_restore)
+"#;
+    let errors = check_source_all(wrong_state)
+        .expect_err("saved-state lifecycle callbacks require exact signatures");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("application on_save_state callback")
+            && error.message.contains("expected fn() -> str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application on_restore_state callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
 }
 
 #[test]
@@ -9810,11 +9835,23 @@ fn stopped() -> void {
 fn exiting() -> void {
     print("exiting")
 }
+fn configuration_changed() -> void {
+    print("configuration changed")
+}
+fn low_memory() -> void {
+    print("low memory")
+}
+fn save_state() -> str {
+    return "saved"
+}
+fn restore_state(value: str) -> void {
+    print(value)
+}
 view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting)
+app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting, on_configuration_changed: configuration_changed, on_low_memory: low_memory, on_save_state: save_state, on_restore_state: restore_state)
 "#,
     )
     .expect("Android codegen source should be writable");
@@ -9829,6 +9866,15 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("activity->callbacks->onResume = flux__android_on_resume"));
     assert!(generated.contains("activity->callbacks->onPause = flux__android_on_pause"));
     assert!(generated.contains("activity->callbacks->onStop = flux__android_on_stop"));
+    assert!(generated.contains(
+        "activity->callbacks->onConfigurationChanged = flux__android_on_configuration_changed"
+    ));
+    assert!(generated.contains("activity->callbacks->onLowMemory = flux__android_on_low_memory"));
+    assert!(generated.contains(
+        "activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state"
+    ));
+    assert!(generated.contains("flux__fn_save_state();"));
+    assert!(generated.contains("flux__fn_restore_state(restored_state);"));
     assert!(generated.contains("activity->callbacks->onDestroy = flux__android_on_destroy"));
     assert!(generated.contains("flux__fn_started();"));
     assert!(generated.contains("flux__fn_resumed();"));

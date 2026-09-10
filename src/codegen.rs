@@ -1104,6 +1104,8 @@ fn emit_android_native_application(
         ("on_resume", "resume"),
         ("on_pause", "pause"),
         ("on_stop", "stop"),
+        ("on_configuration_changed", "configuration_changed"),
+        ("on_low_memory", "low_memory"),
     ] {
         if let Some(function) = application_metadata_function(application, metadata) {
             out.push_str(&format!(
@@ -1120,20 +1122,43 @@ fn emit_android_native_application(
     } else {
         out.push_str("static void flux__android_on_destroy(ANativeActivity *activity) { (void)activity; flux__android_activity = NULL; }\n");
     }
+    if let Some(function) = application_metadata_function(application, "on_save_state") {
+        out.push_str(&format!(
+            "static void *flux__android_on_save_instance_state(ANativeActivity *activity, size_t *out_size) {{\n    (void)activity;\n    if (out_size == NULL) return NULL;\n    *out_size = 0;\n    const char *state = {}();\n    if (state == NULL) return NULL;\n    size_t len = strlen(state);\n    if (len == SIZE_MAX) return NULL;\n    size_t size = len + 1;\n    char *copy = (char *)malloc(size);\n    if (copy == NULL) return NULL;\n    memcpy(copy, state, size);\n    *out_size = size;\n    return copy;\n}}\n",
+            function_c_name(function),
+        ));
+    }
     out.push('\n');
-    out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    (void)saved_state;\n    (void)saved_state_size;\n    flux__android_activity = activity;\n");
+    out.push_str("__attribute__((visibility(\"default\"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {\n    flux__android_activity = activity;\n");
     out.push_str("    activity->callbacks->onDestroy = flux__android_on_destroy;\n");
     for (metadata, callback, field) in [
         ("on_start", "start", "onStart"),
         ("on_resume", "resume", "onResume"),
         ("on_pause", "pause", "onPause"),
         ("on_stop", "stop", "onStop"),
+        (
+            "on_configuration_changed",
+            "configuration_changed",
+            "onConfigurationChanged",
+        ),
+        ("on_low_memory", "low_memory", "onLowMemory"),
     ] {
         if application_metadata_function(application, metadata).is_some() {
             out.push_str(&format!(
                 "    activity->callbacks->{field} = flux__android_on_{callback};\n"
             ));
         }
+    }
+    if application_metadata_function(application, "on_save_state").is_some() {
+        out.push_str("    activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state;\n");
+    }
+    if let Some(function) = application_metadata_function(application, "on_restore_state") {
+        out.push_str(&format!(
+            "    if (saved_state != NULL && saved_state_size > 0 && saved_state_size < SIZE_MAX) {{\n        char *restored_state = (char *)malloc(saved_state_size + 1);\n        if (restored_state != NULL) {{\n            memcpy(restored_state, saved_state, saved_state_size);\n            restored_state[saved_state_size] = '\\0';\n            {}(restored_state);\n            free(restored_state);\n        }}\n    }}\n",
+            function_c_name(function),
+        ));
+    } else {
+        out.push_str("    (void)saved_state;\n    (void)saved_state_size;\n");
     }
     out.push_str("}\n");
     Ok(())

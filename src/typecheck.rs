@@ -1033,33 +1033,45 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
         }
         for field in &application.metadata {
-            if matches!(
-                field.name.as_str(),
+            let lifecycle_signature = match field.name.as_str() {
                 "onStart"
-                    | "onResume"
-                    | "onPause"
-                    | "onStop"
-                    | "onExit"
-                    | "on_start"
-                    | "on_resume"
-                    | "on_pause"
-                    | "on_stop"
-                    | "on_exit"
-            ) {
+                | "onResume"
+                | "onPause"
+                | "onStop"
+                | "onExit"
+                | "onConfigurationChanged"
+                | "onLowMemory"
+                | "on_start"
+                | "on_resume"
+                | "on_pause"
+                | "on_stop"
+                | "on_exit"
+                | "on_configuration_changed"
+                | "on_low_memory" => Some(Type::Function {
+                    params: Vec::new(),
+                    returns: Vec::new(),
+                }),
+                "onSaveState" | "on_save_state" => Some(Type::Function {
+                    params: Vec::new(),
+                    returns: vec![Type::Str],
+                }),
+                "onRestoreState" | "on_restore_state" => Some(Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                }),
+                _ => None,
+            };
+            if let Some(expected) = lifecycle_signature {
                 if !matches!(field.value.kind, ExprKind::Var(_)) {
                     diagnostics.push(diag(
                         field.value.span,
                         &format!(
-                            "application {} requires a named fn() -> void callback",
+                            "application {} requires a named lifecycle callback",
                             field.name
                         ),
                     ));
                     continue;
                 }
-                let expected = Type::Function {
-                    params: Vec::new(),
-                    returns: Vec::new(),
-                };
                 match type_of_expr(&field.value, &HashMap::new(), &signatures) {
                     Ok(actual) => {
                         if let Err(diagnostic) = require_type(
