@@ -58,7 +58,7 @@ flux build android examples/android_app --mode release --format aab
 
 <img src="assets/readme/flux-mobile-showcase.png" alt="Luma wellness app compiled with Flux and running on Waydroid" width="360">
 
-<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid.</sub>
+<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
 
 </div>
 

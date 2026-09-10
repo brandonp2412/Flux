@@ -8906,6 +8906,36 @@ app Styled
 }
 
 #[test]
+fn android_button_shape_styling_preserves_semantic_background() {
+    let source = r#"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button primaryAction at 1,1
+        text: "Continue"
+        primary: true
+        radius: 16
+    Button secondaryAction at 2,1
+        text: "Later"
+        radius: 12
+}
+app Styled(theme: "light")
+"#;
+    check_source(source).expect("button shape-only styling should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("button shape fixture should analyze");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("button shape-only styling should lower on Android");
+    assert!(generated.contains("flux__android_utf8_string(env, \"accent\")"));
+    assert!(generated.contains("flux__android_utf8_string(env, \"surfaceRaised\")"));
+}
+
+#[test]
 fn native_elements_support_dynamic_clipping() {
     let source = r#"
 view Clipped {

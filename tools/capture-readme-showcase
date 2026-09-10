@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLUX="$ROOT/tools/flux"
+PACKAGE="$ROOT/examples/mobile_showcase"
+APK="$ROOT/target/readme-showcase.apk"
+OUTPUT="$ROOT/assets/readme/flux-mobile-showcase.png"
+DEVICE="${FLUX_SCREENSHOT_DEVICE:-}"
+
+if [[ -z "$DEVICE" ]]; then
+  DEVICE="$(adb devices -l | awk '/model:WayDroid_x86_64_Device/ { print $1; exit }')"
+fi
+if [[ -z "$DEVICE" ]]; then
+  printf '%s\n' "No ADB-connected x86_64 Waydroid device found. Start Waydroid and connect it with ADB, or set FLUX_SCREENSHOT_DEVICE." >&2
+  exit 1
+fi
+
+ORIGINAL_SIZE="$(adb -s "$DEVICE" shell wm size | tr -d '\r' | sed -n 's/^Override size: //p')"
+ORIGINAL_DENSITY="$(adb -s "$DEVICE" shell wm density | tr -d '\r' | sed -n 's/^Override density: //p')"
+ORIGINAL_ROTATION="$(adb -s "$DEVICE" shell wm user-rotation | tr -d '\r')"
+
+restore_display() {
+  if [[ -n "$ORIGINAL_SIZE" ]]; then
+    adb -s "$DEVICE" shell wm size "$ORIGINAL_SIZE" >/dev/null
+  else
+    adb -s "$DEVICE" shell wm size reset >/dev/null
+  fi
+  if [[ -n "$ORIGINAL_DENSITY" ]]; then
+    adb -s "$DEVICE" shell wm density "$ORIGINAL_DENSITY" >/dev/null
+  else
+    adb -s "$DEVICE" shell wm density reset >/dev/null
+  fi
+  if [[ "$ORIGINAL_ROTATION" == lock\ * ]]; then
+    adb -s "$DEVICE" shell wm user-rotation lock "${ORIGINAL_ROTATION#lock }" >/dev/null
+  else
+    adb -s "$DEVICE" shell wm user-rotation free >/dev/null
+  fi
+}
+trap restore_display EXIT
+
+"$FLUX" build android "$PACKAGE" -o "$APK" --mode release --abi x86_64 --format apk
+adb -s "$DEVICE" install -r "$APK" >/dev/null
+adb -s "$DEVICE" shell wm size 1080x1920 >/dev/null
+adb -s "$DEVICE" shell wm density 360 >/dev/null
+adb -s "$DEVICE" shell wm user-rotation lock 0 >/dev/null
+adb -s "$DEVICE" shell am force-stop app.flux.showcase
+adb -s "$DEVICE" shell am start -W -n app.flux.showcase/app.flux.runtime.FluxActivity >/dev/null
+sleep 1
+adb -s "$DEVICE" exec-out screencap -p > "$OUTPUT.tmp"
+
+if ! file "$OUTPUT.tmp" | grep -q 'PNG image data, 1080 x 1920'; then
+  rm -f "$OUTPUT.tmp"
+  printf '%s\n' "Capture did not produce the required 1080x1920 PNG." >&2
+  exit 1
+fi
+mv "$OUTPUT.tmp" "$OUTPUT"
+printf '%s\n' "captured real Flux Waydroid screenshot: $OUTPUT"

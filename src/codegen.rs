@@ -1925,7 +1925,7 @@ fn emit_android_native_application(
             }
             Ok(Some(value))
         };
-        let background_color = static_color("background_color")?;
+        let mut background_color = static_color("background_color")?;
         let border_color = static_color("border_color")?;
         let border_top_color = static_color("border_top_color")?;
         let border_bottom_color = static_color("border_bottom_color")?;
@@ -2020,6 +2020,21 @@ fn emit_android_native_application(
         } else {
             None
         };
+        let has_shape_style = border_top_color.is_some()
+            || border_bottom_color.is_some()
+            || border_start_color.is_some()
+            || border_end_color.is_some()
+            || radius_top_left > 0
+            || radius_top_right > 0
+            || radius_bottom_left > 0
+            || radius_bottom_right > 0
+            || has_shadow;
+        if element.kind == "Button" && background_color.is_none() && has_shape_style {
+            let primary = view_property(element, "primary")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false);
+            background_color = Some(if primary { "accent" } else { "surfaceRaised" }.to_string());
+        }
         if background_color.is_some()
             || border_top_color.is_some()
             || border_bottom_color.is_some()

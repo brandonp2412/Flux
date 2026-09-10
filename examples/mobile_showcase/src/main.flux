@@ -100,4 +100,4 @@ view Today {
         onPress: mindful => !mindful
 }
 
-app Today(title: "Flux Showcase")
+app Today(title: "Flux Showcase", theme: "light")
