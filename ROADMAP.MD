@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 421
+- Completed baseline units: 422
 - Reported overall progress: **57%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -812,7 +812,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] High contrast.
 - [x] Reduced motion for the currently supported transition backend: generated native transition styling follows GTK's live system reduced-motion setting and suppresses duration/delay without requiring application code.
 - [ ] Keyboard-only navigation.
-- [ ] Locale detection.
+- [x] Locale detection for current native targets: portable `locale.language()` and `locale.region()` return borrowed language/region strings without platform-specific source imports; Linux follows `LC_ALL` → `LC_MESSAGES` → `LANG` and normalizes the POSIX `C` locale to `und`/no region, while Android reads `java.util.Locale.getDefault()` through compiler-owned JNI. Both paths are statically typed, exposed through LSP completion/signature help, and tree-shaken when unreachable.
 - [ ] Translation resources.
 - [ ] Plural/select rules.
 - [ ] Number/date/currency formatting.

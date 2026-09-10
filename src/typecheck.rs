@@ -4838,6 +4838,31 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "locale" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("locale.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "language" | "region" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("locale.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::Str]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("locale module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "time" {
         if !named_args.is_empty() {
             return Err(diag(

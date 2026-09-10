@@ -1156,6 +1156,11 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "locale" {
+        push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
+        push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
+        return true;
+    }
     if namespace == "time" {
         push_completion_item(items, seen, "unixMillis", 3, "fn time.unixMillis() -> i64");
         push_completion_item(
@@ -2214,6 +2219,19 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "process.env",
                         &["name: str", "fallback: str"],
+                        "str",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "locale" {
+            match member {
+                "language" | "region" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("locale.{member}"),
+                        &[],
                         "str",
                         active_parameter,
                     ));
@@ -5189,7 +5207,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    time.\n    fs.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5245,6 +5263,23 @@ mod tests {
         assert!(process_items.contains("fn process.parentPid() -> i64"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
+
+        let locale_line = source
+            .lines()
+            .position(|line| line.trim() == "locale.")
+            .expect("locale completion line should exist");
+        let locale_source = source.lines().nth(locale_line).unwrap();
+        let locale_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(locale_line),
+            Some(locale_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(locale_items.contains("fn locale.language() -> str"));
+        assert!(locale_items.contains("fn locale.region() -> str"));
 
         let time_line = source
             .lines()
@@ -5841,6 +5876,35 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("process call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_locale_capabilities() {
+        let uri = "file:///tmp/locale-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(locale.language())\n    print(locale.region())\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("locale.language(", "fn locale.language() -> str"),
+            ("locale.region(", "fn locale.region() -> str"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("locale call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("locale call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

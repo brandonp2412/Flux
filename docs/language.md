@@ -734,6 +734,17 @@ print(process.env("APP_MODE", "development"))
 
 `process.pid()` and `process.parentPid()` return `i64`. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. These calls lower directly to the host C/POSIX process environment without a framework runtime and are tree-shaken when unreachable. The current bootstrap exposes them on desktop/server targets; Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
 
+## Locale detection
+
+Portable Flux code can read the current language and region without importing a platform-specific module:
+
+```flux
+print(locale.language())
+print(locale.region())
+```
+
+`locale.language()` returns the platform language code as `str`, using `"und"` when the host has no meaningful language such as the POSIX `C` locale. `locale.region()` returns the region/country code or an empty string when none is available. Linux reads the conventional `LC_ALL`, `LC_MESSAGES`, then `LANG` precedence without invoking locale-sensitive libc parsing, while Android calls the platform default `java.util.Locale` through compiler-owned JNI lowering. Both paths are emitted only when reachable, require no user-written bridge code, and keep their returned strings borrowed under the current bootstrap `str` model. Translation resources, plural/select rules, locale-aware formatting, and richer locale identifiers remain separate internationalization work.
+
 ## Filesystem capabilities
 
 Flux exposes a small compiler-owned filesystem surface without requiring an object API or a user-written native bridge:

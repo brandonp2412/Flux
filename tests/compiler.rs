@@ -1305,6 +1305,139 @@ fn main() -> i64 {
 }
 
 #[test]
+fn locale_detection_is_typed_native_portable_and_tree_shaken() {
+    let source = r#"
+fn main() -> i64 {
+    print(locale.language())
+    print(locale.region())
+    return 0
+}
+"#;
+
+    check_source(source).expect("locale detection should typecheck");
+    let generated = compile_to_c(source).expect("locale detection should lower on Linux");
+    assert!(generated.contains("static inline const char *flux__locale_source(void)"));
+    assert!(generated.contains("static const char *flux__locale_language(void)"));
+    assert!(generated.contains("static const char *flux__locale_region(void)"));
+    assert!(generated.contains("flux__locale_language()"));
+    assert!(generated.contains("flux__locale_region()"));
+
+    let root = std::env::temp_dir().join(format!("flux-locale-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("locale API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("locale API source should be writable");
+    let binary = root.join("locale-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("locale API binary should build");
+    assert!(
+        built.status.success(),
+        "locale API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .env("LC_ALL", "fr_CA.UTF-8")
+        .env_remove("LC_MESSAGES")
+        .env_remove("LANG")
+        .output()
+        .expect("locale API binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "fr\nCA\n");
+
+    let c_locale = Command::new(&binary)
+        .env("LC_ALL", "C.UTF-8")
+        .env_remove("LC_MESSAGES")
+        .env_remove("LANG")
+        .output()
+        .expect("locale API binary should support the C locale");
+    assert!(c_locale.status.success());
+    assert_eq!(String::from_utf8_lossy(&c_locale.stdout), "und\n\n");
+
+    let unused = r#"
+fn hidden() -> void {
+    print(locale.language())
+    print(locale.region())
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead locale calls should still lower safely");
+    assert!(!unused_generated.contains("flux__locale_source(void)"));
+    assert!(!unused_generated.contains("flux__locale_language(void)"));
+    assert!(!unused_generated.contains("flux__locale_region(void)"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    locale.language(1)
+    locale.region(false)
+    locale.unknown()
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid locale calls should fail statically");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.language expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.region expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale module has no function 'unknown'")
+    }));
+
+    let android_root = root.join("android");
+    fs::create_dir_all(android_root.join("src"))
+        .expect("Android locale fixture should be writable");
+    fs::write(
+        android_root.join("flux.toml"),
+        "[package]\nname = \"locale-android\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android locale manifest should be writable");
+    let android_source = r#"
+fn appStarted() -> void {
+    print(locale.language())
+    print(locale.region())
+}
+
+view LocaleApp {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Locale"
+}
+
+app LocaleApp(onStart: appStarted)
+"#;
+    fs::write(android_root.join("src/main.flux"), android_source)
+        .expect("Android locale source should be writable");
+    let analysis =
+        fluxc::project::analyze(&android_root).expect("Android locale fixture should analyze");
+    let android_generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("locale detection should lower on Android");
+    assert!(android_generated.contains("java/util/Locale"));
+    assert!(android_generated.contains("getLanguage"));
+    assert!(android_generated.contains("getCountry"));
+    assert!(android_generated.contains("flux__android_locale_component"));
+    assert!(!android_generated.contains("flux__locale_source(void)"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {
