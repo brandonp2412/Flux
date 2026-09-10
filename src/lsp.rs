@@ -1170,6 +1170,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "permission_granted",
+            3,
+            "fn android.permission_granted(permission: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "request_permission",
+            3,
+            "fn android.request_permission(permission: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "notification_permission_granted",
             3,
             "fn android.notification_permission_granted() -> bool",
@@ -2044,6 +2058,22 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.create_notification_channel",
                         &["id: str", "name: str", "description: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "permission_granted" => {
+                    return Some(signature_help_for_builtin(
+                        "android.permission_granted",
+                        &["permission: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "request_permission" => {
+                    return Some(signature_help_for_builtin(
+                        "android.request_permission",
+                        &["permission: str"],
                         "void",
                         active_parameter,
                     ));
@@ -4918,6 +4948,8 @@ mod tests {
         assert!(android_items.contains(
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
         ));
+        assert!(android_items.contains("fn android.permission_granted(permission: str) -> bool"));
+        assert!(android_items.contains("fn android.request_permission(permission: str) -> void"));
         assert!(android_items.contains("fn android.notification_permission_granted() -> bool"));
         assert!(android_items.contains("fn android.request_notification_permission() -> void"));
         assert!(android_items.contains("fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void"));
@@ -5373,7 +5405,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    android.create_notification_channel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notification_permission_granted())\n    android.request_notification_permission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notify_url_action(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancel_notification(1)\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    print(android.permission_granted(\"android.permission.CAMERA\"))\n    android.request_permission(\"android.permission.CAMERA\")\n    android.create_notification_channel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notification_permission_granted())\n    android.request_notification_permission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notify_url_action(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancel_notification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.sdk_int(", "fn android.sdk_int() -> i64"),
@@ -5383,6 +5415,14 @@ mod tests {
             ),
             ("android.open_url(", "fn android.open_url(url: str) -> void"),
             ("android.share(", "fn android.share(text: str) -> void"),
+            (
+                "android.permission_granted(",
+                "fn android.permission_granted(permission: str) -> bool",
+            ),
+            (
+                "android.request_permission(",
+                "fn android.request_permission(permission: str) -> void",
+            ),
             (
                 "android.create_notification_channel(",
                 "fn android.create_notification_channel(id: str, name: str, description: str) -> void",

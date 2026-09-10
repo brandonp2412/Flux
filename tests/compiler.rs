@@ -8039,7 +8039,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nversion_code = 42\nmin_sdk = 26\ntarget_sdk = 36\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nversion_code = 42\nmin_sdk = 26\ntarget_sdk = 36\npermissions = [\"android.permission.CAMERA\", \"android.permission.RECORD_AUDIO\", \"android.permission.CAMERA\"]\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
     )
     .expect("Android manifest should be writable");
 
@@ -8049,6 +8049,13 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     assert_eq!(parsed.android.min_sdk, 26);
     assert_eq!(parsed.android.target_sdk, 36);
     assert_eq!(
+        parsed.android.permissions,
+        vec![
+            "android.permission.CAMERA".to_string(),
+            "android.permission.RECORD_AUDIO".to_string()
+        ]
+    );
+    assert_eq!(
         parsed.android.keystore.as_deref(),
         Some(root.join("signing/release.jks").as_path())
     );
@@ -8056,7 +8063,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
 
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nversion_code = 0\nmin_sdk = 19\ntarget_sdk = 18\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nversion_code = 0\nmin_sdk = 19\ntarget_sdk = 18\npermissions = [\"bad permission\"]\n",
     )
     .expect("invalid Android manifest should be writable");
     let errors = fluxc::project::read_manifest(&manifest)
@@ -8085,6 +8092,11 @@ fn package_manifest_accepts_and_validates_android_configuration() {
         error
             .message
             .contains("target_sdk must be greater than or equal to min_sdk")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("permissions entries must be Android-style permission names")
     }));
 
     fs::write(
@@ -9805,7 +9817,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     fs::create_dir_all(root.join("src")).expect("Android codegen fixture should be writable");
     fs::write(
         root.join("flux.toml"),
-        "[package]\nname = \"native-app\"\nentry = \"src/main.flux\"\n",
+        "[package]\nname = \"native-app\"\nentry = \"src/main.flux\"\n\n[android]\npermissions = [\"android.permission.CAMERA\"]\n",
     )
     .expect("Android codegen manifest should be writable");
     fs::write(
@@ -9815,6 +9827,8 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.vibrate(25)
     android.open_url("https://example.com")
     android.share("hello from Flux")
+    print(android.permission_granted("android.permission.CAMERA"))
+    android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("updates", "Updates", "Flux update notifications")
     print(android.notification_permission_granted())
     android.request_notification_permission()
@@ -9894,6 +9908,10 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("createChooser"));
     assert!(generated.contains("startActivity"));
     assert!(generated.contains("flux__android_utf8_string"));
+    assert!(generated.contains("static bool flux__android_permission_granted"));
+    assert!(generated.contains("static void flux__android_request_permission"));
+    assert!(generated.contains("flux__android_permission_granted(\"android.permission.CAMERA\")"));
+    assert!(generated.contains("flux__android_request_permission(\"android.permission.CAMERA\")"));
     assert!(generated.contains("static void flux__android_create_notification_channel"));
     assert!(generated.contains("android/app/NotificationChannel"));
     assert!(generated.contains("createNotificationChannel"));
@@ -9954,6 +9972,8 @@ fn main() -> i64 {
     fs::write(
         android_tree_root.join("src/main.flux"),
         r#"fn unused_android() -> void {
+    android.permission_granted("android.permission.CAMERA")
+    android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("unused", "Unused", "Unused")
     android.notify("unused", 1, "Unused", "Unused")
     android.notify_url_action("unused", 2, "Unused", "Unused", "Open", "https://example.com")
@@ -9972,6 +9992,8 @@ app Screen
     let tree_generated = tree_analysis
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android tree-shaking fixture should lower");
+    assert!(!tree_generated.contains("flux__android_permission_granted"));
+    assert!(!tree_generated.contains("flux__android_request_permission"));
     assert!(!tree_generated.contains("flux__android_create_notification_channel"));
     assert!(!tree_generated.contains("flux__android_notify("));
     assert!(!tree_generated.contains("flux__android_notify_url_action"));
@@ -9987,6 +10009,8 @@ fn main() -> i64 {
     android.open_url(42)
     android.share(42)
     android.create_notification_channel("updates", 1, false)
+    android.permission_granted(42)
+    android.request_permission(false)
     android.notification_permission_granted(1)
     android.request_notification_permission(1)
     android.notify(1, "bad", false, 42)
@@ -10015,6 +10039,18 @@ fn main() -> i64 {
         error
             .message
             .contains("android.create_notification_channel name")
+            && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.permission_granted permission")
+            && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.request_permission permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
@@ -10063,12 +10099,19 @@ fn android_native_ui_lowers_flat_grid_text_button_and_click_dispatch() {
     print("pressed")
 }
 view Screen {
+    state expanded: bool = false
+    derived label: str = "Toggle"
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text title at 1,1
         text: "Hello Android"
-    Button action at 2,1
+        visible: expanded
+    Button toggle at 2,1
+        text: label
+        onPress: expanded => !expanded
+    Button action at 3,1
         text: "Press"
+        enabled: !expanded
         onPress: pressed
 }
 app Screen
@@ -10086,8 +10129,146 @@ app Screen
     assert!(generated.contains("android/widget/Button"));
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
-    assert!(generated.contains("case 1: flux__fn_pressed(); break;"));
+    assert!(generated.contains("static bool flux__ui_state_expanded = false;"));
+    assert!(generated.contains("static const char * flux__ui_derived_label = NULL;"));
+    assert!(generated.contains("flux__ui_window_width"));
+    assert!(generated.contains("getDisplayMetrics"));
+    assert!(generated.contains("densityDpi"));
+    assert!(generated.contains("setVisibility"));
+    assert!(generated.contains("setEnabled"));
+    assert!(generated.contains("flux__ui_state_expanded = (!(flux__ui_state_expanded))"));
+    assert!(generated.contains(
+        "Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz)"
+    ));
+    assert!(generated.contains("case 3: flux__fn_pressed(); break;"));
+    assert!(generated.contains(
+        "activity->callbacks->onConfigurationChanged = flux__android_on_configuration_changed"
+    ));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn android_native_ui_lowers_text_input_toggle_radio_and_direct_callbacks() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-android-controls-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("Android controls fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"native-controls\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android controls manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r##"fn changed(value: str) -> void {
+    print(value)
+}
+
+fn submitted(value: str) -> void {
+    print(value)
+}
+
+view Settings {
+    state enabled: bool = false
+    state selected: i64 = 0
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto
+    grid gap: 12
+    grid padding: 18
+    TextInput query at 1,1
+        text: "initial"
+        placeholder: "Search Flux"
+        enabled: enabled
+        autofocus: true
+        password: true
+        max_length: 32
+        min_width: 120
+        margin: 4
+        padding: 6
+        align_x: "fill"
+        background_color: "#112233"
+        border_color: "#445566FF"
+        border_width: 2
+        border_style: "solid"
+        radius: 8
+        tooltip: "Search"
+        accessibility_label: "Search query"
+        accessibility_description: "Enter text to search"
+        on_change: changed
+        on_submit: submitted
+    Toggle enabled_toggle at 2,1
+        label: "Enabled"
+        checked: enabled
+        on_change: enabled => !enabled
+    Radio first at 3,1
+        label: "First"
+        selected: selected == 0
+        on_select: selected => 0
+    Radio second at 4,1
+        label: "Second"
+        selected: selected == 1
+        on_select: selected => 1
+    Text styled at 5,1
+        text: "Styled"
+        color: "#AABBCCDD"
+        size: 18
+        bold: true
+        italic: true
+        underline: true
+        strikethrough: true
+}
+app Settings
+"##,
+    )
+    .expect("Android controls source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("Android controls app should analyze");
+    let generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android controls should lower to target C");
+
+    assert!(generated.contains("android/widget/EditText"));
+    assert!(generated.contains("android/widget/CheckBox"));
+    assert!(generated.contains("android/widget/RadioButton"));
+    assert!(generated.contains("initialText"));
+    assert!(generated.contains("wireTextInput"));
+    assert!(generated.contains("setMaxLength"));
+    assert!(generated.contains("setInputType"));
+    assert!(generated.contains("requestFocus"));
+    assert!(generated.contains("setOnCheckedChangeListener"));
+    assert!(generated.contains("grid_spec_weight"));
+    assert!(generated.contains("setMargins"));
+    assert!(generated.contains("INT64_C(18) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(6) * flux__ui_display_scale"));
+    assert!(generated.contains("setMinimumWidth"));
+    assert!(generated.contains("styleView"));
+    assert!(generated.contains("#112233"));
+    assert!(generated.contains("#445566FF"));
+    assert!(generated.contains("set_child_padding"));
+    assert!(generated.contains("setGravity"));
+    assert!(generated.contains("styleText"));
+    assert!(generated.contains("#AABBCCDD"));
+    assert!(generated.contains("(jfloat)18.0f"));
+    assert!(generated.contains("setTooltip"));
+    assert!(generated.contains("setAccessibility"));
+    assert!(generated.contains("Search query"));
+    assert!(generated.contains("Enter text to search"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));
+    assert!(generated.contains("case 1: flux__fn_changed(value); break;"));
+    assert!(generated.contains("case 1: flux__fn_submitted(value); break;"));
+    assert!(generated.contains("case 2: flux__ui_state_enabled = (!(flux__ui_state_enabled))"));
+    assert!(
+        generated.contains("case 3: if (!checked) break; flux__ui_state_selected = INT64_C(0)")
+    );
+    assert!(
+        generated.contains("case 4: if (!checked) break; flux__ui_state_selected = INT64_C(1)")
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

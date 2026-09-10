@@ -1854,12 +1854,31 @@ fn android_activity_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
 import android.app.NativeActivity;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputFilter;
+import android.text.TextWatcher;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.inputmethod.EditorInfo;
+import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.TextView;
+import java.util.HashMap;
+import java.util.Map;
 
-public final class FluxActivity extends NativeActivity implements View.OnClickListener {
+public final class FluxActivity extends NativeActivity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener {
+    private final Map<Integer, String> textValues = new HashMap<>();
     private native void nativeBuildUi();
     private static native void nativeOnClick(int viewId);
+    private static native void nativeOnChecked(int viewId, boolean checked);
+    private static native void nativeOnTextChanged(int viewId, String text);
+    private static native void nativeOnSubmit(int viewId, String text);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1870,6 +1889,88 @@ public final class FluxActivity extends NativeActivity implements View.OnClickLi
     @Override
     public void onClick(View view) {
         nativeOnClick(view.getId());
+    }
+
+    @Override
+    public void onCheckedChanged(CompoundButton button, boolean checked) {
+        nativeOnChecked(button.getId(), checked);
+    }
+
+    public String initialText(int viewId, String fallback) {
+        String saved = textValues.get(viewId);
+        return saved == null ? fallback : saved;
+    }
+
+    public void setMaxLength(EditText view, int maxLength) {
+        view.setFilters(new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
+    }
+
+    private int parseFluxColor(String value) {
+        if (value.length() == 9 && value.charAt(0) == '#') {
+            value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
+        }
+        return Color.parseColor(value);
+    }
+
+    public void styleView(View view, String background, String border, int borderWidth, float radius) {
+        if (background == null && (border == null || borderWidth <= 0) && radius <= 0) return;
+        GradientDrawable drawable = new GradientDrawable();
+        if (background != null) drawable.setColor(parseFluxColor(background));
+        if (border != null && borderWidth > 0) drawable.setStroke(borderWidth, parseFluxColor(border));
+        if (radius > 0) drawable.setCornerRadius(radius);
+        view.setBackground(drawable);
+    }
+
+    public void styleText(TextView view, String color, float size, boolean bold, boolean italic, boolean underline, boolean strike) {
+        if (color != null) view.setTextColor(parseFluxColor(color));
+        if (size > 0) view.setTextSize(size);
+        int typefaceStyle = (bold ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
+        view.setTypeface(view.getTypeface(), typefaceStyle);
+        int flags = view.getPaintFlags();
+        if (underline) flags |= Paint.UNDERLINE_TEXT_FLAG;
+        if (strike) flags |= Paint.STRIKE_THRU_TEXT_FLAG;
+        view.setPaintFlags(flags);
+    }
+
+    public void setTooltip(View view, String text) {
+        if (Build.VERSION.SDK_INT >= 26) view.setTooltipText(text);
+    }
+
+    public void setAccessibility(View view, String label, String description) {
+        if (label == null || label.isEmpty()) {
+            view.setContentDescription(description);
+        } else if (description == null || description.isEmpty()) {
+            view.setContentDescription(label);
+        } else {
+            view.setContentDescription(label + ". " + description);
+        }
+    }
+
+    public void wireTextInput(EditText view, boolean onChange, boolean onSubmit) {
+        final int viewId = view.getId();
+        view.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                String text = s.toString();
+                textValues.put(viewId, text);
+                if (onChange) nativeOnTextChanged(viewId, text);
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        if (onSubmit) {
+            view.setSingleLine(true);
+            view.setImeOptions(EditorInfo.IME_ACTION_DONE);
+            view.setOnEditorActionListener((editor, actionId, event) -> {
+                boolean enter = event != null
+                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN;
+                if (actionId == EditorInfo.IME_ACTION_DONE || enter) {
+                    nativeOnSubmit(viewId, editor.getText().toString());
+                    return true;
+                }
+                return false;
+            });
+        }
     }
 }
 "#
@@ -2151,20 +2252,28 @@ fn android_manifest_xml(
     let application_id = xml_escape(&manifest.android.application_id);
     let label = xml_escape(&manifest.name);
     let version = xml_escape(manifest.version.as_deref().unwrap_or("0.0.0"));
-    let vibrate_permission = if c_source.contains("flux__android_vibrate(") {
-        "    <uses-permission android:name=\"android.permission.VIBRATE\" />\n"
-    } else {
-        ""
-    };
-    let notification_permission = if c_source.contains("flux__android_notify(")
+    let mut permissions = manifest.android.permissions.clone();
+    if c_source.contains("flux__android_vibrate(") {
+        permissions.push("android.permission.VIBRATE".to_string());
+    }
+    if c_source.contains("flux__android_notify(")
         || c_source.contains("flux__android_notify_url_action(")
         || c_source.contains("flux__android_notification_permission_granted(")
         || c_source.contains("flux__android_request_notification_permission(")
     {
-        "    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n"
-    } else {
-        ""
-    };
+        permissions.push("android.permission.POST_NOTIFICATIONS".to_string());
+    }
+    permissions.sort();
+    permissions.dedup();
+    let permission_xml = permissions
+        .iter()
+        .map(|permission| {
+            format!(
+                "    <uses-permission android:name=\"{}\" />\n",
+                xml_escape(permission)
+            )
+        })
+        .collect::<String>();
     let generated_activity = android_has_generated_activity(c_source);
     let has_code = if generated_activity { "true" } else { "false" };
     let activity_name = if generated_activity {
@@ -2173,7 +2282,7 @@ fn android_manifest_xml(
         "android.app.NativeActivity"
     };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
         manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
@@ -2631,6 +2740,7 @@ mod tests {
                 version_code: 42,
                 min_sdk: 23,
                 target_sdk: 36,
+                permissions: vec!["android.permission.CAMERA".to_string()],
                 keystore: None,
                 key_alias: None,
             },
@@ -2643,6 +2753,7 @@ mod tests {
         );
         assert!(plain.contains("android:versionCode=\"42\""));
         assert!(plain.contains("android:targetSdkVersion=\"36\""));
+        assert!(plain.contains("android.permission.CAMERA"));
         assert!(!plain.contains("android.permission.VIBRATE"));
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
         assert!(plain.contains("android:hasCode=\"false\""));
@@ -2656,9 +2767,33 @@ mod tests {
         assert!(generated_ui.contains("android:hasCode=\"true\""));
         assert!(generated_ui.contains("android:name=\"app.flux.runtime.FluxActivity\""));
         let activity = android_activity_java_source();
-        assert!(activity.contains("extends NativeActivity implements View.OnClickListener"));
+        assert!(activity.contains("extends NativeActivity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(activity.contains("private native void nativeBuildUi();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
+        assert!(
+            activity.contains(
+                "private static native void nativeOnChecked(int viewId, boolean checked);"
+            )
+        );
+        assert!(
+            activity.contains(
+                "private static native void nativeOnTextChanged(int viewId, String text);"
+            )
+        );
+        assert!(
+            activity
+                .contains("private static native void nativeOnSubmit(int viewId, String text);")
+        );
+        assert!(activity.contains("public String initialText(int viewId, String fallback)"));
+        assert!(activity.contains("public void setTooltip(View view, String text)"));
+        assert!(
+            activity.contains(
+                "public void setAccessibility(View view, String label, String description)"
+            )
+        );
+        assert!(activity.contains(
+            "public void wireTextInput(EditText view, boolean onChange, boolean onSubmit)"
+        ));
         assert!(activity.contains("nativeBuildUi();"));
 
         let vibrating = android_manifest_xml(

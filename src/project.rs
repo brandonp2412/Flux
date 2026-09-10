@@ -176,6 +176,7 @@ pub struct AndroidPackageConfig {
     pub version_code: u32,
     pub min_sdk: u32,
     pub target_sdk: u32,
+    pub permissions: Vec<String>,
     pub keystore: Option<PathBuf>,
     pub key_alias: Option<String>,
 }
@@ -414,6 +415,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_version_code = None::<u32>;
     let mut android_min_sdk = None::<u32>;
     let mut android_target_sdk = None::<u32>;
+    let mut android_permissions = None::<Vec<String>>;
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
     let mut diagnostics = Vec::new();
@@ -507,6 +509,22 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         ));
                     }
                 }
+                "permissions" => {
+                    let value = match parse_manifest_string_array(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    if android_permissions.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            "duplicate [android] field 'permissions'",
+                        ));
+                    }
+                }
                 "version_code" | "min_sdk" | "target_sdk" => {
                     let value = match parse_manifest_u32(raw_value) {
                         Ok(value) => value,
@@ -589,6 +607,18 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[android].target_sdk must be greater than or equal to min_sdk",
         ));
     }
+    if let Some(permissions) = android_permissions.as_ref() {
+        for permission in permissions {
+            if !valid_android_permission(permission) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "[android].permissions entries must be Android-style permission names such as 'android.permission.CAMERA'; invalid value '{permission}'"
+                    ),
+                ));
+            }
+        }
+    }
     if android_keystore.as_deref().is_some_and(str::is_empty) {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
@@ -661,6 +691,12 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             version_code,
             min_sdk,
             target_sdk,
+            permissions: {
+                let mut permissions = android_permissions.unwrap_or_default();
+                permissions.sort();
+                permissions.dedup();
+                permissions
+            },
             keystore,
             key_alias: android_key_alias,
         },
@@ -680,12 +716,89 @@ fn canonical_source(path: &Path, kind: &str) -> Result<PathBuf, Vec<Diagnostic>>
     })
 }
 
+fn parse_manifest_string_array(text: &str) -> Result<Vec<String>, String> {
+    let text = text.trim();
+    if !text.starts_with('[') || !text.ends_with(']') {
+        return Err("manifest string arrays must use [\"value\", ...] syntax".to_string());
+    }
+    let bytes = text.as_bytes();
+    let mut index = 1usize;
+    let end = bytes.len() - 1;
+    let mut values = Vec::new();
+    while index < end {
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index == end {
+            break;
+        }
+        if bytes[index] != b'"' {
+            return Err("manifest string array entries must be quoted strings".to_string());
+        }
+        let start = index;
+        index += 1;
+        let mut escaped = false;
+        while index < end {
+            let byte = bytes[index];
+            index += 1;
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte == b'"' {
+                break;
+            }
+        }
+        if index > end || bytes[index - 1] != b'"' {
+            return Err("unterminated manifest string array entry".to_string());
+        }
+        values.push(parse_manifest_string(&text[start..index])?);
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index == end {
+            break;
+        }
+        if bytes[index] != b',' {
+            return Err("manifest string array entries must be separated by commas".to_string());
+        }
+        index += 1;
+        let mut lookahead = index;
+        while lookahead < end && bytes[lookahead].is_ascii_whitespace() {
+            lookahead += 1;
+        }
+        if lookahead == end {
+            return Err("manifest string arrays may not end with a trailing comma".to_string());
+        }
+    }
+    Ok(values)
+}
+
 fn parse_manifest_u32(text: &str) -> Result<u32, String> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("manifest integer values must contain only decimal digits".to_string());
     }
     text.parse::<u32>()
         .map_err(|_| "manifest integer value is out of range".to_string())
+}
+
+fn valid_android_permission(value: &str) -> bool {
+    if value.is_empty() || value.starts_with('.') || value.ends_with('.') || value.contains("..") {
+        return false;
+    }
+    let mut saw_dot = false;
+    for ch in value.chars() {
+        if ch == '.' {
+            saw_dot = true;
+        } else if !(ch.is_ascii_alphanumeric() || ch == '_') {
+            return false;
+        }
+    }
+    saw_dot
 }
 
 fn valid_android_application_id(value: &str) -> bool {

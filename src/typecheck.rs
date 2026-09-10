@@ -4737,6 +4737,44 @@ fn check_qualified_call(
                 }
                 return Ok(Vec::new());
             }
+            "permission_granted" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.permission_granted expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    "android.permission_granted permission",
+                )?;
+                return Ok(vec![Type::Bool]);
+            }
+            "request_permission" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.request_permission expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    "android.request_permission permission",
+                )?;
+                return Ok(Vec::new());
+            }
             "notification_permission_granted" => {
                 if !args.is_empty() {
                     return Err(diag(

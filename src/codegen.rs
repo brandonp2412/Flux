@@ -293,6 +293,8 @@ fn emit_runtime_prelude(
             || runtime_usage.contains("flux__android_create_notification_channel(")
             || runtime_usage.contains("flux__android_notification_permission_granted(")
             || runtime_usage.contains("flux__android_request_notification_permission(")
+            || runtime_usage.contains("flux__android_permission_granted(")
+            || runtime_usage.contains("flux__android_request_permission(")
             || runtime_usage.contains("flux__android_notify(")
             || runtime_usage.contains("flux__android_notify_url_action(")
         {
@@ -311,6 +313,10 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_notification_permission_granted(");
     let uses_android_request_notification_permission =
         uses_android && runtime_usage.contains("flux__android_request_notification_permission(");
+    let uses_android_permission_granted =
+        uses_android && runtime_usage.contains("flux__android_permission_granted(");
+    let uses_android_request_permission =
+        uses_android && runtime_usage.contains("flux__android_request_permission(");
     let uses_android_notify = uses_android && runtime_usage.contains("flux__android_notify(");
     let uses_android_notify_url_action =
         uses_android && runtime_usage.contains("flux__android_notify_url_action(");
@@ -328,6 +334,8 @@ fn emit_runtime_prelude(
         || uses_android_open_url
         || uses_android_share
         || uses_android_notifications
+        || uses_android_permission_granted
+        || uses_android_request_permission
         || uses_android_generated_ui;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
@@ -362,6 +370,8 @@ fn emit_runtime_prelude(
     if uses_android_open_url
         || uses_android_share
         || uses_android_notifications
+        || uses_android_permission_granted
+        || uses_android_request_permission
         || uses_android_generated_ui
     {
         out.push_str(
@@ -588,6 +598,73 @@ fn emit_runtime_prelude(
         );
         out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
         out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_permission_granted {
+        out.push_str(
+            "static bool flux__android_permission_granted(const char *permission_name) {\n",
+        );
+        out.push_str("    if (android_get_device_api_level() < 23) return true;\n");
+        out.push_str(
+            "    if (permission_name == NULL || flux__android_activity == NULL) return false;\n",
+        );
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return false;\n");
+        out.push_str("    bool granted = false;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n");
+        out.push_str("    jstring permission = NULL;\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID check_permission = (*env)->GetMethodID(env, activity_class, \"checkSelfPermission\", \"(Ljava/lang/String;)I\");\n");
+        out.push_str("    if (check_permission == NULL) goto done;\n");
+        out.push_str("    permission = flux__android_utf8_string(env, permission_name);\n");
+        out.push_str("    if (permission == NULL) goto done;\n");
+        out.push_str("    jint result = (*env)->CallIntMethod(env, flux__android_activity->clazz, check_permission, permission);\n");
+        out.push_str("    if (!(*env)->ExceptionCheck(env)) granted = result == 0;\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (permission != NULL) (*env)->DeleteLocalRef(env, permission);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("    return granted;\n");
+        out.push_str("}\n");
+    }
+    if uses_android_request_permission {
+        out.push_str(
+            "static void flux__android_request_permission(const char *permission_name) {\n",
+        );
+        out.push_str("    if (android_get_device_api_level() < 23 || permission_name == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = NULL; jclass string_class = NULL;\n");
+        out.push_str("    jstring permission = NULL; jobjectArray permissions = NULL;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID request_permissions = (*env)->GetMethodID(env, activity_class, \"requestPermissions\", \"([Ljava/lang/String;I)V\");\n");
+        out.push_str("    if (request_permissions == NULL) goto done;\n");
+        out.push_str("    string_class = (*env)->FindClass(env, \"java/lang/String\");\n");
+        out.push_str("    if (string_class == NULL) goto done;\n");
+        out.push_str("    permission = flux__android_utf8_string(env, permission_name);\n");
+        out.push_str("    if (permission == NULL) goto done;\n");
+        out.push_str("    permissions = (*env)->NewObjectArray(env, 1, string_class, NULL);\n");
+        out.push_str("    if (permissions == NULL) goto done;\n");
+        out.push_str("    (*env)->SetObjectArrayElement(env, permissions, 0, permission);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, request_permissions, permissions, (jint)6172);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (permissions != NULL) (*env)->DeleteLocalRef(env, permissions);\n");
+        out.push_str("    if (permission != NULL) (*env)->DeleteLocalRef(env, permission);\n");
+        out.push_str("    if (string_class != NULL) (*env)->DeleteLocalRef(env, string_class);\n");
         out.push_str(
             "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
         );
@@ -1107,15 +1184,122 @@ fn emit_android_native_application(
         })?;
 
     for element in &view.elements {
-        if !matches!(element.kind.as_str(), "Text" | "Button") {
+        if !matches!(
+            element.kind.as_str(),
+            "Text" | "Button" | "TextInput" | "Toggle" | "Radio"
+        ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Android app backend currently renders Text and Button elements",
+                "bootstrap Android app backend currently renders Text, Button, TextInput, Toggle, and Radio elements",
             ));
         }
     }
 
+    out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n");
+    for state in &view.states {
+        let state_name = ui_state_c_name(&state.name);
+        match signatures.canonical_type(&state.ty) {
+            Type::Bool => {
+                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Android bool state requires a compile-time bool initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static bool {state_name} = {};\n",
+                    if initial { "true" } else { "false" }
+                ));
+            }
+            Type::I64 => {
+                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Android i64 state requires a compile-time integer initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static int64_t {state_name} = INT64_C({initial});\n"
+                ));
+            }
+            _ => {
+                return Err(diag(
+                    state.type_span,
+                    "bootstrap Android view state currently supports bool and i64; owned/string/aggregate state remains pending",
+                ));
+            }
+        }
+    }
+    for derived in &view.derived {
+        let derived_name = ui_derived_c_name(&derived.name);
+        let initial = match signatures.canonical_type(&derived.ty) {
+            Type::I64 => "INT64_C(0)",
+            Type::Bool => "false",
+            Type::Str => "NULL",
+            _ => {
+                return Err(diag(
+                    derived.type_span,
+                    "bootstrap Android derived view values currently support i64, bool, and str",
+                ));
+            }
+        };
+        out.push_str(&format!(
+            "static {} {derived_name} = {initial};\n",
+            c_type(&derived.ty, signatures)
+        ));
+    }
+    out.push('\n');
+
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeBuildUi(JNIEnv *env, jobject activity) {\n");
+    out.push_str("    jclass activity_context_class = (*env)->GetObjectClass(env, activity);\n");
+    out.push_str("    if (activity_context_class != NULL) {\n");
+    out.push_str("        jmethodID get_resources = (*env)->GetMethodID(env, activity_context_class, \"getResources\", \"()Landroid/content/res/Resources;\");\n");
+    out.push_str("        if (get_resources != NULL) {\n");
+    out.push_str(
+        "            jobject resources = (*env)->CallObjectMethod(env, activity, get_resources);\n",
+    );
+    out.push_str("            if (resources != NULL && !(*env)->ExceptionCheck(env)) {\n");
+    out.push_str("                jclass resources_class = (*env)->FindClass(env, \"android/content/res/Resources\");\n");
+    out.push_str("                if (resources_class != NULL) {\n");
+    out.push_str("                    jmethodID get_metrics = (*env)->GetMethodID(env, resources_class, \"getDisplayMetrics\", \"()Landroid/util/DisplayMetrics;\");\n");
+    out.push_str("                    if (get_metrics != NULL) {\n");
+    out.push_str("                        jobject metrics = (*env)->CallObjectMethod(env, resources, get_metrics);\n");
+    out.push_str(
+        "                        if (metrics != NULL && !(*env)->ExceptionCheck(env)) {\n",
+    );
+    out.push_str("                            jclass metrics_class = (*env)->FindClass(env, \"android/util/DisplayMetrics\");\n");
+    out.push_str("                            if (metrics_class != NULL) {\n");
+    out.push_str("                                jfieldID width_field = (*env)->GetFieldID(env, metrics_class, \"widthPixels\", \"I\");\n");
+    out.push_str("                                jfieldID height_field = (*env)->GetFieldID(env, metrics_class, \"heightPixels\", \"I\");\n");
+    out.push_str("                                jfieldID density_field = (*env)->GetFieldID(env, metrics_class, \"densityDpi\", \"I\");\n");
+    out.push_str("                                if (width_field != NULL && height_field != NULL && density_field != NULL) {\n");
+    out.push_str("                                    jint width = (*env)->GetIntField(env, metrics, width_field);\n");
+    out.push_str("                                    jint height = (*env)->GetIntField(env, metrics, height_field);\n");
+    out.push_str("                                    jint density = (*env)->GetIntField(env, metrics, density_field);\n");
+    out.push_str("                                    if (width > 0) flux__ui_window_width = (int64_t)width;\n");
+    out.push_str("                                    if (height > 0) flux__ui_window_height = (int64_t)height;\n");
+    out.push_str("                                    flux__ui_display_scale = density >= 160 ? (int64_t)((density + 80) / 160) : INT64_C(1);\n");
+    out.push_str("                                }\n");
+    out.push_str("                                (*env)->DeleteLocalRef(env, metrics_class);\n");
+    out.push_str("                            }\n");
+    out.push_str("                            (*env)->DeleteLocalRef(env, metrics);\n");
+    out.push_str("                        }\n");
+    out.push_str("                    }\n");
+    out.push_str("                    (*env)->DeleteLocalRef(env, resources_class);\n");
+    out.push_str("                }\n");
+    out.push_str("                (*env)->DeleteLocalRef(env, resources);\n");
+    out.push_str("            }\n");
+    out.push_str("        }\n");
+    out.push_str("        (*env)->DeleteLocalRef(env, activity_context_class);\n");
+    out.push_str("    }\n");
+    out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+    for derived in &view.derived {
+        let value = ui_expr_c(&derived.value, view, signatures)?;
+        out.push_str(&format!(
+            "    {} = {value};\n",
+            ui_derived_c_name(&derived.name)
+        ));
+    }
     out.push_str(
         "    jclass grid_class = (*env)->FindClass(env, \"android/widget/GridLayout\");\n",
     );
@@ -1126,7 +1310,8 @@ fn emit_android_native_application(
     out.push_str("    jmethodID set_padding = (*env)->GetMethodID(env, grid_class, \"setPadding\", \"(IIII)V\");\n");
     out.push_str("    jmethodID add_view = (*env)->GetMethodID(env, grid_class, \"addView\", \"(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V\");\n");
     out.push_str("    jmethodID grid_spec = (*env)->GetStaticMethodID(env, grid_class, \"spec\", \"(II)Landroid/widget/GridLayout$Spec;\");\n");
-    out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || add_view == NULL || grid_spec == NULL) return;\n");
+    out.push_str("    jmethodID grid_spec_weight = (*env)->GetStaticMethodID(env, grid_class, \"spec\", \"(IIF)Landroid/widget/GridLayout$Spec;\");\n");
+    out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || add_view == NULL || grid_spec == NULL || grid_spec_weight == NULL) return;\n");
     out.push_str("    jobject grid = (*env)->NewObject(env, grid_class, grid_ctor, activity);\n");
     out.push_str("    if (grid == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
     out.push_str(&format!(
@@ -1139,34 +1324,41 @@ fn emit_android_native_application(
     ));
     let padding = view.grid.padding.unwrap_or(20);
     out.push_str(&format!(
-        "    (*env)->CallVoidMethod(env, grid, set_padding, (jint){padding}, (jint){padding}, (jint){padding}, (jint){padding});\n"
+        "    jint grid_padding = (jint)(INT64_C({padding}) * flux__ui_display_scale);\n    (*env)->CallVoidMethod(env, grid, set_padding, grid_padding, grid_padding, grid_padding, grid_padding);\n"
     ));
     out.push_str("    jclass params_class = (*env)->FindClass(env, \"android/widget/GridLayout$LayoutParams\");\n");
     out.push_str("    if (params_class == NULL) return;\n");
     out.push_str("    jmethodID params_ctor = (*env)->GetMethodID(env, params_class, \"<init>\", \"()V\");\n");
     out.push_str("    jfieldID row_spec_field = (*env)->GetFieldID(env, params_class, \"rowSpec\", \"Landroid/widget/GridLayout$Spec;\");\n");
     out.push_str("    jfieldID column_spec_field = (*env)->GetFieldID(env, params_class, \"columnSpec\", \"Landroid/widget/GridLayout$Spec;\");\n");
-    out.push_str("    if (params_ctor == NULL || row_spec_field == NULL || column_spec_field == NULL) return;\n");
+    out.push_str(
+        "    jfieldID width_field = (*env)->GetFieldID(env, params_class, \"width\", \"I\");\n",
+    );
+    out.push_str(
+        "    jfieldID height_field = (*env)->GetFieldID(env, params_class, \"height\", \"I\");\n",
+    );
+    out.push_str("    jmethodID set_margins = (*env)->GetMethodID(env, params_class, \"setMargins\", \"(IIII)V\");\n");
+    out.push_str("    if (params_ctor == NULL || row_spec_field == NULL || column_spec_field == NULL || width_field == NULL || height_field == NULL || set_margins == NULL) return;\n");
 
-    let mut button_id = 0i32;
-    for element in &view.elements {
+    for (element_index, element) in view.elements.iter().enumerate() {
+        let element_id = element_index + 1;
         out.push_str("    {\n");
-        let text = match view_property(element, "text") {
-            Some(property) => static_expr_str(&property.value, signatures).ok_or_else(|| {
-                diag(
-                    property.value.span,
-                    &format!(
-                        "bootstrap Android {}.text currently requires a compile-time str value",
-                        element.kind
-                    ),
-                )
-            })?,
-            None => element.name.clone(),
+        let text_property = match element.kind.as_str() {
+            "Toggle" | "Radio" => "label",
+            _ => "text",
         };
-        let class_name = if element.kind == "Text" {
-            "android/widget/TextView"
-        } else {
-            "android/widget/Button"
+        let text = match view_property(element, text_property) {
+            Some(property) => ui_expr_c(&property.value, view, signatures)?,
+            None if element.kind == "TextInput" => c_string(""),
+            None => c_string(&element.name),
+        };
+        let class_name = match element.kind.as_str() {
+            "Text" => "android/widget/TextView",
+            "Button" => "android/widget/Button",
+            "TextInput" => "android/widget/EditText",
+            "Toggle" => "android/widget/CheckBox",
+            "Radio" => "android/widget/RadioButton",
+            _ => unreachable!("validated Android native control kind"),
         };
         out.push_str(&format!(
             "    jclass child_class = (*env)->FindClass(env, \"{class_name}\");\n"
@@ -1180,50 +1372,577 @@ fn emit_android_native_application(
         );
         out.push_str("    if (child == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
         out.push_str(&format!(
-            "    jstring child_text = flux__android_utf8_string(env, {});\n",
-            c_string(&text)
+            "    jstring child_text = flux__android_utf8_string(env, {text});\n"
         ));
         out.push_str("    if (child_text == NULL) return;\n");
-        out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
-        if element.kind == "Button" {
-            if let Some(action) = view_property(element, "on_press") {
-                if action.transition.is_some() {
+        if element.kind == "TextInput" {
+            out.push_str(
+                "    jclass initial_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (initial_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID initial_text = (*env)->GetMethodID(env, initial_activity_class, \"initialText\", \"(ILjava/lang/String;)Ljava/lang/String;\");\n");
+            out.push_str("    if (initial_text == NULL) return;\n");
+            out.push_str(&format!(
+                "    jstring restored_text = (jstring)(*env)->CallObjectMethod(env, activity, initial_text, (jint){element_id}, child_text);\n"
+            ));
+            out.push_str("    if (restored_text == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_text, restored_text);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, restored_text);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, initial_activity_class);\n");
+        } else {
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
+        }
+        if let Some(property) = view_property(element, "visible") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("    jmethodID set_visibility = (*env)->GetMethodID(env, child_class, \"setVisibility\", \"(I)V\");\n");
+            out.push_str("    if (set_visibility == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_visibility, (jint)(({value}) ? 0 : 8));\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "enabled") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("    jmethodID set_enabled = (*env)->GetMethodID(env, child_class, \"setEnabled\", \"(Z)V\");\n");
+            out.push_str("    if (set_enabled == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_enabled, (jboolean)({value}));\n"
+            ));
+        }
+        if let Some(min_width) = static_minimum_size(element, "min_width", signatures)? {
+            out.push_str("    jmethodID set_min_width = (*env)->GetMethodID(env, child_class, \"setMinimumWidth\", \"(I)V\");\n");
+            out.push_str("    if (set_min_width == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_display_scale));\n"
+            ));
+        }
+        if let Some(min_height) = static_minimum_size(element, "min_height", signatures)? {
+            out.push_str("    jmethodID set_min_height = (*env)->GetMethodID(env, child_class, \"setMinimumHeight\", \"(I)V\");\n");
+            out.push_str("    if (set_min_height == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(INT64_C({min_height}) * flux__ui_display_scale));\n"
+            ));
+        }
+        let background_color = view_property(element, "background_color")
+            .map(|property| {
+                let Some(value) = static_expr_str(&property.value, signatures) else {
                     return Err(diag(
-                        action.span,
-                        "bootstrap Android Button.on_press state transitions remain pending; use a named fn() -> void callback",
+                        property.value.span,
+                        "bootstrap Android background_color must be a compile-time string",
+                    ));
+                };
+                if parse_hex_rgba(&value).is_none() {
+                    return Err(diag(
+                        property.value.span,
+                        "background_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
                     ));
                 }
-                if !matches!(action.value.kind, ExprKind::Var(_)) {
+                Ok(value)
+            })
+            .transpose()?;
+        let border_color = view_property(element, "border_color")
+            .map(|property| {
+                let Some(value) = static_expr_str(&property.value, signatures) else {
                     return Err(diag(
-                        action.value.span,
-                        "bootstrap Android Button.on_press currently requires a named fn() -> void callback",
+                        property.value.span,
+                        "bootstrap Android border_color must be a compile-time string",
+                    ));
+                };
+                if parse_hex_rgba(&value).is_none() {
+                    return Err(diag(
+                        property.value.span,
+                        "border_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
                     ));
                 }
-                button_id += 1;
-                out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
-                out.push_str("    jmethodID set_click = (*env)->GetMethodID(env, child_class, \"setOnClickListener\", \"(Landroid/view/View$OnClickListener;)V\");\n");
-                out.push_str("    if (set_id == NULL || set_click == NULL) return;\n");
-                out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, child, set_id, (jint){button_id});\n"
+                Ok(value)
+            })
+            .transpose()?;
+        let border_width =
+            static_non_negative_style_i64(element, "border_width", signatures)?.unwrap_or(0);
+        let radius = static_non_negative_style_i64(element, "radius", signatures)?.unwrap_or(0);
+        if let Some(property) = view_property(element, "border_style") {
+            let Some(style) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Android border_style must be a compile-time string",
                 ));
-                out.push_str("    (*env)->CallVoidMethod(env, child, set_click, activity);\n");
+            };
+            if !matches!(style.as_str(), "none" | "solid") {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Android border_style currently supports 'none' and 'solid'",
+                ));
             }
+        }
+        if background_color.is_some() || border_color.is_some() || border_width > 0 || radius > 0 {
+            if let Some(value) = background_color.as_ref() {
+                out.push_str(&format!(
+                    "    jstring child_background = flux__android_utf8_string(env, {});\n",
+                    c_string(value)
+                ));
+                out.push_str("    if (child_background == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_background = NULL;\n");
+            }
+            if let Some(value) = border_color.as_ref() {
+                out.push_str(&format!(
+                    "    jstring child_border = flux__android_utf8_string(env, {});\n",
+                    c_string(value)
+                ));
+                out.push_str("    if (child_border == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_border = NULL;\n");
+            }
+            out.push_str(
+                "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (style_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;IF)V\");\n");
+            out.push_str("    if (style_view == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border, (jint)(INT64_C({border_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius}) * flux__ui_display_scale));\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
+            out.push_str("    if (child_background != NULL) (*env)->DeleteLocalRef(env, child_background);\n");
+            out.push_str(
+                "    if (child_border != NULL) (*env)->DeleteLocalRef(env, child_border);\n",
+            );
+        }
+        let padding = static_non_negative_style_i64(element, "padding", signatures)?.unwrap_or(0);
+        let padding_top =
+            static_non_negative_style_i64(element, "padding_top", signatures)?.unwrap_or(padding);
+        let padding_bottom = static_non_negative_style_i64(element, "padding_bottom", signatures)?
+            .unwrap_or(padding);
+        let padding_start =
+            static_non_negative_style_i64(element, "padding_start", signatures)?.unwrap_or(padding);
+        let padding_end =
+            static_non_negative_style_i64(element, "padding_end", signatures)?.unwrap_or(padding);
+        if padding_top > 0 || padding_bottom > 0 || padding_start > 0 || padding_end > 0 {
+            out.push_str("    jmethodID set_child_padding = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
+            out.push_str("    if (set_child_padding == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)(INT64_C({padding_start}) * flux__ui_display_scale), (jint)(INT64_C({padding_top}) * flux__ui_display_scale), (jint)(INT64_C({padding_end}) * flux__ui_display_scale), (jint)(INT64_C({padding_bottom}) * flux__ui_display_scale));\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "tooltip") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    jstring child_tooltip = flux__android_utf8_string(env, {value});\n"
+            ));
+            out.push_str("    if (child_tooltip == NULL) return;\n");
+            out.push_str(
+                "    jclass tooltip_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (tooltip_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_tooltip = (*env)->GetMethodID(env, tooltip_activity_class, \"setTooltip\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_tooltip == NULL) return;\n");
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, activity, set_tooltip, child, child_tooltip);\n",
+            );
+            out.push_str("    (*env)->DeleteLocalRef(env, tooltip_activity_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_tooltip);\n");
+        }
+        let accessibility_label = view_property(element, "accessibility_label");
+        let accessibility_description = view_property(element, "accessibility_description");
+        if accessibility_label.is_some() || accessibility_description.is_some() {
+            if let Some(property) = accessibility_label {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    jstring child_accessibility_label = flux__android_utf8_string(env, {value});\n"
+                ));
+                out.push_str("    if (child_accessibility_label == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_accessibility_label = NULL;\n");
+            }
+            if let Some(property) = accessibility_description {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    jstring child_accessibility_description = flux__android_utf8_string(env, {value});\n"
+                ));
+                out.push_str("    if (child_accessibility_description == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_accessibility_description = NULL;\n");
+            }
+            out.push_str("    jclass accessibility_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (accessibility_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility = (*env)->GetMethodID(env, accessibility_activity_class, \"setAccessibility\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_accessibility == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, set_accessibility, child, child_accessibility_label, child_accessibility_description);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_activity_class);\n");
+            out.push_str("    if (child_accessibility_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_label);\n");
+            out.push_str("    if (child_accessibility_description != NULL) (*env)->DeleteLocalRef(env, child_accessibility_description);\n");
+        }
+        if element.kind == "Text" {
+            let text_color = view_property(element, "color")
+                .map(|property| {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.color must be a compile-time string",
+                        ));
+                    };
+                    if parse_hex_rgba(&value).is_none() {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let text_size = view_property(element, "size")
+                .map(|property| {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.size must be a compile-time i64 value",
+                        ));
+                    };
+                    if value <= 0 || value > i64::from(i32::MAX) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.size must be greater than zero",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let text_flag = |name: &str| -> Result<bool, Diagnostic> {
+                let Some(property) = view_property(element, name) else {
+                    return Ok(false);
+                };
+                static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        &format!("bootstrap Android Text.{name} must be a compile-time bool value"),
+                    )
+                })
+            };
+            let bold = text_flag("bold")?;
+            let italic = text_flag("italic")?;
+            let underline = text_flag("underline")?;
+            let strikethrough = text_flag("strikethrough")?;
+            if text_color.is_some() || text_size > 0 || bold || italic || underline || strikethrough
+            {
+                if let Some(value) = text_color.as_ref() {
+                    out.push_str(&format!(
+                        "    jstring child_text_color = flux__android_utf8_string(env, {});\n",
+                        c_string(value)
+                    ));
+                    out.push_str("    if (child_text_color == NULL) return;\n");
+                } else {
+                    out.push_str("    jstring child_text_color = NULL;\n");
+                }
+                out.push_str("    jclass text_style_activity_class = (*env)->GetObjectClass(env, activity);\n");
+                out.push_str("    if (text_style_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID style_text = (*env)->GetMethodID(env, text_style_activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
+                out.push_str("    if (style_text == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, activity, style_text, child, child_text_color, (jfloat){text_size}.0f, (jboolean){bold}, (jboolean){italic}, (jboolean){underline}, (jboolean){strikethrough});\n"
+                ));
+                out.push_str("    (*env)->DeleteLocalRef(env, text_style_activity_class);\n");
+                out.push_str("    if (child_text_color != NULL) (*env)->DeleteLocalRef(env, child_text_color);\n");
+            }
+            if let Some(property) = view_property(element, "selectable") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str("    jmethodID set_selectable = (*env)->GetMethodID(env, child_class, \"setTextIsSelectable\", \"(Z)V\");\n");
+                out.push_str("    if (set_selectable == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_selectable, (jboolean)({value}));\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "wrap") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str("    jmethodID set_single_line = (*env)->GetMethodID(env, child_class, \"setSingleLine\", \"(Z)V\");\n");
+                out.push_str("    if (set_single_line == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_single_line, (jboolean)(!({value})));\n"
+                ));
+            }
+        }
+        if element.kind == "TextInput" {
+            if let Some(property) = view_property(element, "placeholder") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str("    jmethodID set_hint = (*env)->GetMethodID(env, child_class, \"setHint\", \"(Ljava/lang/CharSequence;)V\");\n");
+                out.push_str("    if (set_hint == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jstring child_hint = flux__android_utf8_string(env, {value});\n"
+                ));
+                out.push_str("    if (child_hint == NULL) return;\n");
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_hint, child_hint);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, child_hint);\n");
+            }
+            if let Some(property) = view_property(element, "password") {
+                let Some(password) = static_expr_bool(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.password must be a compile-time bool value",
+                    ));
+                };
+                if password {
+                    out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
+                    out.push_str("    if (set_input_type == NULL) return;\n");
+                    out.push_str(
+                        "    (*env)->CallVoidMethod(env, child, set_input_type, (jint)129);\n",
+                    );
+                }
+            }
+            if let Some(property) = view_property(element, "max_length") {
+                let Some(max_length) = static_expr_i64(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.max_length must be a compile-time i64 value",
+                    ));
+                };
+                if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                    return Err(diag(
+                        property.value.span,
+                        "TextInput.max_length must be between 0 and 2147483647",
+                    ));
+                }
+                out.push_str(
+                    "    jclass max_length_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (max_length_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID set_max_length = (*env)->GetMethodID(env, max_length_activity_class, \"setMaxLength\", \"(Landroid/widget/EditText;I)V\");\n");
+                out.push_str("    if (set_max_length == NULL) return;\n");
+                out.push_str(&format!("    (*env)->CallVoidMethod(env, activity, set_max_length, child, (jint){max_length});\n"));
+                out.push_str("    (*env)->DeleteLocalRef(env, max_length_activity_class);\n");
+            }
+            let on_change = view_property(element, "on_change").is_some();
+            let on_submit = view_property(element, "on_submit").is_some();
+            if on_change || on_submit {
+                out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+                out.push_str("    if (set_id == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+                ));
+                out.push_str(
+                    "    jclass wire_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (wire_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID wire_input = (*env)->GetMethodID(env, wire_activity_class, \"wireTextInput\", \"(Landroid/widget/EditText;ZZ)V\");\n");
+                out.push_str("    if (wire_input == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, activity, wire_input, child, (jboolean){}, (jboolean){});\n",
+                    if on_change { "true" } else { "false" },
+                    if on_submit { "true" } else { "false" }
+                ));
+                out.push_str("    (*env)->DeleteLocalRef(env, wire_activity_class);\n");
+            }
+            if let Some(property) = view_property(element, "autofocus") {
+                let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.autofocus must be a compile-time bool value",
+                    ));
+                };
+                if autofocus {
+                    out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, child_class, \"requestFocus\", \"()Z\");\n");
+                    out.push_str("    if (request_focus == NULL) return;\n");
+                    out.push_str("    (*env)->CallBooleanMethod(env, child, request_focus);\n");
+                }
+            }
+        }
+        if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+            let checked_property = if element.kind == "Toggle" {
+                "checked"
+            } else {
+                "selected"
+            };
+            if let Some(property) = view_property(element, checked_property) {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str("    jmethodID set_checked = (*env)->GetMethodID(env, child_class, \"setChecked\", \"(Z)V\");\n");
+                out.push_str("    if (set_checked == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_checked, (jboolean)({value}));\n"
+                ));
+            }
+            let action_name = if element.kind == "Toggle" {
+                "on_change"
+            } else {
+                "on_select"
+            };
+            if view_property(element, action_name).is_some() {
+                out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+                out.push_str("    jmethodID set_checked_listener = (*env)->GetMethodID(env, child_class, \"setOnCheckedChangeListener\", \"(Landroid/widget/CompoundButton$OnCheckedChangeListener;)V\");\n");
+                out.push_str("    if (set_id == NULL || set_checked_listener == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+                ));
+                out.push_str(
+                    "    (*env)->CallVoidMethod(env, child, set_checked_listener, activity);\n",
+                );
+            }
+        }
+        if element.kind == "Button"
+            && let Some(action) = view_property(element, "on_press")
+        {
+            if action.transition.is_none() && !matches!(action.value.kind, ExprKind::Var(_)) {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Android Button.on_press requires a named fn() -> void callback or state transition",
+                ));
+            }
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_click = (*env)->GetMethodID(env, child_class, \"setOnClickListener\", \"(Landroid/view/View$OnClickListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_click == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_click, activity);\n");
         }
         out.push_str("    jobject params = (*env)->NewObject(env, params_class, params_ctor);\n");
         out.push_str("    if (params == NULL) return;\n");
-        out.push_str(&format!(
-            "    jobject row_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){}, (jint){});\n",
-            element.row.saturating_sub(1),
-            element.row_span
-        ));
-        out.push_str(&format!(
-            "    jobject column_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){}, (jint){});\n",
-            element.column.saturating_sub(1),
-            element.column_span
-        ));
+        let row_start = element.row.saturating_sub(1) as usize;
+        let row_end = row_start + element.row_span as usize;
+        let column_start = element.column.saturating_sub(1) as usize;
+        let column_end = column_start + element.column_span as usize;
+        let row_tracks = &view.grid.rows[row_start..row_end];
+        let column_tracks = &view.grid.columns[column_start..column_end];
+        let row_weight = row_tracks
+            .iter()
+            .all(|track| matches!(track, crate::ast::GridTrack::Fraction(_)))
+            .then(|| {
+                row_tracks
+                    .iter()
+                    .map(|track| match track {
+                        crate::ast::GridTrack::Fraction(value) => *value,
+                        _ => 0,
+                    })
+                    .sum::<u32>()
+            });
+        let column_weight = column_tracks
+            .iter()
+            .all(|track| matches!(track, crate::ast::GridTrack::Fraction(_)))
+            .then(|| {
+                column_tracks
+                    .iter()
+                    .map(|track| match track {
+                        crate::ast::GridTrack::Fraction(value) => *value,
+                        _ => 0,
+                    })
+                    .sum::<u32>()
+            });
+        if let Some(weight) = row_weight {
+            out.push_str(&format!(
+                "    jobject row_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec_weight, (jint){row_start}, (jint){}, (jfloat){weight}.0f);\n",
+                element.row_span
+            ));
+        } else {
+            out.push_str(&format!(
+                "    jobject row_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){row_start}, (jint){});\n",
+                element.row_span
+            ));
+        }
+        if let Some(weight) = column_weight {
+            out.push_str(&format!(
+                "    jobject column_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec_weight, (jint){column_start}, (jint){}, (jfloat){weight}.0f);\n",
+                element.column_span
+            ));
+        } else {
+            out.push_str(&format!(
+                "    jobject column_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){column_start}, (jint){});\n",
+                element.column_span
+            ));
+        }
         out.push_str("    if (row_spec == NULL || column_spec == NULL) return;\n");
         out.push_str("    (*env)->SetObjectField(env, params, row_spec_field, row_spec);\n");
         out.push_str("    (*env)->SetObjectField(env, params, column_spec_field, column_spec);\n");
+        let gap = view.grid.gap.unwrap_or(0);
+        let margin = view_property(element, "margin")
+            .map(|property| element_margin_value(property, "margin", signatures))
+            .transpose()?
+            .unwrap_or(0);
+        let margin_top = view_property(element, "margin_top")
+            .map(|property| element_margin_value(property, "margin_top", signatures))
+            .transpose()?
+            .unwrap_or(margin);
+        let margin_bottom = view_property(element, "margin_bottom")
+            .map(|property| element_margin_value(property, "margin_bottom", signatures))
+            .transpose()?
+            .unwrap_or(margin);
+        let margin_start = view_property(element, "margin_start")
+            .map(|property| element_margin_value(property, "margin_start", signatures))
+            .transpose()?
+            .unwrap_or(margin);
+        let margin_end = view_property(element, "margin_end")
+            .map(|property| element_margin_value(property, "margin_end", signatures))
+            .transpose()?
+            .unwrap_or(margin);
+        let gap_half = i64::from(gap) / 2;
+        if gap > 0 || margin_top > 0 || margin_bottom > 0 || margin_start > 0 || margin_end > 0 {
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale), (jint)(INT64_C({}) * flux__ui_display_scale));\n",
+                margin_start.saturating_add(gap_half),
+                margin_top.saturating_add(gap_half),
+                margin_end.saturating_add(gap_half),
+                margin_bottom.saturating_add(gap_half),
+            ));
+        }
+        let alignment = |property_name: &str, horizontal: bool| -> Result<i32, Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok(0);
+            };
+            let Some(value) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    &format!("bootstrap Android {property_name} must be a compile-time string"),
+                ));
+            };
+            match (horizontal, value.as_str()) {
+                (true, "start") => Ok(8_388_611),
+                (true, "center") => Ok(1),
+                (true, "end") => Ok(8_388_613),
+                (true, "fill") => Ok(7),
+                (false, "start") => Ok(48),
+                (false, "center") => Ok(16),
+                (false, "end") => Ok(80),
+                (false, "fill") => Ok(112),
+                _ => Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be one of 'start', 'center', 'end', or 'fill'"),
+                )),
+            }
+        };
+        let gravity = alignment("align_x", true)? | alignment("align_y", false)?;
+        if gravity != 0 {
+            out.push_str("    jmethodID set_gravity = (*env)->GetMethodID(env, params_class, \"setGravity\", \"(I)V\");\n");
+            out.push_str("    if (set_gravity == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, params, set_gravity, (jint){gravity});\n"
+            ));
+        }
+        let fixed_width = column_tracks
+            .iter()
+            .try_fold(0u32, |total, track| match track {
+                crate::ast::GridTrack::Units(value) => total.checked_add(*value),
+                _ => None,
+            });
+        let fixed_height = row_tracks
+            .iter()
+            .try_fold(0u32, |total, track| match track {
+                crate::ast::GridTrack::Units(value) => total.checked_add(*value),
+                _ => None,
+            });
+        if let Some(width) = fixed_width {
+            let width =
+                width.saturating_add(gap.saturating_mul(element.column_span.saturating_sub(1)));
+            out.push_str(&format!(
+                "    (*env)->SetIntField(env, params, width_field, (jint)(INT64_C({width}) * flux__ui_display_scale));\n"
+            ));
+        } else if column_weight.is_some() {
+            out.push_str("    (*env)->SetIntField(env, params, width_field, (jint)0);\n");
+        }
+        if let Some(height) = fixed_height {
+            let height =
+                height.saturating_add(gap.saturating_mul(element.row_span.saturating_sub(1)));
+            out.push_str(&format!(
+                "    (*env)->SetIntField(env, params, height_field, (jint)(INT64_C({height}) * flux__ui_display_scale));\n"
+            ));
+        } else if row_weight.is_some() {
+            out.push_str("    (*env)->SetIntField(env, params, height_field, (jint)0);\n");
+        }
         out.push_str("    (*env)->CallVoidMethod(env, grid, add_view, child, params);\n");
         out.push_str("    (*env)->DeleteLocalRef(env, column_spec);\n    (*env)->DeleteLocalRef(env, row_spec);\n    (*env)->DeleteLocalRef(env, params);\n    (*env)->DeleteLocalRef(env, child_text);\n    (*env)->DeleteLocalRef(env, child);\n    (*env)->DeleteLocalRef(env, child_class);\n");
         out.push_str("    }\n");
@@ -1238,32 +1957,109 @@ fn emit_android_native_application(
     out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
     out.push_str("}\n");
 
-    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
-    button_id = 0;
-    for element in &view.elements {
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for (element_index, element) in view.elements.iter().enumerate() {
         if element.kind != "Button" {
             continue;
         }
         let Some(action) = view_property(element, "on_press") else {
             continue;
         };
-        let ExprKind::Var(function) = &action.value.kind else {
+        let element_id = element_index + 1;
+        if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            out.push_str(&format!(
+                "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+                ui_state_c_name(&transition.state)
+            ));
             continue;
+        }
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Android Button.on_press requires a named fn() -> void callback or state transition",
+            ));
         };
-        button_id += 1;
         out.push_str(&format!(
-            "        case {button_id}: {}(); break;\n",
+            "        case {element_id}: {}(); break;\n",
             function_c_name(function)
         ));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnChecked(JNIEnv *env, jclass activity_class, jint view_id, jboolean checked) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for (element_index, element) in view.elements.iter().enumerate() {
+        let action_name = match element.kind.as_str() {
+            "Toggle" => "on_change",
+            "Radio" => "on_select",
+            _ => continue,
+        };
+        let Some(action) = view_property(element, action_name) else {
+            continue;
+        };
+        let element_id = element_index + 1;
+        let radio_guard = if element.kind == "Radio" {
+            "if (!checked) break; "
+        } else {
+            ""
+        };
+        if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            out.push_str(&format!(
+                "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+                ui_state_c_name(&transition.state)
+            ));
+            continue;
+        }
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Android Toggle/Radio events require a named fn() -> void callback or state transition",
+            ));
+        };
+        out.push_str(&format!(
+            "        case {element_id}: {radio_guard}{}(); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+            function_c_name(function)
+        ));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    for (property_name, native_name) in [
+        ("on_change", "nativeOnTextChanged"),
+        ("on_submit", "nativeOnSubmit"),
+    ] {
+        out.push_str(&format!(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_{native_name}(JNIEnv *env, jclass activity_class, jint view_id, jstring text) {{\n    (void)activity_class;\n    if (text == NULL) return;\n    const char *value = (*env)->GetStringUTFChars(env, text, NULL);\n    if (value == NULL) return;\n    switch (view_id) {{\n"
+        ));
+        for (element_index, element) in view.elements.iter().enumerate() {
+            if element.kind != "TextInput" {
+                continue;
+            }
+            let Some(action) = view_property(element, property_name) else {
+                continue;
+            };
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    &format!(
+                        "bootstrap Android TextInput.{property_name} lowering requires a named fn(str) -> void callback"
+                    ),
+                ));
+            };
+            let element_id = element_index + 1;
+            out.push_str(&format!(
+                "        case {element_id}: {}(value); break;\n",
+                function_c_name(function)
+            ));
+        }
+        out.push_str("        default: break;\n    }\n    (*env)->ReleaseStringUTFChars(env, text, value);\n}\n\n");
+    }
 
     for (metadata, callback) in [
         ("on_start", "start"),
         ("on_resume", "resume"),
         ("on_pause", "pause"),
         ("on_stop", "stop"),
-        ("on_configuration_changed", "configuration_changed"),
         ("on_low_memory", "low_memory"),
     ] {
         if let Some(function) = application_metadata_function(application, metadata) {
@@ -1273,6 +2069,13 @@ fn emit_android_native_application(
             ));
         }
     }
+    out.push_str(
+        "static void flux__android_on_configuration_changed(ANativeActivity *activity) {\n",
+    );
+    if let Some(function) = application_metadata_function(application, "on_configuration_changed") {
+        out.push_str(&format!("    {}();\n", function_c_name(function)));
+    }
+    out.push_str("    bool detach = false;\n    JNIEnv *env = flux__android_get_env(&detach);\n    if (env != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, activity->clazz);\n    flux__android_release_env(detach);\n}\n");
     if let Some(function) = application_metadata_function(application, "on_exit") {
         out.push_str(&format!(
             "static void flux__android_on_destroy(ANativeActivity *activity) {{ (void)activity; {}(); flux__android_activity = NULL; }}\n",
@@ -1295,11 +2098,6 @@ fn emit_android_native_application(
         ("on_resume", "resume", "onResume"),
         ("on_pause", "pause", "onPause"),
         ("on_stop", "stop", "onStop"),
-        (
-            "on_configuration_changed",
-            "configuration_changed",
-            "onConfigurationChanged",
-        ),
         ("on_low_memory", "low_memory", "onLowMemory"),
     ] {
         if application_metadata_function(application, metadata).is_some() {
@@ -1308,6 +2106,7 @@ fn emit_android_native_application(
             ));
         }
     }
+    out.push_str("    activity->callbacks->onConfigurationChanged = flux__android_on_configuration_changed;\n");
     if application_metadata_function(application, "on_save_state").is_some() {
         out.push_str("    activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state;\n");
     }
@@ -2492,7 +3291,7 @@ fn ui_expr_c(
             let Some(constant) = signatures.constant(name) else {
                 return Err(diag(
                     expr.span,
-                    "bootstrap Linux dynamic UI expression may reference only view environment, view state, derived view values, or compile-time constants",
+                    "bootstrap dynamic UI expression may reference only view environment, view state, derived view values, or compile-time constants",
                 ));
             };
             match &constant.value {
@@ -2531,7 +3330,7 @@ fn ui_expr_c(
         )),
         _ => Err(diag(
             expr.span,
-            "bootstrap Linux dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, and conditional expressions",
+            "bootstrap dynamic UI expression currently supports primitive literals, view environment/state/constants, primitive operators, and conditional expressions",
         )),
     }
 }
@@ -8980,6 +9779,34 @@ fn emit_qualified_call(
                     ));
                 }
                 return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
+            }
+            "permission_granted" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_permission_granted({})", value.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "request_permission" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_request_permission({})", value.code),
+                    Vec::new(),
+                    None,
+                ));
             }
             "notification_permission_granted" => {
                 if !args.is_empty() {
