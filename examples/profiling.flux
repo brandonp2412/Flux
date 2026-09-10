@@ -1,12 +1,11 @@
-fn sumRange(limit: i64) -> i64 {
-    var total: i64 = 0
-    for value in 0..limit:
-        total = total + value
-    return total
+fn fibonacci(value: i64) -> i64 {
+    if value < 2:
+        return value
+    return fibonacci(value - 1) + fibonacci(value - 2)
 }
 
 fn main() -> i64 {
-    let total: i64 = sumRange(100000000)
-    print(total)
+    let result: i64 = fibonacci(38)
+    print(result)
     return 0
 }

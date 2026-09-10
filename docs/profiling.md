@@ -10,6 +10,6 @@ The dedicated command is intentionally separate from `flux build --mode profile`
 
 The profiler stores `gmon` data in an isolated temporary directory and removes both the instrumented binary and profiling data after reporting. Program stdin/stdout/stderr remain attached to the terminal, so interactive native programs can be profiled as well.
 
-This first slice exposes native function-level CPU hotspots through `gprof`. Flux-aware symbol demangling, richer source mapping in profiler reports, allocation/memory analysis, render timelines, and low-overhead production profiling remain roadmap work.
+Profiler output removes the compiler's `flux__fn_` prefix from Flux function symbols and resolves sampled native addresses through debug metadata so locations are reported as original `.flux` files and lines whenever an instruction has a source location. Compiler/runtime helpers remain visibly native so profiles do not misrepresent implementation work as application functions.
 
-`flux doctor` reports whether `gprof` is available on the development host.
+Allocation/memory analysis, render timelines, and low-overhead production profiling remain roadmap work. `flux doctor` reports whether `gprof` is available on the development host; address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.

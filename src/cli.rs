@@ -1293,26 +1293,32 @@ fn profile_target(target: &Path) -> Result<(), CliError> {
                 .to_string(),
         ))
     } else {
-        eprintln!("profile: CPU report (Flux source locations where available)");
+        eprintln!("profile: CPU report");
         let mut command = Command::new("gprof");
         command.args(["-b", "-l"]).arg(&binary);
         for data_file in &data_files {
             command.arg(data_file);
         }
-        let status = command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
+        let output = command
+            .output()
             .map_err(|error| format!("failed to launch gprof: {error}"))?;
-        if status.success() {
+        if output.status.success() {
+            let report = String::from_utf8_lossy(&output.stdout);
+            let report = symbolize_profile_report(&binary, &report);
+            print!("{report}");
+            io::stdout()
+                .flush()
+                .map_err(|error| format!("failed to flush profiler report: {error}"))?;
             Ok(())
         } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             Err(CliError::Message(format!(
-                "gprof exited with status {}",
-                status
+                "gprof exited with status {}: {}",
+                output
+                    .status
                     .code()
-                    .map_or_else(|| "signal".to_string(), |code| code.to_string())
+                    .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+                stderr.trim()
             )))
         }
     };
@@ -1362,6 +1368,104 @@ fn profile_data_files(directory: &Path) -> Result<Vec<PathBuf>, CliError> {
         .collect::<Vec<_>>();
     files.sort();
     Ok(files)
+}
+
+fn symbolize_profile_report(binary: &Path, report: &str) -> String {
+    let addresses = profile_report_addresses(report);
+    let locations = resolve_profile_addresses(binary, &addresses);
+    let mut out = report.to_string();
+    for (address, location) in addresses.iter().zip(locations) {
+        let Some(location) = location else {
+            continue;
+        };
+        let marker = format!(" @ {address}");
+        let mut search_start = 0usize;
+        while let Some(relative) = out[search_start..].find(&marker) {
+            let marker_start = search_start + relative;
+            let Some(open_start) = out[..marker_start].rfind('(') else {
+                search_start = marker_start + marker.len();
+                continue;
+            };
+            let location_start = open_start + 1;
+            if out[location_start..marker_start].contains('\n') {
+                search_start = marker_start + marker.len();
+                continue;
+            }
+            out.replace_range(location_start..marker_start, &location);
+            search_start = location_start + location.len() + marker.len();
+        }
+    }
+    demangle_profile_symbols(&out)
+}
+
+fn profile_report_addresses(report: &str) -> Vec<String> {
+    let mut addresses = Vec::new();
+    let mut rest = report;
+    while let Some(index) = rest.find(" @ ") {
+        rest = &rest[index + 3..];
+        let address = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_hexdigit())
+            .collect::<String>();
+        if !address.is_empty() && !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    addresses
+}
+
+fn resolve_profile_addresses(binary: &Path, addresses: &[String]) -> Vec<Option<String>> {
+    if addresses.is_empty() {
+        return Vec::new();
+    }
+    let mut command = Command::new("addr2line");
+    command.arg("-e").arg(binary);
+    for address in addresses {
+        command.arg(format!("0x{address}"));
+    }
+    let Ok(output) = command.output() else {
+        return vec![None; addresses.len()];
+    };
+    if !output.status.success() {
+        return vec![None; addresses.len()];
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut locations = text
+        .lines()
+        .map(|line| {
+            let location = line.trim();
+            (!location.is_empty()
+                && location != "??:0"
+                && location != "??:?"
+                && location.contains(".flux:"))
+            .then(|| location.to_string())
+        })
+        .collect::<Vec<_>>();
+    locations.resize(addresses.len(), None);
+    locations.truncate(addresses.len());
+    locations
+}
+
+fn demangle_profile_symbols(report: &str) -> String {
+    let mut out = String::with_capacity(report.len());
+    let mut rest = report;
+    while let Some(index) = rest.find("flux__fn_") {
+        out.push_str(&rest[..index]);
+        rest = &rest[index + "flux__fn_".len()..];
+        let name_len = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if name_len == 0 {
+            out.push_str("flux__fn_");
+            continue;
+        }
+        out.push_str(&rest[..name_len]);
+        rest = &rest[name_len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
@@ -3891,10 +3995,22 @@ mod tests {
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         NativeInstrumentation, android_abi_from_runtime, android_activity_java_source,
         android_build_options, android_manifest_xml, android_publish_options, build_options,
-        debug_options, json_string, native_build_cache_path, output_with_timeout,
-        parse_adb_devices, select_android_run_target, validate_android_publish_manifest,
-        waydroid_status_is_running,
+        debug_options, demangle_profile_symbols, json_string, native_build_cache_path,
+        output_with_timeout, parse_adb_devices, profile_report_addresses,
+        select_android_run_target, validate_android_publish_manifest, waydroid_status_is_running,
     };
+
+    #[test]
+    fn profiler_extracts_addresses_and_demangles_flux_functions() {
+        let report = " 50.0  0.01  0.01  1  10  10 flux__fn_sumRange (<stdin>:4 @ 12af)\n 50.0 0.02 0.01 main (<stdin>:9 @ 13B0)\n";
+        assert_eq!(
+            profile_report_addresses(report),
+            ["12af".to_string(), "13B0".to_string()]
+        );
+        let demangled = demangle_profile_symbols(report);
+        assert!(demangled.contains("sumRange (<stdin>:4 @ 12af)"));
+        assert!(!demangled.contains("flux__fn_sumRange"));
+    }
 
     #[test]
     fn native_build_cache_separates_profile_instrumentation() {

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 407
+- Completed baseline units: 409
 - Reported overall progress: **55%**
 - Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -916,8 +916,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Frame/render timeline.
 - [ ] Layout diagnostics.
 - [ ] Network inspection.
-- [ ] Native symbolization.
-- [ ] Source mapping.
+- [x] Native symbolization. Bootstrap CPU profiles demangle compiler-generated `flux__fn_` application symbols back to Flux function names while leaving compiler/runtime helpers visibly native; profile-build debug symbols remain available to ordinary native tooling.
+- [x] Source mapping. `flux profile` collects sampled native addresses from gprof output and resolves them through `addr2line` against the exact instrumented binary, replacing compiler-stdin locations with original `.flux` file/line locations wherever DWARF has a source mapping while retaining a safe native fallback for prologue/runtime instructions.
 - [ ] UI inspector without exposing a widget-object hierarchy.
 - [ ] Performance overlays.
 - [ ] Low-overhead production profiling hooks.
