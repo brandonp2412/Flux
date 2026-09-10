@@ -9396,7 +9396,7 @@ app Form
     assert!(
         error
             .message
-            .contains("TextInput.max_length must be between 0")
+            .contains("TextInput.maxLength must be between 0")
     );
 
     let invalid_keyboard_type = r#"
@@ -9414,7 +9414,7 @@ app Form
     assert!(
         error
             .message
-            .contains("TextInput.keyboard_type must be one of")
+            .contains("TextInput.keyboardType must be one of")
     );
 
     let no_enter_submit = r#"
@@ -9436,22 +9436,78 @@ app Form
     assert!(!generated.contains("g_signal_connect(flux__ui_query, \"activate\""));
 
     let linux_multiline = r#"
+fn submit(value: str) -> void {
+    print(value)
+}
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        text: "first\nsecond"
+        multiline: true
+        keyboardType: "text"
+        submitOnEnter: true
+        onChange: submit
+        onSubmit: submit
+}
+app Form
+"#;
+    check_source(linux_multiline).expect("multiline should typecheck before target lowering");
+    let generated = compile_to_c(linux_multiline)
+        .expect("Linux multiline TextInput should lower to a native GtkTextView");
+    assert!(generated.contains("flux__ui_query = gtk_text_view_new()"));
+    assert!(generated.contains("GtkTextBuffer *flux__ui_buffer_query = gtk_text_view_get_buffer"));
+    assert!(
+        generated
+            .contains("gtk_text_buffer_set_text(flux__ui_buffer_query, \"first\\nsecond\", -1)")
+    );
+    assert!(generated.contains(
+        "gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(flux__ui_query), GTK_WRAP_WORD_CHAR)"
+    ));
+    assert!(generated.contains("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW(flux__ui_query), GTK_INPUT_PURPOSE_FREE_FORM)"));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_buffer_query, \"changed\", G_CALLBACK(flux__ui_change_query), NULL)"
+    ));
+    assert!(generated.contains(
+        "GtkEventController *flux__submit_controller_query = gtk_event_controller_key_new()"
+    ));
+    assert!(generated.contains("GDK_KEY_Return"));
+    assert!(generated.contains("gtk_text_buffer_get_text(buffer, &start, &end, FALSE)"));
+    assert!(generated.contains("g_free(text)"));
+    assert!(!generated.contains("flux__ui_query = gtk_entry_new()"));
+
+    let multiline_default_enter = r#"
+fn submit(value: str) -> void {
+    print(value)
+}
 view Form {
     grid columns: 1fr
     grid rows: auto
     TextInput query at 1,1
         multiline: true
+        onSubmit: submit
 }
 app Form
 "#;
-    check_source(linux_multiline).expect("multiline should typecheck before target lowering");
-    let error = compile_to_c(linux_multiline)
-        .expect_err("Linux bootstrap must reject unsupported multiline input explicitly");
-    assert!(
-        error
-            .message
-            .contains("TextInput.multiline is not yet supported")
-    );
+    let generated = compile_to_c(multiline_default_enter)
+        .expect("multiline input should keep Enter as text unless submission is explicit");
+    assert!(!generated.contains("flux__submit_controller_query"));
+
+    for (property, expected) in [
+        (
+            "placeholder: \"Notes\"",
+            "TextInput.placeholder is not yet supported",
+        ),
+        ("maxLength: 32", "TextInput.maxLength is not yet supported"),
+    ] {
+        let source = format!(
+            "view Form {{\n    grid columns: 1fr\n    grid rows: auto\n    TextInput query at 1,1\n        multiline: true\n        {property}\n}}\napp Form\n"
+        );
+        check_source(&source).expect("multiline restriction fixture should typecheck generically");
+        let error =
+            compile_to_c(&source).expect_err("unsupported multiline option must fail explicitly");
+        assert!(error.message.contains(expected));
+    }
 }
 
 #[test]

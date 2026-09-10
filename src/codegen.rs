@@ -3243,6 +3243,17 @@ fn emit_linux_gtk_application(
 
     for element in &view.elements {
         if element.kind == "TextInput" {
+            let multiline = match view_property(element, "multiline") {
+                Some(property) => {
+                    static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.multiline must be a compile-time bool value",
+                        )
+                    })?
+                }
+                None => false,
+            };
             for (property_name, callback_name) in [("on_change", "change"), ("on_submit", "submit")]
             {
                 let Some(action) = view_property(element, property_name) else {
@@ -3256,11 +3267,25 @@ fn emit_linux_gtk_application(
                         ),
                     ));
                 };
-                out.push_str(&format!(
-                    "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
-                    element.name,
-                    function_c_name(function),
-                ));
+                if multiline && property_name == "on_change" {
+                    out.push_str(&format!(
+                        "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data; GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
+                        element.name,
+                        function_c_name(function),
+                    ));
+                } else if multiline {
+                    out.push_str(&format!(
+                        "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data; if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
+                        element.name,
+                        function_c_name(function),
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
+                        element.name,
+                        function_c_name(function),
+                    ));
+                }
             }
             continue;
         }
@@ -3737,15 +3762,6 @@ fn emit_linux_gtk_application(
                     })?,
                     None => false,
                 };
-                if multiline {
-                    let span = view_property(element, "multiline")
-                        .map(|property| property.value.span)
-                        .unwrap_or(element.span);
-                    return Err(diag(
-                        span,
-                        "TextInput.multiline is not yet supported by the Linux GTK bootstrap backend",
-                    ));
-                }
                 let submit_on_enter = match view_property(element, "submit_on_enter") {
                     Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
                         diag(
@@ -3753,21 +3769,41 @@ fn emit_linux_gtk_application(
                             "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
                         )
                     })?,
-                    None => true,
+                    None => !multiline,
                 };
                 let text = match view_property(element, "text") {
                     None => c_string(""),
                     Some(property) => ui_expr_c(&property.value, view, signatures)?,
                 };
-                out.push_str(&format!("    {variable} = gtk_entry_new();\n"));
-                out.push_str(&format!(
-                    "    gtk_editable_set_text(GTK_EDITABLE({variable}), {text});\n"
-                ));
-                if let Some(property) = view_property(element, "placeholder") {
-                    let placeholder = ui_expr_c(&property.value, view, signatures)?;
+                let multiline_buffer = format!("flux__ui_buffer_{}", element.name);
+                if multiline {
+                    if let Some(property) = view_property(element, "placeholder") {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.placeholder is not yet supported for multiline Linux GTK input",
+                        ));
+                    }
+                    out.push_str(&format!("    {variable} = gtk_text_view_new();\n"));
                     out.push_str(&format!(
-                        "    gtk_entry_set_placeholder_text(GTK_ENTRY({variable}), {placeholder});\n"
+                        "    GtkTextBuffer *{multiline_buffer} = gtk_text_view_get_buffer(GTK_TEXT_VIEW({variable}));\n"
                     ));
+                    out.push_str(&format!(
+                        "    gtk_text_buffer_set_text({multiline_buffer}, {text}, -1);\n"
+                    ));
+                    out.push_str(&format!(
+                        "    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW({variable}), GTK_WRAP_WORD_CHAR);\n"
+                    ));
+                } else {
+                    out.push_str(&format!("    {variable} = gtk_entry_new();\n"));
+                    out.push_str(&format!(
+                        "    gtk_editable_set_text(GTK_EDITABLE({variable}), {text});\n"
+                    ));
+                    if let Some(property) = view_property(element, "placeholder") {
+                        let placeholder = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "    gtk_entry_set_placeholder_text(GTK_ENTRY({variable}), {placeholder});\n"
+                        ));
+                    }
                 }
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;
@@ -3779,7 +3815,7 @@ fn emit_linux_gtk_application(
                     let Some(keyboard_type) = static_expr_str(&property.value, signatures) else {
                         return Err(diag(
                             property.value.span,
-                            "bootstrap Linux TextInput.keyboard_type must be a compile-time string",
+                            "bootstrap Linux TextInput.keyboardType must be a compile-time string",
                         ));
                     };
                     let purpose = match keyboard_type.as_str() {
@@ -3792,13 +3828,19 @@ fn emit_linux_gtk_application(
                         _ => {
                             return Err(diag(
                                 property.value.span,
-                                "TextInput.keyboard_type must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
+                                "TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
                             ));
                         }
                     };
-                    out.push_str(&format!(
-                        "    gtk_entry_set_input_purpose(GTK_ENTRY({variable}), {purpose});\n"
-                    ));
+                    if multiline {
+                        out.push_str(&format!(
+                            "    gtk_text_view_set_input_purpose(GTK_TEXT_VIEW({variable}), {purpose});\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    gtk_entry_set_input_purpose(GTK_ENTRY({variable}), {purpose});\n"
+                        ));
+                    }
                 }
                 if let Some(property) = view_property(element, "password") {
                     let Some(password) = static_expr_bool(&property.value, signatures) else {
@@ -3807,6 +3849,12 @@ fn emit_linux_gtk_application(
                             "bootstrap Linux TextInput.password must be a compile-time bool value",
                         ));
                     };
+                    if password && multiline {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.password and TextInput.multiline cannot both be true",
+                        ));
+                    }
                     if password {
                         out.push_str(&format!(
                             "    gtk_entry_set_visibility(GTK_ENTRY({variable}), FALSE);\n"
@@ -3822,13 +3870,19 @@ fn emit_linux_gtk_application(
                     let Some(max_length) = static_expr_i64(&property.value, signatures) else {
                         return Err(diag(
                             property.value.span,
-                            "bootstrap Linux TextInput.max_length must be a compile-time i64 value",
+                            "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
                         ));
                     };
                     if !(0..=i64::from(i32::MAX)).contains(&max_length) {
                         return Err(diag(
                             property.value.span,
-                            "TextInput.max_length must be between 0 and 2147483647",
+                            "TextInput.maxLength must be between 0 and 2147483647",
+                        ));
+                    }
+                    if multiline {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.maxLength is not yet supported for multiline Linux GTK input",
                         ));
                     }
                     out.push_str(&format!(
@@ -3836,16 +3890,31 @@ fn emit_linux_gtk_application(
                     ));
                 }
                 if view_property(element, "on_change").is_some() {
-                    out.push_str(&format!(
-                        "    g_signal_connect({variable}, \"changed\", G_CALLBACK(flux__ui_change_{}), NULL);\n",
-                        element.name
-                    ));
+                    if multiline {
+                        out.push_str(&format!(
+                            "    g_signal_connect({multiline_buffer}, \"changed\", G_CALLBACK(flux__ui_change_{}), NULL);\n",
+                            element.name
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    g_signal_connect({variable}, \"changed\", G_CALLBACK(flux__ui_change_{}), NULL);\n",
+                            element.name
+                        ));
+                    }
                 }
                 if view_property(element, "on_submit").is_some() && submit_on_enter {
-                    out.push_str(&format!(
-                        "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
-                        element.name
-                    ));
+                    if multiline {
+                        let controller = format!("flux__submit_controller_{}", element.name);
+                        out.push_str(&format!(
+                            "    GtkEventController *{controller} = gtk_event_controller_key_new();\n    g_signal_connect({controller}, \"key-pressed\", G_CALLBACK(flux__ui_submit_{}), NULL);\n    gtk_widget_add_controller({variable}, {controller});\n",
+                            element.name
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
+                            element.name
+                        ));
+                    }
                 }
                 if let Some(property) = view_property(element, "autofocus") {
                     let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
