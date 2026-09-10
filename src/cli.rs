@@ -10,6 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
+const FLUX_GDB_SUPPORT: &str = include_str!("../tools/flux-gdb.py");
+
 enum CliError {
     Message(String),
     Reported,
@@ -1195,9 +1197,17 @@ fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
     };
     let binary = debug_binary_path();
     build_native(&generated, &binary, BuildMode::Debug)?;
+    let support = debug_support_path();
+    if let Err(error) = fs::write(&support, FLUX_GDB_SUPPORT) {
+        let _ = fs::remove_file(&binary);
+        return Err(CliError::Message(format!(
+            "failed to prepare Flux debugger support '{}': {error}",
+            support.display()
+        )));
+    }
 
     let mut command = Command::new("gdb");
-    command.arg("--quiet");
+    command.arg("--quiet").arg("-x").arg(&support);
     for breakpoint in &options.breakpoints {
         command.arg("-ex").arg(format!("break {breakpoint}"));
     }
@@ -1218,6 +1228,7 @@ fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
         .status()
         .map_err(|error| format!("failed to launch GDB: {error}"));
     let _ = fs::remove_file(&binary);
+    let _ = fs::remove_file(&support);
     let status = status?;
     if status.success() {
         Ok(())
@@ -1234,6 +1245,10 @@ fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
 fn debug_binary_path() -> PathBuf {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     env::temp_dir().join(format!("flux-debug-{}{suffix}", std::process::id()))
+}
+
+fn debug_support_path() -> PathBuf {
+    env::temp_dir().join(format!("flux-gdb-{}.py", std::process::id()))
 }
 
 fn profile_target(target: &Path) -> Result<(), CliError> {

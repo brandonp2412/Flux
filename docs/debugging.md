@@ -18,6 +18,18 @@ step
 bt
 ```
 
+Flux also installs a small debugger support layer into that GDB session. It keeps compiler-generated local names out of the normal inspection workflow:
+
+```text
+flux-locals
+flux-print value
+flux-watch value
+next
+flux-unwatch value
+```
+
+`flux-locals` shows visible parameters and locals with their Flux names. `flux-print name` inspects one visible local, while `flux-watch name` reports that value each time execution stops until `flux-unwatch name` removes it. Watches report an explicit `<out of scope>` state instead of accidentally resolving another native symbol.
+
 You can install one or more breakpoints before the debugger opens:
 
 ```sh
@@ -31,6 +43,6 @@ Add `--run` to start the program immediately after the requested breakpoints are
 flux debug examples/branches.flux --break examples/branches.flux:3 --run
 ```
 
-The bootstrap debugger intentionally delegates process control to GDB. Breakpoints, source stepping, and stack frames already resolve to Flux files and lines. Locals and function symbols can still expose compiler-generated native names, so Flux-aware local/watch presentation remains roadmap work rather than being claimed as finished.
+The bootstrap debugger intentionally delegates process control to GDB while Flux supplies source-aware local inspection on top. Arbitrary Flux expression evaluation, async/task debugging, and ownership-aware value rendering remain roadmap work rather than being approximated with C-expression semantics.
 
 `flux doctor` reports whether GDB is available on the development host.

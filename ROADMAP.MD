@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 409
-- Reported overall progress: **55%**
+- Completed baseline units: 411
+- Reported overall progress: **56%**
 - Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -898,14 +898,14 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Source-level breakpoints. Bootstrap `flux debug` compiles an isolated native debug binary and launches GDB with original `.flux` paths/line tables; repeated `--break file.flux:line` or function breakpoints can be installed before the interactive debugger starts.
 - [x] Stepping. GDB `step`/`next` operate on the compiler-preserved Flux source lines rather than requiring developers to inspect generated C.
 - [x] Stack frames. Native backtraces resolve frames to original Flux files and source lines through the compiler-emitted debug locations.
-- [ ] Locals. GDB can inspect native values today, but compiler-generated local names still need Flux-aware presentation before this is considered a finished language debugger feature.
-- [ ] Watches.
+- [x] Locals. The debugger embeds a Flux-aware GDB support layer: `flux-locals` enumerates the currently visible parameters/locals using source-language names and values, and `flux-print name` resolves one visible Flux local without requiring the developer to know compiler-generated `flux__local_*` symbols.
+- [x] Watches. `flux-watch name` tracks a visible Flux local and reports it with its source-language name whenever execution stops; `flux-unwatch name` removes the watch and out-of-scope transitions are explicit instead of silently binding a different native symbol.
 - [ ] Expression evaluation.
 - [ ] Async/task debugging.
 - [ ] Ownership-aware value inspection.
 - [x] Native debug metadata. Generated C carries source-aware `#line` directives and debug/profile Clang modes retain DWARF line tables that resolve native instructions back to `.flux` files; this is now exercised through the user-facing debugger path.
 - [x] Predictable bootstrap debug/profile/release native build behavior: `debug` uses no optimization plus full debug info/frame pointers, `profile` uses optimized code with debug info/frame pointers, and `release` uses aggressive optimization/LTO.
-- [x] Platform debugger integration where useful. On the current Linux development target, `flux debug <target>` verifies GDB availability, builds with Flux debug metadata, opens the debugger with inherited terminal I/O, supports preconfigured source/function breakpoints plus optional immediate run, and cleans up its temporary binary after the session. `flux doctor` reports GDB availability; Flux-aware locals/watches remain explicitly pending.
+- [x] Platform debugger integration where useful. On the current Linux development target, `flux debug <target>` verifies GDB availability, builds with Flux debug metadata, opens the debugger with inherited terminal I/O, supports preconfigured source/function breakpoints plus optional immediate run, embeds Flux-aware local/watch commands, and cleans up its temporary binary/support script after the session. `flux doctor` reports GDB availability.
 
 # Milestone 25 — Profiler and devtools
 
