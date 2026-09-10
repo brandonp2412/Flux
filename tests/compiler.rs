@@ -10183,6 +10183,91 @@ app Choice
 }
 
 #[test]
+fn accessibility_order_lowers_to_native_assistive_reading_order() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text third at 1,1
+        text: "Third"
+        accessibilityOrder: 30
+    Button first at 2,1
+        text: "First"
+        accessibilityOrder: 10
+    TextInput second at 3,1
+        accessibilityOrder: 20
+}
+app Screen
+"#;
+    check_source(source).expect("unique compile-time accessibility order should typecheck");
+    let linux = compile_to_c(source).expect("accessibility order should lower to GTK relations");
+    assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_second), -1"));
+    assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_third), -1"));
+    let first_to_second = linux
+        .find("GTK_ACCESSIBLE(flux__ui_first), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_second)")
+        .expect("first should flow to second");
+    let second_to_third = linux
+        .find("GTK_ACCESSIBLE(flux__ui_second), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_third)")
+        .expect("second should flow to third");
+    assert!(first_to_second < second_to_third);
+
+    let program = fluxc::parser::parse(source).expect("accessibility-order app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("accessibility-order app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("accessibility order should lower to Android traversal metadata");
+    assert!(android.contains("setAccessibilityTraversalAfter"));
+    assert!(android.contains(&format!(
+        "set_accessibility_traversal_after, (jint){}",
+        android_stable_view_id("Screen", "first")
+    )));
+    assert!(android.contains(&format!(
+        "set_accessibility_traversal_after, (jint){}",
+        android_stable_view_id("Screen", "second")
+    )));
+
+    let duplicate = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text first at 1,1
+        accessibilityOrder: 1
+    Text second at 2,1
+        accessibilityOrder: 1
+}
+app Screen
+"#;
+    let errors = check_source_all(duplicate).expect_err("duplicate accessibility order must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityOrder 1 is already used")
+    }));
+
+    let dynamic = r#"
+view Screen {
+    state order: i64 = 1
+    grid columns: 1fr
+    grid rows: auto
+    Text item at 1,1
+        accessibilityOrder: order
+}
+app Screen
+"#;
+    let errors = check_source_all(dynamic).expect_err("runtime accessibility order must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityOrder must be a compile-time i64 value")
+    }));
+}
+
+#[test]
 fn text_input_lowers_native_entry_and_typed_submit_callback() {
     let source = r#"
 fn submit(value: str) -> void {

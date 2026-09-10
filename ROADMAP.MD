@@ -806,7 +806,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibilityLabel: str` and `accessibilityDescription: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, refreshes state-derived accessible text alongside the visible UI, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
 - [x] Accessibility-tree visibility: every built-in native element accepts typed `accessibilityHidden: bool`; Linux maps it to native accessible hidden state and Android maps it to view accessibility importance independently of visual `visible` state, including in-place state-driven refresh.
 - [ ] Actions.
-- [ ] Focus ordering.
+- [x] Focus ordering for assistive traversal on current native UI backends: every built-in element accepts a unique compile-time non-negative `accessibilityOrder: i64`; ordered elements form an explicit GTK `FLOW_TO` reading chain and Android `setAccessibilityTraversalAfter` chain while unordered elements retain platform-default ordering.
 - [ ] Screen-reader bridges.
 - [ ] Text scaling.
 - [ ] High contrast.

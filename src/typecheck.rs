@@ -1248,6 +1248,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "min_width"
             | "min_height"
+            | "accessibility_order"
             | "margin"
             | "margin_top"
             | "margin_bottom"
@@ -1462,6 +1463,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "accessibility_label",
     "accessibility_description",
     "accessibility_hidden",
+    "accessibility_order",
     "on_tap",
     "on_long_press",
     "on_hover",
@@ -1959,6 +1961,43 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         .with_note("grid siblings may not overlap; use an explicit overlay/absolute positioning model when overlap is intentional"),
                     );
                 }
+            }
+        }
+
+        let mut accessibility_orders = HashMap::<i64, (&str, SourceSpan)>::new();
+        for element in &view.elements {
+            let Some(property) = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "accessibility_order")
+            else {
+                continue;
+            };
+            match evaluate_default_expr(&property.value, signatures) {
+                Ok(ConstantValue::I64(order)) if order >= 0 => {
+                    if let Some((previous_name, previous_span)) =
+                        accessibility_orders.insert(order, (&element.name, property.value.span))
+                    {
+                        diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!(
+                                    "accessibilityOrder {order} is already used by view element '{previous_name}'"
+                                ),
+                            )
+                            .with_label(previous_span, "first use of this accessibility order"),
+                        );
+                    }
+                }
+                Ok(ConstantValue::I64(_)) => diagnostics.push(diag(
+                    property.value.span,
+                    "accessibilityOrder must be non-negative",
+                )),
+                Ok(_) => {}
+                Err(_) => diagnostics.push(diag(
+                    property.value.span,
+                    "accessibilityOrder must be a compile-time i64 value",
+                )),
             }
         }
     }

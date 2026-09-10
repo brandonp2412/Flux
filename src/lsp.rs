@@ -5142,6 +5142,7 @@ mod tests {
             element.contains("element Text { text: str, variant: str, selectable: bool, size: i64")
         );
         assert!(element.contains("accessibilityLabel: str"));
+        assert!(element.contains("accessibilityOrder: i64"));
         assert!(element.contains("onHover: fn() -> void"));
         assert!(element.contains("alignX: str"));
         assert!(element.contains("marginStart: i64"));

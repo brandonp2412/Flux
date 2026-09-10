@@ -1607,6 +1607,7 @@ fn emit_android_native_application(
             )
         })?;
 
+    let accessibility_order = ordered_accessibility_elements(view, signatures)?;
     let mut stable_ids = HashMap::<u32, &str>::new();
     for element in &view.elements {
         let element_id = stable_android_element_id(&view.name, &element.name);
@@ -1825,6 +1826,19 @@ fn emit_android_native_application(
         out.push_str(&format!(
             "    (*env)->CallVoidMethod(env, child, set_stable_id, (jint){element_id});\n"
         ));
+        if let Some(order_index) = accessibility_order
+            .iter()
+            .position(|candidate| candidate.name == element.name)
+            && order_index > 0
+        {
+            let previous = accessibility_order[order_index - 1];
+            let previous_id = stable_android_element_id(&view.name, &previous.name);
+            out.push_str("    jmethodID set_accessibility_traversal_after = (*env)->GetMethodID(env, child_class, \"setAccessibilityTraversalAfter\", \"(I)V\");\n");
+            out.push_str("    if (set_accessibility_traversal_after == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_accessibility_traversal_after, (jint){previous_id});\n"
+            ));
+        }
         if element.kind == "Image" {
             let source = match view_property(element, "source") {
                 Some(property) => ui_expr_c(&property.value, view, signatures)?,
@@ -4486,6 +4500,14 @@ fn emit_linux_gtk_application(
             element.row_span,
         ));
     }
+    let accessibility_order = ordered_accessibility_elements(view, signatures)?;
+    for pair in accessibility_order.windows(2) {
+        let current = ui_widget_c_name(&pair[0].name);
+        let next = ui_widget_c_name(&pair[1].name);
+        out.push_str(&format!(
+            "    gtk_accessible_update_relation(GTK_ACCESSIBLE({current}), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE({next}), -1);\n"
+        ));
+    }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
     let application_id = application_metadata_string(application, "id", signatures)
@@ -4616,6 +4638,41 @@ fn view_property<'a>(
         .properties
         .iter()
         .find(|property| property.name == source_name || property.name == name)
+}
+
+fn ordered_accessibility_elements<'a>(
+    view: &'a crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Vec<&'a crate::ast::ViewElement>, Diagnostic> {
+    let mut ordered = Vec::new();
+    for element in &view.elements {
+        let Some(property) = view_property(element, "accessibility_order") else {
+            continue;
+        };
+        let Some(order) = static_expr_i64(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                "accessibilityOrder must be a compile-time i64 value",
+            ));
+        };
+        if order < 0 {
+            return Err(diag(
+                property.value.span,
+                "accessibilityOrder must be non-negative",
+            ));
+        }
+        ordered.push((order, element));
+    }
+    ordered.sort_by_key(|(order, _)| *order);
+    for pair in ordered.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(diag(
+                pair[1].1.span,
+                &format!("duplicate accessibilityOrder {}", pair[1].0),
+            ));
+        }
+    }
+    Ok(ordered.into_iter().map(|(_, element)| element).collect())
 }
 
 fn android_ui_runtime_value_names(view: &crate::ast::ViewDef) -> HashSet<String> {

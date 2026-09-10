@@ -840,6 +840,8 @@ The common `onTap: fn() -> void` and `onLongPress: fn() -> void` properties are 
 
 Android native layout dimensions are density-independent: the backend divides physical `DisplayMetrics` width/height by the exact floating-point density before exposing `windowWidth`/`windowHeight`, and uses that exact density for padding, margins, fixed tracks, radii, borders, shadows, and translations. The integer `displayScale` environment binding remains available for coarse responsive decisions without being used as a lossy pixel-conversion factor.
 
+Explicit assistive reading order uses `accessibilityOrder: i64` on built-in elements. Values must be compile-time, non-negative, and unique within the view. Ordered elements form a native assistive traversal chain through GTK `FLOW_TO` relations and Android accessibility traversal metadata; elements without an explicit value retain the platform's normal reading order.
+
 Portable explicit keyboard input uses common `onKey: fn(str) -> void` on any built-in native element. The callback receives stable Flux names for special keys (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, arrow keys, `Home`, `End`, `PageUp`, and `PageDown`) and the Unicode text value for printable keys. Declaring `onKey` makes the element keyboard-focusable. Linux lowers this through a capture-phase GTK key controller, while Android uses the native `View.OnKeyListener`; neither backend exposes toolkit key-event objects to Flux source.
 
 ## UI direction
