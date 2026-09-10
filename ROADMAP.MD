@@ -921,7 +921,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [x] CPU profiling. Bootstrap `flux profile <target>` compiles with optimized profile settings plus isolated native `gprof` instrumentation, runs the exact instrumented binary with inherited terminal I/O, prints a CPU report on exit, keeps normal `--mode profile` builds free from instrumentation overhead, and cleans its temporary binary/data. `flux doctor` reports profiler availability; Flux-aware symbol/source presentation and lower-overhead production profiling remain separately tracked below.
 - [x] Allocation profiling. Bootstrap `flux profile <target> --alloc` builds the ordinary optimized profile-mode native binary and runs it under glibc `memusage`, reporting heap total/peak, stack peak, allocation-call counts/bytes/failures, and block-size distribution without adding allocator/profiling runtime overhead to normal builds. Temporary binaries are removed afterward and `flux doctor` reports profiler availability; per-allocation stack attribution and leak graphs remain under the richer memory-tooling follow-up.
-- [ ] Memory graph/leak tooling.
+- [x] Bootstrap memory leak tooling through `flux profile <target> --leaks`: the CLI builds an isolated optimized native binary with Clang AddressSanitizer, enables leak detection only for that run, preserves Flux source locations through existing debug metadata, fails distinctly on sanitizer findings, and removes the temporary binary afterward. Full retained-object graph visualization remains naturally downstream of general owned heap values rather than blocking useful leak diagnostics now.
 - [ ] Task/async timeline.
 - [ ] Frame/render timeline.
 - [ ] Layout diagnostics.

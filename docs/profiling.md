@@ -22,6 +22,16 @@ CPU profiler output removes the compiler's `flux__fn_` prefix from Flux function
 flux profile benchmarks/perf/compute.flux --alloc
 ```
 
-Allocation profiling is deliberately opt-in and external to normal binaries: ordinary debug/profile/release builds gain no allocator wrapper or profiling runtime. The development Linux host needs `memusage`; `flux doctor` reports its availability. This bootstrap profiler is intended for allocation-pressure investigation rather than leak graphs or production telemetry.
+Allocation profiling is deliberately opt-in and external to normal binaries: ordinary debug/profile/release builds gain no allocator wrapper or profiling runtime. The development Linux host needs `memusage`; `flux doctor` reports its availability. This bootstrap profiler is intended for allocation-pressure investigation rather than leak diagnosis or production telemetry.
 
-Memory graph/leak tooling, task/render timelines, and low-overhead production profiling remain roadmap work. CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.
+## Leak diagnostics
+
+`flux profile <target> --leaks` builds an isolated optimized profile binary with Clang AddressSanitizer instrumentation and runs it with leak detection enabled. Leaked allocations are reported with native allocation stacks and debug locations; Flux's generated `#line` metadata lets compiler-generated application frames resolve back to original `.flux` source where Clang can preserve that mapping.
+
+```sh
+flux profile benchmarks/perf/compute.flux --leaks
+```
+
+The leak profiler is intentionally separate from normal debug/profile/release builds, so sanitizer instrumentation adds no overhead unless `--leaks` is requested. A sanitizer finding uses a dedicated failing exit status and Flux removes the temporary binary afterward. Full retained-object graph visualization is not meaningful for most current Flux values because the bootstrap language still lacks general owned heap collections; richer heap graphs can extend this tooling as those value models land.
+
+Task/render timelines and low-overhead production profiling remain roadmap work. CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.

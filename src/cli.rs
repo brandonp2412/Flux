@@ -59,6 +59,7 @@ enum NativeInstrumentation {
     None,
     Gprof,
     Coverage,
+    AddressSanitizer,
 }
 
 impl NativeInstrumentation {
@@ -67,6 +68,7 @@ impl NativeInstrumentation {
             Self::None => "none",
             Self::Gprof => "gprof",
             Self::Coverage => "coverage-v2",
+            Self::AddressSanitizer => "asan-v1",
         }
     }
 }
@@ -127,6 +129,7 @@ struct DebugOptions {
 enum ProfileKind {
     Cpu,
     Allocation,
+    Leaks,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -457,6 +460,7 @@ fn run() -> Result<(), CliError> {
             match options.kind {
                 ProfileKind::Cpu => profile_cpu_target(&options.target),
                 ProfileKind::Allocation => profile_allocation_target(&options.target),
+                ProfileKind::Leaks => profile_leak_target(&options.target),
             }
         }
         "symbolize" => {
@@ -2232,6 +2236,56 @@ fn profile_allocation_target(target: &Path) -> Result<(), CliError> {
     }
 }
 
+fn profile_leak_target(target: &Path) -> Result<(), CliError> {
+    let sources = validate_project(target)?;
+    let generated = match fluxc::project::compile_to_c(target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = profile_binary_path();
+    build_native_instrumented(
+        &generated,
+        &binary,
+        BuildMode::Profile,
+        NativeInstrumentation::AddressSanitizer,
+    )
+    .map_err(|message| {
+        format!("Flux leak profiling requires Clang AddressSanitizer support: {message}")
+    })?;
+
+    eprintln!("profile: running native binary under AddressSanitizer leak detection");
+    let run_status = Command::new(&binary)
+        .env(
+            "ASAN_OPTIONS",
+            "detect_leaks=1:exitcode=86:symbolize=1:abort_on_error=0",
+        )
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| format!("failed to launch AddressSanitizer profile: {error}"));
+
+    let _ = fs::remove_file(&binary);
+    let run_status = run_status?;
+    if run_status.success() {
+        Ok(())
+    } else if run_status.code() == Some(86) {
+        Err(CliError::Message(
+            "AddressSanitizer reported a memory error or leak; see the profile above".to_string(),
+        ))
+    } else {
+        Err(CliError::Message(format!(
+            "profiled program exited with status {}",
+            run_status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string())
+        )))
+    }
+}
+
 fn profile_binary_path() -> PathBuf {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     env::temp_dir().join(format!("flux-profile-{}{suffix}", std::process::id()))
@@ -3338,7 +3392,8 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
 fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
     let Some(target) = args.first() else {
         return Err(
-            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc]'".to_string(),
+            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks]'"
+                .to_string(),
         );
     };
     if target.starts_with('-') {
@@ -3346,19 +3401,26 @@ fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
     }
 
     let mut kind = ProfileKind::Cpu;
-    let mut allocation_seen = false;
+    let mut mode_seen = false;
     for flag in &args[1..] {
         match flag.as_str() {
             "--alloc" => {
-                if allocation_seen {
-                    return Err("'--alloc' may only be supplied once".to_string());
+                if mode_seen {
+                    return Err("profile modes '--alloc' and '--leaks' are mutually exclusive and may only be supplied once".to_string());
                 }
                 kind = ProfileKind::Allocation;
-                allocation_seen = true;
+                mode_seen = true;
+            }
+            "--leaks" => {
+                if mode_seen {
+                    return Err("profile modes '--alloc' and '--leaks' are mutually exclusive and may only be supplied once".to_string());
+                }
+                kind = ProfileKind::Leaks;
+                mode_seen = true;
             }
             _ => {
                 return Err(format!(
-                    "unknown profile option '{flag}'; expected '--alloc'"
+                    "unknown profile option '{flag}'; expected '--alloc' or '--leaks'"
                 ));
             }
         }
@@ -5147,6 +5209,9 @@ fn build_native_configured(
                 "-fcoverage-compilation-dir={COVERAGE_COMPILATION_DIR}"
             ));
         }
+        NativeInstrumentation::AddressSanitizer => {
+            command.arg("-fsanitize=address");
+        }
     }
     if gtk {
         command.args(&gtk_cflags);
@@ -5354,7 +5419,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         "--format directory|tar.gz|container|systemd",
@@ -5368,8 +5433,8 @@ mod tests {
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_manifest_xml, android_publish_options, build_options, debug_options,
-        demangle_profile_symbols, display_flux_symbol, json_string,
+        android_manifest_xml, android_publish_options, build_native_instrumented, build_options,
+        debug_options, demangle_profile_symbols, display_flux_symbol, json_string,
         native_build_cache_path_configured, native_cache_entry_is_valid, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
         profile_report_addresses, select_android_run_target, split_symbols_options,
@@ -5392,7 +5457,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_options_default_to_cpu_and_accept_allocation_mode() {
+    fn profile_options_default_to_cpu_and_accept_memory_modes() {
         let cpu = profile_options(&["app.flux".to_string()]).expect("CPU profile should parse");
         assert_eq!(cpu.kind, ProfileKind::Cpu);
         assert_eq!(cpu.target, std::path::Path::new("app.flux"));
@@ -5400,6 +5465,10 @@ mod tests {
         let allocation = profile_options(&["app.flux".to_string(), "--alloc".to_string()])
             .expect("allocation profile should parse");
         assert_eq!(allocation.kind, ProfileKind::Allocation);
+
+        let leaks = profile_options(&["app.flux".to_string(), "--leaks".to_string()])
+            .expect("leak profile should parse");
+        assert_eq!(leaks.kind, ProfileKind::Leaks);
         assert!(profile_options(&["--alloc".to_string()]).is_err());
         assert!(
             profile_options(&[
@@ -5409,7 +5478,41 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(
+            profile_options(&[
+                "app.flux".to_string(),
+                "--alloc".to_string(),
+                "--leaks".to_string(),
+            ])
+            .is_err()
+        );
         assert!(profile_options(&["app.flux".to_string(), "--heap".to_string()]).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn address_sanitizer_instrumentation_reports_native_leaks() {
+        let binary = std::env::temp_dir().join(format!("flux-asan-test-{}", std::process::id()));
+        let source = "#include <stdlib.h>\n#line 12 \"leak_test.flux\"\nint main(void) { void *p = malloc(32); ((volatile char *)p)[0] = 1; return p == 0; }\n";
+        build_native_instrumented(
+            source,
+            &binary,
+            BuildMode::Profile,
+            NativeInstrumentation::AddressSanitizer,
+        )
+        .expect("AddressSanitizer profile binary should build");
+        let output = std::process::Command::new(&binary)
+            .env(
+                "ASAN_OPTIONS",
+                "detect_leaks=1:exitcode=86:symbolize=0:abort_on_error=0",
+            )
+            .output()
+            .expect("AddressSanitizer profile binary should run");
+        let _ = std::fs::remove_file(&binary);
+        assert_eq!(output.status.code(), Some(86));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("LeakSanitizer: detected memory leaks"));
+        assert!(stderr.contains("32 byte(s) leaked"));
     }
 
     #[test]
