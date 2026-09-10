@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="assets/readme/flux-logo.svg" alt="Flux" width="420">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/flux-logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/readme/flux-logo.svg">
+  <img src="assets/readme/flux-logo.svg" alt="Flux" width="420">
+</picture>
 
 ### Python-like syntax. Rust-class performance. Native apps everywhere.
 
