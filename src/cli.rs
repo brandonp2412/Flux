@@ -57,6 +57,13 @@ struct BuildOptions {
     mode: BuildMode,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DebugOptions {
+    target: PathBuf,
+    breakpoints: Vec<String>,
+    run_immediately: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AndroidAbi {
     Arm64V8a,
@@ -339,6 +346,10 @@ fn run() -> Result<(), CliError> {
                 ));
             }
             run_tests(path, options.mode)
+        }
+        "debug" => {
+            let options = debug_options(&args[1..])?;
+            debug_target(&options)
         }
         "devices" => {
             if args.len() != 1 {
@@ -1098,6 +1109,109 @@ fn test_binary_path(index: usize) -> PathBuf {
     env::temp_dir().join(format!("flux-test-{}-{index}{suffix}", std::process::id()))
 }
 
+fn debug_options(args: &[String]) -> Result<DebugOptions, String> {
+    let Some(target) = args.first() else {
+        return Err(
+            "debug syntax is 'debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run]'"
+                .to_string(),
+        );
+    };
+    if target.starts_with('-') {
+        return Err("debug requires a Flux source or package target before options".to_string());
+    }
+
+    let mut breakpoints = Vec::new();
+    let mut run_immediately = false;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--break" | "-b" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--break' requires a Flux file:line or function name".to_string());
+                };
+                if value.is_empty() || value.starts_with('-') {
+                    return Err("'--break' requires a Flux file:line or function name".to_string());
+                }
+                breakpoints.push(value.clone());
+                index += 2;
+            }
+            "--run" => {
+                if run_immediately {
+                    return Err("'--run' may only be supplied once".to_string());
+                }
+                run_immediately = true;
+                index += 1;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown debug option '{flag}'; expected '--break <file:line|function>' or '--run'"
+                ));
+            }
+        }
+    }
+
+    Ok(DebugOptions {
+        target: PathBuf::from(target),
+        breakpoints,
+        run_immediately,
+    })
+}
+
+fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
+    command_first_line("gdb", &["--version"])
+        .map_err(|message| CliError::Message(format!("Flux debugger requires GDB: {message}")))?;
+
+    let sources = validate_project(&options.target)?;
+    let generated = match fluxc::project::compile_to_c(&options.target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(&options.target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = debug_binary_path();
+    build_native(&generated, &binary, BuildMode::Debug)?;
+
+    let mut command = Command::new("gdb");
+    command.arg("--quiet");
+    for breakpoint in &options.breakpoints {
+        command.arg("-ex").arg(format!("break {breakpoint}"));
+    }
+    if options.run_immediately {
+        command.arg("-ex").arg("run");
+    }
+    command.arg(&binary);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    eprintln!("debug: built native debug binary; Flux source paths and lines are available to GDB");
+    if !options.run_immediately {
+        eprintln!("debug: use 'run', 'break file.flux:line', 'next', 'step', and 'bt' normally");
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("failed to launch GDB: {error}"));
+    let _ = fs::remove_file(&binary);
+    let status = status?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "GDB exited with status {}",
+            status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string())
+        )))
+    }
+}
+
+fn debug_binary_path() -> PathBuf {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    env::temp_dir().join(format!("flux-debug-{}{suffix}", std::process::id()))
+}
+
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let mut generation = 0usize;
     let mut analysis_cache = fluxc::project::ProjectAnalysisCache::default();
@@ -1821,6 +1935,10 @@ fn run_doctor() -> Result<(), CliError> {
     match command_first_line("nvim", &["--version"]) {
         Ok(version) => println!("  [ok] Neovim editor dogfood: {version}"),
         Err(message) => println!("  [warn] Neovim editor dogfood unavailable: {message}"),
+    }
+    match command_first_line("gdb", &["--version"]) {
+        Ok(version) => println!("  [ok] GDB debugger: {version}"),
+        Err(message) => println!("  [warn] GDB debugger unavailable: {message}"),
     }
 
     if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
@@ -3590,7 +3708,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -3599,10 +3717,39 @@ mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_manifest_xml, android_publish_options, build_options, json_string,
+        android_manifest_xml, android_publish_options, build_options, debug_options, json_string,
         output_with_timeout, parse_adb_devices, select_android_run_target,
         validate_android_publish_manifest, waydroid_status_is_running,
     };
+
+    #[test]
+    fn debug_options_accept_repeated_breakpoints_and_run() {
+        let options = debug_options(&[
+            "examples/branches.flux".to_string(),
+            "--break".to_string(),
+            "examples/branches.flux:3".to_string(),
+            "-b".to_string(),
+            "classify".to_string(),
+            "--run".to_string(),
+        ])
+        .expect("debug options should parse");
+        assert_eq!(
+            options.target,
+            std::path::Path::new("examples/branches.flux")
+        );
+        assert_eq!(
+            options.breakpoints,
+            [
+                "examples/branches.flux:3".to_string(),
+                "classify".to_string()
+            ]
+        );
+        assert!(options.run_immediately);
+        assert!(debug_options(&["--run".to_string()]).is_err());
+        assert!(
+            debug_options(&["examples/branches.flux".to_string(), "--break".to_string(),]).is_err()
+        );
+    }
 
     #[cfg(unix)]
     #[test]
