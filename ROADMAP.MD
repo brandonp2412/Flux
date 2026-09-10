@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 432
+- Completed baseline units: 433
 - Reported overall progress: **58%**
 - Current net scope growth after the baseline: 24 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -532,7 +532,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Explicit effects.
 - [ ] Shared state/store primitives only where necessary.
 - [ ] State ownership/lifetime rules integrated with the compiler.
-- [ ] Fine-grained dependency tracking or equivalent efficient invalidation.
+- [x] Fine-grained dependency tracking for the current primitive UI model: codegen derives transitive state → derived-value → refreshable-property dependencies, state-transition callbacks carry the changed state identity, Linux and Android skip unrelated native element refresh work, and window-environment changes invalidate only environment-dependent properties while full refresh remains available for initialization and callback/lifecycle synchronization.
 - [ ] Minimal re-render/re-layout work after state changes.
   - [x] Bootstrap GTK4 root-view refresh updates only state-dependent native Text/Button properties and does not reconstruct the window/grid; the dogfood toggle produced a localized render delta and the second toggle restored the app region to its original pixels.
   - [x] Bootstrap Android ordinary state transitions now preserve the existing native view hierarchy: compiler-owned stable element IDs let a generated refresh function recompute derived values and update existing text/labels, visibility/enabled state, toggle/radio selection, input hints, image content, accessibility text, tooltips, and transforms in place. Toggle/radio refresh suppresses listener re-entry; configuration/layout changes may still rebuild the hierarchy.
