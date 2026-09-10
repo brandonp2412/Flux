@@ -89,6 +89,7 @@ enum PackageFormat {
     Directory,
     TarGz,
     Container,
+    Systemd,
 }
 
 impl PackageFormat {
@@ -97,8 +98,9 @@ impl PackageFormat {
             "directory" | "dir" => Ok(Self::Directory),
             "tar.gz" | "tgz" => Ok(Self::TarGz),
             "container" => Ok(Self::Container),
+            "systemd" => Ok(Self::Systemd),
             _ => Err(format!(
-                "unknown package format '{value}'; expected directory, tar.gz, or container"
+                "unknown package format '{value}'; expected directory, tar.gz, container, or systemd"
             )),
         }
     }
@@ -987,6 +989,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         PackageFormat::Container => package_root
             .join("dist")
             .join(format!("{artifact_name}-container")),
+        PackageFormat::Systemd => package_root
+            .join("dist")
+            .join(format!("{artifact_name}-systemd")),
     };
     let output = options.output.unwrap_or(default_output);
     if output.exists() {
@@ -996,7 +1001,10 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         )));
     }
 
-    if options.format == PackageFormat::Container {
+    if matches!(
+        options.format,
+        PackageFormat::Container | PackageFormat::Systemd
+    ) {
         let analysis = fluxc::project::analyze(&manifest.path).map_err(|diagnostics| {
             diagnostics
                 .into_iter()
@@ -1005,10 +1013,14 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 .join("\n")
         })?;
         if analysis.program.application.is_some() {
-            return Err(CliError::Message(
-                "container packaging currently supports headless 'fn main() -> i64' packages only"
-                    .to_string(),
-            ));
+            let format = match options.format {
+                PackageFormat::Container => "container",
+                PackageFormat::Systemd => "systemd",
+                _ => unreachable!(),
+            };
+            return Err(CliError::Message(format!(
+                "{format} packaging currently supports headless 'fn main() -> i64' packages only"
+            )));
         }
     }
 
@@ -1085,6 +1097,15 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         PackageFormat::Container => {
             build_container_context(&generated, &output, options.mode, &options.native_target)?;
         }
+        PackageFormat::Systemd => {
+            build_systemd_bundle(
+                &manifest.name,
+                &generated,
+                &output,
+                options.mode,
+                &options.native_target,
+            )?;
+        }
     }
     println!("packaged ({}): {}", options.mode.name(), output.display());
     Ok(())
@@ -1147,6 +1168,68 @@ fn build_container_context(
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(format!(
             "failed to write container build context: {error}"
+        )));
+    }
+    Ok(())
+}
+
+fn build_systemd_bundle(
+    service_name: &str,
+    generated: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<(), CliError> {
+    if service_name.is_empty()
+        || !service_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(CliError::Message(
+            "systemd service package names may contain only ASCII letters, digits, '.', '-', and '_'"
+                .to_string(),
+        ));
+    }
+    fs::create_dir_all(output).map_err(|error| {
+        format!(
+            "failed to create systemd service bundle '{}': {error}",
+            output.display()
+        )
+    })?;
+    let binary = output.join(service_name);
+    if let Err(error) = build_native_configured(
+        generated,
+        &binary,
+        mode,
+        NativeInstrumentation::None,
+        native_target,
+    ) {
+        let _ = fs::remove_dir_all(output);
+        return Err(CliError::Message(error));
+    }
+    let absolute_output = fs::canonicalize(output).map_err(|error| {
+        CliError::Message(format!(
+            "failed to resolve systemd service bundle '{}': {error}",
+            output.display()
+        ))
+    })?;
+    let absolute_binary = absolute_output.join(service_name);
+    let quote = |path: &Path| {
+        let escaped = path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    };
+    let unit = format!(
+        "[Unit]\nDescription=Flux service {service_name}\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={}\nRestart=on-failure\nRestartSec=1s\nKillSignal=SIGTERM\nTimeoutStopSec=30s\n\n[Install]\nWantedBy=default.target\n",
+        quote(&absolute_output),
+        quote(&absolute_binary),
+    );
+    if let Err(error) = fs::write(output.join(format!("{service_name}.service")), unit) {
+        let _ = fs::remove_dir_all(output);
+        return Err(CliError::Message(format!(
+            "failed to write systemd service unit: {error}"
         )));
     }
     Ok(())
@@ -3217,7 +3300,9 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                     return Err("package format may only be specified once".to_string());
                 }
                 let Some(value) = args.get(index + 1) else {
-                    return Err("'--format' requires directory, tar.gz, or container".to_string());
+                    return Err(
+                        "'--format' requires directory, tar.gz, container, or systemd".to_string(),
+                    );
                 };
                 format = PackageFormat::parse(value)?;
                 format_seen = true;
@@ -3245,7 +3330,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
             }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container>', '--target <triple>', or '--sysroot <directory>'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd>', '--target <triple>', or '--sysroot <directory>'"
                 ));
             }
         }
@@ -5106,7 +5191,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -5213,6 +5298,9 @@ mod tests {
         let container = package_options(&["--format".to_string(), "container".to_string()])
             .expect("container package options should parse");
         assert_eq!(container.format, PackageFormat::Container);
+        let systemd = package_options(&["--format".to_string(), "systemd".to_string()])
+            .expect("systemd package options should parse");
+        assert_eq!(systemd.format, PackageFormat::Systemd);
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
     }

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 448
+- Completed baseline units: 449
 - Reported overall progress: **61%**
 - Current net scope growth after the baseline: 30 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -975,7 +975,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] WebSocket server.
 - [ ] TCP/UDP sockets.
 - [x] Linux/server signals/process lifecycle: compiler-owned `process.terminationRequested()` lazily installs SIGINT/SIGTERM handlers whose signal-context work is limited to setting a `sig_atomic_t` flag, enabling ordinary Flux control flow to perform graceful shutdown work outside the handler; `process.exit(code)` provides explicit `0..=255` process termination with compile-time checking for known constants and a runtime guard for dynamic values. Both capabilities lower directly to POSIX/C, are tree-shaken when unreachable, participate in LSP completion/signature help, and remain rejected on Android until portable mobile process semantics are defined.
-- [ ] Service/daemon integration.
+- [x] Bootstrap Linux service/daemon integration: `flux package --format systemd` emits a headless native service bundle containing the optimized Flux executable plus a generated systemd unit bound to that bundle, with restart-on-failure policy, explicit SIGTERM shutdown, bounded stop timeout, and user-service `default.target` enablement. GUI `app` packages are rejected, service names are constrained to safe unit-name characters, and compiler regression coverage verifies the emitted unit and executable.
 - [ ] Structured concurrency for request handling.
 - [ ] Efficient I/O.
 - [ ] Database connectivity.

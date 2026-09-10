@@ -9254,6 +9254,42 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
     assert!(container_run.status.success());
     assert_eq!(String::from_utf8_lossy(&container_run.stdout).trim(), "42");
 
+    let systemd = root.join("systemd");
+    let packaged_systemd = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "systemd", "-o"])
+        .arg(&systemd)
+        .output()
+        .expect("flux package systemd should run");
+    assert!(
+        packaged_systemd.status.success(),
+        "flux package systemd failed: {}",
+        String::from_utf8_lossy(&packaged_systemd.stderr)
+    );
+    let service_binary = systemd.join("package-test");
+    assert!(service_binary.is_file());
+    let service_unit = fs::read_to_string(systemd.join("package-test.service"))
+        .expect("systemd service unit should be readable");
+    let canonical_systemd = fs::canonicalize(&systemd).expect("systemd bundle should canonicalize");
+    assert!(service_unit.contains("Description=Flux service package-test"));
+    assert!(service_unit.contains(&format!(
+        "WorkingDirectory=\"{}\"",
+        canonical_systemd.display()
+    )));
+    assert!(service_unit.contains(&format!(
+        "ExecStart=\"{}\"",
+        canonical_systemd.join("package-test").display()
+    )));
+    assert!(service_unit.contains("Restart=on-failure"));
+    assert!(service_unit.contains("KillSignal=SIGTERM"));
+    assert!(service_unit.contains("WantedBy=default.target"));
+    let service_run = Command::new(&service_binary)
+        .output()
+        .expect("systemd-bundle native binary should execute on its build host");
+    assert!(service_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&service_run.stdout).trim(), "42");
+
     let repeated = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("package")
         .arg(&root)
@@ -9273,6 +9309,24 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
         .expect("source package rejection should run");
     assert!(!raw_source.status.success());
     assert!(String::from_utf8_lossy(&raw_source.stderr).contains("manifest-backed"));
+
+    fs::write(
+        root.join("src/main.flux"),
+        "view ServiceGui {\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"not headless\"\n}\n\napp ServiceGui\n",
+    )
+    .expect("GUI service rejection source should be writable");
+    let gui_systemd = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "systemd", "-o"])
+        .arg(root.join("gui-systemd"))
+        .output()
+        .expect("GUI systemd package rejection should run");
+    assert!(!gui_systemd.status.success());
+    assert!(
+        String::from_utf8_lossy(&gui_systemd.stderr)
+            .contains("systemd packaging currently supports headless")
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
