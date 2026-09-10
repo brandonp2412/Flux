@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 449
+- Completed baseline units: 450
 - Reported overall progress: **61%**
 - Current net scope growth after the baseline: 31 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -919,7 +919,7 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 25 — Profiler and devtools
 
 - [x] CPU profiling. Bootstrap `flux profile <target>` compiles with optimized profile settings plus isolated native `gprof` instrumentation, runs the exact instrumented binary with inherited terminal I/O, prints a CPU report on exit, keeps normal `--mode profile` builds free from instrumentation overhead, and cleans its temporary binary/data. `flux doctor` reports profiler availability; Flux-aware symbol/source presentation and lower-overhead production profiling remain separately tracked below.
-- [ ] Allocation profiling.
+- [x] Allocation profiling. Bootstrap `flux profile <target> --alloc` builds the ordinary optimized profile-mode native binary and runs it under glibc `memusage`, reporting heap total/peak, stack peak, allocation-call counts/bytes/failures, and block-size distribution without adding allocator/profiling runtime overhead to normal builds. Temporary binaries are removed afterward and `flux doctor` reports profiler availability; per-allocation stack attribution and leak graphs remain under the richer memory-tooling follow-up.
 - [ ] Memory graph/leak tooling.
 - [ ] Task/async timeline.
 - [ ] Frame/render timeline.
