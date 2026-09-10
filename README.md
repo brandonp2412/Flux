@@ -1,6 +1,6 @@
 <div align="center">
 
-# Flux
+<img src="assets/readme/flux-logo.svg" alt="Flux" width="420">
 
 ### Python-like syntax. Rust-class performance. Native apps everywhere.
 
@@ -11,65 +11,61 @@
 
 </div>
 
-## Goals
+## Why Flux
 
-Flux combines readable function-first syntax with native compilation and a flat UI model. It aims for Rust-class safety/performance while keeping ordinary application code much less annotation-heavy.
+Flux combines readable function-first syntax, Rust-class safety/performance goals, direct native platform access, and a flat declarative UI model.
 
 - Python-like control flow, comprehensions, slicing, patterns, and low ceremony.
-- Strict static typing; unused bindings are errors.
+- Strict static typing; unused bindings are compile errors.
 - No classes, inheritance, mixins, source generics, exceptions, or ternaries.
-- Explicit errors and multi-value returns.
-- Values, functions, interfaces/capabilities, and ownership instead of OOP.
-- Flat grid-first UI compiled to native platform controls/backends.
-- Compiler-owned platform interop rather than application-written bridge code.
-- First-class formatter, LSP, testing, hot-reload work, diagnostics, and performance gates.
+- Values, functions, interfaces/capabilities, ownership, and explicit errors instead of OOP.
+- Native AOT output with compiler-owned platform interop instead of app-written bridge code.
+- Flat grid-first UI that targets native controls and is designed to look beautiful by default.
+- Formatter, LSP, tests, diagnostics, hot-reload work, and performance gates are part of the language product.
 
 ## Current status
 
-Flux is an active bootstrap compiler written in Rust. The current implementation includes structs/enums, exhaustive matching, first-class and anonymous capture-free functions, modules/packages, constants, explicit mutation, typed list operations and pipelines, semantic CFG/typed-IR foundations, tree shaking/interface specialization, native Linux GUI output, and a compiler-owned Android backend.
+Flux is an active Rust bootstrap compiler. It already supports substantial typed language semantics, modules/packages, exhaustive matching, first-class functions, typed collections/pipelines, semantic CFG and typed-IR foundations, tree shaking/interface specialization, a native GTK4 Linux GUI backend, and compiler-owned Android APK/AAB generation.
 
-Linux currently lowers flat Flux views to native GTK4 controls. Android builds native APK/AAB artifacts with compiler-generated Activity/JNI glue, native controls, state refresh, input/focus handling, permissions, notifications, intents, and other direct platform APIs. Application Flux code does not contain Java/Kotlin/JNI bridge boilerplate.
-
-The C backend is a bootstrap path rather than the intended final semantic backend. Ownership/borrowing, owned strings/collections, broader platform support, production hot reload, and the long-term optimizing native backend remain major roadmap work.
+Ownership/borrowing, owned strings/collections, broader platform coverage, production hot reload, the full beautiful-by-default UI system, and the long-term optimizing native backend remain roadmap work.
 
 ## Quick start
 
 ```sh
-./tools/flux new my-flux-app
-./tools/flux run my-flux-app
+flux new my-flux-app
+flux run my-flux-app
 ```
-
-Build, test, check, format, or start the language server:
 
 ```sh
-./tools/flux build examples/hello.flux -o hello
-./tools/flux test examples/package
-./tools/flux check examples/hello.flux
-./tools/flux format examples/hello.flux
-./tools/flux lsp
+flux build examples/hello.flux -o hello
+flux test examples/package
+flux check examples/hello.flux
+flux format examples/hello.flux
+flux lsp
 ```
 
-Android example:
+Android:
 
 ```sh
-./tools/flux build android examples/android_app --mode debug --abi arm64-v8a
-./tools/flux run android examples/android_app --abi arm64-v8a
-./tools/flux build android examples/android_app --mode release --format aab
+flux build android examples/android_app --mode debug --abi arm64-v8a
+flux run android examples/android_app --abi arm64-v8a
+flux build android examples/android_app --mode release --format aab
 ```
 
-## Example
+## Built with Flux
 
-![Flux example with Flux-aware syntax highlighting](assets/readme/flux-hello.png)
+<div align="center">
 
-[View the source](examples/hello.flux)
+<img src="assets/readme/flux-mobile-showcase.png" alt="Luma wellness app compiled with Flux and running on Waydroid" width="360">
 
-The native GUI dogfood example is [`examples/hello_app.flux`](examples/hello_app.flux). The editor → compile → native window → interaction → save/rebuild acceptance path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md).
+<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid.</sub>
+
+</div>
+
+The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md).
 
 ## Development
 
-- [`ROADMAP.MD`](ROADMAP.MD) is the source of truth for planned and completed work.
-- [`PROGRESS.md`](PROGRESS.md) contains the persistent overall progress baseline used across development sessions.
-- [`docs/language.md`](docs/language.md) is the evolving language reference.
-- [`benchmarks/perf`](benchmarks/perf) contains optimized Flux/Rust/C comparison workloads; run `./tools/flux-bench` to execute them.
+[`ROADMAP.MD`](ROADMAP.MD) is the single source of truth for both implementation work and persistent overall progress. [`docs/language.md`](docs/language.md) is the evolving language reference, and [`benchmarks/perf`](benchmarks/perf) contains the optimized Flux/Rust/C comparison workloads.
 
 Flux is under active development and is not yet a stable 1.0 language.

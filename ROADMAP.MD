@@ -2,19 +2,31 @@
 
 Flux aims to provide the practical application-development reach of Flutter while remaining a native, ahead-of-time compiled, function-first language. The language is built around functions, immutable data, explicit state, interfaces/capabilities, strict static typing, and composition. It does not use classes, inheritance, widget subclasses, mixins, controller hierarchies, or exception-based recoverable errors.
 
-## Roadmap maintenance rule
+## Roadmap maintenance and progress
 
-This file is the source of truth for Flux development. `PROGRESS.md` is the persistent source of truth for the overall completion percentage; do not invent or recalculate a different overall percentage in individual sessions.
+This file is the single source of truth for Flux development and overall progress. Do not invent a separate percentage in individual sessions.
+
+Stable overall-progress baseline:
+
+- Baseline date: 2026-09-10
+- Baseline commit: `7d219b1`
+- Baseline roadmap units: 739 checkbox items
+- Completed baseline units: 374
+- Reported overall progress: **51%**
+- Current net scope growth after the baseline: 13 checkbox items
+- New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
 
-1. Read `ROADMAP.MD` and `PROGRESS.md` before choosing work or reporting progress.
+1. Read `ROADMAP.MD` before choosing work or reporting progress.
 2. Inspect the repository state and run the existing test suite.
 3. Update this roadmap to reflect the actual repository state, newly discovered work, changed sequencing, or completed prerequisites before or alongside implementation.
 4. Choose one coherent highest-value unchecked subsystem that advances the current milestone.
 5. Validate the change with compiler tests and native end-to-end examples where applicable.
 6. Check off completed items and record meaningful follow-up work before committing.
-7. Commit roadmap updates together with the implementation they describe when practical.
+7. Increase `Completed baseline units` only for verified work corresponding to an item that existed in the 739-unit baseline. Record newly discovered items as scope growth instead.
+8. The reported overall percentage is rounded `Completed baseline units / 739 * 100` and must never decrease; reopening old work becomes follow-up/scope growth rather than rewriting completed history.
+9. Commit roadmap/progress updates together with the implementation they describe when practical.
 
 Do not let the roadmap become an aspirational document that diverges from the compiler.
 
@@ -56,6 +68,7 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [x] No mixins or class-oriented extension hierarchy.
 - [x] No widget/controller/view-model object hierarchies in UI code.
 - [x] Immutable values by default; local mutation is explicit and locally visible through typed `var` bindings and assignment; ordinary `let` bindings, parameters, destructured bindings, and loop variables remain immutable.
+- [ ] **Beautiful by default is a non-negotiable product goal:** ordinary Flux UI written by a developer with little or no design expertise should still render as a polished, coherent application without requiring a hand-built design system. The compiler/platform UI layer should provide excellent typography, spacing, sizing, color, interaction, accessibility, and state defaults while keeping deliberate customization easy.
 - [ ] Rust-class memory-safety goals without requiring Rust-level annotation density in normal application code.
 - [ ] Rust-class native performance is a non-negotiable release-build target: generated programs should remain in the C/C++/Rust performance class without a mandatory VM, garbage collector, interpreter, or framework runtime tax.
 - [ ] Zero-cost abstractions by default: high-level language/library/UI constructs must compile away when their semantics require no runtime work, and redundant bounds/safety/dynamic-dispatch checks should be eliminated when statically proven unnecessary.
@@ -490,6 +503,14 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Dialogs/sheets.
 - [ ] Menus/context menus.
 - [ ] Native platform control mapping where beneficial without exposing platform classes to Flux code.
+- [ ] **Beautiful-by-default visual system** that makes minimally styled Flux apps look production-quality out of the box rather than exposing raw platform-widget defaults.
+  - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere.
+  - [ ] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions.
+  - [ ] Layout defaults provide readable line lengths, comfortable touch targets, consistent rhythm, and sensible density on phone/tablet/desktop sizes without requiring design expertise.
+  - [ ] Automatic high-quality light/dark themes and accessible contrast, with platform/system preferences respected by default.
+  - [ ] First-class polished loading, empty, error, disabled, focused, pressed, selected, and validation states so unfinished states do not look unfinished.
+  - [ ] Custom themes and explicit styling remain straightforward escape hatches; beautiful defaults must not become a rigid template system or add mandatory runtime overhead.
+  - [ ] README/gallery screenshots must be reproducible captures from real compiled Flux applications running on the documented native target or emulator (including Waydroid for Android), never synthetic UI mockups presented as application output.
 
 # Milestone 10 — Functional UI state and rendering
 

@@ -1,0 +1,10 @@
+[package]
+name = "Luma"
+version = "0.1.0"
+entry = "src/main.flux"
+
+[android]
+application_id = "app.flux.showcase"
+version_code = 1
+min_sdk = 23
+target_sdk = 36
