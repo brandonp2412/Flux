@@ -4,11 +4,11 @@ Flux aims to provide the practical application-development reach of Flutter whil
 
 ## Roadmap maintenance rule
 
-This file is the source of truth for Flux development.
+This file is the source of truth for Flux development. `PROGRESS.md` is the persistent source of truth for the overall completion percentage; do not invent or recalculate a different overall percentage in individual sessions.
 
 At the **start of every Flux development session**:
 
-1. Read `ROADMAP.MD` before choosing work.
+1. Read `ROADMAP.MD` and `PROGRESS.md` before choosing work or reporting progress.
 2. Inspect the repository state and run the existing test suite.
 3. Update this roadmap to reflect the actual repository state, newly discovered work, changed sequencing, or completed prerequisites before or alongside implementation.
 4. Choose one coherent highest-value unchecked subsystem that advances the current milestone.
