@@ -13,6 +13,20 @@ use fluxc::{
     compile_to_c, diagnostics_to_json,
 };
 
+fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    for byte in view_name
+        .bytes()
+        .chain(std::iter::once(0))
+        .chain(element_name.bytes())
+    {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    let id = hash & 0x00FF_FFFF;
+    if id == 0 { 1 } else { id }
+}
+
 #[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
     let source = r#"
@@ -10375,9 +10389,12 @@ app Screen
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeRefreshUi"));
     assert!(generated.contains("findViewById"));
-    assert!(generated.contains("find_view, (jint)1"));
-    assert!(!generated.contains("find_view, (jint)2"));
-    assert!(generated.contains("find_view, (jint)3"));
+    let title_id = android_stable_view_id("Screen", "title");
+    let toggle_id = android_stable_view_id("Screen", "toggle");
+    let action_id = android_stable_view_id("Screen", "action");
+    assert!(generated.contains(&format!("find_view, (jint){title_id}")));
+    assert!(!generated.contains(&format!("find_view, (jint){toggle_id}")));
+    assert!(generated.contains(&format!("find_view, (jint){action_id}")));
     assert!(generated.contains("set_stable_id"));
     assert!(generated.contains("android/widget/GridLayout"));
     assert!(generated.contains("android/widget/TextView"));
@@ -10397,14 +10414,86 @@ app Screen
     assert!(generated.contains("setVisibility"));
     assert!(generated.contains("setEnabled"));
     assert!(generated.contains("flux__ui_state_expanded = (!(flux__ui_state_expanded))"));
-    assert!(generated.contains(
-        "case 2: flux__ui_state_expanded = (!(flux__ui_state_expanded)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
-    ));
-    assert!(generated.contains("case 3: flux__fn_pressed(); break;"));
+    assert!(generated.contains(&format!(
+        "case {toggle_id}: flux__ui_state_expanded = (!(flux__ui_state_expanded)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
+    )));
+    assert!(generated.contains(&format!("case {action_id}: flux__fn_pressed(); break;")));
     assert!(generated.contains(
         "activity->callbacks->onConfigurationChanged = flux__android_on_configuration_changed"
     ));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn android_native_view_ids_survive_reordering_and_insertions() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-android-stable-view-id-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("Android stable-ID fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"stable-ui\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android stable-ID manifest should be writable");
+
+    let first_source = r#"fn pressed() -> void {
+    print("pressed")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Title"
+    Button action at 2,1
+        text: "Press"
+        onPress: pressed
+}
+app Screen
+"#;
+    fs::write(root.join("src/main.flux"), first_source)
+        .expect("first Android stable-ID source should be writable");
+    let first = fluxc::project::analyze(&root)
+        .expect("first Android stable-ID app should analyze")
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("first Android stable-ID app should lower");
+
+    let second_source = r#"fn pressed() -> void {
+    print("pressed")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Button inserted at 1,1
+        text: "New"
+    Button action at 2,1
+        text: "Press"
+        onPress: pressed
+    Text title at 3,1
+        text: "Title"
+}
+app Screen
+"#;
+    fs::write(root.join("src/main.flux"), second_source)
+        .expect("second Android stable-ID source should be writable");
+    let second = fluxc::project::analyze(&root)
+        .expect("second Android stable-ID app should analyze")
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("second Android stable-ID app should lower");
+
+    let title_id = android_stable_view_id("Screen", "title");
+    let action_id = android_stable_view_id("Screen", "action");
+    let inserted_id = android_stable_view_id("Screen", "inserted");
+    for generated in [&first, &second] {
+        assert!(generated.contains(&format!("set_stable_id, (jint){title_id}")));
+        assert!(generated.contains(&format!("set_stable_id, (jint){action_id}")));
+        assert!(generated.contains(&format!("case {action_id}: flux__fn_pressed(); break;")));
+    }
+    assert!(!first.contains(&format!("set_stable_id, (jint){inserted_id}")));
+    assert!(second.contains(&format!("set_stable_id, (jint){inserted_id}")));
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -10455,9 +10544,10 @@ app Gallery
     assert!(generated.contains("flux__ui_state_compact"));
     assert!(generated.contains("setMinimumWidth"));
     assert!(generated.contains("setMinimumHeight"));
-    assert!(generated.contains(
-        "case 2: flux__ui_state_compact = (!(flux__ui_state_compact)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
-    ));
+    let resize_id = android_stable_view_id("Gallery", "resize");
+    assert!(generated.contains(&format!(
+        "case {resize_id}: flux__ui_state_compact = (!(flux__ui_state_compact)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
+    )));
     assert!(generated.contains("refresh_image_can_shrink"));
     assert!(!generated.contains("refresh_image_source"));
 
@@ -10650,12 +10740,17 @@ app Settings(theme: "dark")
     assert!(generated.contains("/ 100.0f"));
     assert!(generated.contains("Search query"));
     assert!(generated.contains("Enter text to search"));
+    let query_id = android_stable_view_id("Settings", "query");
+    let toggle_id = android_stable_view_id("Settings", "enabled_toggle");
+    let first_id = android_stable_view_id("Settings", "first");
+    let second_id = android_stable_view_id("Settings", "second");
+    let cache_only_id = android_stable_view_id("Settings", "cache_only");
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
     assert!(generated.contains("setOnTouchListener"));
-    assert!(generated.contains("case 1: flux__ui_state_enabled = true; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"));
+    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = true; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
     assert!(generated.contains("setOnLongClickListener"));
-    assert!(generated.contains("case 1: flux__ui_state_enabled = false; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"));
+    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));
@@ -10663,16 +10758,20 @@ app Settings(theme: "dark")
     assert!(generated.contains("refresh_checked"));
     assert!(generated.contains("refresh_transform"));
     assert!(!generated.contains("refresh_hint_value"));
-    assert!(!generated.contains("find_view, (jint)6"));
-    assert!(generated.contains("case 1: flux__fn_changed(value); break;"));
-    assert!(generated.contains("case 1: flux__fn_submitted(value); break;"));
-    assert!(generated.contains("case 2: flux__ui_state_enabled = (!(flux__ui_state_enabled))"));
-    assert!(
-        generated.contains("case 3: if (!checked) break; flux__ui_state_selected = INT64_C(0)")
-    );
-    assert!(
-        generated.contains("case 4: if (!checked) break; flux__ui_state_selected = INT64_C(1)")
-    );
+    assert!(!generated.contains(&format!("find_view, (jint){cache_only_id}")));
+    assert!(generated.contains(&format!("case {query_id}: flux__fn_changed(value); break;")));
+    assert!(generated.contains(&format!(
+        "case {query_id}: flux__fn_submitted(value); break;"
+    )));
+    assert!(generated.contains(&format!(
+        "case {toggle_id}: flux__ui_state_enabled = (!(flux__ui_state_enabled))"
+    )));
+    assert!(generated.contains(&format!(
+        "case {first_id}: if (!checked) break; flux__ui_state_selected = INT64_C(0)"
+    )));
+    assert!(generated.contains(&format!(
+        "case {second_id}: if (!checked) break; flux__ui_state_selected = INT64_C(1)"
+    )));
 
     let _ = fs::remove_dir_all(&root);
 }

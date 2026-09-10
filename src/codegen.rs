@@ -1482,6 +1482,20 @@ fn emit_runtime_prelude(
     out.push('\n');
 }
 
+fn stable_android_element_id(view_name: &str, element_name: &str) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    for byte in view_name
+        .bytes()
+        .chain(std::iter::once(0))
+        .chain(element_name.bytes())
+    {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    let id = hash & 0x00FF_FFFF;
+    if id == 0 { 1 } else { id }
+}
+
 fn emit_android_native_application(
     out: &mut String,
     program: &Program,
@@ -1502,7 +1516,18 @@ fn emit_android_native_application(
             )
         })?;
 
+    let mut stable_ids = HashMap::<u32, &str>::new();
     for element in &view.elements {
+        let element_id = stable_android_element_id(&view.name, &element.name);
+        if let Some(existing) = stable_ids.insert(element_id, &element.name) {
+            return Err(diag(
+                element.name_span,
+                &format!(
+                    "Android stable view ID collision between '{existing}' and '{}'; rename one element",
+                    element.name
+                ),
+            ));
+        }
         if !matches!(
             element.kind.as_str(),
             "Text" | "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
@@ -1666,8 +1691,8 @@ fn emit_android_native_application(
     out.push_str("    jmethodID set_margins = (*env)->GetMethodID(env, params_class, \"setMargins\", \"(IIII)V\");\n");
     out.push_str("    if (params_ctor == NULL || row_spec_field == NULL || column_spec_field == NULL || width_field == NULL || height_field == NULL || set_margins == NULL) return;\n");
 
-    for (element_index, element) in view.elements.iter().enumerate() {
-        let element_id = element_index + 1;
+    for element in &view.elements {
+        let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str("    {\n");
         let class_name = match element.kind.as_str() {
             "Text" => "android/widget/TextView",
@@ -2801,36 +2826,36 @@ fn emit_android_native_application(
     emit_android_ui_refresh(out, view, signatures)?;
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTap(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
-    for (element_index, element) in view.elements.iter().enumerate() {
+    for element in &view.elements {
         let Some(action) = view_property(element, "on_tap") else {
             continue;
         };
-        let element_id = element_index + 1;
+        let element_id = stable_android_element_id(&view.name, &element.name);
         let body = android_ui_zero_arg_event_body(action, view, signatures)?;
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnLongPress(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
-    for (element_index, element) in view.elements.iter().enumerate() {
+    for element in &view.elements {
         let Some(action) = view_property(element, "on_long_press") else {
             continue;
         };
-        let element_id = element_index + 1;
+        let element_id = stable_android_element_id(&view.name, &element.name);
         let body = android_ui_zero_arg_event_body(action, view, signatures)?;
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
-    for (element_index, element) in view.elements.iter().enumerate() {
+    for element in &view.elements {
         if element.kind != "Button" {
             continue;
         }
         let Some(action) = view_property(element, "on_press") else {
             continue;
         };
-        let element_id = element_index + 1;
+        let element_id = stable_android_element_id(&view.name, &element.name);
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
             out.push_str(&format!(
@@ -2853,7 +2878,7 @@ fn emit_android_native_application(
     out.push_str("        default: break;\n    }\n}\n\n");
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnChecked(JNIEnv *env, jclass activity_class, jint view_id, jboolean checked) {\n    (void)activity_class;\n    switch (view_id) {\n");
-    for (element_index, element) in view.elements.iter().enumerate() {
+    for element in &view.elements {
         let action_name = match element.kind.as_str() {
             "Toggle" => "on_change",
             "Radio" => "on_select",
@@ -2862,7 +2887,7 @@ fn emit_android_native_application(
         let Some(action) = view_property(element, action_name) else {
             continue;
         };
-        let element_id = element_index + 1;
+        let element_id = stable_android_element_id(&view.name, &element.name);
         let radio_guard = if element.kind == "Radio" {
             "if (!checked) break; "
         } else {
@@ -2896,13 +2921,13 @@ fn emit_android_native_application(
         out.push_str(&format!(
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_{native_name}(JNIEnv *env, jclass activity_class, jint view_id, jboolean active) {{\n    (void)activity_class;\n    switch (view_id) {{\n"
         ));
-        for (element_index, element) in view.elements.iter().enumerate() {
+        for element in &view.elements {
             let positive = view_property(element, positive_property);
             let negative = view_property(element, negative_property);
             if positive.is_none() && negative.is_none() {
                 continue;
             }
-            let element_id = element_index + 1;
+            let element_id = stable_android_element_id(&view.name, &element.name);
             let positive_body = positive
                 .map(|action| android_ui_zero_arg_event_body(action, view, signatures))
                 .transpose()?
@@ -2925,7 +2950,7 @@ fn emit_android_native_application(
         out.push_str(&format!(
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_{native_name}(JNIEnv *env, jclass activity_class, jint view_id, jstring text) {{\n    (void)activity_class;\n    if (text == NULL) return;\n    const char *value = (*env)->GetStringUTFChars(env, text, NULL);\n    if (value == NULL) return;\n    switch (view_id) {{\n"
         ));
-        for (element_index, element) in view.elements.iter().enumerate() {
+        for element in &view.elements {
             if element.kind != "TextInput" {
                 continue;
             }
@@ -2940,7 +2965,7 @@ fn emit_android_native_application(
                     ),
                 ));
             };
-            let element_id = element_index + 1;
+            let element_id = stable_android_element_id(&view.name, &element.name);
             out.push_str(&format!(
                 "        case {element_id}: {}(value); break;\n",
                 function_c_name(function)
@@ -4281,11 +4306,11 @@ fn emit_android_ui_refresh(
         "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); return; }\n",
     );
 
-    for (element_index, element) in view.elements.iter().enumerate() {
+    for element in &view.elements {
         if !android_ui_element_needs_refresh(element, &runtime_names) {
             continue;
         }
-        let element_id = element_index + 1;
+        let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str("    {\n");
         out.push_str(&format!(
             "        jobject child = (*env)->CallObjectMethod(env, activity, find_view, (jint){element_id});\n"

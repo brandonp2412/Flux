@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 375
+- Completed baseline units: 376
 - Reported overall progress: **51%**
 - Current net scope growth after the baseline: 15 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -528,7 +528,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Minimal re-render/re-layout work after state changes.
   - [x] Bootstrap GTK4 root-view refresh updates only state-dependent native Text/Button properties and does not reconstruct the window/grid; the dogfood toggle produced a localized render delta and the second toggle restored the app region to its original pixels.
   - [x] Bootstrap Android ordinary state transitions now preserve the existing native view hierarchy: compiler-owned stable element IDs let a generated refresh function recompute derived values and update existing text/labels, visibility/enabled state, toggle/radio selection, input hints, image content, accessibility text, tooltips, and transforms in place. Toggle/radio refresh suppresses listener re-entry; configuration/layout changes may still rebuild the hierarchy.
-- [ ] Stable element identity rules.
+- [x] Stable element identity rules: flat element identity is derived deterministically from the declaring view plus the source element name rather than sibling position. Android lowers that identity to a non-zero 24-bit native View ID, rejects the vanishingly rare compile-time hash collision with a rename diagnostic, and preserves callback/refresh/focus identity across sibling insertion or reordering; Linux already addresses generated controls by their stable source element names.
 - [ ] No mandatory controller classes.
 - [ ] No build-context object threaded through user code.
 
