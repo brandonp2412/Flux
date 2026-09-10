@@ -47,7 +47,9 @@ For distro packages, declare GTK4 through the distro's dependency metadata inste
 
 ## Reproducibility and symbols
 
-Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility, as are current `.tar.gz` package archives. Generic native builds and packages can select an explicit Clang target/sysroot; see [`cross-compilation.md`](cross-compilation.md). Reproducible release infrastructure should pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Cross-machine/toolchain reproducibility remains separate roadmap work. For detached native debug information and crash address resolution, see [`debugging.md`](debugging.md).
+Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility, as are current `.tar.gz` package archives. Generic native builds and packages can select an explicit Clang target/sysroot; see [`cross-compilation.md`](cross-compilation.md). Native cache keys include Clang/linker identity and GTK version/flags, and cached binaries are validated against sidecar size/content hashes before reuse. `flux doctor` prints the active Clang, linker, and GTK versions so release jobs can retain those identities with the exact Flux revision and `flux.toml` used for a build.
+
+Reproducible release infrastructure should still pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Full sysroot/SDK content fingerprinting and cross-machine/toolchain reproducibility remain separate roadmap work. For detached native debug information and crash address resolution, see [`debugging.md`](debugging.md).
 
 ## Current boundary
 

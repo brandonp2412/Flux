@@ -2,7 +2,7 @@ use crate as fluxc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
@@ -2791,6 +2791,20 @@ fn run_doctor() -> Result<(), CliError> {
         }
     }
 
+    match command_first_line("clang", &["-print-prog-name=ld"]) {
+        Ok(linker) => match command_first_line(&linker, &["--version"]) {
+            Ok(version) => println!("  [ok] linker: {linker} ({version})"),
+            Err(message) => {
+                println!("  [fail] linker: {linker} ({message})");
+                required_ok = false;
+            }
+        },
+        Err(message) => {
+            println!("  [fail] linker: {message}");
+            required_ok = false;
+        }
+    }
+
     match command_first_line("pkg-config", &["--modversion", "gtk4"]) {
         Ok(version) => println!("  [ok] GTK4: {version}"),
         Err(message) => {
@@ -4722,8 +4736,28 @@ fn build_native_configured(
             sysroot.display()
         ));
     }
-    let cache = native_build_cache_path_configured(c_source, mode, instrumentation, native_target);
-    if cache.is_file() {
+    let gtk = c_source.contains("#include <gtk/gtk.h>");
+    let gtk_cflags = if gtk {
+        pkg_config_flags("--cflags", "gtk4")?
+    } else {
+        Vec::new()
+    };
+    let gtk_libs = if gtk {
+        pkg_config_flags("--libs", "gtk4")?
+    } else {
+        Vec::new()
+    };
+    let toolchain_identity = native_toolchain_cache_identity(gtk, native_target)?;
+    let cache = native_build_cache_path_configured(
+        c_source,
+        mode,
+        instrumentation,
+        native_target,
+        &toolchain_identity,
+        &gtk_cflags,
+        &gtk_libs,
+    );
+    if cache.is_file() && native_cache_entry_is_valid(&cache) {
         fs::copy(&cache, output).map_err(|error| {
             format!(
                 "failed to restore native build cache '{}' to '{}': {error}",
@@ -4732,6 +4766,10 @@ fn build_native_configured(
             )
         })?;
         return Ok(());
+    }
+    if cache.exists() {
+        let _ = fs::remove_file(&cache);
+        let _ = fs::remove_file(native_cache_metadata_path(&cache));
     }
 
     let mut command = Command::new("clang");
@@ -4756,13 +4794,12 @@ fn build_native_configured(
             ));
         }
     }
-    let gtk = c_source.contains("#include <gtk/gtk.h>");
     if gtk {
-        command.args(pkg_config_flags("--cflags", "gtk4")?);
+        command.args(&gtk_cflags);
     }
     command.args(["-x", "c", "-"]);
     if gtk {
-        command.args(pkg_config_flags("--libs", "gtk4")?);
+        command.args(&gtk_libs);
     }
     command.arg("-o").arg(output);
     let mut child = command
@@ -4790,13 +4827,102 @@ fn build_native_configured(
         && fs::create_dir_all(parent).is_ok()
     {
         let temporary_cache = cache.with_extension(format!("tmp-{}", std::process::id()));
-        if fs::copy(output, &temporary_cache).is_ok()
-            && fs::rename(&temporary_cache, &cache).is_err()
-        {
-            let _ = fs::remove_file(&temporary_cache);
+        if fs::copy(output, &temporary_cache).is_ok() {
+            if fs::rename(&temporary_cache, &cache).is_err() {
+                let _ = fs::remove_file(&temporary_cache);
+            } else if write_native_cache_metadata(&cache).is_err() {
+                let _ = fs::remove_file(&cache);
+                let _ = fs::remove_file(native_cache_metadata_path(&cache));
+            }
         }
     }
     Ok(())
+}
+
+fn native_cache_metadata_path(cache: &Path) -> PathBuf {
+    cache.with_extension("meta")
+}
+
+fn native_cache_file_identity(path: &Path) -> io::Result<(u64, u64)> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut size = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size = size.saturating_add(read as u64);
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok((size, hash))
+}
+
+fn native_cache_entry_is_valid(cache: &Path) -> bool {
+    let Ok(metadata) = fs::read_to_string(native_cache_metadata_path(cache)) else {
+        return false;
+    };
+    let mut fields = metadata.split_whitespace();
+    let Some("v1") = fields.next() else {
+        return false;
+    };
+    let Some(expected_size) = fields.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(expected_hash) = fields
+        .next()
+        .and_then(|value| u64::from_str_radix(value, 16).ok())
+    else {
+        return false;
+    };
+    if fields.next().is_some() {
+        return false;
+    }
+    matches!(
+        native_cache_file_identity(cache),
+        Ok((actual_size, actual_hash)) if actual_size == expected_size && actual_hash == expected_hash
+    )
+}
+
+fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
+    let (size, hash) = native_cache_file_identity(cache)?;
+    let metadata = native_cache_metadata_path(cache);
+    let temporary = metadata.with_extension(format!("meta.tmp-{}", std::process::id()));
+    fs::write(&temporary, format!("v1 {size} {hash:016x}\n"))?;
+    if let Err(error) = fs::rename(&temporary, &metadata) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn native_toolchain_cache_identity(
+    gtk: bool,
+    native_target: &NativeTargetOptions,
+) -> Result<String, String> {
+    let clang = command_first_line("clang", &["--version"])?;
+    let target_arg = native_target
+        .triple
+        .as_deref()
+        .map(|target| format!("--target={target}"));
+    let mut linker_args = Vec::new();
+    if let Some(target_arg) = target_arg.as_deref() {
+        linker_args.push(target_arg);
+    }
+    linker_args.push("-print-prog-name=ld");
+    let linker = command_first_line("clang", &linker_args)?;
+    let linker_version =
+        command_first_line(&linker, &["--version"]).unwrap_or_else(|_| "unknown".to_string());
+    let mut identity = format!("clang={clang}\nlinker={linker}\nlinkerVersion={linker_version}");
+    if gtk {
+        let gtk_version = command_first_line("pkg-config", &["--modversion", "gtk4"])?;
+        identity.push_str(&format!("\ngtk4={gtk_version}"));
+    }
+    Ok(identity)
 }
 
 fn native_build_cache_path_configured(
@@ -4804,6 +4930,9 @@ fn native_build_cache_path_configured(
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
     native_target: &NativeTargetOptions,
+    toolchain_identity: &str,
+    gtk_cflags: &[String],
+    gtk_libs: &[String],
 ) -> PathBuf {
     let target = native_target.triple.as_deref().unwrap_or("");
     let sysroot = native_target
@@ -4813,8 +4942,11 @@ fn native_build_cache_path_configured(
         .unwrap_or_default();
     let mut hash = 0xcbf29ce484222325u64;
     for bytes in [
-        b"flux-native-cache-v3".as_slice(),
+        b"flux-native-cache-v4".as_slice(),
         env!("CARGO_PKG_VERSION").as_bytes(),
+        toolchain_identity.as_bytes(),
+        gtk_cflags.join("\u{1f}").as_bytes(),
+        gtk_libs.join("\u{1f}").as_bytes(),
         mode.name().as_bytes(),
         instrumentation.cache_tag().as_bytes(),
         env::consts::OS.as_bytes(),
@@ -4877,10 +5009,11 @@ mod tests {
         NativeInstrumentation, NativeTargetOptions, PackageFormat, android_abi_from_runtime,
         android_activity_java_source, android_build_options, android_manifest_xml,
         android_publish_options, build_options, debug_options, demangle_profile_symbols,
-        display_flux_symbol, json_string, native_build_cache_path_configured, output_with_timeout,
-        package_artifact_name, package_options, parse_adb_devices, profile_report_addresses,
-        select_android_run_target, split_symbols_options, symbolize_options, test_options,
-        validate_android_publish_manifest, waydroid_status_is_running,
+        display_flux_symbol, json_string, native_build_cache_path_configured,
+        native_cache_entry_is_valid, output_with_timeout, package_artifact_name, package_options,
+        parse_adb_devices, profile_report_addresses, select_android_run_target,
+        split_symbols_options, symbolize_options, test_options, validate_android_publish_manifest,
+        waydroid_status_is_running, write_native_cache_metadata,
     };
 
     #[test]
@@ -4974,19 +5107,26 @@ mod tests {
     }
 
     #[test]
-    fn native_build_cache_separates_instrumentation_and_target_configuration() {
+    fn native_build_cache_separates_instrumentation_target_and_toolchain_configuration() {
         let source = "int main(void) { return 0; }";
+        let toolchain = "clang=clang version test";
         let plain = native_build_cache_path_configured(
             source,
             BuildMode::Profile,
             NativeInstrumentation::None,
             &NativeTargetOptions::default(),
+            toolchain,
+            &[],
+            &[],
         );
         let instrumented = native_build_cache_path_configured(
             source,
             BuildMode::Profile,
             NativeInstrumentation::Gprof,
             &NativeTargetOptions::default(),
+            toolchain,
+            &[],
+            &[],
         );
         let targeted = native_build_cache_path_configured(
             source,
@@ -4996,6 +5136,9 @@ mod tests {
                 triple: Some("aarch64-unknown-linux-gnu".to_string()),
                 sysroot: None,
             },
+            toolchain,
+            &[],
+            &[],
         );
         let sysrooted = native_build_cache_path_configured(
             source,
@@ -5005,10 +5148,52 @@ mod tests {
                 triple: None,
                 sysroot: Some(std::path::PathBuf::from("/opt/sysroot")),
             },
+            toolchain,
+            &[],
+            &[],
+        );
+        let different_clang = native_build_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            "clang=clang version newer",
+            &[],
+            &[],
+        );
+        let different_gtk = native_build_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            toolchain,
+            &["-I/opt/gtk/include".to_string()],
+            &["-lgtk-4".to_string()],
         );
         assert_ne!(plain, instrumented);
         assert_ne!(plain, targeted);
         assert_ne!(plain, sysrooted);
+        assert_ne!(plain, different_clang);
+        assert_ne!(plain, different_gtk);
+    }
+
+    #[test]
+    fn native_build_cache_metadata_rejects_corrupt_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-native-cache-integrity-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&root).expect("cache test directory should be writable");
+        let cache = root.join("artifact");
+        std::fs::write(&cache, b"native-binary-v1").expect("cache artifact should be writable");
+        write_native_cache_metadata(&cache).expect("cache metadata should be writable");
+        assert!(native_cache_entry_is_valid(&cache));
+
+        std::fs::write(&cache, b"native-binary-v2").expect("cache artifact should be replaceable");
+        assert!(!native_cache_entry_is_valid(&cache));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

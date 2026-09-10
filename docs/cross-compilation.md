@@ -42,6 +42,8 @@ Android remains a separate first-class target command (`flux build android ...`)
 
 ## Build cache behavior
 
-The native build cache includes the target triple and sysroot path in its cache identity. Artifacts produced for one configured target are therefore not reused for another target or sysroot. Toolchain/SDK content fingerprints and cross-machine reproducibility are separate roadmap work; changing files inside a sysroot without changing its path is not currently sufficient to invalidate an existing cache entry automatically.
+The native build cache includes the target triple and sysroot path in its cache identity. It also fingerprints the active Clang and linker identity, and GTK-backed builds include the resolved GTK version plus compiler/linker flags. Artifacts produced for a different configured target, toolchain, or GTK configuration are therefore not reused accidentally. Cached binaries carry sidecar size/content hashes; a missing or mismatched sidecar causes Flux to discard the entry and rebuild it instead of restoring potentially corrupt output.
+
+Full sysroot/SDK content fingerprinting and cross-machine reproducibility remain separate roadmap work. Changing files inside a sysroot without changing its path is not yet sufficient to invalidate an existing cache entry automatically. `flux doctor` reports the active Clang, linker, and GTK versions so release infrastructure can record the native toolchain identity alongside its pinned Flux revision.
 
 For same-host packaging details, see [`linux-packaging.md`](linux-packaging.md). For Android release artifacts, see [`android-release.md`](android-release.md).
