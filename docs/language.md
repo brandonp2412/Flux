@@ -210,8 +210,8 @@ The mapped free function receives the concrete implementing value as its first p
 When the receiver's concrete type is statically known, the interface namespace can dispatch a capability directly:
 
 ```flux
-let data: str, err: error = Storage.load(storage, "settings.flux")
-let saveErr: error = Storage.save(
+let data: str, err: error = Storage::load(storage, "settings.flux")
+let saveErr: error = Storage::save(
     storage,
     "settings.flux",
     data,
@@ -219,13 +219,13 @@ let saveErr: error = Storage.save(
 )
 ```
 
-`Interface.capability(receiver, ...)` is namespace-qualified function dispatch, not a method call on the receiver. The compiler checks that the receiver type has the declared implementation, validates the remaining capability arguments against the interface signature, resolves the mapping at compile time, and emits a direct call to the mapped free function. Multi-value returns retain their ordinary native return ABI. No vtable, reflection, runtime interface object, or dynamic lookup is introduced for static dispatch.
+`Interface::capability(receiver, ...)` is namespace-qualified function dispatch, not a method call on the receiver. `::` is Flux's canonical namespace separator; `.` is reserved for value/field access. The compiler checks that the receiver type has the declared implementation, validates the remaining capability arguments against the interface signature, resolves the mapping at compile time, and emits a direct call to the mapped free function. Multi-value returns retain their ordinary native return ABI. No vtable, reflection, runtime interface object, or dynamic lookup is introduced for static dispatch.
 
 When runtime polymorphism is needed, a concrete value can be packed explicitly into an interface value:
 
 ```flux
 let storage: Storage = Storage(fileStorage)
-let data: str, err: error = Storage.load(storage, "settings.flux")
+let data: str, err: error = Storage::load(storage, "settings.flux")
 ```
 
 Bootstrap interface values are closed-world tagged values containing the concrete implementing data by value. Dynamic capability dispatch lowers to a native tag switch that calls the corresponding mapped free function. This adds no heap allocation, vtable, reflection, hidden object identity, or source-language object model. Interface values may be passed to and returned from functions, selected by conditional expressions, and used with named capability arguments and multi-value returns. Embedding interface values inside structs/enums is intentionally deferred until ownership and stable layout/ABI rules are defined.
@@ -378,11 +378,11 @@ enum Outcome {
 }
 
 fn load() -> Outcome {
-    return Outcome.Ok(42)
+    return Outcome::Ok(42)
 }
 ```
 
-Construction is always namespace-qualified as `Enum.Variant(...)`; payloadless variants still use `()` so variant construction remains syntactically distinct from ordinary field access. Payload arity and types are checked statically. Enum and struct definitions may refer to each other forward by value when the resulting layout is acyclic. Recursive by-value cycles are rejected until Flux has explicit ownership/indirection types.
+Construction is always namespace-qualified as `Enum::Variant(...)`; payloadless variants still use `()` so variant construction remains syntactically distinct from ordinary field access. The formatter canonicalizes legacy bootstrap `Enum.Variant(...)` source to `::`. Payload arity and types are checked statically. Enum and struct definitions may refer to each other forward by value when the resulting layout is acyclic. Recursive by-value cycles are rejected until Flux has explicit ownership/indirection types.
 
 The bootstrap backend lowers each enum to a native tag plus a union containing only the payload storage required by payload-bearing variants. Typed inline constructors build the tagged value; there is no object hierarchy, reflection, heap allocation, or hidden dynamic dispatch.
 
@@ -391,11 +391,11 @@ Enum values are consumed with exhaustive `match` statements. Payloads are matche
 ```flux
 fn score(outcome: Outcome) -> i64 {
     match outcome:
-        Outcome.Ok(value):
+        Outcome::Ok(value):
             return value
-        Outcome.Error(_):
+        Outcome::Error(_):
             return -1
-        Outcome.Pending():
+        Outcome::Pending():
             return 0
 }
 ```
@@ -413,10 +413,10 @@ enum Event {
 
 fn describe(event: Event) -> i64 {
     match event:
-        Event.Loaded(User { name, age: years }):
+        Event::Loaded(User { name, age: years }):
             print(name)
             return years
-        Event.Empty():
+        Event::Empty():
             return 0
 }
 ```
@@ -428,17 +428,17 @@ Every variant must appear exactly once, every arm must target the scrutinee's en
 ```flux
 fn score(outcome: Outcome) -> i64 {
     return match outcome:
-        Outcome.Ok(value): value
-        Outcome.Error(_): -1
-        Outcome.Pending(): 0
+        Outcome::Ok(value): value
+        Outcome::Error(_): -1
+        Outcome::Pending(): 0
 }
 
 fn main() -> i64 {
-    let outcome: Outcome = Outcome.Ok(42)
+    let outcome: Outcome = Outcome::Ok(42)
     let score: i64 = match outcome:
-        Outcome.Ok(value): value + 1
-        Outcome.Error(_): -1
-        Outcome.Pending(): 0
+        Outcome::Ok(value): value + 1
+        Outcome::Error(_): -1
+        Outcome::Pending(): 0
     print(score)
     return 0
 }
@@ -477,10 +477,10 @@ Enum and list match arms may add a boolean guard after the pattern. Pattern bind
 ```flux
 fn classify(outcome: Outcome) -> i64 {
     return match outcome:
-        Outcome.Ok(value) if value > 100: 2
-        Outcome.Ok(_): 1
-        Outcome.Error(_): -1
-        Outcome.Pending(): 0
+        Outcome::Ok(value) if value > 100: 2
+        Outcome::Ok(_): 1
+        Outcome::Error(_): -1
+        Outcome::Pending(): 0
 }
 
 fn classifyList(values: i64[]) -> i64 {

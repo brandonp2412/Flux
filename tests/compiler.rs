@@ -596,15 +596,15 @@ fn file_save(storage: FileStorage, path: str, data: str, *, durable: bool) -> er
 }
 
 fn reload(storage: FileStorage, path: str) -> (str, error) {
-    return Storage.load(storage, path)
+    return Storage::load(storage, path)
 }
 
 fn main() -> i64 {
     let storage: FileStorage = FileStorage { root: "/tmp" }
-    let data: str, err: error = Storage.load(storage, "config.flux")
+    let data: str, err: error = Storage::load(storage, "config.flux")
     if err != nil:
         print(err)
-    let save_err: error = Storage.save(storage, "config.flux", data, durable: true)
+    let save_err: error = Storage::save(storage, "config.flux", data, durable: true)
     if save_err != nil:
         print(save_err)
     print(data)
@@ -620,8 +620,8 @@ fn main() -> i64 {
     assert!(!generated.contains("dynamic_dispatch"));
 
     let formatted = fluxc::formatter::format_source(source).expect("static calls should format");
-    assert!(formatted.contains("Storage.load(storage, \"config.flux\")"));
-    assert!(formatted.contains("Storage.save(storage, \"config.flux\", data, durable: true)"));
+    assert!(formatted.contains("Storage::load(storage, \"config.flux\")"));
+    assert!(formatted.contains("Storage::save(storage, \"config.flux\", data, durable: true)"));
 }
 
 #[test]
@@ -3506,17 +3506,17 @@ enum Outcome {
 
 fn score(outcome: Outcome) -> i64 {
     match outcome:
-        Outcome.Ok(value):
+        Outcome::Ok(value):
             return value
-        Outcome.Error(message):
+        Outcome::Error(message):
             print(message)
             return -1
-        Outcome.Pending():
+        Outcome::Pending():
             return 0
 }
 
 fn main() -> i64 {
-    print(score(Outcome.Ok(42)))
+    print(score(Outcome::Ok(42)))
     return 0
 }
 "#;
@@ -3575,7 +3575,7 @@ fn main() -> i64 {
 
     let formatted =
         fluxc::formatter::format_source(source).expect("struct match pattern should format");
-    assert!(formatted.contains("Event.Loaded(User { profile: Profile { name, age: years } }):"));
+    assert!(formatted.contains("Event::Loaded(User { profile: Profile { name, age: years } }):"));
     let database = fluxc::semantic::SemanticDatabase::analyze(&formatted, SourceId::new(703))
         .expect("struct match pattern should analyze");
     let years = database
@@ -3828,7 +3828,7 @@ fn main() -> i64 {
 #[test]
 fn formatter_and_semantic_database_preserve_match_expressions() {
     let source = "enum Choice {\n One(i64)\n None\n}\nfn main()->i64 {\n let choice:Choice=Choice.One(42)\n let value:i64 = match choice:\n  Choice.One(payload): payload\n  Choice.None(): 0\n return value\n}\n";
-    let expected = "enum Choice {\n    One(i64)\n    None\n}\nfn main() -> i64 {\n    let choice: Choice = Choice.One(42)\n    let value: i64 = match choice:\n        Choice.One(payload): payload\n        Choice.None(): 0\n    return value\n}\n";
+    let expected = "enum Choice {\n    One(i64)\n    None\n}\nfn main() -> i64 {\n    let choice: Choice = Choice::One(42)\n    let value: i64 = match choice:\n        Choice::One(payload): payload\n        Choice::None(): 0\n    return value\n}\n";
     let formatted =
         fluxc::formatter::format_source(source).expect("match expression should format");
     assert_eq!(formatted, expected);
@@ -4073,7 +4073,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_only > INT64_C(10)"));
 
     let formatted = fluxc::formatter::format_source(source).expect("match guards should format");
-    assert!(formatted.contains("Outcome.Value(value) if value > 10: 2"));
+    assert!(formatted.contains("Outcome::Value(value) if value > 10: 2"));
     assert!(formatted.contains("[only] if only > 10:"));
     let formatted_again =
         fluxc::formatter::format_source(&formatted).expect("formatted guards should reparse");
@@ -4260,7 +4260,7 @@ fn main() -> i64 {
 #[test]
 fn formatter_and_semantic_database_preserve_match_patterns() {
     let source = "enum Outcome {\n Ok(i64)\n Empty\n}\nfn main()->i64 {\n let value:Outcome=Outcome.Ok(42)\n match value:\n  Outcome.Ok(payload):\n   print(payload)\n  Outcome.Empty():\n   print(0)\n return 0\n}\n";
-    let expected = "enum Outcome {\n    Ok(i64)\n    Empty\n}\nfn main() -> i64 {\n    let value: Outcome = Outcome.Ok(42)\n    match value:\n        Outcome.Ok(payload):\n            print(payload)\n        Outcome.Empty():\n            print(0)\n    return 0\n}\n";
+    let expected = "enum Outcome {\n    Ok(i64)\n    Empty\n}\nfn main() -> i64 {\n    let value: Outcome = Outcome::Ok(42)\n    match value:\n        Outcome::Ok(payload):\n            print(payload)\n        Outcome::Empty():\n            print(0)\n    return 0\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("match source should format");
     assert_eq!(formatted, expected);
 
@@ -4400,7 +4400,7 @@ fn main() -> i64 {
 #[test]
 fn formatter_and_semantic_database_preserve_enums() {
     let source = "enum Outcome {\n Ok(i64)\n Pending\n}\nfn main()->i64 {\n let _value:Outcome=Outcome.Ok(42)\n return 0\n}\n";
-    let expected = "enum Outcome {\n    Ok(i64)\n    Pending\n}\nfn main() -> i64 {\n    let _value: Outcome = Outcome.Ok(42)\n    return 0\n}\n";
+    let expected = "enum Outcome {\n    Ok(i64)\n    Pending\n}\nfn main() -> i64 {\n    let _value: Outcome = Outcome::Ok(42)\n    return 0\n}\n";
     let formatted = fluxc::formatter::format_source(source).expect("enum source should format");
     assert_eq!(formatted, expected);
 
@@ -10023,60 +10023,60 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.sdk_int expects 0 arguments, got 1")
+            .contains("android::sdk_int expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.vibrate duration_ms")
+        error.message.contains("android::vibrate duration_ms")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.open_url url") && error.message.contains("expected str")
+        error.message.contains("android::open_url url") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.share text") && error.message.contains("expected str")
+        error.message.contains("android::share text") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.create_notification_channel name")
+            .contains("android::create_notification_channel name")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.permission_granted permission")
+            .contains("android::permission_granted permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.request_permission permission")
+            .contains("android::request_permission permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.notification_permission_granted expects 0 arguments")
+            .contains("android::notification_permission_granted expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.request_notification_permission expects 0 arguments")
+            .contains("android::request_notification_permission expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.notify channel_id")
+        error.message.contains("android::notify channel_id")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.notify_url_action notification_id")
+            .contains("android::notify_url_action notification_id")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.cancel_notification notification_id")
+            .contains("android::cancel_notification notification_id")
             && error.message.contains("expected i64")
     }));
 

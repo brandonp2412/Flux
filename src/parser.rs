@@ -2928,7 +2928,7 @@ fn parse_match_expr_arm(line: &Line) -> Result<MatchExprArm, Diagnostic> {
     let Some(colon) = find_top_level_colon(&line.text) else {
         return Err(diag(
             line.number,
-            "match expression arms use 'Enum.Variant(patterns): expression'",
+            "match expression arms use 'Enum::Variant(patterns): expression'",
         ));
     };
     let pattern_text = line.text[..colon].trim();
@@ -3051,12 +3051,13 @@ fn parse_match_guard(
 }
 
 fn find_top_level_colon(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
     let mut paren = 0usize;
     let mut brace = 0usize;
     let mut bracket = 0usize;
     let mut in_string = false;
     let mut escaped = false;
-    for (index, byte) in input.bytes().enumerate() {
+    for (index, &byte) in bytes.iter().enumerate() {
         if escaped {
             escaped = false;
             continue;
@@ -3079,7 +3080,14 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
             b'}' => brace = brace.saturating_sub(1),
             b'[' => bracket += 1,
             b']' => bracket = bracket.saturating_sub(1),
-            b':' if paren == 0 && brace == 0 && bracket == 0 => return Some(index),
+            b':' if paren == 0
+                && brace == 0
+                && bracket == 0
+                && bytes.get(index + 1) != Some(&b':')
+                && (index == 0 || bytes[index - 1] != b':') =>
+            {
+                return Some(index);
+            }
             _ => {}
         }
     }
@@ -3196,15 +3204,19 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
     let pattern_offset = line.text.find(pattern).unwrap_or(0);
     let (pattern, guard) =
         parse_match_guard(pattern, line.number, line.indent + 1 + pattern_offset)?;
-    let Some(dot_offset) = pattern.find('.') else {
+    let (separator_offset, separator_len) = if let Some(offset) = pattern.find("::") {
+        (offset, 2)
+    } else if let Some(offset) = pattern.find('.') {
+        (offset, 1)
+    } else {
         return Err(diag(
             line.number,
-            "enum match arms use 'Enum.Variant(bindings):' syntax",
+            "enum match arms use 'Enum::Variant(bindings):' syntax",
         ));
     };
-    let enum_name = pattern[..dot_offset].trim();
+    let enum_name = pattern[..separator_offset].trim();
     validate_identifier(enum_name, line.number)?;
-    let variant_source = &pattern[dot_offset + 1..];
+    let variant_source = &pattern[separator_offset + separator_len..];
     let Some(open_offset) = variant_source.find('(') else {
         return Err(diag(
             line.number,
@@ -3218,9 +3230,12 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
     validate_identifier(variant, line.number)?;
     let bindings_source = &inner[open_offset + 1..];
     let enum_column = line.indent + 1 + pattern.find(enum_name).unwrap_or(0);
-    let variant_column =
-        line.indent + 1 + dot_offset + 1 + variant_source[..open_offset].find(variant).unwrap_or(0);
-    let binding_base_column = line.indent + 1 + dot_offset + 1 + open_offset + 1;
+    let variant_column = line.indent
+        + 1
+        + separator_offset
+        + separator_len
+        + variant_source[..open_offset].find(variant).unwrap_or(0);
+    let binding_base_column = line.indent + 1 + separator_offset + separator_len + open_offset + 1;
     let mut patterns = Vec::new();
     if !bindings_source.trim().is_empty() {
         for (raw_pattern, offset) in split_top_level_commas_with_offsets(bindings_source) {
@@ -4899,19 +4914,33 @@ impl ExprParser<'_> {
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_atom()?;
-        while matches!(
-            self.tokens.get(self.index).map(|token| &token.kind),
-            Some(TokenKind::Dot)
-        ) {
-            self.index += 1;
+        loop {
+            let separator_len = match self.tokens.get(self.index).map(|token| &token.kind) {
+                Some(TokenKind::Dot) => 1,
+                Some(TokenKind::Colon)
+                    if matches!(
+                        self.tokens.get(self.index + 1).map(|token| &token.kind),
+                        Some(TokenKind::Colon)
+                    ) =>
+                {
+                    2
+                }
+                _ => break,
+            };
+            let namespace_separator = separator_len == 2;
+            let separator_text = if namespace_separator { "::" } else { "." };
+            self.index += separator_len;
             let Some(field) = self.tokens.get(self.index).cloned() else {
-                return Err(diag(self.line, "expected field name after '.'"));
+                return Err(diag(
+                    self.line,
+                    &format!("expected member name after '{separator_text}'"),
+                ));
             };
             let TokenKind::Ident(name) = field.kind else {
                 return Err(Diagnostic::new(
                     DiagnosticStage::Parse,
                     field.span,
-                    "expected field name after '.'",
+                    format!("expected member name after '{separator_text}'"),
                 ));
             };
             self.index += 1;
@@ -4923,7 +4952,7 @@ impl ExprParser<'_> {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Parse,
                         field.span,
-                        "qualified calls require a namespace name before '.'",
+                        "qualified calls require a namespace name before '::'",
                     ));
                 };
                 let namespace = namespace.clone();
@@ -4941,7 +4970,12 @@ impl ExprParser<'_> {
                             self.tokens.get(self.index),
                             self.tokens.get(self.index + 1).map(|token| &token.kind),
                         ) {
-                            (Some(token), Some(TokenKind::Colon)) => {
+                            (Some(token), Some(TokenKind::Colon))
+                                if !matches!(
+                                    self.tokens.get(self.index + 2).map(|token| &token.kind),
+                                    Some(TokenKind::Colon)
+                                ) =>
+                            {
                                 if let TokenKind::Ident(name) = &token.kind {
                                     Some((name.clone(), token.span))
                                 } else {
@@ -5025,6 +5059,13 @@ impl ExprParser<'_> {
                     },
                 };
                 continue;
+            }
+            if namespace_separator {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    field.span,
+                    "namespace-qualified members must be called or constructed with parentheses",
+                ));
             }
             let span = SourceSpan::new(
                 self.line,
@@ -5495,7 +5536,12 @@ impl ExprParser<'_> {
                             self.tokens.get(self.index),
                             self.tokens.get(self.index + 1).map(|token| &token.kind),
                         ) {
-                            (Some(token), Some(TokenKind::Colon)) => {
+                            (Some(token), Some(TokenKind::Colon))
+                                if !matches!(
+                                    self.tokens.get(self.index + 2).map(|token| &token.kind),
+                                    Some(TokenKind::Colon)
+                                ) =>
+                            {
                                 if let TokenKind::Ident(name) = &token.kind {
                                     Some((name.clone(), token.span))
                                 } else {

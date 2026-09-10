@@ -865,7 +865,9 @@ fn completion_items_at_cursor_cached(
     let (Some(line_index), Some(character)) = (line_index, character) else {
         return items;
     };
-    let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
+    let Some((receiver, namespace_operator)) =
+        member_receiver_at_cursor(source, line_index, character, encoding)
+    else {
         return items;
     };
     if let Some(program) =
@@ -875,7 +877,8 @@ fn completion_items_at_cursor_cached(
         let namespace_matched = namespace.is_some_and(|namespace| {
             add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program)
         });
-        if !namespace_matched
+        if !namespace_operator
+            && !namespace_matched
             && let Some(type_name) =
                 member_receiver_type_name(source, line_index, &receiver, &program)
         {
@@ -1034,7 +1037,7 @@ fn member_receiver_at_cursor(
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let line = source.lines().nth(line_index)?;
     let cursor = byte_offset_for_encoded_column(line, character, encoding).min(line.len());
     let prefix = line.get(..cursor)?;
@@ -1043,10 +1046,14 @@ fn member_receiver_at_cursor(
     while member_start > 0 && is_identifier_byte(bytes[member_start - 1]) {
         member_start -= 1;
     }
-    if member_start == 0 || bytes[member_start - 1] != b'.' {
-        return None;
-    }
-    let receiver_end = member_start - 1;
+    let (receiver_end, namespace_operator) =
+        if member_start >= 2 && bytes.get(member_start - 2..member_start) == Some(b"::") {
+            (member_start - 2, true)
+        } else if member_start > 0 && bytes[member_start - 1] == b'.' {
+            (member_start - 1, false)
+        } else {
+            return None;
+        };
     let receiver_prefix = prefix[..receiver_end].trim_end();
     if receiver_prefix.is_empty() {
         return None;
@@ -1076,14 +1083,14 @@ fn member_receiver_at_cursor(
         if start == open {
             return None;
         }
-        return Some(receiver_prefix[start..].to_string());
+        return Some((receiver_prefix[start..].to_string(), namespace_operator));
     }
     let bytes = receiver_prefix.as_bytes();
     let mut start = bytes.len();
     while start > 0 && (is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'.') {
         start -= 1;
     }
-    (start < bytes.len()).then(|| receiver_prefix[start..].to_string())
+    (start < bytes.len()).then(|| (receiver_prefix[start..].to_string(), namespace_operator))
 }
 
 fn completion_contract_program_cached(
@@ -1138,83 +1145,83 @@ fn add_qualified_namespace_completions(
     program: &crate::ast::Program,
 ) -> bool {
     if namespace == "android" {
-        push_completion_item(items, seen, "sdk_int", 3, "fn android.sdk_int() -> i64");
+        push_completion_item(items, seen, "sdk_int", 3, "fn android::sdk_int() -> i64");
         push_completion_item(
             items,
             seen,
             "vibrate",
             3,
-            "fn android.vibrate(duration_ms: i64) -> void",
+            "fn android::vibrate(duration_ms: i64) -> void",
         );
         push_completion_item(
             items,
             seen,
             "open_url",
             3,
-            "fn android.open_url(url: str) -> void",
+            "fn android::open_url(url: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "share",
             3,
-            "fn android.share(text: str) -> void",
+            "fn android::share(text: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "create_notification_channel",
             3,
-            "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
+            "fn android::create_notification_channel(id: str, name: str, description: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "permission_granted",
             3,
-            "fn android.permission_granted(permission: str) -> bool",
+            "fn android::permission_granted(permission: str) -> bool",
         );
         push_completion_item(
             items,
             seen,
             "request_permission",
             3,
-            "fn android.request_permission(permission: str) -> void",
+            "fn android::request_permission(permission: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "notification_permission_granted",
             3,
-            "fn android.notification_permission_granted() -> bool",
+            "fn android::notification_permission_granted() -> bool",
         );
         push_completion_item(
             items,
             seen,
             "request_notification_permission",
             3,
-            "fn android.request_notification_permission() -> void",
+            "fn android::request_notification_permission() -> void",
         );
         push_completion_item(
             items,
             seen,
             "notify",
             3,
-            "fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
+            "fn android::notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "notify_url_action",
             3,
-            "fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
+            "fn android::notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
         );
         push_completion_item(
             items,
             seen,
             "cancel_notification",
             3,
-            "fn android.cancel_notification(notification_id: i64) -> void",
+            "fn android::cancel_notification(notification_id: i64) -> void",
         );
         return true;
     }
@@ -1235,7 +1242,7 @@ fn add_qualified_namespace_completions(
                 seen,
                 &variant.name,
                 20,
-                &format!("{namespace}.{}({payloads}) -> {namespace}", variant.name),
+                &format!("{namespace}::{}({payloads}) -> {namespace}", variant.name),
             );
         }
         return true;
@@ -1258,7 +1265,7 @@ fn add_qualified_namespace_completions(
                 &function.name,
                 3,
                 &format!(
-                    "fn {namespace}.{}(receiver: {namespace}{}) -> {}",
+                    "fn {namespace}::{}(receiver: {namespace}{}) -> {}",
                     function.name,
                     if params.is_empty() {
                         String::new()
@@ -1330,7 +1337,11 @@ fn struct_field_for_position<'a>(
     let line = source.lines().nth(line_index)?;
     let byte = byte_offset_for_encoded_column(line, character, encoding);
     let field_name = identifier_at(line, byte)?;
-    let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
+    let (receiver, namespace_operator) =
+        member_receiver_at_cursor(source, line_index, character, encoding)?;
+    if namespace_operator {
+        return None;
+    }
     let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
     struct_definition_for_type(&type_name, program)?
         .fields
@@ -1348,7 +1359,11 @@ fn list_property_for_position(
     let line = source.lines().nth(line_index)?;
     let byte = byte_offset_for_encoded_column(line, character, encoding);
     let property = identifier_at(line, byte)?;
-    let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
+    let (receiver, namespace_operator) =
+        member_receiver_at_cursor(source, line_index, character, encoding)?;
+    if namespace_operator {
+        return None;
+    }
     let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
     let crate::ast::Type::List(element) = crate::ast::Type::parse(&type_name)? else {
         return None;
@@ -2019,12 +2034,15 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if let Some((namespace, member)) = call_name.split_once('.') {
+    if let Some((namespace, member)) = call_name
+        .split_once("::")
+        .or_else(|| call_name.split_once('.'))
+    {
         if namespace == "android" {
             match member {
                 "sdk_int" => {
                     return Some(signature_help_for_builtin(
-                        "android.sdk_int",
+                        "android::sdk_int",
                         &[],
                         "i64",
                         active_parameter,
@@ -2032,7 +2050,7 @@ fn signature_help_for_document_cached(
                 }
                 "vibrate" => {
                     return Some(signature_help_for_builtin(
-                        "android.vibrate",
+                        "android::vibrate",
                         &["duration_ms: i64"],
                         "void",
                         active_parameter,
@@ -2040,7 +2058,7 @@ fn signature_help_for_document_cached(
                 }
                 "open_url" => {
                     return Some(signature_help_for_builtin(
-                        "android.open_url",
+                        "android::open_url",
                         &["url: str"],
                         "void",
                         active_parameter,
@@ -2048,7 +2066,7 @@ fn signature_help_for_document_cached(
                 }
                 "share" => {
                     return Some(signature_help_for_builtin(
-                        "android.share",
+                        "android::share",
                         &["text: str"],
                         "void",
                         active_parameter,
@@ -2056,7 +2074,7 @@ fn signature_help_for_document_cached(
                 }
                 "create_notification_channel" => {
                     return Some(signature_help_for_builtin(
-                        "android.create_notification_channel",
+                        "android::create_notification_channel",
                         &["id: str", "name: str", "description: str"],
                         "void",
                         active_parameter,
@@ -2064,7 +2082,7 @@ fn signature_help_for_document_cached(
                 }
                 "permission_granted" => {
                     return Some(signature_help_for_builtin(
-                        "android.permission_granted",
+                        "android::permission_granted",
                         &["permission: str"],
                         "bool",
                         active_parameter,
@@ -2072,7 +2090,7 @@ fn signature_help_for_document_cached(
                 }
                 "request_permission" => {
                     return Some(signature_help_for_builtin(
-                        "android.request_permission",
+                        "android::request_permission",
                         &["permission: str"],
                         "void",
                         active_parameter,
@@ -2080,7 +2098,7 @@ fn signature_help_for_document_cached(
                 }
                 "notification_permission_granted" => {
                     return Some(signature_help_for_builtin(
-                        "android.notification_permission_granted",
+                        "android::notification_permission_granted",
                         &[],
                         "bool",
                         active_parameter,
@@ -2088,7 +2106,7 @@ fn signature_help_for_document_cached(
                 }
                 "request_notification_permission" => {
                     return Some(signature_help_for_builtin(
-                        "android.request_notification_permission",
+                        "android::request_notification_permission",
                         &[],
                         "void",
                         active_parameter,
@@ -2096,7 +2114,7 @@ fn signature_help_for_document_cached(
                 }
                 "notify" => {
                     return Some(signature_help_for_builtin(
-                        "android.notify",
+                        "android::notify",
                         &[
                             "channel_id: str",
                             "notification_id: i64",
@@ -2109,7 +2127,7 @@ fn signature_help_for_document_cached(
                 }
                 "notify_url_action" => {
                     return Some(signature_help_for_builtin(
-                        "android.notify_url_action",
+                        "android::notify_url_action",
                         &[
                             "channel_id: str",
                             "notification_id: i64",
@@ -2124,7 +2142,7 @@ fn signature_help_for_document_cached(
                 }
                 "cancel_notification" => {
                     return Some(signature_help_for_builtin(
-                        "android.cancel_notification",
+                        "android::cancel_notification",
                         &["notification_id: i64"],
                         "void",
                         active_parameter,
@@ -2218,7 +2236,7 @@ fn signature_help_for_enum_variant(
         .map(crate::ast::Type::name)
         .collect::<Vec<_>>();
     signature_help_from_owned_labels(
-        &format!("{enum_name}.{variant_name}"),
+        &format!("{enum_name}::{variant_name}"),
         labels,
         enum_name,
         active_parameter,
@@ -2372,7 +2390,7 @@ fn signature_help_for_interface_capability(
         ),
     };
     let label = format!(
-        "fn {interface_name}.{member_name}({}) -> {returns}",
+        "fn {interface_name}::{member_name}({}) -> {returns}",
         labels.join(", ")
     );
     let parameters = labels
@@ -2465,7 +2483,9 @@ fn active_call(prefix: &str) -> Option<(&str, usize)> {
     }
     let mut name_start = name_end;
     while name_start > 0
-        && (is_identifier_byte(bytes[name_start - 1]) || bytes[name_start - 1] == b'.')
+        && (is_identifier_byte(bytes[name_start - 1])
+            || bytes[name_start - 1] == b'.'
+            || bytes[name_start - 1] == b':')
     {
         name_start -= 1;
     }
@@ -4887,11 +4907,11 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome::\n    Storage::\n    android::\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
-            .position(|line| line.contains("Outcome."))
+            .position(|line| line.contains("Outcome::"))
             .expect("enum completion line should exist");
         let enum_source = source.lines().nth(enum_line).unwrap();
         let enum_items = JsonValue::Array(completion_items_at_cursor(
@@ -4904,12 +4924,12 @@ mod tests {
         ))
         .to_json();
         assert!(enum_items.contains("\"label\":\"Ok\""));
-        assert!(enum_items.contains("Outcome.Ok(i64) -> Outcome"));
+        assert!(enum_items.contains("Outcome::Ok(i64) -> Outcome"));
         assert!(enum_items.contains("\"label\":\"Failed\""));
 
         let interface_line = source
             .lines()
-            .position(|line| line.trim() == "Storage.")
+            .position(|line| line.trim() == "Storage::")
             .expect("interface completion line should exist");
         let interface_source = source.lines().nth(interface_line).unwrap();
         let interface_items = JsonValue::Array(completion_items_at_cursor(
@@ -4922,12 +4942,12 @@ mod tests {
         ))
         .to_json();
         assert!(interface_items.contains("\"label\":\"load\""));
-        assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
+        assert!(interface_items.contains("fn Storage::load(receiver: Storage, path: str)"));
         assert!(interface_items.contains("\"label\":\"save\""));
 
         let android_line = source
             .lines()
-            .position(|line| line.trim() == "android.")
+            .position(|line| line.trim() == "android::")
             .expect("Android completion line should exist");
         let android_source = source.lines().nth(android_line).unwrap();
         let android_items = JsonValue::Array(completion_items_at_cursor(
@@ -4940,22 +4960,22 @@ mod tests {
         ))
         .to_json();
         assert!(android_items.contains("\"label\":\"vibrate\""));
-        assert!(android_items.contains("fn android.sdk_int() -> i64"));
-        assert!(android_items.contains("fn android.vibrate(duration_ms: i64) -> void"));
+        assert!(android_items.contains("fn android::sdk_int() -> i64"));
+        assert!(android_items.contains("fn android::vibrate(duration_ms: i64) -> void"));
         assert!(android_items.contains("\"label\":\"open_url\""));
-        assert!(android_items.contains("fn android.open_url(url: str) -> void"));
-        assert!(android_items.contains("fn android.share(text: str) -> void"));
+        assert!(android_items.contains("fn android::open_url(url: str) -> void"));
+        assert!(android_items.contains("fn android::share(text: str) -> void"));
         assert!(android_items.contains(
-            "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
+            "fn android::create_notification_channel(id: str, name: str, description: str) -> void"
         ));
-        assert!(android_items.contains("fn android.permission_granted(permission: str) -> bool"));
-        assert!(android_items.contains("fn android.request_permission(permission: str) -> void"));
-        assert!(android_items.contains("fn android.notification_permission_granted() -> bool"));
-        assert!(android_items.contains("fn android.request_notification_permission() -> void"));
-        assert!(android_items.contains("fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void"));
-        assert!(android_items.contains("fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void"));
+        assert!(android_items.contains("fn android::permission_granted(permission: str) -> bool"));
+        assert!(android_items.contains("fn android::request_permission(permission: str) -> void"));
+        assert!(android_items.contains("fn android::notification_permission_granted() -> bool"));
+        assert!(android_items.contains("fn android::request_notification_permission() -> void"));
+        assert!(android_items.contains("fn android::notify(channel_id: str, notification_id: i64, title: str, body: str) -> void"));
+        assert!(android_items.contains("fn android::notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void"));
         assert!(
-            android_items.contains("fn android.cancel_notification(notification_id: i64) -> void")
+            android_items.contains("fn android::cancel_notification(notification_id: i64) -> void")
         );
     }
 
@@ -5110,7 +5130,7 @@ mod tests {
             "pub enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\npub interface Storage {\n    fn load(path: str) -> (str, error)\n}\n",
         )
         .expect("completion dependency should be writable");
-        let source = "import \"api.flux\"\nfn main() -> i64 {\n    Outcome.\n    Storage.\n    return 0\n}\n";
+        let source = "import \"api.flux\"\nfn main() -> i64 {\n    Outcome::\n    Storage::\n    return 0\n}\n";
         std::fs::write(&main, source).expect("completion entry should be writable");
         let main = std::fs::canonicalize(main).unwrap();
         let uri = file_uri_from_path(&main);
@@ -5127,7 +5147,7 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(enum_items.contains("Outcome.Ok(i64) -> Outcome"));
+        assert!(enum_items.contains("Outcome::Ok(i64) -> Outcome"));
 
         let storage_line = 3usize;
         let storage_source = source.lines().nth(storage_line).unwrap();
@@ -5140,7 +5160,7 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
+        assert!(interface_items.contains("fn Storage::load(receiver: Storage, path: str)"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5355,7 +5375,7 @@ mod tests {
     #[test]
     fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
         let uri = "file:///tmp/call-shapes.flux";
-        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nfn add(left: i64, right: i64) -> i64 { left + right }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _folded: i64 = fold(values, 0, add)\n    let _reduced: i64 = reduce(values, add)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nfn add(left: i64, right: i64) -> i64 { left + right }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome::Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _folded: i64 = fold(values, 0, add)\n    let _reduced: i64 = reduce(values, add)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -5386,8 +5406,8 @@ mod tests {
             .to_json()
         };
 
-        let enum_help = help_for("Outcome.Ok");
-        assert!(enum_help.contains("fn Outcome.Ok(i64, str) -> Outcome"));
+        let enum_help = help_for("Outcome::Ok");
+        assert!(enum_help.contains("fn Outcome::Ok(i64, str) -> Outcome"));
         let pack_help = help_for("Readable(memory");
         assert!(pack_help.contains("fn Readable(value: implementing concrete value) -> Readable"));
         let print_help = help_for("print(");
@@ -5405,47 +5425,50 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    print(android.permission_granted(\"android.permission.CAMERA\"))\n    android.request_permission(\"android.permission.CAMERA\")\n    android.create_notification_channel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notification_permission_granted())\n    android.request_notification_permission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notify_url_action(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancel_notification(1)\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android::sdk_int())\n    android::vibrate(25)\n    android::open_url(\"https://example.com\")\n    android::share(\"hello\")\n    print(android::permission_granted(\"android.permission.CAMERA\"))\n    android::request_permission(\"android.permission.CAMERA\")\n    android::create_notification_channel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android::notification_permission_granted())\n    android::request_notification_permission()\n    android::notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android::notify_url_action(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android::cancel_notification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            ("android.sdk_int(", "fn android.sdk_int() -> i64"),
+            ("android::sdk_int(", "fn android::sdk_int() -> i64"),
             (
-                "android.vibrate(",
-                "fn android.vibrate(duration_ms: i64) -> void",
-            ),
-            ("android.open_url(", "fn android.open_url(url: str) -> void"),
-            ("android.share(", "fn android.share(text: str) -> void"),
-            (
-                "android.permission_granted(",
-                "fn android.permission_granted(permission: str) -> bool",
+                "android::vibrate(",
+                "fn android::vibrate(duration_ms: i64) -> void",
             ),
             (
-                "android.request_permission(",
-                "fn android.request_permission(permission: str) -> void",
+                "android::open_url(",
+                "fn android::open_url(url: str) -> void",
+            ),
+            ("android::share(", "fn android::share(text: str) -> void"),
+            (
+                "android::permission_granted(",
+                "fn android::permission_granted(permission: str) -> bool",
             ),
             (
-                "android.create_notification_channel(",
-                "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
+                "android::request_permission(",
+                "fn android::request_permission(permission: str) -> void",
             ),
             (
-                "android.notification_permission_granted(",
-                "fn android.notification_permission_granted() -> bool",
+                "android::create_notification_channel(",
+                "fn android::create_notification_channel(id: str, name: str, description: str) -> void",
             ),
             (
-                "android.request_notification_permission(",
-                "fn android.request_notification_permission() -> void",
+                "android::notification_permission_granted(",
+                "fn android::notification_permission_granted() -> bool",
             ),
             (
-                "android.notify(",
-                "fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
+                "android::request_notification_permission(",
+                "fn android::request_notification_permission() -> void",
             ),
             (
-                "android.notify_url_action(",
-                "fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
+                "android::notify(",
+                "fn android::notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
             ),
             (
-                "android.cancel_notification(",
-                "fn android.cancel_notification(notification_id: i64) -> void",
+                "android::notify_url_action(",
+                "fn android::notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
+            ),
+            (
+                "android::cancel_notification(",
+                "fn android::cancel_notification(notification_id: i64) -> void",
             ),
         ] {
             let line_index = source
@@ -5462,9 +5485,9 @@ mod tests {
                 cursor,
                 PositionEncoding::Utf8,
             )
-            .expect("platform call should have signature help")
+            .unwrap_or_else(|| panic!("platform call '{needle}' should have signature help"))
             .to_json();
-            assert!(help.contains(expected));
+            assert!(help.contains(expected), "{needle}: {help}");
         }
     }
 
@@ -5625,11 +5648,11 @@ mod tests {
     #[test]
     fn signature_help_supports_interface_capability_call_shape() {
         let uri = "file:///tmp/interface-signature.flux";
-        let source = "interface Storage {\n    fn load(path: str) -> (str, error)\n}\nstruct Memory {\n    value: str\n}\nfn memory_load(storage: Memory, path: str) -> (str, error) {\n    print(storage.value)\n    return path, nil\n}\nimpl Storage for Memory {\n    load: memory_load\n}\nfn main() -> i64 {\n    let memory: Memory = Memory { value: \"x\" }\n    let storage: Storage = Storage(memory)\n    let data: str, err: error = Storage.load(storage, \"settings\")\n    print(data)\n    print(err)\n    return 0\n}\n";
+        let source = "interface Storage {\n    fn load(path: str) -> (str, error)\n}\nstruct Memory {\n    value: str\n}\nfn memory_load(storage: Memory, path: str) -> (str, error) {\n    print(storage.value)\n    return path, nil\n}\nimpl Storage for Memory {\n    load: memory_load\n}\nfn main() -> i64 {\n    let memory: Memory = Memory { value: \"x\" }\n    let storage: Storage = Storage(memory)\n    let data: str, err: error = Storage::load(storage, \"settings\")\n    print(data)\n    print(err)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let call_line_index = source
             .lines()
-            .position(|line| line.contains("Storage.load"))
+            .position(|line| line.contains("Storage::load"))
             .expect("capability call line should exist");
         let call_line = source.lines().nth(call_line_index).unwrap();
         let help = signature_help_for_document(
@@ -5643,8 +5666,8 @@ mod tests {
         .expect("interface capability call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn Storage.load(receiver: Storage, path: str) -&gt; (str, error)")
-                || help.contains("fn Storage.load(receiver: Storage, path: str) -> (str, error)")
+            help.contains("fn Storage::load(receiver: Storage, path: str) -&gt; (str, error)")
+                || help.contains("fn Storage::load(receiver: Storage, path: str) -> (str, error)")
         );
         assert!(help.contains("\"label\":\"receiver: Storage\""));
         assert!(help.contains("\"label\":\"path: str\""));

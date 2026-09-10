@@ -10028,7 +10028,7 @@ fn emit_expr(
                     return Err(diag(
                         expr.span,
                         &format!(
-                            "qualified call '{namespace}.{name}' returns multiple values and requires destructuring"
+                            "qualified call '{namespace}::{name}' returns multiple values and requires destructuring"
                         ),
                     ));
                 }
@@ -10567,7 +10567,9 @@ fn emit_multi_expr(
             if returns.len() < 2 {
                 return Err(diag(
                     expr.span,
-                    &format!("qualified call '{namespace}.{name}' does not return multiple values"),
+                    &format!(
+                        "qualified call '{namespace}::{name}' does not return multiple values"
+                    ),
                 ));
             }
             let multi_struct = mapped.ok_or_else(|| {
