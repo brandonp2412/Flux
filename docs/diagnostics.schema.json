@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flux-lang.dev/schemas/diagnostics-v1.json",
+  "title": "Flux machine diagnostics envelope v1",
+  "type": "object",
+  "required": ["schema_version", "ok", "source_id", "diagnostics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ok": { "type": "boolean" },
+    "source_id": { "type": "integer", "minimum": 0 },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "span": {
+      "type": "object",
+      "required": ["source_id", "line", "column", "length"],
+      "properties": {
+        "source_id": { "type": "integer", "minimum": 0 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "length": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "label": {
+      "type": "object",
+      "required": ["span", "message"],
+      "properties": {
+        "span": { "$ref": "#/$defs/span" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "fix": {
+      "type": "object",
+      "required": ["span", "replacement", "message"],
+      "properties": {
+        "span": { "$ref": "#/$defs/span" },
+        "replacement": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["stage", "message", "span", "labels", "notes", "fixes"],
+      "properties": {
+        "stage": { "enum": ["parse", "type", "codegen"] },
+        "message": { "type": "string" },
+        "span": {
+          "oneOf": [
+            { "$ref": "#/$defs/span" },
+            { "type": "null" }
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/label" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "fixes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fix" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -12,8 +12,8 @@ pub mod terminal;
 pub mod typecheck;
 
 pub use diagnostic::{
-    Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage, SourceId, SourceSpan,
-    diagnostics_to_json,
+    DIAGNOSTIC_JSON_SCHEMA_VERSION, Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage,
+    SourceId, SourceSpan, diagnostics_envelope_to_json, diagnostics_to_json,
 };
 pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
 

@@ -7704,11 +7704,16 @@ fn main() -> i64 {
     assert!(error.labels[0].message.contains("identity"));
     assert_eq!(error.labels[0].span.line, 2);
 
-    let json = diagnostics_to_json(&[error]);
+    let json = diagnostics_to_json(&[error.clone()]);
     assert!(json.starts_with("[{") && json.ends_with("]"));
     assert!(json.contains("\"stage\":\"type\""));
     assert!(json.contains("\"labels\":[{"));
     assert!(json.contains("\"source_id\":0"));
+
+    let envelope = fluxc::diagnostics_envelope_to_json(false, SourceId::new(42), &[error]);
+    assert!(envelope.starts_with("{\"schema_version\":1,\"ok\":false,\"source_id\":42,"));
+    assert!(envelope.contains("\"diagnostics\":[{\"stage\":\"type\""));
+    assert_eq!(fluxc::DIAGNOSTIC_JSON_SCHEMA_VERSION, 1);
 }
 
 #[test]
@@ -8164,7 +8169,7 @@ fn check_json_cli_emits_clean_machine_readable_output() {
         "JSON mode must not mix human stderr output"
     );
     let stdout = String::from_utf8(output.stdout).expect("JSON output must be UTF-8");
-    assert!(stdout.starts_with("{\"ok\":false,\"source_id\":"));
+    assert!(stdout.starts_with("{\"schema_version\":1,\"ok\":false,\"source_id\":"));
     assert!(stdout.contains("\"diagnostics\":[{"));
     assert!(stdout.contains("\"stage\":\"type\""));
     assert!(stdout.trim_end().ends_with("}"));
@@ -8185,6 +8190,27 @@ fn flux_binary_exposes_the_user_facing_cli_name_and_commands() {
         .output()
         .expect("flux analyze should run");
     assert!(analyzed.status.success());
+
+    let checked_json = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("check")
+        .arg("examples/hello.flux")
+        .arg("--json")
+        .output()
+        .expect("flux JSON check should run");
+    assert!(checked_json.status.success());
+    assert!(checked_json.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(checked_json.stdout).expect("Flux JSON output must be UTF-8"),
+        format!(
+            "{{\"schema_version\":1,\"ok\":true,\"source_id\":{},\"diagnostics\":[]}}\n",
+            SourceId::from_name(
+                &fs::canonicalize("examples/hello.flux")
+                    .expect("example path should canonicalize")
+                    .to_string_lossy()
+            )
+            .value()
+        )
+    );
 
     let usage = Command::new(env!("CARGO_BIN_EXE_flux"))
         .output()

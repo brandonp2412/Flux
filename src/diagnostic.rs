@@ -1,5 +1,7 @@
 use std::fmt;
 
+pub const DIAGNOSTIC_JSON_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct SourceId(u32);
 
@@ -206,6 +208,20 @@ pub fn diagnostics_to_json(diagnostics: &[Diagnostic]) -> String {
             .map(Diagnostic::to_json)
             .collect::<Vec<_>>()
             .join(",")
+    )
+}
+
+pub fn diagnostics_envelope_to_json(
+    ok: bool,
+    source_id: SourceId,
+    diagnostics: &[Diagnostic],
+) -> String {
+    format!(
+        "{{\"schema_version\":{},\"ok\":{},\"source_id\":{},\"diagnostics\":{}}}",
+        DIAGNOSTIC_JSON_SCHEMA_VERSION,
+        ok,
+        source_id.value(),
+        diagnostics_to_json(diagnostics)
     )
 }
 

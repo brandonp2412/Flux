@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 422
+- Completed baseline units: 423
 - Reported overall progress: **57%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -945,7 +945,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Reproducible builds.
   - [x] Same-host/same-toolchain native reproducibility for current debug/profile/release modes: generated C is streamed to Clang over stdin so PID-specific temporary source paths cannot leak into DWARF, and cache-isolated builds of identical Flux source are regression-tested as byte-identical in every mode.
   - [ ] Cross-machine/toolchain reproducibility contract with pinned compiler/SDK/runtime identities, normalized environment inputs, dependency lockfiles, and documented verification metadata.
-- [x] CI-friendly machine output through `fluxc check --json`, preserving a clean stdout JSON contract with no human diagnostic text on stderr.
+- [x] CI-friendly machine output through `fluxc check --json`, preserving a clean stdout JSON contract with no human diagnostic text on stderr; `flux check --json` / `flux analyze --json` now emit the same explicitly versioned diagnostics envelope.
 
 # Milestone 27 — Distribution
 
@@ -986,7 +986,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] Stable native/platform ABI policy.
 - [ ] Stable UI API compatibility policy.
 - [ ] Stable formatter.
-- [ ] Stable diagnostics contract for tooling.
+- [x] Stable diagnostics contract for tooling: machine analysis output is pinned to documented `schema_version: 1`, exposes one shared versioned envelope for successful and failed `flux check --json` / `flux analyze --json` runs, ships a checked-in JSON Schema, keeps diagnostic/span/label/note/fix field meanings explicit, and defines additive-vs-breaking compatibility rules in `docs/diagnostics.md`. The version constant and envelope serializer are public so compiler-integrating tools do not need to duplicate the wire contract.
 - [ ] Android, iOS, Windows, macOS, Linux, web, and headless/server targets meet documented support tiers.
 - [ ] Production-quality LSP/debugger/profiler.
 - [ ] Automatic save-triggered hot reload is production-ready for development workflows.

@@ -268,8 +268,8 @@ fn run() -> Result<(), CliError> {
             if diagnostics.is_empty() {
                 if json {
                     println!(
-                        "{{\"ok\":true,\"source_id\":{},\"diagnostics\":[]}}",
-                        source_id.value()
+                        "{}",
+                        fluxc::diagnostics_envelope_to_json(true, source_id, &[])
                     );
                 } else {
                     println!("ok: {}", path.display());
@@ -278,9 +278,8 @@ fn run() -> Result<(), CliError> {
             }
             if json {
                 println!(
-                    "{{\"ok\":false,\"source_id\":{},\"diagnostics\":{}}}",
-                    source_id.value(),
-                    fluxc::diagnostics_to_json(&diagnostics)
+                    "{}",
+                    fluxc::diagnostics_envelope_to_json(false, source_id, &diagnostics)
                 );
             } else {
                 report_diagnostics(path, &diagnostics, &sources);
