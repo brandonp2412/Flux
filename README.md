@@ -46,29 +46,6 @@ Flux is an active Rust bootstrap compiler. It already supports substantial typed
 
 Ownership/borrowing, owned strings/collections, broader platform coverage, production hot reload, the full beautiful-by-default UI system, and the long-term optimizing native backend remain roadmap work.
 
-## More commands
-
-```sh
-flux build examples/hello.flux -o hello
-flux build examples/hello.flux --target aarch64-unknown-linux-gnu --sysroot /opt/aarch64-sysroot -o hello-aarch64
-flux test examples/package
-flux check examples/hello.flux
-flux format examples/hello.flux
-flux format --version
-flux debug examples/branches.flux --break examples/branches.flux:3
-flux profile benchmarks/perf/compute.flux
-flux lsp
-```
-
-Android:
-
-```sh
-flux build android examples/android_app --mode debug --abi arm64-v8a
-flux run android examples/android_app --device waydroid
-flux build android examples/android_app --mode release --format aab
-flux publish android my-app --json
-```
-
 The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), testing and dependency fakes in [`docs/testing.md`](docs/testing.md), the stable machine diagnostics contract in [`docs/diagnostics.md`](docs/diagnostics.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), generic native cross compilation in [`docs/cross-compilation.md`](docs/cross-compilation.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
 
 ## Development
