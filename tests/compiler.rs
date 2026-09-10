@@ -1167,6 +1167,144 @@ fn main() -> i64 {
 }
 
 #[test]
+fn process_environment_capabilities_are_typed_native_and_tree_shaken() {
+    let source = r#"
+fn main() -> i64 {
+    print(process.pid())
+    print(process.parentPid())
+    print(process.hasEnv("FLUX_PROCESS_TEST"))
+    print(process.env("FLUX_PROCESS_TEST", "missing"))
+    print(process.env("FLUX_PROCESS_MISSING", "fallback"))
+    return 0
+}
+"#;
+
+    check_source(source).expect("process capabilities should typecheck on portable source");
+    let generated = compile_to_c(source).expect("process capabilities should lower on Linux");
+    assert!(generated.contains("static inline int64_t flux__process_pid(void)"));
+    assert!(generated.contains("static inline int64_t flux__process_parent_pid(void)"));
+    assert!(generated.contains("static inline bool flux__process_has_env(const char *name)"));
+    assert!(generated.contains(
+        "static inline const char *flux__process_env(const char *name, const char *fallback)"
+    ));
+    assert!(generated.contains("flux__process_pid()"));
+    assert!(generated.contains("flux__process_parent_pid()"));
+    assert!(generated.contains("flux__process_has_env(\"FLUX_PROCESS_TEST\")"));
+    assert!(generated.contains("flux__process_env(\"FLUX_PROCESS_TEST\", \"missing\")"));
+
+    let root = std::env::temp_dir().join(format!("flux-process-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("process API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("process API source should be writable");
+    let binary = root.join("process-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("process API binary should build");
+    assert!(
+        built.status.success(),
+        "process API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .env("FLUX_PROCESS_TEST", "native-value")
+        .output()
+        .expect("process API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].parse::<i64>().is_ok());
+    assert!(lines[1].parse::<i64>().is_ok());
+    assert_eq!(&lines[2..], &["true", "native-value", "fallback"]);
+
+    let unused = r#"
+fn hidden() -> void {
+    print(process.pid())
+    print(process.env("HOME", ""))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead process calls should not poison Linux");
+    assert!(!unused_generated.contains("flux__process_pid(void)"));
+    assert!(!unused_generated.contains("flux__process_env(const char"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    process.pid(1)
+    process.parentPid(false)
+    process.hasEnv(42)
+    process.env("HOME", 1)
+    process.unknown()
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid process calls should fail statically");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.pid expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.parentPid expects 0 arguments, got 1")
+    }));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("process.hasEnv name")
+                && error.message.contains("expected str"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("process.env fallback")
+                && error.message.contains("expected str"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process module has no function 'unknown'")
+    }));
+
+    let android_root = root.join("android");
+    fs::create_dir_all(android_root.join("src"))
+        .expect("Android process rejection fixture should be writable");
+    fs::write(
+        android_root.join("flux.toml"),
+        "[package]\nname = \"process-android\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android process manifest should be writable");
+    fs::write(
+        android_root.join("src/main.flux"),
+        "fn main() -> i64 {\n    print(process.pid())\n    return 0\n}\n",
+    )
+    .expect("Android process source should be writable");
+    let analysis =
+        fluxc::project::analyze(&android_root).expect("Android process fixture should analyze");
+    let error = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect_err("process APIs must reject Android lowering");
+    assert!(
+        error
+            .message
+            .contains("process.* APIs require a desktop/server target")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_invalid_typed_shell_operations() {
     let bad_pipe = r#"
 fn text() -> str {

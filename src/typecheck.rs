@@ -4735,6 +4735,60 @@ fn check_qualified_call(
         return Err(diag(expr.span, "expected a qualified call"));
     };
     let span = expr.span;
+    if namespace == "process" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("process.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "pid" | "parentPid" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("process.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
+            "hasEnv" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("process.hasEnv expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &actual, "process.hasEnv name")?;
+                return Ok(vec![Type::Bool]);
+            }
+            "env" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("process.env expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let name_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &name_type, "process.env name")?;
+                let fallback_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &fallback_type,
+                    "process.env fallback",
+                )?;
+                return Ok(vec![Type::Str]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("process module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

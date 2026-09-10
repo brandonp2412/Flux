@@ -132,6 +132,12 @@ pub fn emit_c_for_target_with_source_paths(
             "android.* platform APIs require the Android target",
         ));
     }
+    if target == NativeTarget::Android && runtime_usage.contains("flux__process_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "process.* APIs require a desktop/server target",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -282,6 +288,11 @@ fn emit_runtime_prelude(
         out.push_str("#include <errno.h>\n");
         out.push_str("#include <sys/types.h>\n");
         out.push_str("#include <sys/wait.h>\n");
+    }
+    if uses_background
+        || runtime_usage.contains("flux__process_pid(")
+        || runtime_usage.contains("flux__process_parent_pid(")
+    {
         out.push_str("#include <unistd.h>\n");
     }
     if uses_gtk {
@@ -1357,6 +1368,23 @@ fn emit_runtime_prelude(
         );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
+    }
+
+    if runtime_usage.contains("flux__process_pid(") {
+        out.push_str(
+            "static inline int64_t flux__process_pid(void) { return (int64_t)getpid(); }\n",
+        );
+    }
+    if runtime_usage.contains("flux__process_parent_pid(") {
+        out.push_str(
+            "static inline int64_t flux__process_parent_pid(void) { return (int64_t)getppid(); }\n",
+        );
+    }
+    if runtime_usage.contains("flux__process_has_env(") {
+        out.push_str("static inline bool flux__process_has_env(const char *name) { return getenv(name) != NULL; }\n");
+    }
+    if runtime_usage.contains("flux__process_env(") {
+        out.push_str("static inline const char *flux__process_env(const char *name, const char *fallback) { const char *value = getenv(name); return value != NULL ? value : fallback; }\n");
     }
 
     if runtime_usage.contains("flux_print_i64(") {
@@ -11616,6 +11644,50 @@ fn emit_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    if namespace == "process" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid process call reached code generation"));
+        }
+        match name {
+            "pid" | "parentPid" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid process call reached code generation"));
+                }
+                let helper = if name == "pid" {
+                    "flux__process_pid"
+                } else {
+                    "flux__process_parent_pid"
+                };
+                return Ok((format!("{helper}()"), vec![Type::I64], None));
+            }
+            "hasEnv" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid process call reached code generation"));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__process_has_env({})", value.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "env" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid process call reached code generation"));
+                }
+                let name = emit_expr(&args[0], env, signatures)?;
+                let fallback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__process_env({}, {})", name.code, fallback.code),
+                    vec![Type::Str],
+                    None,
+                ));
+            }
+            _ => {
+                return Err(diag(span, "unknown process call reached code generation"));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

@@ -1137,6 +1137,25 @@ fn add_qualified_namespace_completions(
     namespace: &str,
     program: &crate::ast::Program,
 ) -> bool {
+    if namespace == "process" {
+        push_completion_item(items, seen, "pid", 3, "fn process.pid() -> i64");
+        push_completion_item(items, seen, "parentPid", 3, "fn process.parentPid() -> i64");
+        push_completion_item(
+            items,
+            seen,
+            "hasEnv",
+            3,
+            "fn process.hasEnv(name: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "env",
+            3,
+            "fn process.env(name: str, fallback: str) -> str",
+        );
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2120,6 +2139,35 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        if namespace == "process" {
+            match member {
+                "pid" | "parentPid" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("process.{member}"),
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "hasEnv" => {
+                    return Some(signature_help_for_builtin(
+                        "process.hasEnv",
+                        &["name: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "env" => {
+                    return Some(signature_help_for_builtin(
+                        "process.env",
+                        &["name: str", "fallback: str"],
+                        "str",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
         if namespace == "android" {
             match member {
                 "sdkInt" => {
@@ -5029,7 +5077,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5066,6 +5114,25 @@ mod tests {
         assert!(interface_items.contains("\"label\":\"load\""));
         assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
         assert!(interface_items.contains("\"label\":\"save\""));
+
+        let process_line = source
+            .lines()
+            .position(|line| line.trim() == "process.")
+            .expect("process completion line should exist");
+        let process_source = source.lines().nth(process_line).unwrap();
+        let process_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(process_line),
+            Some(process_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(process_items.contains("fn process.pid() -> i64"));
+        assert!(process_items.contains("fn process.parentPid() -> i64"));
+        assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
+        assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
 
         let android_line = source
             .lines()
@@ -5594,6 +5661,40 @@ mod tests {
         assert!(fold_help.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
         let reduce_help = help_for("reduce(");
         assert!(reduce_help.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
+    }
+
+    #[test]
+    fn signature_help_supports_process_capabilities() {
+        let uri = "file:///tmp/process-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("process.pid(", "fn process.pid() -> i64"),
+            ("process.parentPid(", "fn process.parentPid() -> i64"),
+            ("process.hasEnv(", "fn process.hasEnv(name: str) -> bool"),
+            (
+                "process.env(",
+                "fn process.env(name: str, fallback: str) -> str",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("process call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("process call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

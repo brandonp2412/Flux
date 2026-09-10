@@ -721,6 +721,19 @@ work 42 | report &
 
 Parenthesized calls remain valid and are required for named arguments. These shell-inspired forms are typed function syntax, not a subprocess command language.
 
+## Process and environment capabilities
+
+Desktop/server Flux code can query basic process identity and environment state through compiler-owned `process.*` capabilities:
+
+```flux
+print(process.pid())
+print(process.parentPid())
+print(process.hasEnv("CI"))
+print(process.env("APP_MODE", "development"))
+```
+
+`process.pid()` and `process.parentPid()` return `i64`. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. These calls lower directly to the host C/POSIX process environment without a framework runtime and are tree-shaken when unreachable. The current bootstrap exposes them on desktop/server targets; Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
+
 ## Performance and safety contract
 
 Flux targets safe Rust-class native performance. Release builds are expected to stay in the C/C++/Rust performance class while preserving Flux's memory-safety guarantees. The language therefore has no mandatory VM, garbage collector, interpreter, or cross-platform widget-emulation runtime.
