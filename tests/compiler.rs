@@ -9610,6 +9610,10 @@ app Screen
 
     let linux = compile_to_c(source).expect("semantic Text variants should lower on Linux");
     assert!(linux.contains("pango_attr_size_new(16 * PANGO_SCALE)"));
+    assert!(
+        !linux.contains("pango_attr_size_new_absolute"),
+        "Flux text sizes must remain point-based so GTK/Pango can apply the platform font DPI/text scale"
+    );
     assert!(linux.contains("pango_attr_line_height_new(1.4000)"));
     assert!(linux.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
     assert!(linux.contains("pango_attr_line_height_new(1.2000)"));
@@ -9942,6 +9946,9 @@ app Palette(theme: "system")
     assert!(linux.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
     assert!(linux.contains("gtk_widget_add_css_class(grid, \"flux-root\")"));
     assert!(linux.contains("gtk_widget_add_css_class(flux__ui_action, \"flux-button\")"));
+    assert!(linux.contains("@media (prefers-contrast: more)"));
+    assert!(linux.contains("\"gtk-interface-contrast\""));
+    assert!(linux.contains("\"prefers-contrast\""));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("semantic color fixture should analyze");

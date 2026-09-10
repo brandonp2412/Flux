@@ -853,6 +853,8 @@ Android native layout dimensions are density-independent: the backend divides ph
 
 Explicit assistive reading order uses `accessibilityOrder: i64` on built-in elements. Values must be compile-time, non-negative, and unique within the view. Ordered elements form a native assistive traversal chain through GTK `FLOW_TO` relations and Android accessibility traversal metadata; elements without an explicit value retain the platform's normal reading order.
 
+Text sizing deliberately remains in the native platform's scalable font coordinate system. Linux `Text.size` and semantic typography roles lower through Pango point sizes rather than absolute device-unit sizes, so GTK's platform font DPI/settings remain authoritative. Android lowers the same values through `TextView.setTextSize(float)`, whose one-argument form uses scaled-pixel (`sp`) semantics and therefore follows the user's font-size preference. Native controls whose text size is not explicitly overridden continue to inherit their toolkit/theme sizing. Flux does not convert authored text sizes to raw pixels or disable native font scaling.
+
 Portable explicit keyboard input uses common `onKey: fn(str) -> void` on any built-in native element. The callback receives stable Flux names for special keys (`Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, arrow keys, `Home`, `End`, `PageUp`, and `PageDown`) and the Unicode text value for printable keys. Declaring `onKey` makes the element keyboard-focusable. Linux lowers this through a capture-phase GTK key controller, while Android uses the native `View.OnKeyListener`; neither backend exposes toolkit key-event objects to Flux source.
 
 ## UI direction

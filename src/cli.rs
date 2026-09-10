@@ -3349,6 +3349,7 @@ fn android_activity_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
 import android.app.Activity;
+import android.app.UiModeManager;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -3401,6 +3402,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private boolean restoringCheckedState;
     private int suppressTapViewId = View.NO_ID;
     private int fluxThemeMode;
+    private float fluxContrast;
     private native int nativeThemeMode();
     private native String nativeThemeColor(String token);
     private native void nativeCreate(String restoredState);
@@ -3434,11 +3436,22 @@ public final class FluxActivity extends Activity implements View.OnClickListener
                 : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
     }
 
+    private float readFluxContrast() {
+        if (Build.VERSION.SDK_INT < 34) return 0.0f;
+        UiModeManager manager = (UiModeManager) getSystemService(UI_MODE_SERVICE);
+        return manager == null ? 0.0f : manager.getContrast();
+    }
+
+    private boolean isFluxHighContrast() {
+        return fluxContrast > 0.0f;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         fluxThemeMode = nativeThemeMode();
         applyFluxTheme();
         super.onCreate(savedInstanceState);
+        fluxContrast = readFluxContrast();
         String restoredState = savedInstanceState == null ? null : savedInstanceState.getString(FLUX_STATE_KEY);
         nativeCreate(restoredState);
         nativeBuildUi();
@@ -3453,6 +3466,11 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     @Override
     protected void onResume() {
         super.onResume();
+        float nextContrast = readFluxContrast();
+        if (Float.compare(nextContrast, fluxContrast) != 0) {
+            fluxContrast = nextContrast;
+            nativeBuildUi();
+        }
         nativeResume();
     }
 
@@ -3650,18 +3668,19 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         String custom = nativeThemeColor(value);
         if (custom != null) value = custom;
         boolean dark = isFluxDarkTheme();
+        boolean highContrast = custom == null && isFluxHighContrast();
         switch (value) {
-            case "surface": return dark ? 0xFF0F172A : 0xFFF8FAFC;
-            case "surfaceRaised": return dark ? 0xFF1E293B : 0xFFFFFFFF;
-            case "text": return dark ? 0xFFF8FAFC : 0xFF0F172A;
-            case "textMuted": return dark ? 0xFF94A3B8 : 0xFF64748B;
-            case "accent": return dark ? 0xFF818CF8 : 0xFF4F46E5;
-            case "onAccent": return dark ? 0xFF0F172A : 0xFFFFFFFF;
-            case "outline": return dark ? 0xFF475569 : 0xFFCBD5E1;
-            case "danger": return dark ? 0xFFF87171 : 0xFFDC2626;
-            case "success": return dark ? 0xFF4ADE80 : 0xFF16A34A;
-            case "warning": return dark ? 0xFFFBBF24 : 0xFFD97706;
-            case "shadow": return dark ? 0x66000000 : 0x33000000;
+            case "surface": return highContrast ? (dark ? 0xFF000000 : 0xFFFFFFFF) : (dark ? 0xFF0F172A : 0xFFF8FAFC);
+            case "surfaceRaised": return highContrast ? (dark ? 0xFF111111 : 0xFFFFFFFF) : (dark ? 0xFF1E293B : 0xFFFFFFFF);
+            case "text": return highContrast ? (dark ? 0xFFFFFFFF : 0xFF000000) : (dark ? 0xFFF8FAFC : 0xFF0F172A);
+            case "textMuted": return highContrast ? (dark ? 0xFFE2E8F0 : 0xFF334155) : (dark ? 0xFF94A3B8 : 0xFF64748B);
+            case "accent": return highContrast ? (dark ? 0xFFA5B4FC : 0xFF3730A3) : (dark ? 0xFF818CF8 : 0xFF4F46E5);
+            case "onAccent": return highContrast ? (dark ? 0xFF000000 : 0xFFFFFFFF) : (dark ? 0xFF0F172A : 0xFFFFFFFF);
+            case "outline": return highContrast ? (dark ? 0xFFE2E8F0 : 0xFF334155) : (dark ? 0xFF475569 : 0xFFCBD5E1);
+            case "danger": return highContrast ? (dark ? 0xFFFCA5A5 : 0xFF991B1B) : (dark ? 0xFFF87171 : 0xFFDC2626);
+            case "success": return highContrast ? (dark ? 0xFF86EFAC : 0xFF166534) : (dark ? 0xFF4ADE80 : 0xFF16A34A);
+            case "warning": return highContrast ? (dark ? 0xFFFDE047 : 0xFF92400E) : (dark ? 0xFFFBBF24 : 0xFFD97706);
+            case "shadow": return highContrast ? (dark ? 0x99000000 : 0x66000000) : (dark ? 0x66000000 : 0x33000000);
             default:
                 if (value.length() == 9 && value.charAt(0) == '#') {
                     value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
@@ -5386,12 +5405,23 @@ mod tests {
         assert!(activity.contains("case \"surface\":"));
         assert!(activity.contains("case \"accent\":"));
         assert!(activity.contains("case \"textMuted\":"));
+        assert!(activity.contains(
+            "UiModeManager manager = (UiModeManager) getSystemService(UI_MODE_SERVICE);"
+        ));
+        assert!(activity.contains("manager.getContrast()"));
+        assert!(activity.contains("custom == null && isFluxHighContrast()"));
+        assert!(activity.contains("if (Float.compare(nextContrast, fluxContrast) != 0)"));
         assert!(activity.contains("public void styleButton(Button view, boolean primary)"));
         assert!(activity.contains("view.setAllCaps(false);"));
         assert!(activity.contains("-android.R.attr.state_enabled"));
         assert!(activity.contains("android.R.attr.state_pressed"));
         assert!(activity.contains("public void styleTextInput(EditText view)"));
         assert!(activity.contains("android.R.attr.state_focused"));
+        assert!(activity.contains("if (size > 0) view.setTextSize(size);"));
+        assert!(
+            !activity.contains("COMPLEX_UNIT_PX"),
+            "generated Android typography must keep TextView's scaled-pixel semantics so user font scaling remains active"
+        );
         assert!(activity.contains("public void styleCheckable(CompoundButton view)"));
         assert!(activity.contains("android.R.attr.state_checked"));
         assert!(activity.contains("public void setTooltip(View view, String text)"));

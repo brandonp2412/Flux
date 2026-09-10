@@ -3696,12 +3696,13 @@ fn emit_linux_gtk_application(
             .unwrap_or_else(|| fallback.to_string());
         theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
     }
-    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; }");
+    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
     out.push_str(&format!(
         "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
         c_string(&theme_css)
     ));
     out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
+    out.push_str("    GtkSettings *flux__theme_settings = gtk_settings_get_default();\n    if (flux__theme_settings != NULL) g_object_bind_property(flux__theme_settings, \"gtk-interface-contrast\", flux__theme_provider, \"prefers-contrast\", G_BINDING_SYNC_CREATE);\n");
     out.push_str("    g_object_unref(flux__theme_provider);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
