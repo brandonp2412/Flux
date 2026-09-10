@@ -2929,6 +2929,17 @@ fn emit_android_native_application(
         out.push_str("        default: break;\n    }\n    (*env)->ReleaseStringUTFChars(env, text, value);\n}\n\n");
     }
 
+    let theme_mode = match application_metadata_string(application, "theme", signatures).as_deref()
+    {
+        None | Some("system") => 0,
+        Some("light") => 1,
+        Some("dark") => 2,
+        _ => unreachable!("application theme validated by type checking"),
+    };
+    out.push_str(&format!(
+        "JNIEXPORT jint JNICALL Java_app_flux_runtime_FluxActivity_nativeThemeMode(JNIEnv *env, jobject activity) {{\n    (void)env;\n    (void)activity;\n    return (jint){theme_mode};\n}}\n\n"
+    ));
+
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeCreate(JNIEnv *env, jobject activity, jstring restored_state) {\n");
     out.push_str("    JavaVM *vm = NULL;\n    if ((*env)->GetJavaVM(env, &vm) != JNI_OK || vm == NULL) return;\n");
     out.push_str("    jobject global_activity = (*env)->NewGlobalRef(env, activity);\n    if (global_activity == NULL) return;\n");

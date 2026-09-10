@@ -10566,7 +10566,7 @@ view Settings {
         multiline: true
         submit_on_enter: false
 }
-app Settings
+app Settings(theme: "dark")
 "##,
     )
     .expect("Android controls source should be writable");
@@ -10576,6 +10576,8 @@ app Settings
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android controls should lower to target C");
 
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeThemeMode"));
+    assert!(generated.contains("return (jint)2;"));
     assert!(generated.contains("android/widget/EditText"));
     assert!(generated.contains("android/widget/CheckBox"));
     assert!(generated.contains("android/widget/RadioButton"));

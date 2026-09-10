@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 374
+- Completed baseline units: 375
 - Reported overall progress: **51%**
 - Current net scope growth after the baseline: 14 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -616,7 +616,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Light/dark themes.
   - [x] Bootstrap application-level `theme: "system" | "light" | "dark"` metadata is compile-time validated and lowers to the native GTK theme preference when explicitly light/dark; `system` leaves the platform preference untouched. Theme tokens, runtime theme switching, and per-view overrides remain future work.
 - [ ] Design tokens/variables.
-- [ ] System theme integration.
+- [x] System theme integration for the current native backends: Linux `theme: "system"` preserves the GTK/system preference, while Android resolves the current `Configuration.UI_MODE_NIGHT_*` mode before Activity creation and reapplies it on `uiMode` configuration changes; explicit `light`/`dark` select the matching native `DeviceDefault` theme without bundling a framework theme runtime.
 - [ ] Device/window/orientation queries.
   - [x] Bootstrap root-view environment exposes read-only typed `windowWidth: i64`, `windowHeight: i64`, `windowIsLandscape: bool`, `windowIsPortrait: bool`, and `displayScale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and mobile orientation semantics remain pending.
 - [ ] Adaptive components where platform differences are valuable.

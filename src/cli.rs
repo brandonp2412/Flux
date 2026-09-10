@@ -1903,6 +1903,8 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private boolean restoringFocus;
     private boolean restoringCheckedState;
     private int suppressTapViewId = View.NO_ID;
+    private int fluxThemeMode;
+    private native int nativeThemeMode();
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -1922,8 +1924,21 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
 
+    private void applyFluxTheme() {
+        boolean dark = fluxThemeMode == 2;
+        if (fluxThemeMode == 0) {
+            int nightMode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+            dark = nightMode == Configuration.UI_MODE_NIGHT_YES;
+        }
+        setTheme(dark
+                ? android.R.style.Theme_DeviceDefault_NoActionBar
+                : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        fluxThemeMode = nativeThemeMode();
+        applyFluxTheme();
         super.onCreate(savedInstanceState);
         String restoredState = savedInstanceState == null ? null : savedInstanceState.getString(FLUX_STATE_KEY);
         nativeCreate(restoredState);
@@ -1963,6 +1978,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     @Override
     public void onConfigurationChanged(Configuration configuration) {
         super.onConfigurationChanged(configuration);
+        if (fluxThemeMode == 0) applyFluxTheme();
         nativeConfigurationChanged();
         nativeBuildUi();
     }
@@ -3258,9 +3274,15 @@ mod tests {
         );
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
+        assert!(activity.contains("private native int nativeThemeMode();"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));
         assert!(activity.contains("private native String nativeSaveState();"));
+        assert!(activity.contains("fluxThemeMode = nativeThemeMode();"));
+        assert!(activity.contains("Configuration.UI_MODE_NIGHT_MASK"));
+        assert!(activity.contains("Theme_DeviceDefault_NoActionBar"));
+        assert!(activity.contains("Theme_DeviceDefault_Light_NoActionBar"));
+        assert!(activity.contains("if (fluxThemeMode == 0) applyFluxTheme();"));
         assert!(activity.contains("nativeCreate(restoredState);"));
         assert!(activity.contains("nativeConfigurationChanged();"));
         assert!(activity.contains("nativeDestroy();"));
