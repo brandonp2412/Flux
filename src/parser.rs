@@ -2010,6 +2010,25 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             continue;
         }
 
+        if let Some(value) = line.text.strip_prefix("grid overlay:") {
+            if grid.overlay.is_some() {
+                return Err(diag(line.number, "grid overlay may only be declared once"));
+            }
+            grid.overlay = Some(match value.trim() {
+                "true" => true,
+                "false" => false,
+                _ => {
+                    return Err(diag(
+                        line.number,
+                        "grid overlay must be the boolean literal true or false",
+                    ));
+                }
+            });
+            grid.overlay_line = Some(line.number);
+            *index += 1;
+            continue;
+        }
+
         let mut element = parse_view_element(line)?;
         if elements
             .iter()

@@ -285,6 +285,9 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
     if let (Some(scroll), Some(line)) = (view.grid.scroll, view.grid.scroll_line) {
         lines.insert(line, format!("    grid scroll: {scroll}"));
     }
+    if let (Some(overlay), Some(line)) = (view.grid.overlay, view.grid.overlay_line) {
+        lines.insert(line, format!("    grid overlay: {overlay}"));
+    }
     for state in &view.states {
         lines.insert(
             state.line,

@@ -13637,9 +13637,43 @@ fn main() -> i64 { 0 }
         overlap_error
             .notes
             .iter()
-            .any(|note| note.contains("explicit overlay/absolute positioning"))
+            .any(|note| note.contains("grid overlay: true"))
     );
     assert_eq!(overlap_error.labels.len(), 1);
+
+    let explicit_overlay = r#"
+view Overlay {
+    grid columns: 1fr 1fr
+    grid rows: 1fr 1fr
+    grid overlay: true
+    Text backdrop at 1,1 span rows 2 span columns 2
+        text: "Background"
+    Button action at 2,2
+        text: "Continue"
+}
+app Overlay
+"#;
+    check_source(explicit_overlay).expect("explicit overlay grids may intentionally overlap");
+    let formatted = fluxc::formatter::format_source(explicit_overlay)
+        .expect("explicit overlay syntax should format canonically");
+    assert!(formatted.contains("    grid overlay: true\n"));
+
+    let linux = compile_to_c(explicit_overlay)
+        .expect("explicit overlay grid should lower through the native Linux grid");
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_backdrop, 0, 0, 2, 2)"));
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_action, 1, 1, 1, 1)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(explicit_overlay, SourceId::UNKNOWN)
+        .expect("explicit overlay fixture should analyze for Android lowering");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("explicit overlay grid should lower through the native Android grid");
+    assert!(android.contains("grid_spec_weight, (jint)0, (jint)2, (jfloat)2.0f"));
+    assert!(android.contains("grid_spec_weight, (jint)1, (jint)1, (jfloat)1.0f"));
 }
 
 #[test]

@@ -481,10 +481,10 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
     - [x] Bootstrap built-in element contracts validate known property names and property expression types, including typed function callbacks, without introducing widget classes; semantic symbols expose the property type for editor tooling.
     - [x] Declared Flux views act as custom element contracts derived directly from their typed parameters/defaults; custom-view property types flow into semantic/editor symbols.
     - [ ] Interface-defined platform/native element contracts after platform capability rules are mature.
-  - [x] Validate placement against declared track counts and define overlap policy: row/column spans that escape the declared grid are static errors, and ordinary sibling grid regions may not overlap. Intentional overlap belongs to the separate explicit overlay/absolute-positioning model.
+  - [x] Validate placement against declared track counts and define overlap policy: row/column spans that escape the declared grid are static errors, and ordinary sibling grid regions may not overlap unless the grid explicitly opts into overlay composition.
   - [ ] Consider named grid areas only if they materially improve readability without reintroducing hierarchy.
 - [ ] Flex/flow layout where grid is not appropriate.
-- [ ] Absolute/overlay positioning when explicitly requested.
+- [x] Explicit overlay positioning when requested: flat grids accept `grid overlay: true`, allowing sibling row/column regions to overlap deliberately while preserving ordinary bounds validation, source-order native composition, and the no-wrapper flat layout model on Linux and Android. Omitted/false overlay mode continues to reject accidental overlap statically; absolute coordinate positioning remains intentionally unnecessary for this contract rather than being smuggled into ordinary layout.
 - [ ] Constraints, min/max sizing, intrinsic sizing.
   - [x] Bootstrap common `minWidth: i64` / `minHeight: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
   - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.

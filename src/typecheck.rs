@@ -2060,22 +2060,24 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 );
             }
 
-            for previous in &view.elements[..index] {
-                if grid_elements_overlap(previous, element) {
-                    diagnostics.push(
-                        diag(
-                            element.span,
-                            &format!(
-                                "view element '{}' overlaps sibling '{}' in grid '{}'",
-                                element.name, previous.name, view.name
-                            ),
-                        )
-                        .with_label(
-                            previous.span,
-                            format!("'{}' already occupies this grid area", previous.name),
-                        )
-                        .with_note("grid siblings may not overlap; use an explicit overlay/absolute positioning model when overlap is intentional"),
-                    );
+            if view.grid.overlay != Some(true) {
+                for previous in &view.elements[..index] {
+                    if grid_elements_overlap(previous, element) {
+                        diagnostics.push(
+                            diag(
+                                element.span,
+                                &format!(
+                                    "view element '{}' overlaps sibling '{}' in grid '{}'",
+                                    element.name, previous.name, view.name
+                                ),
+                            )
+                            .with_label(
+                                previous.span,
+                                format!("'{}' already occupies this grid area", previous.name),
+                            )
+                            .with_note("grid siblings may not overlap by default; declare 'grid overlay: true' when intentional overlap is part of the flat layout"),
+                        );
+                    }
                 }
             }
         }
