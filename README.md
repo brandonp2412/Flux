@@ -48,7 +48,7 @@ Android:
 
 ```sh
 flux build android examples/android_app --mode debug --abi arm64-v8a
-flux run android examples/android_app --abi arm64-v8a
+flux run android examples/android_app --device waydroid
 flux build android examples/android_app --mode release --format aab
 ```
 

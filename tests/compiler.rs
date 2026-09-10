@@ -10444,6 +10444,7 @@ view Screen {
     Button action at 3,1
         text: "Press"
         enabled: !expanded
+        primary: true
         onPress: pressed
 }
 app Screen
@@ -10471,6 +10472,9 @@ app Screen
     assert!(generated.contains("INT64_C(48) * flux__ui_density"));
     assert!(generated.contains("INT64_C(6) * flux__ui_density"));
     assert!(generated.contains("setOnClickListener"));
+    assert!(generated.contains("styleButton"));
+    assert!(generated.contains("(Landroid/widget/Button;Z)V"));
+    assert!(generated.contains("style_button, child, JNI_TRUE"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
     assert!(generated.contains("static bool flux__ui_state_expanded = false;"));
     assert!(generated.contains("static const char * flux__ui_derived_label = NULL;"));

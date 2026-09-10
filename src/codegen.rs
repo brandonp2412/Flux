@@ -1808,6 +1808,28 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
             }
         }
+        if element.kind == "Button"
+            && let Some(property) = view_property(element, "primary")
+        {
+            let Some(primary) = static_expr_bool(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Android Button.primary must be a compile-time bool value",
+                ));
+            };
+            if primary {
+                out.push_str(
+                    "    jclass button_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (button_style_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID style_button = (*env)->GetMethodID(env, button_style_activity_class, \"styleButton\", \"(Landroid/widget/Button;Z)V\");\n");
+                out.push_str("    if (style_button == NULL) return;\n");
+                out.push_str(
+                    "    (*env)->CallVoidMethod(env, activity, style_button, child, JNI_TRUE);\n",
+                );
+                out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
+            }
+        }
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jmethodID set_visibility = (*env)->GetMethodID(env, child_class, \"setVisibility\", \"(I)V\");\n");
