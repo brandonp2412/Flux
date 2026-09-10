@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 399
+- Completed baseline units: 401
 - Reported overall progress: **54%**
 - Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -721,7 +721,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Platform FFI/bindings to Kotlin/Java/NDK where needed, generated or compiler-owned for normal platform access rather than exposed as application bridge boilerplate.
 - [x] Verify generated Android glue is tree-shakeable and zero/near-zero overhead beyond boundaries Android itself requires; no mandatory Flutter-style channel serialization or plugin registry.
   - [x] Android runtime helpers are emitted from reachable generated-call usage rather than linked as a permanent platform runtime. Compiler tests prove unreachable notification channel/post/action/cancel code omits `Notification.Builder`, `PendingIntent`, notification helpers, and permission machinery entirely; platform calls cross JNI directly with no serialization bus, plugin registry, or user-written bridge.
-- [ ] Play Store-ready release pipeline.
+- [x] Play Store-ready release pipeline for compiler-owned upload artifacts: `flux publish android <package>` performs a non-interactive release/all-ABI AAB build, refuses development-key fallback, requires explicit version metadata plus configured upload-key credentials, enforces the current API 36+ phone/tablet submission target, and validates the final signed bundle with both `bundletool validate` and standard `jarsigner` signature verification. Play Console account/listing/policy/rollout actions remain external rather than hidden compiler side effects.
   - [x] Publishing version metadata is configurable without Gradle: `[package].version` becomes Android `versionName`, `[android].version_code` becomes `versionCode`, defaults to 1, and rejects values outside Google Play's accepted 1..=2100000000 range. The default targetSdk is API 36 for current phone/tablet Play submissions, and signed all-ABI AAB generation remains directly consumable by Play App Signing.
 - [x] First real production-style Flux Android app built and tested on physical hardware: the polished `examples/mobile_showcase` application compiles from Flux source into the generated native Android activity/APK and has been repeatedly installed/launched successfully on a physical Samsung SM-S931B, including the semantic typography, native styling, scrolling, toggle state, and primary-action surface used by the README showcase.
 
@@ -945,7 +945,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 # Milestone 27 — Distribution
 
-- [ ] Android signing/store publishing guidance and automation hooks.
+- [x] Android signing/store publishing guidance and automation hooks: `docs/android-release.md` documents upload-key configuration, Play App Signing boundaries, current target-API policy, secret handling, deterministic `-o` artifacts, and CI usage; `flux publish android ... --json` emits a clean machine-readable success object only after release AAB construction plus bundle/signature verification, while failures retain non-zero process status. Verification deliberately avoids `jarsigner -strict`, whose CA-chain policy rejects the self-signed upload keys used by ordinary Android signing.
 - [ ] iOS signing/App Store workflow.
 - [ ] Windows packaging/store workflow.
 - [ ] macOS signing/notarization/store workflow.

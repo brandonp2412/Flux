@@ -50,6 +50,7 @@ Android:
 flux build android examples/android_app --mode debug --abi arm64-v8a
 flux run android examples/android_app --device waydroid
 flux build android examples/android_app --mode release --format aab
+flux publish android my-app --json
 ```
 
 ## Built with Flux
@@ -62,7 +63,7 @@ flux build android examples/android_app --mode release --format aab
 
 </div>
 
-The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md).
+The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), and Google Play upload-bundle publishing is documented in [`docs/android-release.md`](docs/android-release.md).
 
 ## Development
 

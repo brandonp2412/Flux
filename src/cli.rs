@@ -129,6 +129,13 @@ struct AndroidBuildOptions {
     kind: AndroidArtifactKind,
 }
 
+#[derive(Debug)]
+struct AndroidPublishOptions {
+    target: PathBuf,
+    output: Option<PathBuf>,
+    json: bool,
+}
+
 impl From<String> for CliError {
     fn from(message: String) -> Self {
         Self::Message(message)
@@ -265,7 +272,8 @@ fn run() -> Result<(), CliError> {
         }
         "build" => {
             if args.get(1).is_some_and(|value| value == "android") {
-                return build_android_command(&args[2..], BuildMode::Release, false).map(|_| ());
+                return build_android_command(&args[2..], BuildMode::Release, false, true)
+                    .map(|_| ());
             }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Release)?;
@@ -298,9 +306,18 @@ fn run() -> Result<(), CliError> {
             let options = build_options(&args[2..], BuildMode::Release)?;
             package_target(path, options)
         }
+        "publish" => {
+            if args.get(1).is_some_and(|value| value == "android") {
+                return publish_android_command(&args[2..]);
+            }
+            Err(CliError::Message(
+                "publish syntax is 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]'"
+                    .to_string(),
+            ))
+        }
         "run" => {
             if args.get(1).is_some_and(|value| value == "android") {
-                let built = build_android_command(&args[2..], BuildMode::Debug, true)?;
+                let built = build_android_command(&args[2..], BuildMode::Debug, true, true)?;
                 return run_android_apk(&built);
             }
             let path = require_target(&args)?;
@@ -378,6 +395,7 @@ fn build_android_command(
     args: &[String],
     default_mode: BuildMode,
     for_run: bool,
+    announce: bool,
 ) -> Result<AndroidBuildResult, CliError> {
     let mut options = android_build_options(args, default_mode)?;
     if !for_run && options.device.is_some() {
@@ -471,13 +489,15 @@ fn build_android_command(
     } else {
         "all ABIs"
     };
-    println!(
-        "built Android {} {} {}: {}",
-        options.kind.extension().to_uppercase(),
-        target,
-        options.mode.name(),
-        output.display()
-    );
+    if announce {
+        println!(
+            "built Android {} {} {}: {}",
+            options.kind.extension().to_uppercase(),
+            target,
+            options.mode.name(),
+            output.display()
+        );
+    }
     Ok(AndroidBuildResult {
         artifact: output,
         application_id: manifest.android.application_id,
@@ -490,6 +510,109 @@ fn build_android_command(
         abi: options.abi,
         device: options.device,
     })
+}
+
+fn validate_android_publish_manifest(
+    manifest: &fluxc::project::PackageManifest,
+) -> Result<(), String> {
+    if manifest.version.is_none() {
+        return Err(
+            "Android publishing requires an explicit non-empty [package].version for Play versionName"
+                .to_string(),
+        );
+    }
+    if manifest.android.target_sdk < 36 {
+        return Err(format!(
+            "Android publishing requires [android].target_sdk >= 36 for the current Google Play phone/tablet submission requirement; got {}",
+            manifest.android.target_sdk
+        ));
+    }
+    if manifest.android.keystore.is_none() || manifest.android.key_alias.is_none() {
+        return Err(
+            "Android publishing requires [android].keystore and [android].key_alias; development signing keys are never accepted by 'publish android'"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn publish_android_command(args: &[String]) -> Result<(), CliError> {
+    let options = android_publish_options(args)?;
+    let manifest_path = if options.target.is_dir() {
+        options.target.join("flux.toml")
+    } else if options.target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        options.target.clone()
+    } else {
+        return Err(CliError::Message(
+            "Android publishing requires a manifest-backed package directory or flux.toml"
+                .to_string(),
+        ));
+    };
+    let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    validate_android_publish_manifest(&manifest)?;
+    android_signing_config(&manifest, BuildMode::Release)?;
+
+    let mut build_args = vec![options.target.to_string_lossy().into_owned()];
+    if let Some(output) = options.output.as_ref() {
+        build_args.push("-o".to_string());
+        build_args.push(output.to_string_lossy().into_owned());
+    }
+    build_args.push("--format".to_string());
+    build_args.push("aab".to_string());
+    let built = build_android_command(&build_args, BuildMode::Release, false, false)?;
+    verify_android_publish_aab(&built.artifact)?;
+
+    let version = manifest
+        .version
+        .as_deref()
+        .expect("publish version preflight");
+    if options.json {
+        println!(
+            "{{\"ok\":true,\"artifact\":{},\"application_id\":{},\"version\":{},\"version_code\":{},\"target_sdk\":{},\"format\":\"aab\",\"mode\":\"release\",\"verified\":true}}",
+            json_string(&built.artifact.to_string_lossy()),
+            json_string(&manifest.android.application_id),
+            json_string(version),
+            manifest.android.version_code,
+            manifest.android.target_sdk,
+        );
+    } else {
+        println!(
+            "prepared Google Play upload bundle: {}",
+            built.artifact.display()
+        );
+        println!("  application id: {}", manifest.android.application_id);
+        println!(
+            "  version: {} (code {})",
+            version, manifest.android.version_code
+        );
+        println!("  target API: {}", manifest.android.target_sdk);
+        println!("  signing: configured release/upload key");
+        println!("  verification: bundletool validate + jarsigner signature check");
+    }
+    Ok(())
+}
+
+fn verify_android_publish_aab(output: &Path) -> Result<(), CliError> {
+    let bundletool = find_android_bundletool()?;
+    run_checked(
+        Command::new("java")
+            .arg("-jar")
+            .arg(bundletool)
+            .arg("validate")
+            .arg(format!("--bundle={}", output.display())),
+        "bundletool validate",
+    )?;
+    run_checked(
+        Command::new("jarsigner").arg("-verify").arg(output),
+        "jarsigner verify",
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1852,6 +1975,52 @@ fn android_build_options(
         abi_explicit: abi_seen,
         device,
         kind,
+    })
+}
+
+fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, String> {
+    let Some(target) = args.first() else {
+        return Err(
+            "Android publish syntax is 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]'"
+                .to_string(),
+        );
+    };
+    let mut output = None;
+    let mut json = false;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("output path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'-o' requires an output path".to_string());
+                };
+                if Path::new(path).extension().and_then(|value| value.to_str()) != Some("aab") {
+                    return Err("Android publishing output must end in '.aab'".to_string());
+                }
+                output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--json" => {
+                if json {
+                    return Err("'--json' may only be specified once".to_string());
+                }
+                json = true;
+                index += 1;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown Android publish option '{flag}'; expected '-o <artifact.aab>' or '--json'"
+                ));
+            }
+        }
+    }
+    Ok(AndroidPublishOptions {
+        target: PathBuf::from(target),
+        output,
+        json,
     })
 }
 
@@ -3421,7 +3590,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -3430,8 +3599,9 @@ mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_manifest_xml, build_options, output_with_timeout, parse_adb_devices,
-        select_android_run_target, waydroid_status_is_running,
+        android_manifest_xml, android_publish_options, build_options, json_string,
+        output_with_timeout, parse_adb_devices, select_android_run_target,
+        validate_android_publish_manifest, waydroid_status_is_running,
     };
 
     #[cfg(unix)]
@@ -3563,6 +3733,77 @@ mod tests {
         )
         .expect_err("duplicate Android device selection should fail");
         assert!(duplicate_device.contains("only be specified once"));
+    }
+
+    #[test]
+    fn android_publish_options_and_play_policy_are_strict() {
+        let options = android_publish_options(&[
+            "package".to_string(),
+            "-o".to_string(),
+            "release.aab".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("publish options should parse");
+        assert_eq!(options.target, std::path::Path::new("package"));
+        assert_eq!(
+            options.output.as_deref(),
+            Some(std::path::Path::new("release.aab"))
+        );
+        assert!(options.json);
+        assert!(
+            android_publish_options(&[
+                "package".to_string(),
+                "-o".to_string(),
+                "release.apk".to_string(),
+            ])
+            .expect_err("publish output must be an AAB")
+            .contains("must end in '.aab'")
+        );
+        assert!(
+            android_publish_options(&["package".to_string(), "--mode".to_string()])
+                .expect_err("publish mode is fixed to release")
+                .contains("unknown Android publish option")
+        );
+
+        let mut manifest = crate::project::PackageManifest {
+            name: "example".to_string(),
+            version: None,
+            entry: std::path::PathBuf::from("src/main.flux"),
+            path: std::path::PathBuf::from("flux.toml"),
+            android: crate::project::AndroidPackageConfig {
+                application_id: "app.flux.example".to_string(),
+                version_code: 42,
+                min_sdk: 23,
+                target_sdk: 36,
+                permissions: vec![],
+                keystore: None,
+                key_alias: None,
+            },
+        };
+        assert!(
+            validate_android_publish_manifest(&manifest)
+                .expect_err("publishing requires an explicit version")
+                .contains("[package].version")
+        );
+        manifest.version = Some("1.2.3".to_string());
+        manifest.android.target_sdk = 35;
+        assert!(
+            validate_android_publish_manifest(&manifest)
+                .expect_err("phone/tablet publishing requires current target API")
+                .contains("target_sdk >= 36")
+        );
+        manifest.android.target_sdk = 36;
+        assert!(
+            validate_android_publish_manifest(&manifest)
+                .expect_err("publishing may not fall back to the development key")
+                .contains("development signing keys are never accepted")
+        );
+        manifest.android.keystore = Some(std::path::PathBuf::from("upload.jks"));
+        manifest.android.key_alias = Some("upload".to_string());
+        validate_android_publish_manifest(&manifest)
+            .expect("complete publishing metadata should pass static policy checks");
+
+        assert_eq!(json_string("a\\b\"c\n"), "\"a\\\\b\\\"c\\n\"");
     }
 
     #[test]
