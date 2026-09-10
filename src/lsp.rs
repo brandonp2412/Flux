@@ -1156,6 +1156,24 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "time" {
+        push_completion_item(items, seen, "unixMillis", 3, "fn time.unixMillis() -> i64");
+        push_completion_item(
+            items,
+            seen,
+            "monotonicMillis",
+            3,
+            "fn time.monotonicMillis() -> i64",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "sleepMillis",
+            3,
+            "fn time.sleepMillis(durationMs: i64) -> void",
+        );
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2162,6 +2180,27 @@ fn signature_help_for_document_cached(
                         "process.env",
                         &["name: str", "fallback: str"],
                         "str",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "time" {
+            match member {
+                "unixMillis" | "monotonicMillis" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("time.{member}"),
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "sleepMillis" => {
+                    return Some(signature_help_for_builtin(
+                        "time.sleepMillis",
+                        &["durationMs: i64"],
+                        "void",
                         active_parameter,
                     ));
                 }
@@ -5077,7 +5116,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    time.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5133,6 +5172,24 @@ mod tests {
         assert!(process_items.contains("fn process.parentPid() -> i64"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
+
+        let time_line = source
+            .lines()
+            .position(|line| line.trim() == "time.")
+            .expect("time completion line should exist");
+        let time_source = source.lines().nth(time_line).unwrap();
+        let time_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(time_line),
+            Some(time_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(time_items.contains("fn time.unixMillis() -> i64"));
+        assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
+        assert!(time_items.contains("fn time.sleepMillis(durationMs: i64) -> void"));
 
         let android_line = source
             .lines()
@@ -5692,6 +5749,39 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("process call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_time_capabilities() {
+        let uri = "file:///tmp/time-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("time.unixMillis(", "fn time.unixMillis() -> i64"),
+            ("time.monotonicMillis(", "fn time.monotonicMillis() -> i64"),
+            (
+                "time.sleepMillis(",
+                "fn time.sleepMillis(durationMs: i64) -> void",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("time call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("time call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

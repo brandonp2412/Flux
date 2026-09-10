@@ -278,16 +278,24 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
 ) {
+    if runtime_usage.contains("flux__time_") {
+        out.push_str("#define _POSIX_C_SOURCE 200809L\n");
+    }
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stddef.h>\n");
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
-    if uses_background {
+    if uses_background || runtime_usage.contains("flux__time_sleep_millis(") {
         out.push_str("#include <errno.h>\n");
+    }
+    if uses_background {
         out.push_str("#include <sys/types.h>\n");
         out.push_str("#include <sys/wait.h>\n");
+    }
+    if runtime_usage.contains("flux__time_") {
+        out.push_str("#include <time.h>\n");
     }
     if uses_background
         || runtime_usage.contains("flux__process_pid(")
@@ -1385,6 +1393,21 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_env(") {
         out.push_str("static inline const char *flux__process_env(const char *name, const char *fallback) { const char *value = getenv(name); return value != NULL ? value : fallback; }\n");
+    }
+
+    if runtime_usage.contains("flux__time_unix_millis(")
+        || runtime_usage.contains("flux__time_monotonic_millis(")
+    {
+        out.push_str("static inline int64_t flux__time_clock_millis(clockid_t clock_id) { struct timespec value; if (clock_gettime(clock_id, &value) != 0) { fputs(\"Flux runtime error: clock query failed\\n\", stderr); abort(); } if (value.tv_sec > (time_t)(INT64_MAX / INT64_C(1000)) || value.tv_sec < (time_t)(INT64_MIN / INT64_C(1000))) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t whole = (int64_t)value.tv_sec * INT64_C(1000); int64_t fraction = (int64_t)(value.tv_nsec / 1000000L); if (__builtin_add_overflow(whole, fraction, &whole)) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } return whole; }\n");
+    }
+    if runtime_usage.contains("flux__time_unix_millis(") {
+        out.push_str("static inline int64_t flux__time_unix_millis(void) { return flux__time_clock_millis(CLOCK_REALTIME); }\n");
+    }
+    if runtime_usage.contains("flux__time_monotonic_millis(") {
+        out.push_str("static inline int64_t flux__time_monotonic_millis(void) { return flux__time_clock_millis(CLOCK_MONOTONIC); }\n");
+    }
+    if runtime_usage.contains("flux__time_sleep_millis(") {
+        out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
     }
 
     if runtime_usage.contains("flux_print_i64(") {
@@ -11686,6 +11709,36 @@ fn emit_qualified_call(
             _ => {
                 return Err(diag(span, "unknown process call reached code generation"));
             }
+        }
+    }
+    if namespace == "time" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid time call reached code generation"));
+        }
+        match name {
+            "unixMillis" | "monotonicMillis" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let helper = if name == "unixMillis" {
+                    "flux__time_unix_millis"
+                } else {
+                    "flux__time_monotonic_millis"
+                };
+                return Ok((format!("{helper}()"), vec![Type::I64], None));
+            }
+            "sleepMillis" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let duration = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__time_sleep_millis({})", duration.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown time call reached code generation")),
         }
     }
     if namespace == "android" {

@@ -4789,6 +4789,56 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "time" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("time.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "unixMillis" | "monotonicMillis" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("time.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
+            "sleepMillis" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("time.sleepMillis expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "time.sleepMillis durationMs",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[0], signatures),
+                    Some(ConstantValue::I64(value)) if value < 0
+                ) {
+                    return Err(diag(
+                        args[0].span,
+                        "time.sleepMillis durationMs must be non-negative",
+                    ));
+                }
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("time module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

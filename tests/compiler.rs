@@ -1305,6 +1305,116 @@ fn main() -> i64 {
 }
 
 #[test]
+fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
+    let source = r#"
+fn main() -> i64 {
+    let before: i64 = time.monotonicMillis()
+    time.sleepMillis(2)
+    let after: i64 = time.monotonicMillis()
+    print(time.unixMillis())
+    print(before)
+    print(after)
+    return 0
+}
+"#;
+
+    check_source(source).expect("time capabilities should typecheck");
+    let generated = compile_to_c(source).expect("time capabilities should lower natively");
+    assert!(generated.contains("#include <time.h>"));
+    assert!(
+        generated.contains("static inline int64_t flux__time_clock_millis(clockid_t clock_id)")
+    );
+    assert!(generated.contains("static inline int64_t flux__time_unix_millis(void)"));
+    assert!(generated.contains("static inline int64_t flux__time_monotonic_millis(void)"));
+    assert!(generated.contains("static inline void flux__time_sleep_millis(int64_t duration_ms)"));
+    assert!(generated.contains("CLOCK_REALTIME"));
+    assert!(generated.contains("CLOCK_MONOTONIC"));
+    assert!(generated.contains("nanosleep(&remaining, &remaining)"));
+
+    let root = std::env::temp_dir().join(format!("flux-time-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("time API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("time API source should be writable");
+    let binary = root.join("time-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("time API binary should build");
+    assert!(
+        built.status.success(),
+        "time API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("time API binary should run");
+    assert!(run.status.success());
+    let values = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(|line| line.parse::<i64>().expect("time output should be i64"))
+        .collect::<Vec<_>>();
+    assert_eq!(values.len(), 3);
+    assert!(values[0] > 0);
+    assert!(values[1] >= 0);
+    assert!(values[2] >= values[1]);
+
+    let unused = r#"
+fn hidden() -> void {
+    print(time.unixMillis())
+    time.sleepMillis(1)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead time calls should still lower");
+    assert!(!unused_generated.contains("#include <time.h>"));
+    assert!(!unused_generated.contains("flux__time_clock_millis"));
+    assert!(!unused_generated.contains("flux__time_sleep_millis"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    time.unixMillis(1)
+    time.monotonicMillis(false)
+    time.sleepMillis("later")
+    time.sleepMillis(-1)
+    time.unknown()
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid time calls should fail statically");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.unixMillis expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.monotonicMillis expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(
+        |error| error.message.contains("time.sleepMillis durationMs")
+            && error.message.contains("expected i64")
+    ));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.sleepMillis durationMs must be non-negative")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time module has no function 'unknown'")
+    }));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_invalid_typed_shell_operations() {
     let bad_pipe = r#"
 fn text() -> str {

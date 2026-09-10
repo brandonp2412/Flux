@@ -12,8 +12,8 @@ Stable overall-progress baseline:
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 418
-- Reported overall progress: **56%**
-- Current net scope growth after the baseline: 20 checkbox items
+- Reported overall progress: **57%**
+- Current net scope growth after the baseline: 21 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -368,6 +368,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Byte buffers.
 - [ ] Paths and filesystem APIs.
 - [ ] Date/time/duration.
+  - [x] Bootstrap native scalar time primitives: `time.unixMillis()` exposes wall-clock Unix milliseconds, `time.monotonicMillis()` provides an elapsed-time clock, and `time.sleepMillis(durationMs)` performs an EINTR-safe native sleep with compile-time rejection of constant negative durations plus a runtime guard for dynamic negatives. The helpers are tree-shaken when unreachable and participate in qualified LSP completion/signature help; calendar values, time zones, formatting, and richer duration types remain pending.
 - [ ] JSON parsing/encoding.
 - [ ] URI/URL support.
 - [ ] HTTP primitives.
