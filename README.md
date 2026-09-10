@@ -42,6 +42,7 @@ flux test examples/package
 flux check examples/hello.flux
 flux format examples/hello.flux
 flux debug examples/branches.flux --break examples/branches.flux:3
+flux profile benchmarks/perf/compute.flux
 flux lsp
 ```
 
@@ -64,7 +65,7 @@ flux publish android my-app --json
 
 </div>
 
-The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), source debugging in [`docs/debugging.md`](docs/debugging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
+The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
 
 ## Development
 

@@ -51,6 +51,21 @@ impl BuildMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeInstrumentation {
+    None,
+    Gprof,
+}
+
+impl NativeInstrumentation {
+    const fn cache_tag(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Gprof => "gprof",
+        }
+    }
+}
+
 #[derive(Debug)]
 struct BuildOptions {
     output: Option<PathBuf>,
@@ -350,6 +365,15 @@ fn run() -> Result<(), CliError> {
         "debug" => {
             let options = debug_options(&args[1..])?;
             debug_target(&options)
+        }
+        "profile" => {
+            let path = require_target(&args)?;
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "profile syntax is 'profile <file.flux|package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            profile_target(path)
         }
         "devices" => {
             if args.len() != 1 {
@@ -1212,6 +1236,134 @@ fn debug_binary_path() -> PathBuf {
     env::temp_dir().join(format!("flux-debug-{}{suffix}", std::process::id()))
 }
 
+fn profile_target(target: &Path) -> Result<(), CliError> {
+    command_first_line("gprof", &["--version"]).map_err(|message| {
+        CliError::Message(format!("Flux CPU profiling requires gprof: {message}"))
+    })?;
+
+    let sources = validate_project(target)?;
+    let generated = match fluxc::project::compile_to_c(target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = profile_binary_path();
+    let data_dir = profile_data_dir();
+    if data_dir.exists() {
+        fs::remove_dir_all(&data_dir).map_err(|error| {
+            format!(
+                "failed to clear profiling data '{}': {error}",
+                data_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&data_dir).map_err(|error| {
+        format!(
+            "failed to create profiling data '{}': {error}",
+            data_dir.display()
+        )
+    })?;
+    build_native_instrumented(
+        &generated,
+        &binary,
+        BuildMode::Profile,
+        NativeInstrumentation::Gprof,
+    )?;
+
+    eprintln!("profile: running instrumented native binary");
+    let run_status = Command::new(&binary)
+        .env("GMON_OUT_PREFIX", data_dir.join("gmon"))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| {
+            format!(
+                "failed to launch profiled binary '{}': {error}",
+                binary.display()
+            )
+        });
+
+    let data_files = profile_data_files(&data_dir)?;
+    let report_status = if data_files.is_empty() {
+        Err(CliError::Message(
+            "profiled process produced no gprof data; the process may have terminated before profiling data could be flushed"
+                .to_string(),
+        ))
+    } else {
+        eprintln!("profile: CPU report (Flux source locations where available)");
+        let mut command = Command::new("gprof");
+        command.args(["-b", "-l"]).arg(&binary);
+        for data_file in &data_files {
+            command.arg(data_file);
+        }
+        let status = command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|error| format!("failed to launch gprof: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(CliError::Message(format!(
+                "gprof exited with status {}",
+                status
+                    .code()
+                    .map_or_else(|| "signal".to_string(), |code| code.to_string())
+            )))
+        }
+    };
+
+    let _ = fs::remove_file(&binary);
+    let _ = fs::remove_dir_all(&data_dir);
+    let run_status = run_status?;
+    report_status?;
+    if run_status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "profiled program exited with status {}",
+            run_status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string())
+        )))
+    }
+}
+
+fn profile_binary_path() -> PathBuf {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    env::temp_dir().join(format!("flux-profile-{}{suffix}", std::process::id()))
+}
+
+fn profile_data_dir() -> PathBuf {
+    env::temp_dir().join(format!("flux-profile-data-{}", std::process::id()))
+}
+
+fn profile_data_files(directory: &Path) -> Result<Vec<PathBuf>, CliError> {
+    let mut files = fs::read_dir(directory)
+        .map_err(|error| {
+            format!(
+                "failed to read profiling data '{}': {error}",
+                directory.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == "gmon.out" || name.starts_with("gmon."))
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
+}
+
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let mut generation = 0usize;
     let mut analysis_cache = fluxc::project::ProjectAnalysisCache::default();
@@ -1939,6 +2091,10 @@ fn run_doctor() -> Result<(), CliError> {
     match command_first_line("gdb", &["--version"]) {
         Ok(version) => println!("  [ok] GDB debugger: {version}"),
         Err(message) => println!("  [warn] GDB debugger unavailable: {message}"),
+    }
+    match command_first_line("gprof", &["--version"]) {
+        Ok(version) => println!("  [ok] gprof CPU profiler: {version}"),
+        Err(message) => println!("  [warn] gprof CPU profiler unavailable: {message}"),
     }
 
     if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
@@ -3596,7 +3752,16 @@ fn default_binary_path(source: &Path) -> PathBuf {
 }
 
 fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), String> {
-    let cache = native_build_cache_path(c_source, mode);
+    build_native_instrumented(c_source, output, mode, NativeInstrumentation::None)
+}
+
+fn build_native_instrumented(
+    c_source: &str,
+    output: &Path,
+    mode: BuildMode,
+    instrumentation: NativeInstrumentation,
+) -> Result<(), String> {
+    let cache = native_build_cache_path(c_source, mode, instrumentation);
     if cache.is_file() {
         fs::copy(&cache, output).map_err(|error| {
             format!(
@@ -3612,6 +3777,9 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
     command
         .args(["-std=c17", "-fwrapv"])
         .args(mode.clang_args());
+    if instrumentation == NativeInstrumentation::Gprof {
+        command.arg("-pg");
+    }
     let gtk = c_source.contains("#include <gtk/gtk.h>");
     if gtk {
         command.args(pkg_config_flags("--cflags", "gtk4")?);
@@ -3655,12 +3823,17 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
     Ok(())
 }
 
-fn native_build_cache_path(c_source: &str, mode: BuildMode) -> PathBuf {
+fn native_build_cache_path(
+    c_source: &str,
+    mode: BuildMode,
+    instrumentation: NativeInstrumentation,
+) -> PathBuf {
     let mut hash = 0xcbf29ce484222325u64;
     for bytes in [
-        b"flux-native-cache-v1".as_slice(),
+        b"flux-native-cache-v2".as_slice(),
         env!("CARGO_PKG_VERSION").as_bytes(),
         mode.name().as_bytes(),
+        instrumentation.cache_tag().as_bytes(),
         env::consts::OS.as_bytes(),
         env::consts::ARCH.as_bytes(),
         c_source.as_bytes(),
@@ -3708,7 +3881,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -3716,11 +3889,27 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
-        android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_manifest_xml, android_publish_options, build_options, debug_options, json_string,
-        output_with_timeout, parse_adb_devices, select_android_run_target,
-        validate_android_publish_manifest, waydroid_status_is_running,
+        NativeInstrumentation, android_abi_from_runtime, android_activity_java_source,
+        android_build_options, android_manifest_xml, android_publish_options, build_options,
+        debug_options, json_string, native_build_cache_path, output_with_timeout,
+        parse_adb_devices, select_android_run_target, validate_android_publish_manifest,
+        waydroid_status_is_running,
     };
+
+    #[test]
+    fn native_build_cache_separates_profile_instrumentation() {
+        let plain = native_build_cache_path(
+            "int main(void) { return 0; }",
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+        );
+        let instrumented = native_build_cache_path(
+            "int main(void) { return 0; }",
+            BuildMode::Profile,
+            NativeInstrumentation::Gprof,
+        );
+        assert_ne!(plain, instrumented);
+    }
 
     #[test]
     fn debug_options_accept_repeated_breakpoints_and_run() {
