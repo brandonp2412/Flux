@@ -2026,6 +2026,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     | "onChange"
                     | "onSelect"
                     | "onTap"
+                    | "onLongPress"
                     | "onHover"
                     | "onLeave"
                     | "onFocus"

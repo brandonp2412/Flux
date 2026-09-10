@@ -2546,6 +2546,17 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->CallVoidMethod(env, child, set_touch_listener, activity);\n");
         }
+        if view_property(element, "on_long_press").is_some() {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_long_click_listener = (*env)->GetMethodID(env, child_class, \"setOnLongClickListener\", \"(Landroid/view/View$OnLongClickListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_long_click_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, child, set_long_click_listener, activity);\n",
+            );
+        }
         if view_property(element, "on_focus").is_some()
             || view_property(element, "on_blur").is_some()
         {
@@ -2761,6 +2772,17 @@ fn emit_android_native_application(
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTap(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
     for (element_index, element) in view.elements.iter().enumerate() {
         let Some(action) = view_property(element, "on_tap") else {
+            continue;
+        };
+        let element_id = element_index + 1;
+        let body = android_ui_zero_arg_event_body(action, view, signatures)?;
+        out.push_str(&format!("        case {element_id}: {body} break;\n"));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnLongPress(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for (element_index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_long_press") else {
             continue;
         };
         let element_id = element_index + 1;
@@ -3201,6 +3223,13 @@ fn emit_linux_gtk_application(
             let body = ui_zero_arg_event_body(action, view, signatures)?;
             out.push_str(&format!(
                 "static void flux__ui_tap_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)gesture; (void)n_press; (void)x; (void)y; (void)data; {body} }}\n",
+                element.name,
+            ));
+        }
+        if let Some(action) = view_property(element, "on_long_press") {
+            let body = ui_zero_arg_event_body(action, view, signatures)?;
+            out.push_str(&format!(
+                "static void flux__ui_long_press_{}(GtkGestureLongPress *gesture, double x, double y, gpointer data) {{ (void)gesture; (void)x; (void)y; (void)data; {body} }}\n",
                 element.name,
             ));
         }
@@ -3930,6 +3959,19 @@ fn emit_linux_gtk_application(
             ));
             out.push_str(&format!(
                 "    g_signal_connect({controller}, \"released\", G_CALLBACK(flux__ui_tap_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
+        if view_property(element, "on_long_press").is_some() {
+            let controller = format!("flux__long_press_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_long_press_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"pressed\", G_CALLBACK(flux__ui_long_press_{}), NULL);\n",
                 element.name
             ));
             out.push_str(&format!(

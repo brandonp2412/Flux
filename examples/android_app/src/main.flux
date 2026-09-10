@@ -57,9 +57,11 @@ view Screen {
         padding: 8
         backgroundColor: "#EAF2FFFF"
         radius: 10
+        onLongPress: expanded => true
     Text detail at 2,1
         text: "Native Flux state updated this Android view"
         visible: expanded
+        onLongPress: expanded => false
     Button toggle at 3,1
         text: actionLabel
         onPress: expanded => !expanded

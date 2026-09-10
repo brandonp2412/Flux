@@ -9443,6 +9443,7 @@ view HoverCard {
         accessibility_label: "Hover state title"
         visible: hovered
         onTap: tapped
+        onLongPress: hovered => true
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -9462,6 +9463,12 @@ app HoverCard
     assert!(generated.contains("gtk_gesture_click_new()"));
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_tap_title)"));
     assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_title)"));
+    assert!(generated.contains("GtkGestureLongPress *gesture"));
+    assert!(generated.contains("gtk_gesture_long_press_new()"));
+    assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
+    assert!(
+        generated.contains("gtk_widget_add_controller(flux__ui_title, flux__long_press_title)")
+    );
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
@@ -10512,6 +10519,7 @@ view Settings {
         accessibility_label: "Search query"
         accessibility_description: "Enter text to search"
         onTap: enabled => true
+        onLongPress: enabled => false
         on_change: changed
         on_submit: submitted
     Toggle enabled_toggle at 2,1
@@ -10631,6 +10639,9 @@ app Settings
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
     assert!(generated.contains("setOnTouchListener"));
     assert!(generated.contains("case 1: flux__ui_state_enabled = true; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
+    assert!(generated.contains("setOnLongClickListener"));
+    assert!(generated.contains("case 1: flux__ui_state_enabled = false; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));
@@ -10778,6 +10789,7 @@ view App {
         text: "Press"
         enabled: true
         onTap: handle_press
+        onLongPress: handle_press
         on_press: handle_press
     Chart chart at 2,1
         label: "Activity"

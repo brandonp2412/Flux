@@ -539,6 +539,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Common typed `onTap: fn() -> void` works on every built-in native element without exposing pointer/controller objects; Linux lowers it to a native `GtkGestureClick` release callback and supports the ordinary functional state-transition form.
 - [ ] Touch input.
   - [x] The same `onTap` contract lowers on Android to a compiler-wired native `View.OnTouchListener` and dispatches `ACTION_UP` directly back into compiled Flux callbacks/state transitions, with no application-authored Java/Kotlin/JNI bridge.
+  - [x] Common `onLongPress: fn() -> void` lowers to Android's native `View.OnLongClickListener`, consumes the recognized long press after direct Flux dispatch, and supports typed functional state transitions without exposing `MotionEvent` or listener objects.
 - [ ] Keyboard input.
   - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Portable key events and explicit keyboard handling remain pending.
 - [ ] Focus model.
@@ -546,7 +547,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Hover.
   - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
-  - [x] Portable single-tap recognition is available through `onTap`; richer double-tap, long-press, drag, scale, and velocity semantics remain pending.
+  - [x] Portable single-tap recognition is available through `onTap`.
+  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Double-tap, drag, scale, and velocity semantics remain pending.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `onPress` logic.

@@ -1887,7 +1887,7 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -1902,6 +1902,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
+    private int suppressTapViewId = View.NO_ID;
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -1914,6 +1915,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private native void nativeDestroy();
     private static native void nativeOnClick(int viewId);
     private static native void nativeOnTap(int viewId);
+    private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
     private static native void nativeOnHover(int viewId, boolean hovered);
@@ -1985,8 +1987,20 @@ public final class FluxActivity extends Activity implements View.OnClickListener
 
     @Override
     public boolean onTouch(View view, MotionEvent event) {
-        if (event.getActionMasked() == MotionEvent.ACTION_UP) nativeOnTap(view.getId());
+        int viewId = view.getId();
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN && suppressTapViewId == viewId) suppressTapViewId = View.NO_ID;
+        if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            if (suppressTapViewId == viewId) suppressTapViewId = View.NO_ID;
+            else nativeOnTap(viewId);
+        }
         return false;
+    }
+
+    @Override
+    public boolean onLongClick(View view) {
+        suppressTapViewId = view.getId();
+        nativeOnLongPress(view.getId());
+        return true;
     }
 
     @Override
@@ -3234,7 +3248,10 @@ mod tests {
         assert!(!generated_ui.contains("android.app.lib_name"));
         let activity = android_activity_java_source();
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
-        assert!(activity.contains("View.OnHoverListener, View.OnTouchListener"));
+        assert!(
+            activity
+                .contains("View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener")
+        );
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
@@ -3245,7 +3262,11 @@ mod tests {
         assert!(activity.contains("nativeDestroy();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
         assert!(activity.contains("private static native void nativeOnTap(int viewId);"));
-        assert!(activity.contains("MotionEvent.ACTION_UP) nativeOnTap(view.getId())"));
+        assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
+        assert!(activity.contains("suppressTapViewId = View.NO_ID;"));
+        assert!(activity.contains("else nativeOnTap(viewId);"));
+        assert!(activity.contains("suppressTapViewId = view.getId();"));
+        assert!(activity.contains("nativeOnLongPress(view.getId());"));
         assert!(
             activity.contains(
                 "private static native void nativeOnChecked(int viewId, boolean checked);"
