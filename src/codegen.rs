@@ -1435,6 +1435,11 @@ fn emit_android_native_application(
             "    jobject child = (*env)->NewObject(env, child_class, child_ctor, activity);\n",
         );
         out.push_str("    if (child == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+        out.push_str("    jmethodID set_stable_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+        out.push_str("    if (set_stable_id == NULL) return;\n");
+        out.push_str(&format!(
+            "    (*env)->CallVoidMethod(env, child, set_stable_id, (jint){element_id});\n"
+        ));
         if element.kind == "Image" {
             let source = match view_property(element, "source") {
                 Some(property) => ui_expr_c(&property.value, view, signatures)?,
@@ -2439,6 +2444,7 @@ fn emit_android_native_application(
     }
     out.push_str("    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
     out.push_str("}\n");
+    emit_android_ui_refresh(out, view, signatures)?;
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
     for (element_index, element) in view.elements.iter().enumerate() {
@@ -2452,7 +2458,7 @@ fn emit_android_native_application(
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
             out.push_str(&format!(
-                "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+                "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;\n",
                 ui_state_c_name(&transition.state)
             ));
             continue;
@@ -2489,7 +2495,7 @@ fn emit_android_native_application(
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
             out.push_str(&format!(
-                "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+                "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;\n",
                 ui_state_c_name(&transition.state)
             ));
             continue;
@@ -2501,7 +2507,7 @@ fn emit_android_native_application(
             ));
         };
         out.push_str(&format!(
-            "        case {element_id}: {radio_guard}{}(); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz); break;\n",
+            "        case {element_id}: {radio_guard}{}(); break;\n",
             function_c_name(function)
         ));
     }
@@ -3722,12 +3728,377 @@ fn view_property<'a>(
         .find(|property| property.name == source_name || property.name == name)
 }
 
+fn android_ui_runtime_value_names(view: &crate::ast::ViewDef) -> HashSet<String> {
+    let mut runtime_names = view
+        .states
+        .iter()
+        .map(|state| state.name.clone())
+        .collect::<HashSet<_>>();
+    for derived in &view.derived {
+        let mut reads = HashSet::new();
+        typecheck::collect_expr_reads(&derived.value, &mut reads);
+        if reads.iter().any(|name| {
+            runtime_names.contains(name) || typecheck::view_environment_type(name).is_some()
+        }) {
+            runtime_names.insert(derived.name.clone());
+        }
+    }
+    runtime_names
+}
+
+fn android_ui_expr_needs_refresh(expr: &Expr, runtime_names: &HashSet<String>) -> bool {
+    let mut reads = HashSet::new();
+    typecheck::collect_expr_reads(expr, &mut reads);
+    reads.iter().any(|name| {
+        runtime_names.contains(name) || typecheck::view_environment_type(name).is_some()
+    })
+}
+
+fn android_ui_property_needs_refresh(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    runtime_names: &HashSet<String>,
+) -> bool {
+    view_property(element, property_name)
+        .is_some_and(|property| android_ui_expr_needs_refresh(&property.value, runtime_names))
+}
+
+fn android_ui_element_needs_refresh(
+    element: &crate::ast::ViewElement,
+    runtime_names: &HashSet<String>,
+) -> bool {
+    let common = [
+        "visible",
+        "enabled",
+        "tooltip",
+        "accessibility_label",
+        "accessibility_description",
+        "translate_x",
+        "translate_y",
+        "rotate_degrees",
+        "scale_percent",
+        "scale_x_percent",
+        "scale_y_percent",
+        "transform_origin_x_percent",
+        "transform_origin_y_percent",
+    ];
+    let specific: &[&str] = match element.kind.as_str() {
+        "Text" => &["text", "selectable", "wrap"],
+        "Button" => &["text"],
+        "TextInput" => &["placeholder"],
+        "Image" => &["source", "alt", "can_shrink"],
+        "Toggle" => &["label", "checked"],
+        "Radio" => &["label", "selected"],
+        _ => &[],
+    };
+    common
+        .iter()
+        .chain(specific.iter())
+        .any(|name| android_ui_property_needs_refresh(element, name, runtime_names))
+}
+
+fn emit_android_ui_refresh(
+    out: &mut String,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let runtime_names = android_ui_runtime_value_names(view);
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeRefreshUi(JNIEnv *env, jobject activity) {\n");
+    for derived in &view.derived {
+        if !runtime_names.contains(&derived.name) {
+            continue;
+        }
+        let value = ui_expr_c(&derived.value, view, signatures)?;
+        out.push_str(&format!(
+            "    {} = {value};\n",
+            ui_derived_c_name(&derived.name)
+        ));
+    }
+    out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+    out.push_str("    if (activity_class == NULL) return;\n");
+    out.push_str("    jmethodID find_view = (*env)->GetMethodID(env, activity_class, \"findViewById\", \"(I)Landroid/view/View;\");\n");
+    out.push_str(
+        "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); return; }\n",
+    );
+
+    for (element_index, element) in view.elements.iter().enumerate() {
+        if !android_ui_element_needs_refresh(element, &runtime_names) {
+            continue;
+        }
+        let element_id = element_index + 1;
+        out.push_str("    {\n");
+        out.push_str(&format!(
+            "        jobject child = (*env)->CallObjectMethod(env, activity, find_view, (jint){element_id});\n"
+        ));
+        out.push_str("        if (child != NULL && !(*env)->ExceptionCheck(env)) {\n");
+        out.push_str("            jclass child_class = (*env)->GetObjectClass(env, child);\n");
+        out.push_str("            if (child_class != NULL) {\n");
+
+        if android_ui_property_needs_refresh(element, "visible", &runtime_names)
+            && let Some(property) = view_property(element, "visible")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("                jmethodID refresh_visibility = (*env)->GetMethodID(env, child_class, \"setVisibility\", \"(I)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_visibility != NULL) (*env)->CallVoidMethod(env, child, refresh_visibility, (jint)(({value}) ? 0 : 8));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "enabled", &runtime_names)
+            && let Some(property) = view_property(element, "enabled")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("                jmethodID refresh_enabled = (*env)->GetMethodID(env, child_class, \"setEnabled\", \"(Z)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_enabled != NULL) (*env)->CallVoidMethod(env, child, refresh_enabled, (jboolean)({value}));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
+            && let Some(property) = view_property(element, "tooltip")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "                jstring refresh_tooltip_text = flux__android_utf8_string(env, {value});\n"
+            ));
+            out.push_str("                if (refresh_tooltip_text != NULL) {\n");
+            out.push_str("                    jmethodID refresh_tooltip = (*env)->GetMethodID(env, activity_class, \"setTooltip\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("                    if (refresh_tooltip != NULL) (*env)->CallVoidMethod(env, activity, refresh_tooltip, child, refresh_tooltip_text);\n");
+            out.push_str(
+                "                    (*env)->DeleteLocalRef(env, refresh_tooltip_text);\n",
+            );
+            out.push_str("                }\n");
+        }
+        let runtime_transform = [
+            "translate_x",
+            "translate_y",
+            "rotate_degrees",
+            "scale_percent",
+            "scale_x_percent",
+            "scale_y_percent",
+            "transform_origin_x_percent",
+            "transform_origin_y_percent",
+        ]
+        .iter()
+        .any(|name| android_ui_property_needs_refresh(element, name, &runtime_names));
+        if runtime_transform {
+            let transform_value =
+                |property_name: &str, fallback: &str| -> Result<String, Diagnostic> {
+                    view_property(element, property_name)
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .unwrap_or_else(|| Ok(fallback.to_string()))
+                };
+            let translate_x = transform_value("translate_x", "0")?;
+            let translate_y = transform_value("translate_y", "0")?;
+            let rotate_degrees = transform_value("rotate_degrees", "0")?;
+            let scale_percent = transform_value("scale_percent", "100")?;
+            let scale_x_percent = view_property(element, "scale_x_percent")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            let scale_y_percent = view_property(element, "scale_y_percent")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            let origin_x = transform_value("transform_origin_x_percent", "50")?;
+            let origin_y = transform_value("transform_origin_y_percent", "50")?;
+            out.push_str("                jmethodID refresh_transform = (*env)->GetMethodID(env, activity_class, \"transformView\", \"(Landroid/view/View;FFFFFFF)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_transform != NULL) (*env)->CallVoidMethod(env, activity, refresh_transform, child, (jfloat)(({translate_x}) * flux__ui_display_scale), (jfloat)(({translate_y}) * flux__ui_display_scale), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
+            ));
+        }
+
+        match element.kind.as_str() {
+            "Text" | "Button" | "Toggle" | "Radio" => {
+                let text_property = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+                    "label"
+                } else {
+                    "text"
+                };
+                if android_ui_property_needs_refresh(element, text_property, &runtime_names)
+                    && let Some(property) = view_property(element, text_property)
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                jstring refresh_text_value = flux__android_utf8_string(env, {value});\n"
+                    ));
+                    out.push_str("                if (refresh_text_value != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_text = (*env)->GetMethodID(env, child_class, \"setText\", \"(Ljava/lang/CharSequence;)V\");\n");
+                    out.push_str("                    if (refresh_text != NULL) (*env)->CallVoidMethod(env, child, refresh_text, refresh_text_value);\n");
+                    out.push_str(
+                        "                    (*env)->DeleteLocalRef(env, refresh_text_value);\n",
+                    );
+                    out.push_str("                }\n");
+                }
+                if element.kind == "Text" {
+                    if android_ui_property_needs_refresh(element, "selectable", &runtime_names)
+                        && let Some(property) = view_property(element, "selectable")
+                    {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str("                jmethodID refresh_selectable = (*env)->GetMethodID(env, child_class, \"setTextIsSelectable\", \"(Z)V\");\n");
+                        out.push_str(&format!(
+                            "                if (refresh_selectable != NULL) (*env)->CallVoidMethod(env, child, refresh_selectable, (jboolean)({value}));\n"
+                        ));
+                    }
+                    if android_ui_property_needs_refresh(element, "wrap", &runtime_names)
+                        && let Some(property) = view_property(element, "wrap")
+                    {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str("                jmethodID refresh_single_line = (*env)->GetMethodID(env, child_class, \"setSingleLine\", \"(Z)V\");\n");
+                        out.push_str(&format!(
+                            "                if (refresh_single_line != NULL) (*env)->CallVoidMethod(env, child, refresh_single_line, (jboolean)(!({value})));\n"
+                        ));
+                    }
+                }
+                if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+                    let checked_property = if element.kind == "Toggle" {
+                        "checked"
+                    } else {
+                        "selected"
+                    };
+                    if android_ui_property_needs_refresh(element, checked_property, &runtime_names)
+                        && let Some(property) = view_property(element, checked_property)
+                    {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str("                jmethodID refresh_checked = (*env)->GetMethodID(env, activity_class, \"setCheckedSilently\", \"(Landroid/widget/CompoundButton;Z)V\");\n");
+                        out.push_str(&format!(
+                            "                if (refresh_checked != NULL) (*env)->CallVoidMethod(env, activity, refresh_checked, child, (jboolean)({value}));\n"
+                        ));
+                    }
+                }
+            }
+            "TextInput" => {
+                if android_ui_property_needs_refresh(element, "placeholder", &runtime_names)
+                    && let Some(property) = view_property(element, "placeholder")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                jstring refresh_hint_value = flux__android_utf8_string(env, {value});\n"
+                    ));
+                    out.push_str("                if (refresh_hint_value != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_hint = (*env)->GetMethodID(env, child_class, \"setHint\", \"(Ljava/lang/CharSequence;)V\");\n");
+                    out.push_str("                    if (refresh_hint != NULL) (*env)->CallVoidMethod(env, child, refresh_hint, refresh_hint_value);\n");
+                    out.push_str(
+                        "                    (*env)->DeleteLocalRef(env, refresh_hint_value);\n",
+                    );
+                    out.push_str("                }\n");
+                }
+            }
+            "Image" => {
+                let source_dynamic =
+                    android_ui_property_needs_refresh(element, "source", &runtime_names);
+                let alt_dynamic = android_ui_property_needs_refresh(element, "alt", &runtime_names);
+                let can_shrink_dynamic =
+                    android_ui_property_needs_refresh(element, "can_shrink", &runtime_names);
+                if source_dynamic {
+                    let source = view_property(element, "source")
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .transpose()?
+                        .unwrap_or_else(|| c_string(""));
+                    let alt = view_property(element, "alt")
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .transpose()?
+                        .unwrap_or_else(|| c_string(""));
+                    let fit = view_property(element, "fit")
+                        .and_then(|property| static_expr_str(&property.value, signatures))
+                        .unwrap_or_else(|| "contain".to_string());
+                    let can_shrink = view_property(element, "can_shrink")
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .transpose()?
+                        .unwrap_or_else(|| "false".to_string());
+                    out.push_str(&format!(
+                        "                jstring refresh_image_source = flux__android_utf8_string(env, {source});\n"
+                    ));
+                    out.push_str(&format!(
+                        "                jstring refresh_image_alt = flux__android_utf8_string(env, {alt});\n"
+                    ));
+                    out.push_str(&format!(
+                        "                jstring refresh_image_fit = flux__android_utf8_string(env, {});\n",
+                        c_string(&fit)
+                    ));
+                    out.push_str("                if (refresh_image_source != NULL && refresh_image_alt != NULL && refresh_image_fit != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_image = (*env)->GetMethodID(env, activity_class, \"configureImage\", \"(Landroid/widget/ImageView;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V\");\n");
+                    out.push_str(&format!(
+                        "                    if (refresh_image != NULL) (*env)->CallVoidMethod(env, activity, refresh_image, child, refresh_image_source, refresh_image_fit, refresh_image_alt, (jboolean)({can_shrink}));\n"
+                    ));
+                    out.push_str("                }\n");
+                    out.push_str("                if (refresh_image_source != NULL) (*env)->DeleteLocalRef(env, refresh_image_source);\n");
+                    out.push_str("                if (refresh_image_alt != NULL) (*env)->DeleteLocalRef(env, refresh_image_alt);\n");
+                    out.push_str("                if (refresh_image_fit != NULL) (*env)->DeleteLocalRef(env, refresh_image_fit);\n");
+                } else {
+                    if can_shrink_dynamic
+                        && let Some(property) = view_property(element, "can_shrink")
+                    {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str("                jmethodID refresh_image_can_shrink = (*env)->GetMethodID(env, child_class, \"setAdjustViewBounds\", \"(Z)V\");\n");
+                        out.push_str(&format!(
+                            "                if (refresh_image_can_shrink != NULL) (*env)->CallVoidMethod(env, child, refresh_image_can_shrink, (jboolean)({value}));\n"
+                        ));
+                    }
+                    if alt_dynamic && let Some(property) = view_property(element, "alt") {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "                jstring refresh_image_alt = flux__android_utf8_string(env, {value});\n"
+                        ));
+                        out.push_str("                if (refresh_image_alt != NULL) {\n");
+                        out.push_str("                    jmethodID refresh_image_content_description = (*env)->GetMethodID(env, child_class, \"setContentDescription\", \"(Ljava/lang/CharSequence;)V\");\n");
+                        out.push_str("                    if (refresh_image_content_description != NULL) (*env)->CallVoidMethod(env, child, refresh_image_content_description, refresh_image_alt);\n");
+                        out.push_str(
+                            "                    (*env)->DeleteLocalRef(env, refresh_image_alt);\n",
+                        );
+                        out.push_str("                }\n");
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let accessibility_label =
+            android_ui_property_needs_refresh(element, "accessibility_label", &runtime_names)
+                .then(|| view_property(element, "accessibility_label"))
+                .flatten();
+        let accessibility_description =
+            android_ui_property_needs_refresh(element, "accessibility_description", &runtime_names)
+                .then(|| view_property(element, "accessibility_description"))
+                .flatten();
+        if accessibility_label.is_some() || accessibility_description.is_some() {
+            if let Some(property) = accessibility_label {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                jstring refresh_accessibility_label = flux__android_utf8_string(env, {value});\n"
+                ));
+            } else {
+                out.push_str("                jstring refresh_accessibility_label = NULL;\n");
+            }
+            if let Some(property) = accessibility_description {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                jstring refresh_accessibility_description = flux__android_utf8_string(env, {value});\n"
+                ));
+            } else {
+                out.push_str("                jstring refresh_accessibility_description = NULL;\n");
+            }
+            out.push_str("                jmethodID refresh_accessibility = (*env)->GetMethodID(env, activity_class, \"setAccessibility\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+            out.push_str("                if (refresh_accessibility != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility, child, refresh_accessibility_label, refresh_accessibility_description);\n");
+            out.push_str("                if (refresh_accessibility_label != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_label);\n");
+            out.push_str("                if (refresh_accessibility_description != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_description);\n");
+        }
+
+        out.push_str("                (*env)->DeleteLocalRef(env, child_class);\n");
+        out.push_str("            }\n");
+        out.push_str("            (*env)->DeleteLocalRef(env, child);\n");
+        out.push_str("        } else if ((*env)->ExceptionCheck(env)) {\n");
+        out.push_str("            (*env)->ExceptionClear(env);\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+    }
+    out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
+    out.push_str("}\n\n");
+    Ok(())
+}
+
 fn android_ui_zero_arg_event_body(
     action: &crate::ast::ViewProperty,
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
-    let refresh = "if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz);";
+    let refresh = "if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz);";
     if let Some(transition) = &action.transition {
         let next = ui_expr_c(&action.value, view, signatures)?;
         return Ok(format!(

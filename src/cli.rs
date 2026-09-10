@@ -1901,6 +1901,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private boolean restoringInput;
     private boolean restoringFocus;
+    private boolean restoringCheckedState;
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -1983,7 +1984,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
 
     @Override
     public void onCheckedChanged(CompoundButton button, boolean checked) {
-        nativeOnChecked(button.getId(), checked);
+        if (!restoringCheckedState) nativeOnChecked(button.getId(), checked);
     }
 
     @Override
@@ -2059,6 +2060,15 @@ public final class FluxActivity extends Activity implements View.OnClickListener
 
     public void setMaxLength(EditText view, int maxLength) {
         view.setFilters(new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
+    }
+
+    public void setCheckedSilently(CompoundButton button, boolean checked) {
+        restoringCheckedState = true;
+        try {
+            button.setChecked(checked);
+        } finally {
+            restoringCheckedState = false;
+        }
     }
 
     private static int parseFluxColor(String value) {
@@ -3248,6 +3258,12 @@ mod tests {
         assert!(activity.contains("selectionStarts"));
         assert!(activity.contains("rememberSelection"));
         assert!(activity.contains("restoringFocus"));
+        assert!(activity.contains("restoringCheckedState"));
+        assert!(
+            activity
+                .contains("public void setCheckedSilently(CompoundButton button, boolean checked)")
+        );
+        assert!(activity.contains("if (!restoringCheckedState) nativeOnChecked"));
         assert!(activity.contains("view.findViewById(previousFocusId)"));
         assert!(activity.contains("replacement.requestFocus()"));
         assert!(activity.contains("composingStarts"));

@@ -10213,6 +10213,12 @@ app Screen
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android UI app should lower to target C");
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeRefreshUi"));
+    assert!(generated.contains("findViewById"));
+    assert!(generated.contains("find_view, (jint)1"));
+    assert!(!generated.contains("find_view, (jint)2"));
+    assert!(generated.contains("find_view, (jint)3"));
+    assert!(generated.contains("set_stable_id"));
     assert!(generated.contains("android/widget/GridLayout"));
     assert!(generated.contains("android/widget/TextView"));
     assert!(generated.contains("android/widget/Button"));
@@ -10227,7 +10233,7 @@ app Screen
     assert!(generated.contains("setEnabled"));
     assert!(generated.contains("flux__ui_state_expanded = (!(flux__ui_state_expanded))"));
     assert!(generated.contains(
-        "Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz)"
+        "case 2: flux__ui_state_expanded = (!(flux__ui_state_expanded)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
     ));
     assert!(generated.contains("case 3: flux__fn_pressed(); break;"));
     assert!(generated.contains(
@@ -10285,8 +10291,10 @@ app Gallery
     assert!(generated.contains("setMinimumWidth"));
     assert!(generated.contains("setMinimumHeight"));
     assert!(generated.contains(
-        "Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz)"
+        "case 2: flux__ui_state_compact = (!(flux__ui_state_compact)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
     ));
+    assert!(generated.contains("refresh_image_can_shrink"));
+    assert!(!generated.contains("refresh_image_source"));
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -10464,6 +10472,11 @@ app Settings
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));
+    assert!(generated.contains("setCheckedSilently"));
+    assert!(generated.contains("refresh_checked"));
+    assert!(generated.contains("refresh_transform"));
+    assert!(!generated.contains("refresh_hint_value"));
+    assert!(!generated.contains("find_view, (jint)6"));
     assert!(generated.contains("case 1: flux__fn_changed(value); break;"));
     assert!(generated.contains("case 1: flux__fn_submitted(value); break;"));
     assert!(generated.contains("case 2: flux__ui_state_enabled = (!(flux__ui_state_enabled))"));
