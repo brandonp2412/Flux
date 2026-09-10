@@ -32,9 +32,18 @@ flux package . --format container
 podman build -f dist/my-service-1.2.3-linux-x86_64-container/Containerfile dist/my-service-1.2.3-linux-x86_64-container
 ```
 
-The context contains the optimized native executable as `app` plus a minimal `Containerfile` that copies it into `debian:stable-slim` and uses it as the container entry point. Flux deliberately emits a build context rather than invoking Docker or Podman, so CI can choose its container engine, registry, platform flags, and image metadata explicitly. GUI `app` declarations are rejected for this format; container packaging is the headless/server path. This does not claim a fully static executable: static/self-contained deployment remains a separate roadmap item.
+The context contains the optimized native executable as `app` plus a minimal `Containerfile` that copies it into `debian:stable-slim` and uses it as the container entry point. Flux deliberately emits a build context rather than invoking Docker or Podman, so CI can choose its container engine, registry, platform flags, and image metadata explicitly. GUI `app` declarations are rejected for this format; container packaging is the headless/server path.
 
-`flux package` refuses to overwrite an existing output directory or archive. Build automation should remove or version old artifacts explicitly instead of relying on implicit replacement.
+Current Linux headless packages can also request one statically linked native executable:
+
+```sh
+flux package . --format static
+flux package . --format static -o dist/my-service
+```
+
+`--format static` passes static linkage through the same optimized native backend and keeps static and dynamically linked artifacts in separate build-cache identities. It is intentionally headless-only because the current GTK application backend is a host-runtime dependency. The selected Clang target/sysroot must provide a static C runtime; when it does not, packaging fails explicitly instead of silently producing a dynamically linked binary. This makes the format self-contained with respect to the C runtime on supported Linux toolchains, while application-owned files, certificates, databases, and other runtime data remain ordinary deployment inputs.
+
+`flux package` refuses to overwrite an existing output directory, archive, or static executable. Build automation should remove or version old artifacts explicitly instead of relying on implicit replacement.
 
 ## Runtime dependencies
 
@@ -62,4 +71,4 @@ Reproducible release infrastructure should still pin the Flux compiler revision 
 
 ## Current boundary
 
-Flux currently automates native compilation, the host directory bundle, reproducible host `.tar.gz` archives, and headless container build contexts. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, registry publication, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.
+Flux currently automates native compilation, the host directory bundle, reproducible host `.tar.gz` archives, headless container build contexts, and static headless executables when the selected Linux toolchain supplies static runtime libraries. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, registry publication, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.

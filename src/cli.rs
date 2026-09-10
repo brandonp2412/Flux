@@ -90,6 +90,7 @@ enum PackageFormat {
     TarGz,
     Container,
     Systemd,
+    Static,
 }
 
 impl PackageFormat {
@@ -99,8 +100,9 @@ impl PackageFormat {
             "tar.gz" | "tgz" => Ok(Self::TarGz),
             "container" => Ok(Self::Container),
             "systemd" => Ok(Self::Systemd),
+            "static" => Ok(Self::Static),
             _ => Err(format!(
-                "unknown package format '{value}'; expected directory, tar.gz, container, or systemd"
+                "unknown package format '{value}'; expected directory, tar.gz, container, systemd, or static"
             )),
         }
     }
@@ -401,6 +403,7 @@ fn run() -> Result<(), CliError> {
                 options.mode,
                 NativeInstrumentation::None,
                 &options.native_target,
+                false,
             )?;
             println!("built ({}): {}", options.mode.name(), output.display());
             Ok(())
@@ -1002,6 +1005,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         PackageFormat::Systemd => package_root
             .join("dist")
             .join(format!("{artifact_name}-systemd")),
+        PackageFormat::Static => package_root
+            .join("dist")
+            .join(format!("{artifact_name}-static")),
     };
     let output = options.output.unwrap_or(default_output);
     if output.exists() {
@@ -1013,7 +1019,7 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
 
     if matches!(
         options.format,
-        PackageFormat::Container | PackageFormat::Systemd
+        PackageFormat::Container | PackageFormat::Systemd | PackageFormat::Static
     ) {
         let analysis = fluxc::project::analyze(&manifest.path).map_err(|diagnostics| {
             diagnostics
@@ -1026,6 +1032,7 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
             let format = match options.format {
                 PackageFormat::Container => "container",
                 PackageFormat::Systemd => "systemd",
+                PackageFormat::Static => "static",
                 _ => unreachable!(),
             };
             return Err(CliError::Message(format!(
@@ -1116,6 +1123,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 &options.native_target,
             )?;
         }
+        PackageFormat::Static => {
+            build_static_executable(&generated, &output, options.mode, &options.native_target)?;
+        }
     }
     println!("packaged ({}): {}", options.mode.name(), output.display());
     Ok(())
@@ -1137,6 +1147,7 @@ fn build_package_directory(
         mode,
         NativeInstrumentation::None,
         native_target,
+        false,
     ) {
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(error));
@@ -1148,6 +1159,37 @@ fn build_package_directory(
         )));
     }
     Ok(())
+}
+
+fn build_static_executable(
+    generated: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<(), CliError> {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create static package output directory '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    build_native_configured(
+        generated,
+        output,
+        mode,
+        NativeInstrumentation::None,
+        native_target,
+        true,
+    )
+    .map_err(|error| {
+        CliError::Message(format!(
+            "static package requires a target toolchain with static C runtime support: {error}"
+        ))
+    })
 }
 
 fn build_container_context(
@@ -1169,6 +1211,7 @@ fn build_container_context(
         mode,
         NativeInstrumentation::None,
         native_target,
+        false,
     ) {
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(error));
@@ -1213,6 +1256,7 @@ fn build_systemd_bundle(
         mode,
         NativeInstrumentation::None,
         native_target,
+        false,
     ) {
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(error));
@@ -3397,7 +3441,8 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                 }
                 let Some(value) = args.get(index + 1) else {
                     return Err(
-                        "'--format' requires directory, tar.gz, container, or systemd".to_string(),
+                        "'--format' requires directory, tar.gz, container, systemd, or static"
+                            .to_string(),
                     );
                 };
                 format = PackageFormat::parse(value)?;
@@ -3426,7 +3471,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
             }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd>', '--target <triple>', or '--sysroot <directory>'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static>', '--target <triple>', or '--sysroot <directory>'"
                 ));
             }
         }
@@ -5002,6 +5047,7 @@ fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), St
         mode,
         NativeInstrumentation::None,
         &NativeTargetOptions::default(),
+        false,
     )
 }
 
@@ -5017,6 +5063,7 @@ fn build_native_instrumented(
         mode,
         instrumentation,
         &NativeTargetOptions::default(),
+        false,
     )
 }
 
@@ -5026,6 +5073,7 @@ fn build_native_configured(
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
     native_target: &NativeTargetOptions,
+    static_link: bool,
 ) -> Result<(), String> {
     if let Some(sysroot) = native_target.sysroot.as_deref()
         && !sysroot.is_dir()
@@ -5036,6 +5084,9 @@ fn build_native_configured(
         ));
     }
     let gtk = c_source.contains("#include <gtk/gtk.h>");
+    if static_link && gtk {
+        return Err("static packaging supports headless programs only".to_string());
+    }
     let gtk_cflags = if gtk {
         pkg_config_flags("--cflags", "gtk4")?
     } else {
@@ -5055,6 +5106,7 @@ fn build_native_configured(
         &toolchain_identity,
         &gtk_cflags,
         &gtk_libs,
+        static_link,
     );
     if cache.is_file() && native_cache_entry_is_valid(&cache) {
         fs::copy(&cache, output).map_err(|error| {
@@ -5080,6 +5132,9 @@ fn build_native_configured(
     }
     if let Some(sysroot) = native_target.sysroot.as_deref() {
         command.arg(format!("--sysroot={}", sysroot.display()));
+    }
+    if static_link {
+        command.arg("-static");
     }
     match instrumentation {
         NativeInstrumentation::None => {}
@@ -5232,6 +5287,7 @@ fn native_build_cache_path_configured(
     toolchain_identity: &str,
     gtk_cflags: &[String],
     gtk_libs: &[String],
+    static_link: bool,
 ) -> PathBuf {
     let target = native_target.triple.as_deref().unwrap_or("");
     let sysroot = native_target
@@ -5241,7 +5297,7 @@ fn native_build_cache_path_configured(
         .unwrap_or_default();
     let mut hash = 0xcbf29ce484222325u64;
     for bytes in [
-        b"flux-native-cache-v4".as_slice(),
+        b"flux-native-cache-v5".as_slice(),
         env!("CARGO_PKG_VERSION").as_bytes(),
         toolchain_identity.as_bytes(),
         gtk_cflags.join("\u{1f}").as_bytes(),
@@ -5252,6 +5308,7 @@ fn native_build_cache_path_configured(
         env::consts::ARCH.as_bytes(),
         target.as_bytes(),
         sysroot.as_bytes(),
+        if static_link { b"static" } else { b"dynamic" },
         c_source.as_bytes(),
     ] {
         for byte in bytes {
@@ -5298,6 +5355,10 @@ fn usage() -> String {
     let command = command_name();
     format!(
         "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+    )
+    .replace(
+        "--format directory|tar.gz|container|systemd",
+        "--format directory|tar.gz|container|systemd|static",
     )
 }
 
@@ -5429,6 +5490,9 @@ mod tests {
         let systemd = package_options(&["--format".to_string(), "systemd".to_string()])
             .expect("systemd package options should parse");
         assert_eq!(systemd.format, PackageFormat::Systemd);
+        let static_package = package_options(&["--format".to_string(), "static".to_string()])
+            .expect("static package options should parse");
+        assert_eq!(static_package.format, PackageFormat::Static);
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
     }
@@ -5445,6 +5509,17 @@ mod tests {
             toolchain,
             &[],
             &[],
+            false,
+        );
+        let static_linked = native_build_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            toolchain,
+            &[],
+            &[],
+            true,
         );
         let instrumented = native_build_cache_path_configured(
             source,
@@ -5454,6 +5529,7 @@ mod tests {
             toolchain,
             &[],
             &[],
+            false,
         );
         let targeted = native_build_cache_path_configured(
             source,
@@ -5466,6 +5542,7 @@ mod tests {
             toolchain,
             &[],
             &[],
+            false,
         );
         let sysrooted = native_build_cache_path_configured(
             source,
@@ -5478,6 +5555,7 @@ mod tests {
             toolchain,
             &[],
             &[],
+            false,
         );
         let different_clang = native_build_cache_path_configured(
             source,
@@ -5487,6 +5565,7 @@ mod tests {
             "clang=clang version newer",
             &[],
             &[],
+            false,
         );
         let different_gtk = native_build_cache_path_configured(
             source,
@@ -5496,7 +5575,9 @@ mod tests {
             toolchain,
             &["-I/opt/gtk/include".to_string()],
             &["-lgtk-4".to_string()],
+            false,
         );
+        assert_ne!(plain, static_linked);
         assert_ne!(plain, instrumented);
         assert_ne!(plain, targeted);
         assert_ne!(plain, sysrooted);

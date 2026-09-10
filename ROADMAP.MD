@@ -981,7 +981,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] Structured concurrency for request handling.
 - [ ] Efficient I/O.
 - [ ] Database connectivity.
-- [ ] Static/self-contained deployment where platform permits.
+- [x] Static/self-contained deployment where platform permits: `flux package --format static` emits one statically linked optimized executable for headless packages, keeps static/dynamic native cache identities separate, rejects GUI applications rather than pretending GTK is self-contained, supports the existing explicit Clang target/sysroot path, and fails clearly when the selected toolchain lacks a static C runtime. Compiler E2E coverage executes the artifact and verifies the Linux ELF has no dynamic interpreter when `readelf` is available.
 - [x] Container-friendly builds: `flux package --format container` emits a headless-only native container build context containing the optimized Flux executable plus a minimal `Containerfile`, without requiring Docker/Podman during compilation or conflating this with the separate static/self-contained deployment goal. Compiler regression coverage verifies the generated context and executable, while GUI `app` packages are rejected from this server-oriented format.
 - [ ] Profiling/observability hooks.
 

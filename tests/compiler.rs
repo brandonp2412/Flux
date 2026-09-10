@@ -9467,6 +9467,38 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
     assert!(service_run.status.success());
     assert_eq!(String::from_utf8_lossy(&service_run.stdout).trim(), "42");
 
+    let static_binary = root.join("package-static");
+    let packaged_static = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "static", "-o"])
+        .arg(&static_binary)
+        .env("FLUX_CACHE_DIR", root.join("static-cache"))
+        .output()
+        .expect("flux package static should run");
+    assert!(
+        packaged_static.status.success(),
+        "flux package static failed: {}",
+        String::from_utf8_lossy(&packaged_static.stderr)
+    );
+    let static_run = Command::new(&static_binary)
+        .output()
+        .expect("static package binary should execute on its build host");
+    assert!(static_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&static_run.stdout).trim(), "42");
+    if let Ok(headers) = Command::new("readelf")
+        .args(["-l"])
+        .arg(&static_binary)
+        .output()
+        && headers.status.success()
+    {
+        let headers = String::from_utf8_lossy(&headers.stdout);
+        assert!(
+            !headers.contains(" INTERP "),
+            "static package must not contain a dynamic interpreter: {headers}"
+        );
+    }
+
     let repeated = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("package")
         .arg(&root)
@@ -9503,6 +9535,18 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
     assert!(
         String::from_utf8_lossy(&gui_systemd.stderr)
             .contains("systemd packaging currently supports headless")
+    );
+    let gui_static = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "static", "-o"])
+        .arg(root.join("gui-static"))
+        .output()
+        .expect("GUI static package rejection should run");
+    assert!(!gui_static.status.success());
+    assert!(
+        String::from_utf8_lossy(&gui_static.stderr)
+            .contains("static packaging currently supports headless")
     );
 
     let _ = fs::remove_dir_all(&root);
