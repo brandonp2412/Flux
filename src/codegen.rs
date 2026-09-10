@@ -340,6 +340,8 @@ fn emit_runtime_prelude(
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
+    let uses_android_set_clipboard_text =
+        uses_android && runtime_usage.contains("flux__android_set_clipboard_text(");
     let uses_android_show_keyboard =
         uses_android && runtime_usage.contains("flux__android_show_keyboard(");
     let uses_android_hide_keyboard =
@@ -405,6 +407,7 @@ fn emit_runtime_prelude(
     let uses_android_platform_api = uses_android_vibrate
         || uses_android_open_url
         || uses_android_share
+        || uses_android_set_clipboard_text
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -449,6 +452,7 @@ fn emit_runtime_prelude(
     }
     if uses_android_open_url
         || uses_android_share
+        || uses_android_set_clipboard_text
         || uses_android_notifications
         || uses_android_permission_granted
         || uses_android_request_permission
@@ -847,6 +851,61 @@ fn emit_runtime_prelude(
         out.push_str("    if (mime != NULL) (*env)->DeleteLocalRef(env, mime);\n");
         out.push_str("    if (action != NULL) (*env)->DeleteLocalRef(env, action);\n");
         out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_set_clipboard_text {
+        out.push_str("static void flux__android_set_clipboard_text(const char *text) {\n");
+        out.push_str("    if (text == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = NULL; jclass manager_class = NULL; jclass clip_data_class = NULL;\n");
+        out.push_str(
+            "    jstring service_name = NULL; jstring label = NULL; jstring text_string = NULL;\n",
+        );
+        out.push_str("    jobject manager = NULL; jobject clip = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"clipboard\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str(
+            "    manager = (*env)->CallObjectMethod(env, activity, get_service, service_name);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str(
+            "    clip_data_class = (*env)->FindClass(env, \"android/content/ClipData\");\n",
+        );
+        out.push_str("    if (manager_class == NULL || clip_data_class == NULL) goto done;\n");
+        out.push_str("    jmethodID new_plain_text = (*env)->GetStaticMethodID(env, clip_data_class, \"newPlainText\", \"(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;\");\n");
+        out.push_str("    jmethodID set_primary_clip = (*env)->GetMethodID(env, manager_class, \"setPrimaryClip\", \"(Landroid/content/ClipData;)V\");\n");
+        out.push_str("    if (new_plain_text == NULL || set_primary_clip == NULL) goto done;\n");
+        out.push_str("    label = (*env)->NewStringUTF(env, \"Flux\");\n");
+        out.push_str("    text_string = flux__android_utf8_string(env, text);\n");
+        out.push_str("    if (label == NULL || text_string == NULL) goto done;\n");
+        out.push_str("    clip = (*env)->CallStaticObjectMethod(env, clip_data_class, new_plain_text, label, text_string);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || clip == NULL) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, manager, set_primary_clip, clip);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (clip != NULL) (*env)->DeleteLocalRef(env, clip);\n");
+        out.push_str("    if (text_string != NULL) (*env)->DeleteLocalRef(env, text_string);\n");
+        out.push_str("    if (label != NULL) (*env)->DeleteLocalRef(env, label);\n");
+        out.push_str(
+            "    if (clip_data_class != NULL) (*env)->DeleteLocalRef(env, clip_data_class);\n",
+        );
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
@@ -12716,7 +12775,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "vibrate" | "openUrl" | "share" => {
+            "vibrate" | "openUrl" | "share" | "setClipboardText" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -12728,6 +12787,9 @@ fn emit_qualified_call(
                     "vibrate" => format!("flux__android_vibrate({})", value.code),
                     "openUrl" => format!("flux__android_open_url({})", value.code),
                     "share" => format!("flux__android_share({})", value.code),
+                    "setClipboardText" => {
+                        format!("flux__android_set_clipboard_text({})", value.code)
+                    }
                     _ => unreachable!(),
                 };
                 return Ok((code, Vec::new(), None));

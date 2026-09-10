@@ -1281,6 +1281,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "setClipboardText",
+            3,
+            "fn android.setClipboardText(text: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "showKeyboard",
             3,
             "fn android.showKeyboard() -> void",
@@ -2447,6 +2454,14 @@ fn signature_help_for_document_cached(
                 "share" => {
                     return Some(signature_help_for_builtin(
                         "android.share",
+                        &["text: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "setClipboardText" => {
+                    return Some(signature_help_for_builtin(
+                        "android.setClipboardText",
                         &["text: str"],
                         "void",
                         active_parameter,
@@ -5468,6 +5483,7 @@ mod tests {
         assert!(android_items.contains("\"label\":\"openUrl\""));
         assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
+        assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
         assert!(android_items.contains("fn android.hideKeyboard() -> void"));
         assert!(android_items.contains("fn android.focusNext(wrap: bool = false) -> void"));
@@ -6248,6 +6264,32 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_android_clipboard() {
+        let uri = "file:///tmp/android-clipboard-signature.flux";
+        let source =
+            "fn main() -> i64 {\n    android.setClipboardText(\"copied\")\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let needle = "android.setClipboardText(";
+        let line_index = source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("clipboard call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("clipboard call should have signature help")
+        .to_json();
+        assert!(help.contains("fn android.setClipboardText(text: str) -> void"));
     }
 
     #[test]

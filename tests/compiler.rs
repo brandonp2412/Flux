@@ -12327,6 +12327,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.vibrate(25)
     android.openUrl("https://example.com")
     android.share("hello from Flux")
+    android.setClipboardText("copied from Flux")
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
@@ -12418,6 +12419,10 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("static void flux__android_share(const char *text)"));
     assert!(generated.contains("android.intent.action.SEND"));
     assert!(generated.contains("android.intent.extra.TEXT"));
+    assert!(generated.contains("static void flux__android_set_clipboard_text(const char *text)"));
+    assert!(generated.contains("android/content/ClipData"));
+    assert!(generated.contains("\"newPlainText\""));
+    assert!(generated.contains("\"setPrimaryClip\""));
     assert!(generated.contains("createChooser"));
     assert!(generated.contains("startActivity"));
     assert!(generated.contains("static inline void flux__android_show_keyboard(void)"));

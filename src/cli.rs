@@ -3461,6 +3461,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import java.io.File;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener {
@@ -3962,7 +3963,19 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         view.setBackgroundColor(parseFluxColor("surface"));
     }
 
+    private void applyFluxTextLocales(TextView view) {
+        if (Build.VERSION.SDK_INT >= 24) {
+            view.setTextLocales(getResources().getConfiguration().getLocales());
+            if (view instanceof EditText) {
+                ((EditText)view).setImeHintLocales(getResources().getConfiguration().getLocales());
+            }
+        } else {
+            view.setTextLocale(Locale.getDefault());
+        }
+    }
+
     public void styleButton(Button view, boolean primary) {
+        applyFluxTextLocales(view);
         view.setAllCaps(false);
         int background = parseFluxColor(primary ? "accent" : "surfaceRaised");
         int label = parseFluxColor(primary ? "onAccent" : "text");
@@ -3981,6 +3994,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     public void styleTextInput(EditText view, String validationState) {
+        applyFluxTextLocales(view);
         int accent = parseFluxColor("accent");
         int outline = parseFluxColor("outline");
         int semantic = outline;
@@ -4002,6 +4016,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     public void styleCheckable(CompoundButton view) {
+        applyFluxTextLocales(view);
         int accent = parseFluxColor("accent");
         int outline = parseFluxColor("outline");
         int[][] states = new int[][] {
@@ -4014,6 +4029,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     public void styleText(TextView view, String color, float size, boolean bold, boolean italic, boolean underline, boolean strike) {
+        applyFluxTextLocales(view);
         if (color != null) view.setTextColor(parseFluxColor(color));
         if (size > 0) view.setTextSize(size);
         int typefaceStyle = (bold ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
@@ -5685,7 +5701,17 @@ mod tests {
         assert!(activity.contains("manager.getContrast()"));
         assert!(activity.contains("custom == null && isFluxHighContrast()"));
         assert!(activity.contains("if (Float.compare(nextContrast, fluxContrast) != 0)"));
+        assert!(activity.contains("private void applyFluxTextLocales(TextView view)"));
+        assert!(
+            activity
+                .contains("view.setTextLocales(getResources().getConfiguration().getLocales())")
+        );
+        assert!(activity.contains(
+            "((EditText)view).setImeHintLocales(getResources().getConfiguration().getLocales())"
+        ));
+        assert!(activity.contains("view.setTextLocale(Locale.getDefault())"));
         assert!(activity.contains("public void styleButton(Button view, boolean primary)"));
+        assert!(activity.contains("applyFluxTextLocales(view);"));
         assert!(activity.contains("view.setAllCaps(false);"));
         assert!(activity.contains("-android.R.attr.state_enabled"));
         assert!(activity.contains("android.R.attr.state_pressed"));
