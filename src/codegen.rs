@@ -4855,22 +4855,8 @@ fn gtk_shortcut_trigger(value: &str) -> Option<String> {
     Some(trigger)
 }
 
-const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
-    "surface",
-    "surfaceRaised",
-    "text",
-    "textMuted",
-    "accent",
-    "onAccent",
-    "outline",
-    "danger",
-    "success",
-    "warning",
-    "shadow",
-];
-
 fn is_semantic_ui_color(value: &str) -> bool {
-    SEMANTIC_UI_COLOR_TOKENS.contains(&value)
+    crate::typecheck::SEMANTIC_UI_COLOR_TOKENS.contains(&value)
 }
 
 fn valid_ui_color(value: &str) -> bool {

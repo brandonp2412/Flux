@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 396
 - Reported overall progress: **54%**
-- Current net scope growth after the baseline: 18 checkbox items
+- Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -506,6 +506,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [x] Native platform control mapping where beneficial without exposing platform classes to Flux code.
 - [ ] **Beautiful-by-default visual system** that makes minimally styled Flux apps look production-quality out of the box rather than exposing raw platform-widget defaults.
   - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere. The first color-token slice is now implemented: UI color properties accept `surface`, `surfaceRaised`, `text`, `textMuted`, `accent`, `onAccent`, `outline`, `danger`, `success`, `warning`, and `shadow`, resolving through Android light/dark palettes or GTK theme colors while explicit hexadecimal values remain supported.
+    - [x] Bootstrap semantic color authoring support: the shared compiler token table drives validation/native lowering and contextual LSP value completion for every common UI color property, so typing `color:`/`backgroundColor:`/border/shadow color fields suggests the valid semantic token literals instead of requiring memorization.
     - [x] Bootstrap semantic typography roles: `Text.variant` accepts `body`, `caption`, `heading`, `title`, and `display`; omitted variants use a polished body role, both native backends apply scalable role size/weight/line-height defaults, and explicit `size`, `bold`, or `lineHeightPercent` values override the role without requiring a theme framework/runtime.
   - [x] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions: compiler-owned roots, text, buttons, text inputs, toggles, and radios receive coherent semantic surface/text/accent defaults on Android and lightweight lower-priority GTK classes on Linux; native interaction/input semantics remain intact and application-priority element styling stays authoritative.
     - [x] Explicit Flux styling wins over compiler-owned/native role styling: Android clears any platform Button tint before installing an explicit Flux background/border/radius/shadow drawable, preventing `Button.primary` emphasis from recoloring an application-specified surface; Linux application-priority element CSS already preserves the same explicit-style precedence.

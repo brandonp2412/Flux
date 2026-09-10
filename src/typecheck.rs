@@ -1388,6 +1388,20 @@ pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
     "Content",
 ];
 
+pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
+    "surface",
+    "surfaceRaised",
+    "text",
+    "textMuted",
+    "accent",
+    "onAccent",
+    "outline",
+    "danger",
+    "success",
+    "warning",
+    "shadow",
+];
+
 fn view_element_kind_is_builtin(kind: &str) -> bool {
     BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind)
 }

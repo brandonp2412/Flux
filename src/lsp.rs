@@ -1604,6 +1604,29 @@ fn add_builtin_ui_context_completions(
     if indent >= 8
         && let Some((kind, element_line)) = enclosing_view_element(&lines, line_index)
     {
+        if let Some((property, _)) = current.trim().split_once(':')
+            && matches!(
+                property.trim(),
+                "color"
+                    | "backgroundColor"
+                    | "borderColor"
+                    | "borderTopColor"
+                    | "borderBottomColor"
+                    | "borderStartColor"
+                    | "borderEndColor"
+                    | "shadowColor"
+            )
+        {
+            for token in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS {
+                push_completion_item(
+                    items,
+                    seen,
+                    &format!("\"{token}\""),
+                    12,
+                    "semantic Flux UI color",
+                );
+            }
+        }
         let existing = view_properties_before_cursor(&lines, element_line, line_index);
         for property in crate::typecheck::view_property_names(kind) {
             if existing.contains(&property) {
@@ -5311,6 +5334,27 @@ mod tests {
         assert!(items.contains("Badge.label: str"));
         assert!(items.contains("\"label\":\"count\""));
         assert!(items.contains("Badge.count: i64"));
+    }
+
+    #[test]
+    fn completion_suggests_semantic_ui_color_values() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: \"Flux\"\n        color: \n}\n";
+        let uri = "file:///tmp/ui-color-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(5));
+        for token in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS {
+            let expected = format!("\"{token}\"");
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.get("label").and_then(JsonValue::as_str)
+                        == Some(expected.as_str())),
+                "semantic color completion should include {token}"
+            );
+        }
+        assert!(items.iter().any(|item| {
+            item.get("detail").and_then(JsonValue::as_str) == Some("semantic Flux UI color")
+        }));
     }
 
     #[test]
