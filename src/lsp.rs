@@ -1704,6 +1704,15 @@ fn add_builtin_ui_context_completions(
                 &format!("read-only view environment {name}: {}", ty.name()),
             );
         }
+        for (name, value) in crate::typecheck::SEMANTIC_UI_I64_TOKENS {
+            push_completion_item(
+                items,
+                seen,
+                name,
+                21,
+                &format!("semantic Flux UI token {name}: i64 = {value}"),
+            );
+        }
     }
     if indent >= 8
         && let Some((kind, element_line)) = enclosing_view_element(&lines, line_index)
@@ -5701,6 +5710,10 @@ mod tests {
         assert!(text_properties.contains("\"label\":\"windowIsLandscape\""));
         assert!(text_properties.contains("read-only view environment windowIsLandscape: bool"));
         assert!(text_properties.contains("\"label\":\"displayScale\""));
+        assert!(text_properties.contains("\"label\":\"spaceMd\""));
+        assert!(text_properties.contains("semantic Flux UI token spaceMd: i64 = 12"));
+        assert!(text_properties.contains("\"label\":\"radiusMd\""));
+        assert!(text_properties.contains("\"label\":\"motionNormal\""));
         assert!(!text_properties.contains("\"label\":\"text\",\"kind\":10"));
 
         let custom_properties = JsonValue::Array(completion_items_at_position(

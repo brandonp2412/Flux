@@ -5147,11 +5147,67 @@ fn ui_widget_c_name(name: &str) -> String {
     format!("flux__ui_{name}")
 }
 
+fn fold_ui_primitive_expr(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<Option<ConstantValue>, Diagnostic> {
+    match &expr.kind {
+        ExprKind::Var(name) => {
+            if let Some(value) = typecheck::semantic_ui_i64_token(name) {
+                Ok(Some(ConstantValue::I64(value)))
+            } else {
+                fold_primitive_expr(expr, &HashMap::new(), signatures)
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let Some(inner) = fold_ui_primitive_expr(inner, signatures)? else {
+                return Ok(None);
+            };
+            Ok(Some(match (op, inner) {
+                (UnaryOp::Neg, ConstantValue::I64(value)) => {
+                    ConstantValue::I64(value.checked_neg().ok_or_else(|| {
+                        diag(expr.span, "constant integer negation overflows i64")
+                    })?)
+                }
+                (UnaryOp::Not, ConstantValue::Bool(value)) => ConstantValue::Bool(!value),
+                _ => return Ok(None),
+            }))
+        }
+        ExprKind::Binary { left, op, right } => {
+            let Some(left) = fold_ui_primitive_expr(left, signatures)? else {
+                return Ok(None);
+            };
+            if matches!(op, BinOp::And) && left == ConstantValue::Bool(false) {
+                return Ok(Some(ConstantValue::Bool(false)));
+            }
+            if matches!(op, BinOp::Or) && left == ConstantValue::Bool(true) {
+                return Ok(Some(ConstantValue::Bool(true)));
+            }
+            let Some(right) = fold_ui_primitive_expr(right, signatures)? else {
+                return Ok(None);
+            };
+            Ok(Some(fold_primitive_binary(expr.span, *op, left, right)?))
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            let Some(condition) = fold_ui_primitive_expr(cond, signatures)? else {
+                return Ok(None);
+            };
+            match condition {
+                ConstantValue::Bool(true) => fold_ui_primitive_expr(then_expr, signatures),
+                ConstantValue::Bool(false) => fold_ui_primitive_expr(else_expr, signatures),
+                _ => Ok(None),
+            }
+        }
+        _ => fold_primitive_expr(expr, &HashMap::new(), signatures),
+    }
+}
+
 fn static_expr_i64(expr: &Expr, signatures: &Signatures) -> Option<i64> {
-    match fold_primitive_expr(expr, &HashMap::new(), signatures)
-        .ok()
-        .flatten()?
-    {
+    match fold_ui_primitive_expr(expr, signatures).ok().flatten()? {
         ConstantValue::I64(value) => Some(value),
         _ => None,
     }
@@ -5252,10 +5308,7 @@ fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
 }
 
 fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
-    match fold_primitive_expr(expr, &HashMap::new(), signatures)
-        .ok()
-        .flatten()?
-    {
+    match fold_ui_primitive_expr(expr, signatures).ok().flatten()? {
         ConstantValue::Bool(value) => Some(value),
         _ => None,
     }
@@ -5266,7 +5319,7 @@ fn ui_expr_c(
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
-    if let Some(value) = fold_primitive_expr(expr, &HashMap::new(), signatures)? {
+    if let Some(value) = fold_ui_primitive_expr(expr, signatures)? {
         return Ok(constant_c_value(&value));
     }
     match &expr.kind {
@@ -5288,6 +5341,9 @@ fn ui_expr_c(
             };
             if let Some(environment) = environment {
                 return Ok(environment.to_string());
+            }
+            if let Some(value) = typecheck::semantic_ui_i64_token(name) {
+                return Ok(format!("INT64_C({value})"));
             }
             if view.states.iter().any(|state| state.name == *name) {
                 return Ok(ui_state_c_name(name));

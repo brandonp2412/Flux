@@ -10270,6 +10270,64 @@ app Palette(theme: "system")
 }
 
 #[test]
+fn semantic_ui_dimension_tokens_lower_without_runtime_theme_objects() {
+    let source = r#"
+view Tokens {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Continue"
+        margin: spaceSm
+        padding: spaceSm + spaceXs
+        radius: radiusMd
+        shadowBlur: elevationMd
+        transitionMs: motionFast + 80
+}
+app Tokens
+"#;
+    check_source(source)
+        .expect("semantic UI dimension tokens should typecheck as read-only i64 values");
+
+    let linux = compile_to_c(source).expect("semantic UI dimension tokens should lower on Linux");
+    assert!(linux.contains("gtk_widget_set_margin_top(flux__ui_action, 8)"));
+    assert!(linux.contains("padding-top: 12px;"));
+    assert!(linux.contains("border-radius: 10px;"));
+    assert!(linux.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
+    assert!(linux.contains("transition-duration: 200ms;"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("semantic dimension token fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("semantic UI dimension tokens should lower on Android");
+    assert!(android.contains("INT64_C(8) * flux__ui_density"));
+    assert!(android.contains("INT64_C(12) * flux__ui_density"));
+    assert!(android.contains("INT64_C(10) * flux__ui_density"));
+
+    let reserved = r#"
+view Invalid {
+    state spaceMd: i64 = 1
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Invalid"
+}
+app Invalid
+"#;
+    let errors = check_source_all(reserved)
+        .expect_err("semantic design-token names must remain compiler-owned and read-only");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("read-only view environment binding"))
+    );
+}
+
+#[test]
 fn native_elements_support_native_shadows() {
     let source = r##"
 view Shadowed {

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 431
+- Completed baseline units: 432
 - Reported overall progress: **58%**
 - Current net scope growth after the baseline: 24 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -509,7 +509,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Menus/context menus.
 - [x] Native platform control mapping where beneficial without exposing platform classes to Flux code.
 - [ ] **Beautiful-by-default visual system** that makes minimally styled Flux apps look production-quality out of the box rather than exposing raw platform-widget defaults.
-  - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere. The first color-token slice is now implemented: UI color properties accept `surface`, `surfaceRaised`, `text`, `textMuted`, `accent`, `onAccent`, `outline`, `danger`, `success`, `warning`, and `shadow`, resolving through Android light/dark palettes or GTK theme colors while explicit hexadecimal values remain supported.
+  - [x] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere. Color tokens (`surface`, `surfaceRaised`, `text`, `textMuted`, `accent`, `onAccent`, `outline`, `danger`, `success`, `warning`, `shadow`) resolve through Android light/dark palettes or GTK theme colors; semantic typography roles supply native-scaled type defaults; read-only numeric tokens provide a shared 4/8/12/16/24/32 spacing rhythm, 6/10/16/pill radii, low/medium/high elevation values, and 120/200/320ms motion durations. Numeric tokens participate in compile-time Flux expressions, lower to constants with no theme-object runtime, are offered through LSP completion, and use the existing native logical-unit/density conversion. Platform-appropriate default control sizing remains compiler-owned (48dp Android / 40px Linux), while explicit values and hexadecimal colors stay available as escape hatches.
     - [x] Bootstrap semantic color authoring support: the shared compiler token table drives validation/native lowering and contextual LSP value completion for every common UI color property, so typing `color:`/`backgroundColor:`/border/shadow color fields suggests the valid semantic token literals instead of requiring memorization.
     - [x] Bootstrap semantic typography roles: `Text.variant` accepts `body`, `caption`, `heading`, `title`, and `display`; omitted variants use a polished body role, both native backends apply scalable role size/weight/line-height defaults, and explicit `size`, `bold`, or `lineHeightPercent` values override the role without requiring a theme framework/runtime.
   - [x] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions: compiler-owned roots, text, buttons, text inputs, toggles, and radios receive coherent semantic surface/text/accent defaults on Android and lightweight lower-priority GTK classes on Linux; native interaction/input semantics remain intact and application-priority element styling stays authoritative.

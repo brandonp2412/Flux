@@ -1235,6 +1235,7 @@ pub fn view_environment_type(name: &str) -> Option<Type> {
         .iter()
         .find(|(candidate, _)| *candidate == name || *candidate == source_name)
         .map(|(_, ty)| ty.clone())
+        .or_else(|| semantic_ui_i64_token(name).map(|_| Type::I64))
 }
 
 pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
@@ -1440,6 +1441,33 @@ pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "warning",
     "shadow",
 ];
+
+pub const SEMANTIC_UI_I64_TOKENS: &[(&str, i64)] = &[
+    ("spaceXs", 4),
+    ("spaceSm", 8),
+    ("spaceMd", 12),
+    ("spaceLg", 16),
+    ("spaceXl", 24),
+    ("spaceXxl", 32),
+    ("radiusSm", 6),
+    ("radiusMd", 10),
+    ("radiusLg", 16),
+    ("radiusPill", 999),
+    ("elevationLow", 2),
+    ("elevationMd", 8),
+    ("elevationHigh", 16),
+    ("motionFast", 120),
+    ("motionNormal", 200),
+    ("motionSlow", 320),
+];
+
+pub fn semantic_ui_i64_token(name: &str) -> Option<i64> {
+    let source_name = internal_name_to_source(name);
+    SEMANTIC_UI_I64_TOKENS
+        .iter()
+        .find(|(candidate, _)| *candidate == name || *candidate == source_name)
+        .map(|(_, value)| *value)
+}
 
 pub fn valid_hex_ui_color(value: &str) -> bool {
     let Some(hex) = value.strip_prefix('#') else {
@@ -1696,6 +1724,10 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             .collect::<HashMap<_, _>>();
         for (name, ty) in VIEW_ENVIRONMENT_BINDINGS {
             property_env.insert(source_name_to_internal(name), ty.clone());
+        }
+        for (name, _) in SEMANTIC_UI_I64_TOKENS {
+            property_env.insert((*name).to_string(), Type::I64);
+            property_env.insert(source_name_to_internal(name), Type::I64);
         }
         property_env.extend(
             view.params
