@@ -339,7 +339,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Bootstrap direct-local move path-state is computed to a fixed point on the semantic CFG with deterministic move origins and reachability facts; compile-time primitive conditions and statically empty integer ranges remove impossible CFG edges before ownership propagation so dead moves do not poison live owners.
   - [ ] General move analysis across calls, aggregate fields, partial moves, and owned resource types after normalized control-flow ownership facts exist.
 - [ ] Immutable borrows.
-  - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
+  - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner; a borrowed list parameter can also be rebound to a local immutable alias without incorrectly moving the parameter.
   - [x] Reachable non-copy name reads are represented explicitly as immutable-borrow facts on normalized CFG ownership nodes, derived from typed IR value reachability rather than syntax-wide read collection. Use-after-move validation consumes those borrow facts, so compile-time-dead nested regions such as a short-circuited boolean RHS do not spuriously borrow a moved owner while runtime-reachable borrows still fail deterministically.
   - [ ] First-class borrow/reference types and inferred borrow lifetimes for owned values.
 - [ ] Exclusive mutable borrows.

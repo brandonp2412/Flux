@@ -3707,6 +3707,44 @@ fn main() -> i64 {
 }
 
 #[test]
+fn borrowed_list_parameters_can_be_reborrowed_without_moving_the_parameter() {
+    let source = r#"
+fn inspect(values: i64[]) -> i64 {
+    let alias: i64[] = values
+    print(values.first)
+    return alias.last
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 4]
+    let result: i64 = inspect(values)
+    print(values.first)
+    return result
+}
+"#;
+
+    check_source(source).expect("borrowed list parameters should support local immutable aliases");
+    compile_to_c(source).expect("borrowed list parameter aliases should lower natively");
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1206))
+        .expect("borrowed parameter alias should analyze");
+    let graph = database
+        .control_flow_graph("inspect")
+        .expect("inspect should expose a CFG");
+    let alias = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.kind,
+                ControlFlowNodeKind::Binding { name, .. } if name == "alias"
+            )
+        })
+        .expect("alias binding should be represented in the CFG");
+    assert!(alias.ownership.moves.is_empty());
+}
+
+#[test]
 fn ownership_ignores_non_copy_borrows_in_statically_dead_expression_regions() {
     let dead_borrow = r#"
 fn main() -> i64 {

@@ -1786,6 +1786,7 @@ impl<'a> ControlFlowBuilder<'a> {
     fn binding_move_ownership(&self, name: &str, ty: &Type, expr: &Expr) -> ControlFlowOwnership {
         let moves = if !self.signatures.is_copy_type(ty)
             && let ExprKind::Var(source) = &expr.kind
+            && !self.is_borrowed_list_parameter(source)
         {
             vec![OwnershipMove {
                 source: source.clone(),
@@ -1800,6 +1801,13 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves,
         }
+    }
+
+    fn is_borrowed_list_parameter(&self, name: &str) -> bool {
+        self.parameters.iter().any(|parameter| {
+            parameter.name == name
+                && matches!(self.signatures.canonical_type(&parameter.ty), Type::List(_))
+        })
     }
 }
 
