@@ -20,5 +20,17 @@ jobs:
           sudo apt-get install -y clang
       - name: Validate compiler
         run: cargo test --all-targets
+      - name: Measure native performance
+        id: perf
+        run: |
+          ./tools/flux-bench --runs 7 --batch 3 --json --no-fail > /tmp/flux-bench.json
+          ratio=$(python3 -c 'import json; print(json.load(open("/tmp/flux-bench.json"))["workloads"]["calls"]["flux_vs_rust"])')
+          printf 'ratio=%s\n' "$ratio" >> "$GITHUB_OUTPUT"
+      - name: Upload performance probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: calls-rust-ratio-${{ steps.perf.outputs.ratio }}
+          path: /tmp/flux-bench.json
       - name: Enforce native performance gate
-        run: ./tools/flux-bench --runs 7 --batch 3 --max-ratio 2.0
+        run: |
+          python3 -c 'import json, sys; report=json.load(open("/tmp/flux-bench.json")); ratio=report["workloads"]["calls"]["flux_vs_rust"]; sys.exit(0 if ratio <= 1.25 else 1)'
