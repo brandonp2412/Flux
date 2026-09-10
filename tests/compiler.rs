@@ -9896,6 +9896,10 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.focusNext()
     android.focusPrevious()
     android.clearFocus()
+    print(android.selectionStart())
+    print(android.selectionEnd())
+    print(android.setCaret(1))
+    print(android.setSelection(0, 1))
     print(android.permission_granted("android.permission.CAMERA"))
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("updates", "Updates", "Flux update notifications")
@@ -9984,6 +9988,17 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("\"focusSearch\", \"(I)Landroid/view/View;\""));
     assert!(generated.contains("\"requestFocus\", \"()Z\""));
     assert!(generated.contains("\"clearFocus\", \"()V\""));
+    assert!(generated.contains("static inline int64_t flux__android_selection_start(void)"));
+    assert!(generated.contains("static inline int64_t flux__android_selection_end(void)"));
+    assert!(generated.contains("static inline bool flux__android_set_caret(int64_t position)"));
+    assert!(
+        generated.contains("static bool flux__android_set_selection(int64_t start, int64_t end)")
+    );
+    assert!(generated.contains("\"android/widget/EditText\""));
+    assert!(generated.contains("\"getSelectionStart\""));
+    assert!(generated.contains("\"getSelectionEnd\""));
+    assert!(generated.contains("\"setSelection\", \"(II)V\""));
+    assert!(generated.contains("\"length\", \"()I\""));
     assert!(generated.contains("showSoftInput"));
     assert!(generated.contains("hideSoftInputFromWindow"));
     assert!(generated.contains("\"input_method\""));
@@ -10057,6 +10072,10 @@ fn main() -> i64 {
     android.focusNext()
     android.focusPrevious()
     android.clearFocus()
+    android.selectionStart()
+    android.selectionEnd()
+    android.setCaret(1)
+    android.setSelection(0, 1)
     android.permission_granted("android.permission.CAMERA")
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("unused", "Unused", "Unused")
@@ -10083,6 +10102,11 @@ app Screen
     assert!(!tree_generated.contains("flux__android_focus_previous"));
     assert!(!tree_generated.contains("flux__android_clear_focus"));
     assert!(!tree_generated.contains("focusSearch"));
+    assert!(!tree_generated.contains("flux__android_selection_start"));
+    assert!(!tree_generated.contains("flux__android_selection_end"));
+    assert!(!tree_generated.contains("flux__android_set_caret"));
+    assert!(!tree_generated.contains("flux__android_set_selection"));
+    assert!(!tree_generated.contains("android/widget/EditText"));
     assert!(!tree_generated.contains("showSoftInput"));
     assert!(!tree_generated.contains("hideSoftInputFromWindow"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
@@ -10106,6 +10130,10 @@ fn main() -> i64 {
     android.focusNext(1)
     android.focusPrevious(false)
     android.clearFocus("bad")
+    android.selectionStart(1)
+    android.selectionEnd(false)
+    android.setCaret("bad")
+    android.setSelection(0, "bad")
     android.create_notification_channel("updates", 1, false)
     android.permission_granted(42)
     android.request_permission(false)
@@ -10143,13 +10171,26 @@ fn main() -> i64 {
             .message
             .contains("android.hide_keyboard expects 0 arguments, got 1")
     }));
-    for name in ["focusNext", "focusPrevious", "clearFocus"] {
+    for name in [
+        "focusNext",
+        "focusPrevious",
+        "clearFocus",
+        "selectionStart",
+        "selectionEnd",
+    ] {
         assert!(errors.iter().any(|error| {
             error
                 .message
                 .contains(&format!("android.{name} expects 0 arguments, got 1"))
         }));
     }
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.setCaret position")
+            && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.setSelection end") && error.message.contains("expected i64")
+    }));
     assert!(errors.iter().any(|error| {
         error
             .message

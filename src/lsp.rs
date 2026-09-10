@@ -1198,6 +1198,34 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "selectionStart",
+            3,
+            "fn android.selectionStart() -> i64",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "selectionEnd",
+            3,
+            "fn android.selectionEnd() -> i64",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "setCaret",
+            3,
+            "fn android.setCaret(position: i64) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "setSelection",
+            3,
+            "fn android.setSelection(start: i64, end: i64) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
             "create_notification_channel",
             3,
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
@@ -2095,6 +2123,30 @@ fn signature_help_for_document_cached(
                         &format!("android.{member}"),
                         &[],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                "selectionStart" | "selectionEnd" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("android.{member}"),
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "setCaret" => {
+                    return Some(signature_help_for_builtin(
+                        "android.setCaret",
+                        &["position: i64"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "setSelection" => {
+                    return Some(signature_help_for_builtin(
+                        "android.setSelection",
+                        &["start: i64", "end: i64"],
+                        "bool",
                         active_parameter,
                     ));
                 }
@@ -4994,6 +5046,10 @@ mod tests {
         assert!(android_items.contains("fn android.focusNext() -> void"));
         assert!(android_items.contains("fn android.focusPrevious() -> void"));
         assert!(android_items.contains("fn android.clearFocus() -> void"));
+        assert!(android_items.contains("fn android.selectionStart() -> i64"));
+        assert!(android_items.contains("fn android.selectionEnd() -> i64"));
+        assert!(android_items.contains("fn android.setCaret(position: i64) -> bool"));
+        assert!(android_items.contains("fn android.setSelection(start: i64, end: i64) -> bool"));
         assert!(android_items.contains(
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
         ));
@@ -5518,9 +5574,9 @@ mod tests {
     }
 
     #[test]
-    fn signature_help_supports_android_focus_navigation() {
+    fn signature_help_supports_android_focus_and_selection() {
         let uri = "file:///tmp/android-focus-signatures.flux";
-        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.clearFocus()\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.focusNext(", "fn android.focusNext() -> void"),
@@ -5529,11 +5585,24 @@ mod tests {
                 "fn android.focusPrevious() -> void",
             ),
             ("android.clearFocus(", "fn android.clearFocus() -> void"),
+            (
+                "android.selectionStart(",
+                "fn android.selectionStart() -> i64",
+            ),
+            ("android.selectionEnd(", "fn android.selectionEnd() -> i64"),
+            (
+                "android.setCaret(",
+                "fn android.setCaret(position: i64) -> bool",
+            ),
+            (
+                "android.setSelection(",
+                "fn android.setSelection(start: i64, end: i64) -> bool",
+            ),
         ] {
             let line_index = source
                 .lines()
                 .position(|line| line.contains(needle))
-                .expect("focus call line should exist");
+                .expect("Android input call line should exist");
             let line = source.lines().nth(line_index).unwrap();
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(
@@ -5544,7 +5613,7 @@ mod tests {
                 cursor,
                 PositionEncoding::Utf8,
             )
-            .expect("focus call should have signature help")
+            .expect("Android input call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

@@ -319,6 +319,17 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_clear_focus(");
     let uses_android_focus_navigation =
         uses_android_focus_next || uses_android_focus_previous || uses_android_clear_focus;
+    let uses_android_selection_start =
+        uses_android && runtime_usage.contains("flux__android_selection_start(");
+    let uses_android_selection_end =
+        uses_android && runtime_usage.contains("flux__android_selection_end(");
+    let uses_android_set_caret = uses_android && runtime_usage.contains("flux__android_set_caret(");
+    let uses_android_set_selection =
+        uses_android && runtime_usage.contains("flux__android_set_selection(");
+    let uses_android_text_selection = uses_android_selection_start
+        || uses_android_selection_end
+        || uses_android_set_caret
+        || uses_android_set_selection;
     let uses_android_create_notification_channel =
         uses_android && runtime_usage.contains("flux__android_create_notification_channel(");
     let uses_android_notification_permission_granted =
@@ -348,6 +359,7 @@ fn emit_runtime_prelude(
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
+        || uses_android_text_selection
         || uses_android_notifications
         || uses_android_permission_granted
         || uses_android_request_permission
@@ -563,6 +575,94 @@ fn emit_runtime_prelude(
         }
         if uses_android_clear_focus {
             out.push_str("static inline void flux__android_clear_focus(void) { flux__android_change_focus(0); }\n");
+        }
+    }
+    if uses_android_text_selection {
+        out.push_str("static jobject flux__android_current_edit_text(JNIEnv *env) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return NULL;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) return NULL;\n");
+        out.push_str("    jmethodID get_focus = (*env)->GetMethodID(env, activity_class, \"getCurrentFocus\", \"()Landroid/view/View;\");\n");
+        out.push_str("    if (get_focus == NULL) { (*env)->DeleteLocalRef(env, activity_class); return NULL; }\n");
+        out.push_str("    jobject view = (*env)->CallObjectMethod(env, activity, get_focus);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || view == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return NULL; }\n");
+        out.push_str(
+            "    jclass edit_text_class = (*env)->FindClass(env, \"android/widget/EditText\");\n",
+        );
+        out.push_str("    if (edit_text_class == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, view); return NULL; }\n");
+        out.push_str(
+            "    jboolean is_edit_text = (*env)->IsInstanceOf(env, view, edit_text_class);\n",
+        );
+        out.push_str("    (*env)->DeleteLocalRef(env, edit_text_class);\n");
+        out.push_str(
+            "    if (!is_edit_text) { (*env)->DeleteLocalRef(env, view); return NULL; }\n",
+        );
+        out.push_str("    return view;\n");
+        out.push_str("}\n");
+        if uses_android_selection_start || uses_android_selection_end {
+            out.push_str("static int64_t flux__android_selection_position(bool end) {\n");
+            out.push_str("    bool detach = false;\n");
+            out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+            out.push_str("    if (env == NULL) return INT64_C(-1);\n");
+            out.push_str("    jobject view = flux__android_current_edit_text(env);\n");
+            out.push_str("    if (view == NULL) { flux__android_release_env(detach); return INT64_C(-1); }\n");
+            out.push_str("    jclass view_class = (*env)->GetObjectClass(env, view);\n");
+            out.push_str("    jint result = -1;\n");
+            out.push_str("    if (view_class != NULL) {\n");
+            out.push_str("        jmethodID get_position = (*env)->GetMethodID(env, view_class, end ? \"getSelectionEnd\" : \"getSelectionStart\", \"()I\");\n");
+            out.push_str("        if (get_position != NULL) result = (*env)->CallIntMethod(env, view, get_position);\n");
+            out.push_str("    }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); result = -1; }\n");
+            out.push_str("    if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, view);\n");
+            out.push_str("    flux__android_release_env(detach);\n");
+            out.push_str("    return (int64_t)result;\n");
+            out.push_str("}\n");
+            if uses_android_selection_start {
+                out.push_str("static inline int64_t flux__android_selection_start(void) { return flux__android_selection_position(false); }\n");
+            }
+            if uses_android_selection_end {
+                out.push_str("static inline int64_t flux__android_selection_end(void) { return flux__android_selection_position(true); }\n");
+            }
+        }
+        if uses_android_set_caret || uses_android_set_selection {
+            out.push_str("static bool flux__android_set_selection(int64_t start, int64_t end) {\n");
+            out.push_str("    if (start < 0 || end < start || start > INT32_MAX || end > INT32_MAX) return false;\n");
+            out.push_str("    bool detach = false;\n");
+            out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+            out.push_str("    if (env == NULL) return false;\n");
+            out.push_str("    jobject view = flux__android_current_edit_text(env);\n");
+            out.push_str(
+                "    if (view == NULL) { flux__android_release_env(detach); return false; }\n",
+            );
+            out.push_str("    jclass view_class = (*env)->GetObjectClass(env, view);\n");
+            out.push_str("    bool applied = false;\n");
+            out.push_str("    if (view_class != NULL) {\n");
+            out.push_str("        jmethodID length = (*env)->GetMethodID(env, view_class, \"length\", \"()I\");\n");
+            out.push_str("        jmethodID set_selection = (*env)->GetMethodID(env, view_class, \"setSelection\", \"(II)V\");\n");
+            out.push_str("        if (length != NULL && set_selection != NULL) {\n");
+            out.push_str(
+                "            jint text_length = (*env)->CallIntMethod(env, view, length);\n",
+            );
+            out.push_str(
+                "            if (!(*env)->ExceptionCheck(env) && end <= (int64_t)text_length) {\n",
+            );
+            out.push_str("                (*env)->CallVoidMethod(env, view, set_selection, (jint)start, (jint)end);\n");
+            out.push_str("                applied = !(*env)->ExceptionCheck(env);\n");
+            out.push_str("            }\n");
+            out.push_str("        }\n");
+            out.push_str("    }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+            out.push_str("    if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, view);\n");
+            out.push_str("    flux__android_release_env(detach);\n");
+            out.push_str("    return applied;\n");
+            out.push_str("}\n");
+            if uses_android_set_caret {
+                out.push_str("static inline bool flux__android_set_caret(int64_t position) { return flux__android_set_selection(position, position); }\n");
+            }
         }
     }
     if uses_android_share {
@@ -10911,6 +11011,53 @@ fn emit_qualified_call(
                     _ => unreachable!(),
                 };
                 return Ok((format!("flux__android_{runtime_name}()"), Vec::new(), None));
+            }
+            "selectionStart" | "selectionEnd" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let runtime_name = if name == "selectionStart" {
+                    "selection_start"
+                } else {
+                    "selection_end"
+                };
+                return Ok((
+                    format!("flux__android_{runtime_name}()"),
+                    vec![Type::I64],
+                    None,
+                ));
+            }
+            "setCaret" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let position = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_set_caret({})", position.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "setSelection" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let start = emit_expr(&args[0], env, signatures)?;
+                let end = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__android_set_selection({}, {})", start.code, end.code),
+                    vec![Type::Bool],
+                    None,
+                ));
             }
             "vibrate" | "open_url" | "share" => {
                 if args.len() != 1 {
