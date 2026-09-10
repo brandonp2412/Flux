@@ -3480,8 +3480,9 @@ fn check_cfg_moved_reads(
         }
         let mut moved_reads = node
             .ownership
-            .reads
+            .borrows
             .iter()
+            .map(|borrow| &borrow.source)
             .filter(|name| state.is_moved(name))
             .cloned()
             .collect::<Vec<_>>();

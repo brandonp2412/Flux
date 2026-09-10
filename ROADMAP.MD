@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 444
 - Reported overall progress: **60%**
-- Current net scope growth after the baseline: 26 checkbox items
+- Current net scope growth after the baseline: 27 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -340,6 +340,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [ ] General move analysis across calls, aggregate fields, partial moves, and owned resource types after normalized control-flow ownership facts exist.
 - [ ] Immutable borrows.
   - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner.
+  - [x] Reachable non-copy name reads are represented explicitly as immutable-borrow facts on normalized CFG ownership nodes, derived from typed IR value reachability rather than syntax-wide read collection. Use-after-move validation consumes those borrow facts, so compile-time-dead nested regions such as a short-circuited boolean RHS do not spuriously borrow a moved owner while runtime-reachable borrows still fail deterministically.
   - [ ] First-class borrow/reference types and inferred borrow lifetimes for owned values.
 - [ ] Exclusive mutable borrows.
 - [ ] Lifetime inference.

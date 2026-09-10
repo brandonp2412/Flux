@@ -215,9 +215,22 @@ pub struct OwnershipMove {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipBorrowKind {
+    Immutable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipBorrow {
+    pub source: String,
+    pub kind: OwnershipBorrowKind,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlFlowOwnership {
     pub reads: Vec<String>,
+    pub borrows: Vec<OwnershipBorrow>,
     pub moves: Vec<OwnershipMove>,
 }
 
@@ -525,6 +538,12 @@ impl<'a> ControlFlowBuilder<'a> {
         let value_uses = collect_value_uses(&self.values);
         let reachable_values =
             compute_reachable_values(&self.values, &value_uses, &move_states_before);
+        populate_immutable_borrows(
+            &mut self.nodes,
+            &self.values,
+            &reachable_values,
+            self.signatures,
+        );
         ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
@@ -1695,6 +1714,7 @@ impl<'a> ControlFlowBuilder<'a> {
         reads.sort();
         ControlFlowOwnership {
             reads,
+            borrows: Vec::new(),
             moves: Vec::new(),
         }
     }
@@ -1713,6 +1733,7 @@ impl<'a> ControlFlowBuilder<'a> {
         };
         ControlFlowOwnership {
             reads: Vec::new(),
+            borrows: Vec::new(),
             moves,
         }
     }
@@ -2291,6 +2312,44 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
         }
     }
     uses
+}
+
+fn populate_immutable_borrows(
+    nodes: &mut [ControlFlowNode],
+    values: &[ControlFlowValue],
+    reachable_values: &BTreeSet<ControlFlowValueId>,
+    signatures: &Signatures,
+) {
+    for value in values {
+        if !reachable_values.contains(&value.id) || signatures.is_copy_type(&value.ty) {
+            continue;
+        }
+        let ControlFlowValueKind::NameRead { name, .. } = &value.kind else {
+            continue;
+        };
+        let Some(node) = nodes.get_mut(value.producer.0) else {
+            continue;
+        };
+        if node.ownership.borrows.iter().any(|borrow| {
+            borrow.source == *name
+                && borrow.kind == OwnershipBorrowKind::Immutable
+                && borrow.span == value.span
+        }) {
+            continue;
+        }
+        node.ownership.borrows.push(OwnershipBorrow {
+            source: name.clone(),
+            kind: OwnershipBorrowKind::Immutable,
+            span: value.span,
+        });
+    }
+    for node in nodes {
+        node.ownership.borrows.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then_with(|| span_key(left.span).cmp(&span_key(right.span)))
+        });
+    }
 }
 
 fn compute_reachable_values(

@@ -3568,6 +3568,43 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ignores_non_copy_borrows_in_statically_dead_expression_regions() {
+    let dead_borrow = r#"
+fn main() -> i64 {
+    let source: i64[] = [3, 4]
+    let destination: i64[] = source
+    if false && source.isNotEmpty:
+        print(1)
+    return destination.first
+}
+"#;
+    check_source(dead_borrow)
+        .expect("a statically dead nested borrow must not become a use-after-move error");
+    compile_to_c(dead_borrow).expect("dead nested borrow ownership should lower natively");
+
+    let live_borrow = r#"
+fn inspect(enabled: bool) -> i64 {
+    let source: i64[] = [3, 4]
+    let destination: i64[] = source
+    if enabled && source.isNotEmpty:
+        print(1)
+    return destination.first
+}
+
+fn main() -> i64 {
+    return inspect(true)
+}
+"#;
+    let errors = check_source_all(live_borrow)
+        .expect_err("a reachable conditional borrow after a move must still fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'source'")
+    }));
+}
+
+#[test]
 fn branch_moves_are_conservative_and_loop_moves_are_rejected() {
     let branch = r#"
 fn main() -> i64 {
@@ -6945,6 +6982,12 @@ fn main() -> i64 {
     assert_eq!(source_value.result_index, Some(0));
     assert_eq!(source_value.ty, source_evaluation.value_types[0]);
     assert_eq!(source_evaluation.ownership.reads, vec!["source"]);
+    assert_eq!(source_evaluation.ownership.borrows.len(), 1);
+    assert_eq!(source_evaluation.ownership.borrows[0].source, "source");
+    assert_eq!(
+        source_evaluation.ownership.borrows[0].span,
+        source_value.span
+    );
     assert!(source_evaluation.ownership.moves.is_empty());
 
     let destination_read = ownership_graph
@@ -6957,6 +7000,13 @@ fn main() -> i64 {
                 .any(|read| read == "destination")
         })
         .expect("later expression evaluation should retain its binding reads");
+    assert!(
+        destination_read
+            .ownership
+            .borrows
+            .iter()
+            .any(|borrow| borrow.source == "destination")
+    );
     let moved_before_read = ownership_graph
         .move_state_before(destination_read.id)
         .expect("every graph node should have a move-state slot");
