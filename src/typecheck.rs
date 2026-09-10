@@ -2362,6 +2362,9 @@ fn collect_binding_declarations(
                 }
             }
             StmtKind::Assign { .. }
+            | StmtKind::AssignMultiDestructure { .. }
+            | StmtKind::AssignListDestructure { .. }
+            | StmtKind::AssignStructDestructure { .. }
             | StmtKind::Break
             | StmtKind::Continue
             | StmtKind::Expr(_)
@@ -2450,12 +2453,16 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
             StmtKind::Let { expr, .. }
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => collect_expr_reads(expr, reads),
             StmtKind::LetDestructure {
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 collect_expr_reads(expr, reads);
                 if *else_return && let Some(binding) = bindings.last() {
@@ -2466,6 +2473,7 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 collect_expr_reads(expr, reads);
                 if *else_return
@@ -2773,10 +2781,142 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
             }
+            StmtKind::AssignMultiDestructure { bindings, expr } => {
+                let actuals = match value_types_of_expr(expr, env, signatures) {
+                    Ok(actuals) => Some(actuals),
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                if let Some(actuals) = actuals {
+                    if actuals.len() != bindings.len() {
+                        diagnostics.push(diag(
+                            stmt.span,
+                            &format!(
+                                "multi-value assignment pattern expects {} values, expression returns {}",
+                                bindings.len(),
+                                actuals.len()
+                            ),
+                        ));
+                    }
+                    for (binding, actual) in bindings.iter().zip(actuals.iter()) {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        validate_assignment_target(
+                            &binding.name,
+                            binding.span,
+                            actual,
+                            env,
+                            mutable,
+                            signatures,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+            StmtKind::AssignListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                let element_ty = match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => match signatures.canonical_type(&actual) {
+                        Type::List(element) => Some(*element),
+                        other => {
+                            diagnostics.push(diag(
+                                expr.span,
+                                &format!(
+                                    "list assignment pattern requires a list value, got {}",
+                                    other.name()
+                                ),
+                            ));
+                            None
+                        }
+                    },
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        None
+                    }
+                };
+                if let Some(element_ty) = element_ty {
+                    for binding in bindings {
+                        if binding.name != "_" {
+                            validate_assignment_target(
+                                &binding.name,
+                                binding.span,
+                                &element_ty,
+                                env,
+                                mutable,
+                                signatures,
+                                diagnostics,
+                            );
+                        }
+                    }
+                    if let Some(rest) = rest
+                        && rest.binding.name != "_"
+                    {
+                        validate_assignment_target(
+                            &rest.binding.name,
+                            rest.binding.span,
+                            &Type::List(Box::new(element_ty)),
+                            env,
+                            mutable,
+                            signatures,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+            StmtKind::AssignStructDestructure {
+                struct_name,
+                struct_span,
+                fields,
+                expr,
+            } => {
+                let pattern_ty = signatures.canonical_type(&Type::Named(struct_name.clone()));
+                let Type::Named(concrete_name) = &pattern_ty else {
+                    diagnostics.push(diag(
+                        *struct_span,
+                        &format!("struct pattern '{struct_name}' does not name a struct type"),
+                    ));
+                    continue;
+                };
+                if signatures.struct_type(concrete_name).is_none() {
+                    diagnostics.push(diag(
+                        *struct_span,
+                        &format!("struct pattern '{struct_name}' does not name a struct type"),
+                    ));
+                    continue;
+                }
+                match type_of_expr(expr, env, signatures) {
+                    Ok(actual) => {
+                        if let Err(diagnostic) = require_type(
+                            expr.span,
+                            &pattern_ty,
+                            &actual,
+                            "struct assignment pattern",
+                        ) {
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                validate_struct_assignment_fields(
+                    fields,
+                    concrete_name,
+                    env,
+                    mutable,
+                    signatures,
+                    diagnostics,
+                );
+            }
             StmtKind::LetDestructure {
                 bindings,
                 expr,
                 else_return,
+                mutable: pattern_mutable,
             } => {
                 let actuals = match value_types_of_expr(expr, env, signatures) {
                     Ok(actuals) => Some(actuals),
@@ -2825,7 +2965,21 @@ fn check_block_all(
                             &format!("'{}' is already defined in this scope", binding.name),
                         ));
                     } else {
-                        env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
+                        let binding_ty = signatures.canonical_type(&binding.ty);
+                        env.insert(binding.name.clone(), binding_ty.clone());
+                        if *pattern_mutable {
+                            if signatures.is_copy_type(&binding_ty) {
+                                mutable.insert(binding.name.clone());
+                            } else {
+                                diagnostics.push(diag(
+                                    binding.type_span,
+                                    &format!(
+                                        "non-copy destructured binding '{}' cannot be mutable until move/borrow semantics are implemented",
+                                        binding.name
+                                    ),
+                                ));
+                            }
+                        }
                     }
                 }
 
@@ -2858,6 +3012,7 @@ fn check_block_all(
                 bindings,
                 expr,
                 else_return,
+                mutable: pattern_mutable,
             } => {
                 let actuals = match value_types_of_expr(expr, env, signatures) {
                     Ok(actuals) => Some(actuals),
@@ -2887,7 +3042,21 @@ fn check_block_all(
                                 &format!("'{}' is already defined in this scope", binding.name),
                             ));
                         } else {
-                            env.insert(binding.name.clone(), signatures.canonical_type(actual));
+                            let binding_ty = signatures.canonical_type(actual);
+                            env.insert(binding.name.clone(), binding_ty.clone());
+                            if *pattern_mutable {
+                                if signatures.is_copy_type(&binding_ty) {
+                                    mutable.insert(binding.name.clone());
+                                } else {
+                                    diagnostics.push(diag(
+                                        binding.span,
+                                        &format!(
+                                            "non-copy destructured binding '{}' cannot be mutable until move/borrow semantics are implemented",
+                                            binding.name
+                                        ),
+                                    ));
+                                }
+                            }
                         }
                     }
                     if *else_return {
@@ -2924,6 +3093,7 @@ fn check_block_all(
                 bindings,
                 rest,
                 expr,
+                mutable: pattern_mutable,
             } => {
                 let element_ty = match type_of_expr(expr, env, signatures) {
                     Ok(actual) => match signatures.canonical_type(&actual) {
@@ -2956,6 +3126,19 @@ fn check_block_all(
                             ));
                         } else {
                             env.insert(binding.name.clone(), element_ty.clone());
+                            if *pattern_mutable {
+                                if signatures.is_copy_type(&element_ty) {
+                                    mutable.insert(binding.name.clone());
+                                } else {
+                                    diagnostics.push(diag(
+                                        binding.span,
+                                        &format!(
+                                            "non-copy destructured binding '{}' cannot be mutable until move/borrow semantics are implemented",
+                                            binding.name
+                                        ),
+                                    ));
+                                }
+                            }
                         }
                     }
                     if let Some(rest) = rest
@@ -2970,7 +3153,17 @@ fn check_block_all(
                                 ),
                             ));
                         } else {
-                            env.insert(rest.binding.name.clone(), Type::List(Box::new(element_ty)));
+                            let rest_ty = Type::List(Box::new(element_ty));
+                            env.insert(rest.binding.name.clone(), rest_ty.clone());
+                            if *pattern_mutable {
+                                diagnostics.push(diag(
+                                    rest.binding.span,
+                                    &format!(
+                                        "non-copy destructured binding '{}' cannot be mutable until move/borrow semantics are implemented",
+                                        rest.binding.name
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2980,6 +3173,7 @@ fn check_block_all(
                 struct_span,
                 fields,
                 expr,
+                mutable: pattern_mutable,
             } => {
                 let pattern_ty = signatures.canonical_type(&Type::Named(struct_name.clone()));
                 let Type::Named(concrete_name) = &pattern_ty else {
@@ -3007,6 +3201,25 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 bind_struct_pattern_fields(fields, concrete_name, env, signatures, diagnostics);
+                if *pattern_mutable {
+                    let mut declarations = Vec::new();
+                    collect_struct_pattern_declarations(fields, &mut declarations);
+                    for (name, span, _) in declarations {
+                        let Some(binding_ty) = env.get(&name).cloned() else {
+                            continue;
+                        };
+                        if signatures.is_copy_type(&binding_ty) {
+                            mutable.insert(name);
+                        } else {
+                            diagnostics.push(diag(
+                                span,
+                                &format!(
+                                    "non-copy destructured binding '{name}' cannot be mutable until move/borrow semantics are implemented"
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
             StmtKind::Return(expressions) => {
                 let actuals = if expressions.len() == 1 {
@@ -5973,6 +6186,9 @@ fn block_guarantees_return(body: &[Stmt]) -> bool {
             | StmtKind::Let { .. }
             | StmtKind::Var { .. }
             | StmtKind::Assign { .. }
+            | StmtKind::AssignMultiDestructure { .. }
+            | StmtKind::AssignListDestructure { .. }
+            | StmtKind::AssignStructDestructure { .. }
             | StmtKind::LetDestructure { .. }
             | StmtKind::LetMultiDestructure { .. }
             | StmtKind::LetListDestructure { .. }
@@ -6368,6 +6584,95 @@ fn resolve_alias_target(
     let resolved = resolve_alias_target(target, aliases, chain);
     chain.pop();
     resolved
+}
+
+fn validate_assignment_target(
+    name: &str,
+    span: SourceSpan,
+    actual: &Type,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    _signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(expected) = env.get(name) else {
+        diagnostics.push(diag(span, &format!("unknown binding '{name}'")));
+        return;
+    };
+    if !mutable.contains(name) {
+        diagnostics.push(diag(
+            span,
+            &format!("cannot assign to immutable binding '{name}'; declare it with 'var'"),
+        ));
+        return;
+    }
+    if let Err(diagnostic) = require_type(span, expected, actual, "pattern assignment") {
+        diagnostics.push(diagnostic);
+    }
+}
+
+fn validate_struct_assignment_fields(
+    fields: &[StructPatternField],
+    concrete_name: &str,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(definition) = signatures.struct_type(concrete_name) else {
+        return;
+    };
+    for field in fields {
+        let Some(field_signature) = definition.field(&field.field) else {
+            diagnostics.push(
+                diag(
+                    field.field_span,
+                    &format!("struct '{concrete_name}' has no field '{}'", field.field),
+                )
+                .with_label(
+                    definition.span,
+                    format!("'{concrete_name}' is declared here"),
+                ),
+            );
+            continue;
+        };
+        if let Some(nested) = &field.nested {
+            let expected = signatures.canonical_type(&Type::Named(nested.struct_name.clone()));
+            let actual = signatures.canonical_type(&field_signature.ty);
+            if let Err(diagnostic) = require_type(
+                nested.struct_span,
+                &expected,
+                &actual,
+                "nested struct assignment pattern",
+            ) {
+                diagnostics.push(diagnostic);
+                continue;
+            }
+            let Type::Named(nested_name) = expected else {
+                continue;
+            };
+            validate_struct_assignment_fields(
+                &nested.fields,
+                &nested_name,
+                env,
+                mutable,
+                signatures,
+                diagnostics,
+            );
+            continue;
+        }
+        if field.binding.name != "_" {
+            validate_assignment_target(
+                &field.binding.name,
+                field.binding.span,
+                &field_signature.ty,
+                env,
+                mutable,
+                signatures,
+                diagnostics,
+            );
+        }
+    }
 }
 
 fn bind_struct_pattern_fields(

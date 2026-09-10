@@ -472,39 +472,18 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
             StmtKind::Assign { name, expr, .. } => {
                 lines.insert(stmt.line, format!("{pad}{name} = {}", format_expr(expr, 0)));
             }
-            StmtKind::LetDestructure {
-                bindings,
-                expr,
-                else_return,
-            } => {
-                let bindings = bindings
-                    .iter()
-                    .map(|binding| format!("{}: {}", binding.name, binding.ty.name()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let suffix = if *else_return { " else return" } else { "" };
-                lines.insert(
-                    stmt.line,
-                    format!("{pad}let {bindings} = {}{suffix}", format_expr(expr, 0)),
-                );
-            }
-            StmtKind::LetMultiDestructure {
-                bindings,
-                expr,
-                else_return,
-            } => {
+            StmtKind::AssignMultiDestructure { bindings, expr } => {
                 let pattern = bindings
                     .iter()
                     .map(|binding| binding.name.clone())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let suffix = if *else_return { " else return" } else { "" };
                 lines.insert(
                     stmt.line,
-                    format!("{pad}let ({pattern}) = {}{suffix}", format_expr(expr, 0)),
+                    format!("{pad}({pattern}) = {}", format_expr(expr, 0)),
                 );
             }
-            StmtKind::LetListDestructure {
+            StmtKind::AssignListDestructure {
                 bindings,
                 rest,
                 expr,
@@ -518,14 +497,10 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 }
                 lines.insert(
                     stmt.line,
-                    format!(
-                        "{pad}let [{}] = {}",
-                        pattern.join(", "),
-                        format_expr(expr, 0)
-                    ),
+                    format!("{pad}[{}] = {}", pattern.join(", "), format_expr(expr, 0)),
                 );
             }
-            StmtKind::LetStructDestructure {
+            StmtKind::AssignStructDestructure {
                 struct_name,
                 fields,
                 expr,
@@ -539,7 +514,93 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 lines.insert(
                     stmt.line,
                     format!(
-                        "{pad}let {struct_name} {{ {fields} }} = {}",
+                        "{pad}{struct_name} {{ {fields} }} = {}",
+                        format_expr(expr, 0)
+                    ),
+                );
+            }
+            StmtKind::LetDestructure {
+                bindings,
+                expr,
+                else_return,
+                mutable,
+            } => {
+                let bindings = bindings
+                    .iter()
+                    .map(|binding| format!("{}: {}", binding.name, binding.ty.name()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if *else_return { " else return" } else { "" };
+                let keyword = if *mutable { "var" } else { "let" };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}{keyword} {bindings} = {}{suffix}",
+                        format_expr(expr, 0)
+                    ),
+                );
+            }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                else_return,
+                mutable,
+            } => {
+                let pattern = bindings
+                    .iter()
+                    .map(|binding| binding.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if *else_return { " else return" } else { "" };
+                let keyword = if *mutable { "var" } else { "let" };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}{keyword} ({pattern}) = {}{suffix}",
+                        format_expr(expr, 0)
+                    ),
+                );
+            }
+            StmtKind::LetListDestructure {
+                bindings,
+                rest,
+                expr,
+                mutable,
+            } => {
+                let mut pattern = bindings
+                    .iter()
+                    .map(|binding| binding.name.clone())
+                    .collect::<Vec<_>>();
+                if let Some(rest) = rest {
+                    pattern.insert(rest.index, format!("...{}", rest.binding.name));
+                }
+                let keyword = if *mutable { "var" } else { "let" };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}{keyword} [{}] = {}",
+                        pattern.join(", "),
+                        format_expr(expr, 0)
+                    ),
+                );
+            }
+            StmtKind::LetStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                mutable,
+                ..
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(format_struct_pattern_field)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let keyword = if *mutable { "var" } else { "let" };
+                lines.insert(
+                    stmt.line,
+                    format!(
+                        "{pad}{keyword} {struct_name} {{ {fields} }} = {}",
                         format_expr(expr, 0)
                     ),
                 );

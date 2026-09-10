@@ -8945,6 +8945,9 @@ fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut 
             StmtKind::Let { expr, .. }
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. }
             | StmtKind::LetDestructure { expr, .. }
             | StmtKind::LetMultiDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
@@ -9431,10 +9434,131 @@ fn emit_block(
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value.code));
             }
+            StmtKind::AssignMultiDestructure { bindings, expr } => {
+                let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                let temp = format!("flux__multi_assign_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                for (index, binding) in bindings.iter().enumerate() {
+                    if binding.name == "_"
+                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                    {
+                        continue;
+                    }
+                    actuals.get(index).ok_or_else(|| {
+                        diag(
+                            stmt.span,
+                            "multi-value assignment arity changed after type checking",
+                        )
+                    })?;
+                    out.push_str(&format!(
+                        "{pad}{} = {temp}.v{index};\n",
+                        local_c_name(&binding.name)
+                    ));
+                }
+            }
+            StmtKind::AssignListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                let value = emit_expr(expr, env, signatures)?;
+                let Type::List(element) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "list assignment code generation requires a list value",
+                    ));
+                };
+                let temp = format!("flux__list_assign_{}", *temp_counter);
+                *temp_counter += 1;
+                let element_c = c_type(element, signatures);
+                out.push_str(&format!(
+                    "{pad}struct flux__list {temp} = {};\n",
+                    value.code
+                ));
+                if rest.is_some() {
+                    out.push_str(&format!(
+                        "{pad}if ({temp}.len < {}) {{ fputs(\"Flux runtime error: list pattern requires at least {} elements\\n\", stderr); abort(); }}\n",
+                        bindings.len(),
+                        bindings.len()
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}if ({temp}.len != {}) {{ fputs(\"Flux runtime error: list pattern requires exactly {} elements\\n\", stderr); abort(); }}\n",
+                        bindings.len(),
+                        bindings.len()
+                    ));
+                }
+                for (index, binding) in bindings.iter().enumerate() {
+                    if binding.name == "_"
+                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                    {
+                        continue;
+                    }
+                    let index_code = if let Some(rest) = rest {
+                        if index < rest.index {
+                            index.to_string()
+                        } else {
+                            format!("{temp}.len - {}", bindings.len() - index)
+                        }
+                    } else {
+                        index.to_string()
+                    };
+                    out.push_str(&format!(
+                        "{pad}{} = *(({element_c} *)flux_list_at_unchecked({temp}, {index_code}, sizeof({element_c})));\n",
+                        local_c_name(&binding.name)
+                    ));
+                }
+                if let Some(rest) = rest
+                    && rest.binding.name != "_"
+                    && !dead_definitions.is_some_and(|dead| dead.contains(&rest.binding.name))
+                {
+                    let rest_temp = format!("flux__list_assign_rest_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}struct flux__list {rest_temp} = {{ .data = {temp}.data, .len = {temp}.len - {}, .stride = flux_list_stride({temp}, sizeof({element_c})) }};\n",
+                        bindings.len()
+                    ));
+                    out.push_str(&format!(
+                        "{pad}if ({rest_temp}.len != 0) {{ {rest_temp}.data = flux_list_at_unchecked({temp}, {}, sizeof({element_c})); }}\n",
+                        rest.index
+                    ));
+                    out.push_str(&format!(
+                        "{pad}{} = {rest_temp};\n",
+                        local_c_name(&rest.binding.name)
+                    ));
+                }
+            }
+            StmtKind::AssignStructDestructure { fields, expr, .. } => {
+                let value = emit_expr(expr, env, signatures)?;
+                let Type::Named(struct_name) = &value.ty else {
+                    return Err(diag(
+                        stmt.span,
+                        "struct assignment code generation requires a struct value",
+                    ));
+                };
+                let temp = format!("flux__struct_assign_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {temp} = {};\n",
+                    c_type(&value.ty, signatures),
+                    value.code
+                ));
+                emit_struct_pattern_assignments(
+                    out,
+                    &pad,
+                    fields,
+                    struct_name,
+                    &temp,
+                    signatures,
+                    dead_definitions,
+                )?;
+            }
             StmtKind::LetDestructure {
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 let (value, tag, _) = emit_multi_expr(expr, env, signatures)?;
                 let temp = format!("flux__multi_{}", *temp_counter);
@@ -9471,6 +9595,7 @@ fn emit_block(
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
                 let temp = format!("flux__multi_pattern_{}", *temp_counter);
@@ -9515,6 +9640,7 @@ fn emit_block(
                 bindings,
                 rest,
                 expr,
+                ..
             } => {
                 let value = emit_expr(expr, env, signatures)?;
                 let Type::List(element) = &value.ty else {
@@ -10493,6 +10619,54 @@ fn emit_list_match_expr_into(
             }
             out.push_str(&format!("{pad}}}\n"));
         }
+    }
+    Ok(())
+}
+
+fn emit_struct_pattern_assignments(
+    out: &mut String,
+    pad: &str,
+    fields: &[StructPatternField],
+    struct_name: &str,
+    base: &str,
+    signatures: &Signatures,
+    dead_definitions: Option<&HashSet<String>>,
+) -> Result<(), Diagnostic> {
+    let definition = signatures
+        .struct_type(struct_name)
+        .expect("type checking guarantees struct assignment pattern type exists");
+    for field in fields {
+        let field_signature = definition
+            .field(&field.field)
+            .expect("type checking guarantees struct assignment pattern fields exist");
+        let access = format!("{base}.{}", field_c_name(&field.field));
+        if let Some(nested) = &field.nested {
+            let Type::Named(nested_name) = signatures.canonical_type(&field_signature.ty) else {
+                return Err(diag(
+                    nested.struct_span,
+                    "nested struct assignment code generation requires a struct value",
+                ));
+            };
+            emit_struct_pattern_assignments(
+                out,
+                pad,
+                &nested.fields,
+                &nested_name,
+                &access,
+                signatures,
+                dead_definitions,
+            )?;
+            continue;
+        }
+        if field.binding.name == "_"
+            || dead_definitions.is_some_and(|dead| dead.contains(&field.binding.name))
+        {
+            continue;
+        }
+        out.push_str(&format!(
+            "{pad}{} = {access};\n",
+            local_c_name(&field.binding.name),
+        ));
     }
     Ok(())
 }
@@ -13883,6 +14057,9 @@ fn collect_update_helpers_from_block(
             StmtKind::Let { expr, .. }
             | StmtKind::Var { expr, .. }
             | StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. }
             | StmtKind::LetDestructure { expr, .. }
             | StmtKind::LetMultiDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }

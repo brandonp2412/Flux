@@ -282,7 +282,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [x] Relational/logical scalar enum-payload patterns where readable: `==`, `!=`, `<`, `<=`, `>`, and `>=` compare against compile-time primitive constants, `&&`/`||` compose relational tests, statement/value matches share native lowering and formatter support, and refutable pattern arms remain conservatively non-exhaustive until a later irrefutable arm covers the variant.
 - [x] Boolean pattern guards on enum/list statement and value-producing `match` arms, with pattern bindings in scope, formatter/semantic support, native lowering, guarded-arm fallthrough, conservative exhaustiveness, and unreachable-arm diagnostics after an unguarded covering arm.
 - [x] Exhaustiveness checking for the implemented closed enum and list-length pattern domains, including unreachable/duplicate-arm rejection.
-- [ ] Pattern-based variable declarations/assignments beyond the implemented struct/list/multi-value `let` destructuring forms.
+- [x] Pattern-based mutable declarations and assignments beyond `let` destructuring: typed multi-value, inferred multi-value, exact/rest list, and nested struct patterns may declare copyable targets with `var`, while corresponding multi-value/list/struct assignment patterns update existing mutable bindings after exact static type checks. Pattern RHS values are evaluated once, list assignments preserve exact/rest cardinality checks and strided order, struct assignments project nested fields directly, `_` remains discard-only, non-copy mutable captures remain rejected until full move/borrow semantics land, and formatter/semantic/CFG/native lowering share the same forms.
 
 ## Expression ergonomics
 

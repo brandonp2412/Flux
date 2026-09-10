@@ -605,20 +605,34 @@ fn collect_block_symbols(
                 });
                 collect_expr_pattern_symbols(expr, symbols, signatures);
             }
-            StmtKind::Assign { expr, .. } => {
+            StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. } => {
                 collect_expr_pattern_symbols(expr, symbols, signatures);
             }
-            StmtKind::LetDestructure { bindings, .. } => {
+            StmtKind::LetDestructure {
+                bindings, mutable, ..
+            } => {
                 for binding in bindings {
                     symbols.push(SemanticSymbol {
                         name: binding.name.clone(),
-                        kind: SymbolKind::Binding,
+                        kind: if *mutable {
+                            SymbolKind::MutableBinding
+                        } else {
+                            SymbolKind::Binding
+                        },
                         ty: Some(binding.ty.clone()),
                         span: binding.name_span,
                     });
                 }
             }
-            StmtKind::LetMultiDestructure { bindings, expr, .. } => {
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                mutable,
+                ..
+            } => {
                 let env = symbols
                     .iter()
                     .filter(|symbol| {
@@ -640,7 +654,11 @@ fn collect_block_symbols(
                     }
                     symbols.push(SemanticSymbol {
                         name: binding.name.clone(),
-                        kind: SymbolKind::PatternBinding,
+                        kind: if *mutable {
+                            SymbolKind::MutableBinding
+                        } else {
+                            SymbolKind::PatternBinding
+                        },
                         ty: actuals.as_ref().and_then(|types| types.get(index)).cloned(),
                         span: binding.span,
                     });
@@ -651,6 +669,7 @@ fn collect_block_symbols(
                 bindings,
                 rest,
                 expr,
+                mutable,
             } => {
                 let env = symbols
                     .iter()
@@ -679,7 +698,11 @@ fn collect_block_symbols(
                     }
                     symbols.push(SemanticSymbol {
                         name: binding.name.clone(),
-                        kind: SymbolKind::Binding,
+                        kind: if *mutable {
+                            SymbolKind::MutableBinding
+                        } else {
+                            SymbolKind::Binding
+                        },
                         ty: element_ty.clone(),
                         span: binding.span,
                     });
@@ -689,7 +712,11 @@ fn collect_block_symbols(
                 {
                     symbols.push(SemanticSymbol {
                         name: rest.binding.name.clone(),
-                        kind: SymbolKind::Binding,
+                        kind: if *mutable {
+                            SymbolKind::MutableBinding
+                        } else {
+                            SymbolKind::Binding
+                        },
                         ty: element_ty
                             .clone()
                             .map(|element| Type::List(Box::new(element))),
@@ -701,6 +728,7 @@ fn collect_block_symbols(
             StmtKind::LetStructDestructure {
                 struct_name,
                 fields,
+                mutable,
                 ..
             } => {
                 let definition = signatures.canonical_type(&Type::Named(struct_name.clone()));
@@ -708,7 +736,18 @@ fn collect_block_symbols(
                     Type::Named(name) => name,
                     _ => struct_name.clone(),
                 };
+                let start = symbols.len();
                 collect_struct_pattern_symbols(fields, &concrete_name, symbols, signatures);
+                if *mutable {
+                    for symbol in &mut symbols[start..] {
+                        if matches!(
+                            symbol.kind,
+                            SymbolKind::Binding | SymbolKind::PatternBinding
+                        ) {
+                            symbol.kind = SymbolKind::MutableBinding;
+                        }
+                    }
+                }
             }
             StmtKind::If {
                 body, else_body, ..

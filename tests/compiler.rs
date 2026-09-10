@@ -3410,6 +3410,145 @@ fn main() -> i64 {
 }
 
 #[test]
+fn mutable_pattern_declarations_bind_copy_values_as_vars() {
+    let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn pair() -> (i64, i64) {
+    return 3, 4
+}
+
+fn main() -> i64 {
+    var typedLeft: i64, typedRight: i64 = pair()
+    var (first, second) = pair()
+    var [head, tail] = [5, 6]
+    var Pair { left, right: renamed } = Pair { left: 7, right: 8 }
+    typedLeft = typedLeft + 1
+    typedRight = typedRight + 1
+    first = first + 1
+    second = second + 1
+    head = head + 1
+    tail = tail + 1
+    left = left + 1
+    renamed = renamed + 1
+    return typedLeft + typedRight + first + second + head + tail + left + renamed
+}
+"#;
+
+    check_source(source).expect("copy-valued var destructuring should be assignable");
+    compile_to_c(source)
+        .expect("mutable destructuring should lower through ordinary native locals");
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("mutable patterns should format");
+    assert!(formatted.contains("var typedLeft: i64, typedRight: i64 = pair()"));
+    assert!(formatted.contains("var (first, second) = pair()"));
+    assert!(formatted.contains("var [head, tail] = [5, 6]"));
+    assert!(formatted.contains("var Pair { left, right: renamed } = Pair { left: 7, right: 8 }"));
+}
+
+#[test]
+fn pattern_assignments_update_existing_mutable_bindings() {
+    let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn pair() -> (i64, i64) {
+    return 3, 4
+}
+
+fn main() -> i64 {
+    var first: i64 = 0
+    var second: i64 = 0
+    var head: i64 = 0
+    var tail: i64 = 0
+    var left: i64 = 0
+    var renamed: i64 = 0
+    (first, second) = pair()
+    [head, tail] = [5, 6]
+    Pair { left, right: renamed } = Pair { left: 7, right: 8 }
+    return first + second + head + tail + left + renamed
+}
+"#;
+
+    check_source(source).expect("pattern assignment should update existing mutable bindings");
+    let generated = compile_to_c(source).expect("pattern assignment should lower natively");
+    assert!(generated.contains("flux__multi_assign_"));
+    assert!(generated.contains("flux__list_assign_"));
+    assert!(generated.contains("flux__struct_assign_"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("pattern assignments should format");
+    assert!(formatted.contains("(first, second) = pair()"));
+    assert!(formatted.contains("[head, tail] = [5, 6]"));
+    assert!(formatted.contains("Pair { left, right: renamed } = Pair { left: 7, right: 8 }"));
+}
+
+#[test]
+fn pattern_assignments_require_existing_mutable_compatible_targets() {
+    let immutable = r#"
+fn pair() -> (i64, i64) {
+    return 1, 2
+}
+
+fn main() -> i64 {
+    let first: i64 = 0
+    var second: i64 = 0
+    (first, second) = pair()
+    return first + second
+}
+"#;
+    let errors = check_source_all(immutable).expect_err("immutable assignment target must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot assign to immutable binding 'first'")
+    }));
+
+    let unknown = r#"
+fn pair() -> (i64, i64) {
+    return 1, 2
+}
+
+fn main() -> i64 {
+    var first: i64 = 0
+    (first, missing) = pair()
+    return first
+}
+"#;
+    let errors = check_source_all(unknown).expect_err("unknown assignment target must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unknown binding 'missing'"))
+    );
+}
+
+#[test]
+fn mutable_pattern_declarations_reject_non_copy_bindings() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    var [first, ...rest] = values
+    first = first + 1
+    return rest.length + first
+}
+"#;
+
+    let errors = check_source_all(source).expect_err("mutable non-copy rest bindings must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("non-copy destructured binding 'rest' cannot be mutable")
+    }));
+}
+
+#[test]
 fn ownership_copy_classification_is_structural_and_alias_aware() {
     let source = r#"
 struct Pair {

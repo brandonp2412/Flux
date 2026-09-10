@@ -503,6 +503,37 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 *name_span = name_span.with_source(source_id);
                 attach_expr_source(expr, source_id);
             }
+            StmtKind::AssignMultiDestructure { bindings, expr } => {
+                for binding in bindings {
+                    binding.span = binding.span.with_source(source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::AssignListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                for binding in bindings {
+                    binding.span = binding.span.with_source(source_id);
+                }
+                if let Some(rest) = rest {
+                    rest.binding.span = rest.binding.span.with_source(source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
+            StmtKind::AssignStructDestructure {
+                struct_span,
+                fields,
+                expr,
+                ..
+            } => {
+                *struct_span = struct_span.with_source(source_id);
+                for field in fields {
+                    attach_struct_pattern_field_source(field, source_id);
+                }
+                attach_expr_source(expr, source_id);
+            }
             StmtKind::LetDestructure { bindings, expr, .. } => {
                 for binding in bindings {
                     binding.name_span = binding.name_span.with_source(source_id);
@@ -520,6 +551,7 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                 bindings,
                 rest,
                 expr,
+                ..
             } => {
                 for binding in bindings {
                     binding.span = binding.span.with_source(source_id);
@@ -3479,19 +3511,100 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
         let raw_expr_src = &rest[eq_offset + 1..];
         let (expr_src, expr_column) =
             trim_with_column(raw_expr_src, span.column + 4 + eq_offset + 1);
-        let (raw_binding, binding_column) = trim_with_column(binding_src, span.column + 4);
-        let binding = parse_binding(raw_binding, line, binding_column)?;
         let expr = parse_expression_at(expr_src, line, expr_column)?;
+
+        if let Some(bindings) =
+            parse_multi_value_destructure_pattern(binding_src, line, span.column + 4)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetMultiDestructure {
+                    bindings,
+                    expr,
+                    else_return: false,
+                    mutable: true,
+                },
+            });
+        }
+        if let Some(list_pattern) =
+            parse_list_destructure_pattern(binding_src, line, span.column + 4, false)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetListDestructure {
+                    bindings: list_pattern.bindings,
+                    rest: list_pattern.rest,
+                    expr,
+                    mutable: true,
+                },
+            });
+        }
+        if let Some((struct_name, struct_span, fields)) =
+            parse_struct_destructure_pattern(binding_src, line, span.column + 4)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::LetStructDestructure {
+                    struct_name,
+                    struct_span,
+                    fields,
+                    expr,
+                    mutable: true,
+                },
+            });
+        }
+
+        let raw_bindings = split_top_level_commas_with_offsets(binding_src);
+        if raw_bindings.len() == 1 {
+            let (raw_binding, binding_offset) = raw_bindings[0];
+            let (raw_binding, binding_column) =
+                trim_with_column(raw_binding, span.column + 4 + binding_offset);
+            let binding = parse_binding(raw_binding, line, binding_column)?;
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, span.column, 3),
+                kind: StmtKind::Var {
+                    name: binding.name,
+                    name_span: binding.name_span,
+                    ty: binding.ty,
+                    type_span: binding.type_span,
+                    expr,
+                },
+            });
+        }
+
+        let mut bindings = Vec::with_capacity(raw_bindings.len());
+        for (raw_binding, binding_offset) in raw_bindings {
+            let (raw_binding, binding_column) =
+                trim_with_column(raw_binding, span.column + 4 + binding_offset);
+            let binding = parse_binding(raw_binding, line, binding_column)?;
+            if bindings
+                .iter()
+                .any(|existing: &Binding| existing.name == binding.name)
+            {
+                return Err(diag(
+                    line,
+                    &format!("duplicate destructured binding '{}'", binding.name),
+                ));
+            }
+            bindings.push(binding);
+        }
         return Ok(Stmt {
             line,
             span,
             keyword_span: SourceSpan::new(line, span.column, 3),
-            kind: StmtKind::Var {
-                name: binding.name,
-                name_span: binding.name_span,
-                ty: binding.ty,
-                type_span: binding.type_span,
+            kind: StmtKind::LetDestructure {
+                bindings,
                 expr,
+                else_return: false,
+                mutable: true,
             },
         });
     }
@@ -3521,6 +3634,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                     bindings,
                     expr,
                     else_return,
+                    mutable: false,
                 },
             });
         }
@@ -3542,6 +3656,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                     bindings: list_pattern.bindings,
                     rest: list_pattern.rest,
                     expr,
+                    mutable: false,
                 },
             });
         }
@@ -3564,6 +3679,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                     struct_span,
                     fields,
                     expr,
+                    mutable: false,
                 },
             });
         }
@@ -3620,26 +3736,65 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                 bindings,
                 expr,
                 else_return,
+                mutable: false,
             },
         });
     }
 
     if let Some(eq_offset) = find_assignment_operator(input) {
-        let (name, name_column) = trim_with_column(&input[..eq_offset], span.column);
-        validate_identifier(name, line)?;
+        let (target, target_column) = trim_with_column(&input[..eq_offset], span.column);
         let (expr_src, expr_column) =
             trim_with_column(&input[eq_offset + 1..], span.column + eq_offset + 1);
         if expr_src.is_empty() {
             return Err(diag(line, "assignment requires an expression"));
         }
         let expr = parse_expression_at(expr_src, line, expr_column)?;
+        if let Some(bindings) = parse_multi_value_destructure_pattern(target, line, target_column)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, target_column, target.len()),
+                kind: StmtKind::AssignMultiDestructure { bindings, expr },
+            });
+        }
+        if let Some(list_pattern) =
+            parse_list_destructure_pattern(target, line, target_column, false)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, target_column, target.len()),
+                kind: StmtKind::AssignListDestructure {
+                    bindings: list_pattern.bindings,
+                    rest: list_pattern.rest,
+                    expr,
+                },
+            });
+        }
+        if let Some((struct_name, struct_span, fields)) =
+            parse_struct_destructure_pattern(target, line, target_column)?
+        {
+            return Ok(Stmt {
+                line,
+                span,
+                keyword_span: SourceSpan::new(line, target_column, target.len()),
+                kind: StmtKind::AssignStructDestructure {
+                    struct_name,
+                    struct_span,
+                    fields,
+                    expr,
+                },
+            });
+        }
+        validate_identifier(target, line)?;
         return Ok(Stmt {
             line,
             span,
-            keyword_span: SourceSpan::new(line, name_column, name.len()),
+            keyword_span: SourceSpan::new(line, target_column, target.len()),
             kind: StmtKind::Assign {
-                name: name.to_string(),
-                name_span: SourceSpan::new(line, name_column, name.len()),
+                name: target.to_string(),
+                name_span: SourceSpan::new(line, target_column, target.len()),
                 expr,
             },
         });

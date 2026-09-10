@@ -677,10 +677,72 @@ impl<'a> ControlFlowBuilder<'a> {
                 }
                 self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, assignment)
             }
+            StmtKind::AssignMultiDestructure { bindings, expr } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: false,
+                    },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                let types = self.expression_types(expr);
+                self.set_definitions(
+                    node,
+                    bindings
+                        .iter()
+                        .zip(types)
+                        .filter(|(binding, _)| binding.name != "_")
+                        .map(|(binding, ty)| ControlFlowDefinition {
+                            name: binding.name.clone(),
+                            ty,
+                            span: binding.span,
+                        })
+                        .collect(),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, node)
+            }
+            StmtKind::AssignListDestructure {
+                bindings,
+                rest,
+                expr,
+            } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: false,
+                    },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.set_definitions(
+                    node,
+                    self.list_destructure_definitions(bindings, rest.as_ref(), expr),
+                );
+                self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, node)
+            }
+            StmtKind::AssignStructDestructure {
+                struct_name,
+                fields,
+                expr,
+                ..
+            } => {
+                let node = self.linear_node(
+                    ControlFlowNodeKind::Destructure {
+                        propagates_error: false,
+                    },
+                    stmt.span,
+                    successor,
+                    ControlFlowOwnership::default(),
+                );
+                self.set_definitions(node, self.struct_pattern_definitions(fields, struct_name));
+                self.evaluation_node(ControlFlowEvaluationKind::AssignmentValue, expr, node)
+            }
             StmtKind::LetDestructure {
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 let node = self.node(
                     ControlFlowNodeKind::Destructure {
@@ -709,6 +771,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 bindings,
                 expr,
                 else_return,
+                ..
             } => {
                 let node = self.node(
                     ControlFlowNodeKind::Destructure {
@@ -742,6 +805,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 bindings,
                 rest,
                 expr,
+                ..
             } => {
                 let node = self.linear_node(
                     ControlFlowNodeKind::Destructure {
@@ -1765,7 +1829,11 @@ fn collect_block_evaluation_types(
                 record_evaluation_type(expr, env, signatures, evaluations);
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
-            StmtKind::Assign { expr, .. } | StmtKind::Expr(expr) => {
+            StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
                 record_evaluation_type(expr, env, signatures, evaluations);
             }
             StmtKind::LetDestructure { bindings, expr, .. } => {
@@ -1788,6 +1856,7 @@ fn collect_block_evaluation_types(
                 bindings,
                 rest,
                 expr,
+                ..
             } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
                 if let Ok(ty) = typecheck::type_of_expr(expr, env, signatures)
