@@ -173,6 +173,7 @@ impl ProjectAnalysisCache {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AndroidPackageConfig {
     pub application_id: String,
+    pub version_code: u32,
     pub min_sdk: u32,
     pub target_sdk: u32,
     pub keystore: Option<PathBuf>,
@@ -410,6 +411,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut version = None::<String>;
     let mut entry = None::<String>;
     let mut android_application_id = None::<String>;
+    let mut android_version_code = None::<u32>;
     let mut android_min_sdk = None::<u32>;
     let mut android_target_sdk = None::<u32>;
     let mut android_keystore = None::<String>;
@@ -505,7 +507,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         ));
                     }
                 }
-                "min_sdk" | "target_sdk" => {
+                "version_code" | "min_sdk" | "target_sdk" => {
                     let value = match parse_manifest_u32(raw_value) {
                         Ok(value) => value,
                         Err(message) => {
@@ -513,10 +515,11 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                             continue;
                         }
                     };
-                    let slot = if key == "min_sdk" {
-                        &mut android_min_sdk
-                    } else {
-                        &mut android_target_sdk
+                    let slot = match key {
+                        "version_code" => &mut android_version_code,
+                        "min_sdk" => &mut android_min_sdk,
+                        "target_sdk" => &mut android_target_sdk,
+                        _ => unreachable!(),
                     };
                     if slot.replace(value).is_some() {
                         diagnostics.push(manifest_diagnostic(
@@ -558,6 +561,12 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
             "[android].application_id must be a lowercase reverse-DNS identifier such as 'nz.example.app'",
+        ));
+    }
+    if android_version_code.is_some_and(|value| value == 0 || value > 2_100_000_000) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[android].version_code must be between 1 and 2100000000 for Google Play",
         ));
     }
     if android_min_sdk.is_some_and(|value| value < 21) {
@@ -634,8 +643,9 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     }
 
     let name = name.expect("validated package name");
+    let version_code = android_version_code.unwrap_or(1);
     let min_sdk = android_min_sdk.unwrap_or(23);
-    let target_sdk = android_target_sdk.unwrap_or(35);
+    let target_sdk = android_target_sdk.unwrap_or(36);
     let keystore = android_keystore.map(|path| {
         let path = PathBuf::from(path);
         if path.is_absolute() {
@@ -648,6 +658,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         android: AndroidPackageConfig {
             application_id: android_application_id
                 .unwrap_or_else(|| default_android_application_id(&name)),
+            version_code,
             min_sdk,
             target_sdk,
             keystore,

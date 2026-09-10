@@ -185,13 +185,14 @@ entry = "src/main.flux"
 
 [android]
 application_id = "nz.example.package"
+version_code = 42
 min_sdk = 23
-target_sdk = 35
+target_sdk = 36
 keystore = "signing/release.jks"
 key_alias = "release"
 ```
 
-The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<package>` application ID and currently defaults to minSdk 23 / targetSdk 35. `keystore` and `key_alias` are optional but must be configured together; a relative keystore path is resolved from the package root. Release-signing passwords are never stored in `flux.toml`: set `FLUX_ANDROID_KEYSTORE_PASSWORD`, and optionally `FLUX_ANDROID_KEY_PASSWORD` when the private-key password differs. Without release signing configuration Flux uses its compiler-managed development key. Android builds require an `app` root and use the installed Android SDK/NDK directly; `examples/android_app` is a checked-in package for this path:
+The `[android]` table is optional. When omitted, Flux derives a safe `app.flux.<package>` application ID and currently defaults to `version_code = 1`, minSdk 23, and targetSdk 36. `version_code` must be a positive Google Play-compatible value no greater than 2100000000 and should increase for every published release. `keystore` and `key_alias` are optional but must be configured together; a relative keystore path is resolved from the package root. Release-signing passwords are never stored in `flux.toml`: set `FLUX_ANDROID_KEYSTORE_PASSWORD`, and optionally `FLUX_ANDROID_KEY_PASSWORD` when the private-key password differs. Without release signing configuration Flux uses its compiler-managed development key. Android builds require an `app` root and use the installed Android SDK/NDK directly; `examples/android_app` is a checked-in package for this path:
 
 ```sh
 ./tools/flux build android examples/android_app --mode debug --abi arm64-v8a

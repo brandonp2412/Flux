@@ -7935,8 +7935,9 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     assert_eq!(parsed.version.as_deref(), Some("0.1.0"));
     assert_eq!(parsed.entry, fs::canonicalize(&entry).unwrap());
     assert_eq!(parsed.android.application_id, "app.flux.sample");
+    assert_eq!(parsed.android.version_code, 1);
     assert_eq!(parsed.android.min_sdk, 23);
-    assert_eq!(parsed.android.target_sdk, 35);
+    assert_eq!(parsed.android.target_sdk, 36);
     assert_eq!(
         fluxc::project::resolve_entry(&root).expect("directory should resolve through flux.toml"),
         parsed.entry
@@ -8038,14 +8039,15 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nmin_sdk = 26\ntarget_sdk = 35\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nversion_code = 42\nmin_sdk = 26\ntarget_sdk = 36\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
     )
     .expect("Android manifest should be writable");
 
     let parsed = fluxc::project::read_manifest(&manifest).expect("Android config should parse");
     assert_eq!(parsed.android.application_id, "nz.flux.sample");
+    assert_eq!(parsed.android.version_code, 42);
     assert_eq!(parsed.android.min_sdk, 26);
-    assert_eq!(parsed.android.target_sdk, 35);
+    assert_eq!(parsed.android.target_sdk, 36);
     assert_eq!(
         parsed.android.keystore.as_deref(),
         Some(root.join("signing/release.jks").as_path())
@@ -8054,7 +8056,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
 
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nmin_sdk = 19\ntarget_sdk = 18\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nversion_code = 0\nmin_sdk = 19\ntarget_sdk = 18\n",
     )
     .expect("invalid Android manifest should be writable");
     let errors = fluxc::project::read_manifest(&manifest)
@@ -8064,6 +8066,11 @@ fn package_manifest_accepts_and_validates_android_configuration() {
             .iter()
             .any(|error| error.message.contains("reverse-DNS identifier"))
     );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("version_code must be between 1 and 2100000000")
+    }));
     assert!(
         errors
             .iter()

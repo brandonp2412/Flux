@@ -625,7 +625,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Package/application ID configuration.
   - [x] Optional `[android].application_id` accepts a validated lowercase reverse-DNS identifier; otherwise Flux derives a deterministic `app.flux.<package>` ID from the package name.
 - [x] minSdk/targetSdk configuration.
-  - [x] Optional integer `[android].min_sdk` / `target_sdk` fields are validated (`minSdk >= 21`, target >= min) and drive both NDK compiler selection and generated APK metadata; bootstrap defaults are 23 / 35.
+  - [x] Optional integer `[android].min_sdk` / `target_sdk` fields are validated (`minSdk >= 21`, target >= min) and drive both NDK compiler selection and generated APK metadata; bootstrap defaults are minSdk 23 / targetSdk 36, matching the Google Play phone/tablet target-API requirement effective August 31, 2026 while older targets remain explicitly selectable where needed.
 - [x] Signing configuration.
   - [x] Development signing is compiler-owned: Flux creates/reuses its own debug keystore, signs aligned APKs with `apksigner`, signs AABs with `jarsigner`, and verifies the results.
   - [x] Release builds may configure `[android].keystore` plus `[android].key_alias`; relative keystore paths resolve from the package root, while passwords stay out of source and are supplied through `FLUX_ANDROID_KEYSTORE_PASSWORD` with optional `FLUX_ANDROID_KEY_PASSWORD` override. APK signing uses apksigner environment-password sources and AAB signing uses jarsigner environment-password sources so credentials do not appear in command arguments. Fresh-key Nox E2E builds verified both release formats against the configured signing certificate; unsigned/missing-key and missing-credential paths fail explicitly. Play App Signing can consume the resulting signed upload AAB without requiring a Flux-specific credential store.
@@ -661,6 +661,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Verify generated Android glue is tree-shakeable and zero/near-zero overhead beyond boundaries Android itself requires; no mandatory Flutter-style channel serialization or plugin registry.
   - [x] Android runtime helpers are emitted from reachable generated-call usage rather than linked as a permanent platform runtime. Compiler tests prove unreachable notification channel/post/action/cancel code omits `Notification.Builder`, `PendingIntent`, notification helpers, and permission machinery entirely; platform calls cross JNI directly with no serialization bus, plugin registry, or user-written bridge.
 - [ ] Play Store-ready release pipeline.
+  - [x] Publishing version metadata is configurable without Gradle: `[package].version` becomes Android `versionName`, `[android].version_code` becomes `versionCode`, defaults to 1, and rejects values outside Google Play's accepted 1..=2100000000 range. The default targetSdk is API 36 for current phone/tablet Play submissions, and signed all-ABI AAB generation remains directly consumable by Play App Signing.
 - [ ] First real production-style Flux Android app built and tested on physical hardware.
 
 # Milestone 16 — Desktop targets

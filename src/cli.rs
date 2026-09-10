@@ -2072,7 +2072,8 @@ fn android_manifest_xml(
         ""
     };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
         if mode == BuildMode::Debug {
@@ -2524,8 +2525,9 @@ mod tests {
             path: std::path::PathBuf::from("flux.toml"),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
+                version_code: 42,
                 min_sdk: 23,
-                target_sdk: 35,
+                target_sdk: 36,
                 keystore: None,
                 key_alias: None,
             },
@@ -2536,6 +2538,8 @@ mod tests {
             BuildMode::Release,
             "int main(void) { return 0; }",
         );
+        assert!(plain.contains("android:versionCode=\"42\""));
+        assert!(plain.contains("android:targetSdkVersion=\"36\""));
         assert!(!plain.contains("android.permission.VIBRATE"));
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
 
