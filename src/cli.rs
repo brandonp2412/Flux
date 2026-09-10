@@ -3938,7 +3938,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         view.setPaintFlags(flags);
     }
 
-    public void styleTextLayout(TextView view, String fontFamily, int letterSpacing, int lineHeightPercent, String align, String wrapMode, String ellipsize, int maxLines) {
+    public void styleTextLayout(TextView view, String fontFamily, int letterSpacing, int lineHeightPercent, String align, String wrapMode, String ellipsize, int maxLines, int maxWidthChars) {
         if (fontFamily != null && !fontFamily.isEmpty()) {
             int style = view.getTypeface() == null ? Typeface.NORMAL : view.getTypeface().getStyle();
             view.setTypeface(Typeface.create(fontFamily, style));
@@ -3968,6 +3968,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
             else if ("end".equals(ellipsize)) view.setEllipsize(TextUtils.TruncateAt.END);
         }
         if (maxLines > 0) view.setMaxLines(maxLines);
+        if (maxWidthChars > 0) view.setMaxEms(maxWidthChars);
     }
 
     public void configureImage(ImageView view, String source, String fit, String alt, boolean canShrink) {

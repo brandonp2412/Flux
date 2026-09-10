@@ -1334,7 +1334,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("Text", "size")
         | ("Text", "letter_spacing")
         | ("Text", "line_height_percent")
-        | ("Text", "max_lines") => Some(Type::I64),
+        | ("Text", "max_lines")
+        | ("Text", "max_width_chars") => Some(Type::I64),
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
@@ -1571,6 +1572,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "wrap_mode",
             "ellipsize",
             "max_lines",
+            "max_width_chars",
             "color",
         ],
         "Button" => &["text", "enabled", "primary", "shortcut", "on_press"],

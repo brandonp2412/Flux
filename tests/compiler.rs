@@ -10016,14 +10016,17 @@ app Screen
 
     let linux = compile_to_c(source).expect("semantic Text variants should lower on Linux");
     assert!(linux.contains("pango_attr_size_new(16 * PANGO_SCALE)"));
+    assert!(linux.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_body), 72)"));
     assert!(
         !linux.contains("pango_attr_size_new_absolute"),
         "Flux text sizes must remain point-based so GTK/Pango can apply the platform font DPI/text scale"
     );
     assert!(linux.contains("pango_attr_line_height_new(1.4000)"));
     assert!(linux.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
+    assert!(linux.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_title), 44)"));
     assert!(linux.contains("pango_attr_line_height_new(1.2000)"));
     assert!(linux.contains("pango_attr_size_new(30 * PANGO_SCALE)"));
+    assert!(linux.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_custom), 36)"));
     assert!(linux.contains("pango_attr_line_height_new(1.5000)"));
     assert_eq!(
         linux
@@ -10045,6 +10048,9 @@ app Screen
     assert!(android.contains("(jfloat)16.0f, (jboolean)false"));
     assert!(android.contains("(jfloat)28.0f, (jboolean)true"));
     assert!(android.contains("(jfloat)30.0f, (jboolean)false"));
+    assert!(android.contains("(jint)72"));
+    assert!(android.contains("(jint)44"));
+    assert!(android.contains("(jint)36"));
     assert!(android.contains("(jint)140"));
     assert!(android.contains("(jint)120"));
     assert!(android.contains("(jint)150"));
@@ -10085,6 +10091,7 @@ view Screen {
         wrap_mode: "word_char"
         ellipsize: "end"
         max_lines: 2
+        max_width_chars: 64
 }
 app Screen
 "#;
@@ -10112,6 +10119,7 @@ app Screen
             .contains("gtk_label_set_ellipsize(GTK_LABEL(flux__ui_title), PANGO_ELLIPSIZE_END)")
     );
     assert!(generated.contains("gtk_label_set_lines(GTK_LABEL(flux__ui_title), 2)"));
+    assert!(generated.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_title), 64)"));
 
     let empty_family = r#"
 view Screen {
@@ -10143,6 +10151,24 @@ app Screen
         error
             .message
             .contains("line_height_percent must be greater than zero")
+    );
+
+    let bad_width = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        max_width_chars: -1
+}
+app Screen
+"#;
+    check_source(bad_width).expect("readable width range is validated by native lowering");
+    let error = compile_to_c(bad_width).expect_err("negative readable width should fail");
+    assert!(
+        error
+            .message
+            .contains("Text.maxWidthChars must be between 0")
     );
 
     let bad_ellipsize = r#"

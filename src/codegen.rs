@@ -2375,7 +2375,7 @@ fn emit_android_native_application(
             ));
         }
         if element.kind == "Text" {
-            let (default_size, default_bold, default_line_height_percent) =
+            let (default_size, default_bold, default_line_height_percent, default_max_width_chars) =
                 text_semantic_typography(element, signatures)?;
             let text_color = view_property(element, "color")
                 .map(|property| {
@@ -2568,6 +2568,24 @@ fn emit_android_native_application(
                     Ok(value)
                 })
                 .transpose()?;
+            let max_width_chars = view_property(element, "max_width_chars")
+                .map(|property| {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.max_width_chars must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(0..=i64::from(i32::MAX)).contains(&value) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.maxWidthChars must be between 0 and 2147483647",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?
+                .unwrap_or(default_max_width_chars);
             if font_family.is_some()
                 || letter_spacing.is_some()
                 || line_height_percent.is_some()
@@ -2575,6 +2593,7 @@ fn emit_android_native_application(
                 || wrap_mode.is_some()
                 || ellipsize.is_some()
                 || max_lines.is_some()
+                || max_width_chars >= 0
             {
                 let emit_optional_text =
                     |out: &mut String, variable: &str, value: Option<&String>| {
@@ -2594,13 +2613,14 @@ fn emit_android_native_application(
                 emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
                 out.push_str("    jclass text_layout_activity_class = (*env)->GetObjectClass(env, activity);\n");
                 out.push_str("    if (text_layout_activity_class == NULL) return;\n");
-                out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V\");\n");
+                out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                 out.push_str("    if (style_text_layout == NULL) return;\n");
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){}, (jint){}, child_text_align, child_wrap_mode, child_ellipsize, (jint){});\n",
+                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){}, (jint){}, child_text_align, child_wrap_mode, child_ellipsize, (jint){}, (jint){});\n",
                     letter_spacing.unwrap_or(i64::from(i32::MIN)),
                     line_height_percent.unwrap_or(0),
                     max_lines.unwrap_or(0),
+                    max_width_chars,
                 ));
                 out.push_str("    (*env)->DeleteLocalRef(env, text_layout_activity_class);\n");
                 out.push_str("    if (child_font_family != NULL) (*env)->DeleteLocalRef(env, child_font_family);\n");
@@ -3826,8 +3846,12 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    gtk_label_set_wrap(GTK_LABEL({variable}), {wrap});\n"
                 ));
-                let (default_size, default_bold, default_line_height_percent) =
-                    text_semantic_typography(element, signatures)?;
+                let (
+                    default_size,
+                    default_bold,
+                    default_line_height_percent,
+                    default_max_width_chars,
+                ) = text_semantic_typography(element, signatures)?;
                 let size = view_property(element, "size");
                 let bold = view_property(element, "bold");
                 let italic = view_property(element, "italic");
@@ -4091,6 +4115,28 @@ fn emit_linux_gtk_application(
                         "    gtk_label_set_lines(GTK_LABEL({variable}), {value});\n"
                     ));
                 }
+                let max_width_chars = if let Some(property) =
+                    view_property(element, "max_width_chars")
+                {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Text.max_width_chars must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(0..=i64::from(i32::MAX)).contains(&value) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.maxWidthChars must be between 0 and 2147483647",
+                        ));
+                    }
+                    if value == 0 { -1 } else { value }
+                } else {
+                    default_max_width_chars
+                };
+                out.push_str(&format!(
+                    "    gtk_label_set_max_width_chars(GTK_LABEL({variable}), {max_width_chars});\n"
+                ));
                 if let Some(property) = view_property(element, "selectable") {
                     let selectable = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
@@ -5801,7 +5847,7 @@ fn emit_ui_refresh(
 fn text_semantic_typography(
     element: &crate::ast::ViewElement,
     signatures: &Signatures,
-) -> Result<(i64, bool, i64), Diagnostic> {
+) -> Result<(i64, bool, i64, i64), Diagnostic> {
     let variant = match view_property(element, "variant") {
         Some(property) => static_expr_str(&property.value, signatures).ok_or_else(|| {
             diag(
@@ -5812,11 +5858,11 @@ fn text_semantic_typography(
         None => "body".to_string(),
     };
     match variant.as_str() {
-        "body" => Ok((16, false, 140)),
-        "caption" => Ok((13, false, 135)),
-        "heading" => Ok((20, true, 125)),
-        "title" => Ok((28, true, 120)),
-        "display" => Ok((36, true, 115)),
+        "body" => Ok((16, false, 140, 72)),
+        "caption" => Ok((13, false, 135, 72)),
+        "heading" => Ok((20, true, 125, 52)),
+        "title" => Ok((28, true, 120, 44)),
+        "display" => Ok((36, true, 115, 36)),
         _ => Err(diag(
             view_property(element, "variant")
                 .expect("non-default variant has a source property")
