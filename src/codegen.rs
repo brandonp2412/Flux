@@ -2085,6 +2085,17 @@ fn emit_android_native_application(
             out.push_str("    if (child_accessibility_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_label);\n");
             out.push_str("    if (child_accessibility_description != NULL) (*env)->DeleteLocalRef(env, child_accessibility_description);\n");
         }
+        if let Some(property) = view_property(element, "accessibility_hidden") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("    jclass accessibility_hidden_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (accessibility_hidden_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility_hidden = (*env)->GetMethodID(env, accessibility_hidden_activity_class, \"setAccessibilityHidden\", \"(Landroid/view/View;Z)V\");\n");
+            out.push_str("    if (set_accessibility_hidden == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, set_accessibility_hidden, child, (jboolean)({value}));\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_hidden_activity_class);\n");
+        }
         if element.kind == "Text" {
             let text_color = view_property(element, "color")
                 .map(|property| {
@@ -3942,6 +3953,12 @@ fn emit_linux_gtk_application(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
             ));
         }
+        if let Some(property) = view_property(element, "accessibility_hidden") {
+            let hidden = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_accessible_update_state(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_STATE_HIDDEN, {hidden}, -1);\n"
+            ));
+        }
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
@@ -4185,6 +4202,7 @@ fn android_ui_element_needs_refresh(
         "tooltip",
         "accessibility_label",
         "accessibility_description",
+        "accessibility_hidden",
         "translate_x",
         "translate_y",
         "rotate_degrees",
@@ -4461,16 +4479,15 @@ fn emit_android_ui_refresh(
             _ => {}
         }
 
-        let accessibility_label =
+        let accessibility_needs_refresh =
             android_ui_property_needs_refresh(element, "accessibility_label", &runtime_names)
-                .then(|| view_property(element, "accessibility_label"))
-                .flatten();
-        let accessibility_description =
-            android_ui_property_needs_refresh(element, "accessibility_description", &runtime_names)
-                .then(|| view_property(element, "accessibility_description"))
-                .flatten();
-        if accessibility_label.is_some() || accessibility_description.is_some() {
-            if let Some(property) = accessibility_label {
+                || android_ui_property_needs_refresh(
+                    element,
+                    "accessibility_description",
+                    &runtime_names,
+                );
+        if accessibility_needs_refresh {
+            if let Some(property) = view_property(element, "accessibility_label") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str(&format!(
                     "                jstring refresh_accessibility_label = flux__android_utf8_string(env, {value});\n"
@@ -4478,7 +4495,7 @@ fn emit_android_ui_refresh(
             } else {
                 out.push_str("                jstring refresh_accessibility_label = NULL;\n");
             }
-            if let Some(property) = accessibility_description {
+            if let Some(property) = view_property(element, "accessibility_description") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str(&format!(
                     "                jstring refresh_accessibility_description = flux__android_utf8_string(env, {value});\n"
@@ -4490,6 +4507,15 @@ fn emit_android_ui_refresh(
             out.push_str("                if (refresh_accessibility != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility, child, refresh_accessibility_label, refresh_accessibility_description);\n");
             out.push_str("                if (refresh_accessibility_label != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_label);\n");
             out.push_str("                if (refresh_accessibility_description != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_description);\n");
+        }
+        if android_ui_property_needs_refresh(element, "accessibility_hidden", &runtime_names)
+            && let Some(property) = view_property(element, "accessibility_hidden")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("                jmethodID refresh_accessibility_hidden = (*env)->GetMethodID(env, activity_class, \"setAccessibilityHidden\", \"(Landroid/view/View;Z)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_accessibility_hidden != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility_hidden, child, (jboolean)({value}));\n"
+            ));
         }
 
         out.push_str("                (*env)->DeleteLocalRef(env, child_class);\n");
@@ -4776,6 +4802,12 @@ fn emit_ui_refresh(
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_hidden") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_STATE_HIDDEN, {value}, -1);\n"
             ));
         }
         emit_dynamic_transform_refresh(out, element, view, signatures)?;

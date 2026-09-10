@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 374
 - Reported overall progress: **51%**
-- Current net scope growth after the baseline: 13 checkbox items
+- Current net scope growth after the baseline: 14 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -681,7 +681,8 @@ Android is the first application-platform target. Android integration must feel 
     - [x] Ordinary Android functional transitions use generated in-place native refresh rather than full `setContentView` reconstruction: every flat element receives a stable compiler-owned ID, refresh looks up the existing native control and reapplies refreshable dynamic properties, and programmatic Toggle/Radio selection is listener-suppressed so refresh cannot recursively dispatch Flux events.
     - [ ] Finish higher-level composition controls, dynamic styling, and production-grade focus/selection/text-composition/input edge cases.
 - [ ] Accessibility/semantics bridge.
-  - [x] Bootstrap semantic text lands on native Android Views: `accessibility_label` and `accessibility_description` lower to compiler-owned `contentDescription` generation, while `tooltip` uses the platform tooltip API when available. Roles/actions/state semantics beyond native control defaults remain pending.
+  - [x] Bootstrap semantic text lands on native Android Views: canonical `accessibilityLabel` and `accessibilityDescription` lower to compiler-owned `contentDescription` generation, while `tooltip` uses the platform tooltip API when available. Android refresh recomputes both label and description together when either becomes dynamic so a state-driven half cannot erase its static counterpart.
+  - [x] Common typed `accessibilityHidden: bool` explicitly removes native elements and descendants from the accessibility tree without changing visual visibility: Linux lowers to `GTK_ACCESSIBLE_STATE_HIDDEN`, Android to `IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS`, and state-driven Android values refresh in place. Roles/actions/richer state semantics remain pending.
 - [x] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.
   - [x] `android.createNotificationChannel`, `android.notificationPermissionGranted`, `android.requestNotificationPermission`, `android.notify`, `android.notifyUrlAction`, and `android.cancelNotification` lower directly through compiler-owned framework JNI. API 33+ `POST_NOTIFICATIONS` is inferred into the generated manifest only when reachable code requires it; URL actions use an immutable/updateable Android `PendingIntent` without application-authored Java/Kotlin/JNI. Nox validation builds the action-enabled example as a signed x86_64 release APK, installs/launches it in Waydroid, and builds the all-ABI release AAB.
 - [ ] WorkManager/background-job integration callable directly from Flux; generate required `Worker`/`ListenableWorker` JVM entry classes and route execution into compiled Flux without user-authored Kotlin/Java glue.
@@ -795,6 +796,7 @@ Web is a supported target, not the implementation substrate for native apps.
 
 - [ ] Semantic roles.
 - [x] Accessible labels/descriptions: every built-in native element accepts typed `accessibilityLabel: str` and `accessibilityDescription: str`; Linux lowers them to GTK accessible label/description properties on the existing native control, refreshes state-derived accessible text alongside the visible UI, and the properties flow through the compiler-owned UI contract/LSP surface without exposing platform accessibility objects.
+- [x] Accessibility-tree visibility: every built-in native element accepts typed `accessibilityHidden: bool`; Linux maps it to native accessible hidden state and Android maps it to view accessibility importance independently of visual `visible` state, including in-place state-driven refresh.
 - [ ] Actions.
 - [ ] Focus ordering.
 - [ ] Screen-reader bridges.

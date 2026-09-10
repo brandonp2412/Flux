@@ -2379,6 +2379,10 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         }
     }
 
+    public void setAccessibilityHidden(View view, boolean hidden) {
+        view.setImportantForAccessibility(hidden ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+    }
+
     public void wireTextInput(EditText view, boolean onChange, boolean onSubmit, boolean multiline, boolean submitOnEnter) {
         final int viewId = view.getId();
         view.addTextChangedListener(new TextWatcher() {
@@ -3314,6 +3318,8 @@ mod tests {
                 "public void setAccessibility(View view, String label, String description)"
             )
         );
+        assert!(activity.contains("public void setAccessibilityHidden(View view, boolean hidden)"));
+        assert!(activity.contains("View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS"));
         assert!(activity.contains(
             "public void wireTextInput(EditText view, boolean onChange, boolean onSubmit, boolean multiline, boolean submitOnEnter)"
         ));

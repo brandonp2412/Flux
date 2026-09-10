@@ -9242,6 +9242,7 @@ view Form {
         tooltip: "Type a query"
         accessibility_label: "Search query"
         accessibility_description: "Enter text to search Flux"
+        accessibilityHidden: false
         on_change: submit
         on_submit: submit
 }
@@ -9279,6 +9280,7 @@ app Form
         generated
             .contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, \"Enter text to search Flux\", -1")
     );
+    assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, false, -1"));
     assert!(generated.contains("gtk_editable_get_text(GTK_EDITABLE(widget))"));
     assert!(generated.contains("flux__fn_submit(gtk_editable_get_text"));
 
@@ -10516,8 +10518,9 @@ view Settings {
         shadow_offset_x: -2
         shadow_offset_y: 3
         tooltip: "Search"
-        accessibility_label: "Search query"
-        accessibility_description: "Enter text to search"
+        accessibilityLabel: "Search query"
+        accessibilityDescription: "Enter text to search"
+        accessibilityHidden: !enabled
         onTap: enabled => true
         onLongPress: enabled => false
         on_change: changed
@@ -10631,6 +10634,8 @@ app Settings
     assert!(generated.contains("(jint)2"));
     assert!(generated.contains("setTooltip"));
     assert!(generated.contains("setAccessibility"));
+    assert!(generated.contains("setAccessibilityHidden"));
+    assert!(generated.contains("refresh_accessibility_hidden"));
     assert!(generated.contains("transformView"));
     assert!(generated.contains("flux__ui_state_selected"));
     assert!(generated.contains("/ 100.0f"));

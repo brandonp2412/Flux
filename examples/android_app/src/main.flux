@@ -61,6 +61,7 @@ view Screen {
     Text detail at 2,1
         text: "Native Flux state updated this Android view"
         visible: expanded
+        accessibilityHidden: !expanded
         onLongPress: expanded => false
     Button toggle at 3,1
         text: actionLabel
