@@ -7697,6 +7697,79 @@ fn project_codegen_preserves_flux_source_paths_and_statement_lines() {
 }
 
 #[test]
+fn flux_debugger_evaluates_flux_primitive_expressions() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let gdb_ready = Command::new("gdb")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !gdb_ready {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("flux-debug-eval-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("debug evaluator fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn adjust(value: i64) -> i64 {\n    let active: bool = value < 0\n    let label: str = \"Flux\"\n    print(label)\n    if active:\n        return value + 1\n    return value\n}\n\nfn main() -> i64 {\n    print(adjust(-1))\n    return 0\n}\n",
+    )
+    .expect("debug evaluator source should be writable");
+    let binary = root.join("debug-eval");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug", "-o"])
+        .arg(&binary)
+        .output()
+        .expect("debug evaluator binary should build");
+    assert!(
+        built.status.success(),
+        "debug evaluator fixture failed to build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let support = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/flux-gdb.py");
+    let breakpoint = format!("break {}:6", source.display());
+    let output = Command::new("gdb")
+        .args(["--batch", "--quiet", "-x"])
+        .arg(&support)
+        .arg("-ex")
+        .arg(&breakpoint)
+        .arg("-ex")
+        .arg("run")
+        .arg("-ex")
+        .arg("flux-eval value + 3 * 2")
+        .arg("-ex")
+        .arg("flux-eval active && true")
+        .arg("-ex")
+        .arg("flux-eval label == \"Flux\"")
+        .arg("-ex")
+        .arg("flux-eval false && missing > 0")
+        .arg("-ex")
+        .arg("flux-eval -7 / 3")
+        .arg(&binary)
+        .output()
+        .expect("GDB expression evaluator should run");
+    let _ = fs::remove_dir_all(&root);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Operation not permitted") || stderr.contains("ptrace") {
+        return;
+    }
+    assert!(output.status.success(), "GDB evaluator failed: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("value + 3 * 2 = 5"));
+    assert!(stdout.contains("active && true = true"));
+    assert!(stdout.contains("label == \"Flux\" = true"));
+    assert!(stdout.contains("false && missing > 0 = false"));
+    assert!(stdout.contains("-7 / 3 = -2"));
+}
+
+#[test]
 fn native_builds_are_byte_reproducible_with_isolated_caches() {
     let root = std::env::temp_dir().join(format!("flux-reproducible-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

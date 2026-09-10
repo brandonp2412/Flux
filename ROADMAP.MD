@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 411
+- Completed baseline units: 412
 - Reported overall progress: **56%**
 - Current net scope growth after the baseline: 20 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -900,7 +900,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Stack frames. Native backtraces resolve frames to original Flux files and source lines through the compiler-emitted debug locations.
 - [x] Locals. The debugger embeds a Flux-aware GDB support layer: `flux-locals` enumerates the currently visible parameters/locals using source-language names and values, and `flux-print name` resolves one visible Flux local without requiring the developer to know compiler-generated `flux__local_*` symbols.
 - [x] Watches. `flux-watch name` tracks a visible Flux local and reports it with its source-language name whenever execution stops; `flux-unwatch name` removes the watch and out-of-scope transitions are explicit instead of silently binding a different native symbol.
-- [ ] Expression evaluation.
+- [x] Expression evaluation. Bootstrap `flux-eval expression` evaluates side-effect-free primitive Flux expressions directly over visible debugger locals instead of forwarding source text into GDB/C: `i64`/`bool`/`str` values, parentheses, unary `!`/`-`, checked integer arithmetic/division, comparisons/equality, and short-circuit `&&`/`||` follow Flux semantics. Function calls, assignment/platform effects, and aggregate/member evaluation remain intentionally unavailable until they can preserve Flux ownership/effect rules.
 - [ ] Async/task debugging.
 - [ ] Ownership-aware value inspection.
 - [x] Native debug metadata. Generated C carries source-aware `#line` directives and debug/profile Clang modes retain DWARF line tables that resolve native instructions back to `.flux` files; this is now exercised through the user-facing debugger path.
