@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 423
+- Completed baseline units: 424
 - Reported overall progress: **57%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -76,7 +76,7 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [ ] Portable source should lower to real platform implementations rather than a browser/VM/widget-emulation wrapper.
 - [ ] **No user-written platform bridges:** Flux source must be able to call platform capabilities directly. The compiler/toolchain owns any ABI/JNI/JVM/Objective-C/Win32 glue required by the target; application developers should not write Flutter-style method channels, serialization shims, plugin registries, or hand-maintained bridge code merely to reach an OS API.
 - [ ] **Native-first platform lowering:** use direct native/NDK/C/OS APIs where the platform exposes them, and generate the thinnest target-required interop when it does not. Generated glue is an implementation detail and must remain optimizable/tree-shakeable rather than becoming a mandatory framework runtime.
-- [ ] The LSP, debugger, profiler, formatter, test runner, package tooling, and hot reload are first-class parts of the language product.
+- [x] The LSP, debugger, profiler, formatter, test runner, package tooling, and hot reload are first-class parts of the language product: all are exposed through the user-facing `flux` workflow, reuse compiler-native source/diagnostic/build semantics rather than separate framework layers, and have checked-in regression coverage. Production-depth follow-ups remain tracked in their dedicated milestones without reopening this product-integration principle.
 
 ## Current compiler baseline
 
