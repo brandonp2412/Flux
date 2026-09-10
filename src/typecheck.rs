@@ -4732,7 +4732,7 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
-            "show_keyboard" | "hide_keyboard" => {
+            "show_keyboard" | "hide_keyboard" | "focusNext" | "focusPrevious" | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,

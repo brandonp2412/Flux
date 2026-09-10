@@ -9893,6 +9893,9 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.share("hello from Flux")
     android.show_keyboard()
     android.hide_keyboard()
+    android.focusNext()
+    android.focusPrevious()
+    android.clearFocus()
     print(android.permission_granted("android.permission.CAMERA"))
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("updates", "Updates", "Flux update notifications")
@@ -9975,6 +9978,12 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("startActivity"));
     assert!(generated.contains("static inline void flux__android_show_keyboard(void)"));
     assert!(generated.contains("static inline void flux__android_hide_keyboard(void)"));
+    assert!(generated.contains("static inline void flux__android_focus_next(void)"));
+    assert!(generated.contains("static inline void flux__android_focus_previous(void)"));
+    assert!(generated.contains("static inline void flux__android_clear_focus(void)"));
+    assert!(generated.contains("\"focusSearch\", \"(I)Landroid/view/View;\""));
+    assert!(generated.contains("\"requestFocus\", \"()Z\""));
+    assert!(generated.contains("\"clearFocus\", \"()V\""));
     assert!(generated.contains("showSoftInput"));
     assert!(generated.contains("hideSoftInputFromWindow"));
     assert!(generated.contains("\"input_method\""));
@@ -10045,6 +10054,9 @@ fn main() -> i64 {
         r#"fn unused_android() -> void {
     android.show_keyboard()
     android.hide_keyboard()
+    android.focusNext()
+    android.focusPrevious()
+    android.clearFocus()
     android.permission_granted("android.permission.CAMERA")
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("unused", "Unused", "Unused")
@@ -10067,6 +10079,10 @@ app Screen
         .expect("Android tree-shaking fixture should lower");
     assert!(!tree_generated.contains("flux__android_show_keyboard"));
     assert!(!tree_generated.contains("flux__android_hide_keyboard"));
+    assert!(!tree_generated.contains("flux__android_focus_next"));
+    assert!(!tree_generated.contains("flux__android_focus_previous"));
+    assert!(!tree_generated.contains("flux__android_clear_focus"));
+    assert!(!tree_generated.contains("focusSearch"));
     assert!(!tree_generated.contains("showSoftInput"));
     assert!(!tree_generated.contains("hideSoftInputFromWindow"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
@@ -10087,6 +10103,9 @@ fn main() -> i64 {
     android.share(42)
     android.show_keyboard(1)
     android.hide_keyboard(false)
+    android.focusNext(1)
+    android.focusPrevious(false)
+    android.clearFocus("bad")
     android.create_notification_channel("updates", 1, false)
     android.permission_granted(42)
     android.request_permission(false)
@@ -10124,6 +10143,13 @@ fn main() -> i64 {
             .message
             .contains("android.hide_keyboard expects 0 arguments, got 1")
     }));
+    for name in ["focusNext", "focusPrevious", "clearFocus"] {
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains(&format!("android.{name} expects 0 arguments, got 1"))
+        }));
+    }
     assert!(errors.iter().any(|error| {
         error
             .message

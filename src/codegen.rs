@@ -311,6 +311,14 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_show_keyboard(");
     let uses_android_hide_keyboard =
         uses_android && runtime_usage.contains("flux__android_hide_keyboard(");
+    let uses_android_focus_next =
+        uses_android && runtime_usage.contains("flux__android_focus_next(");
+    let uses_android_focus_previous =
+        uses_android && runtime_usage.contains("flux__android_focus_previous(");
+    let uses_android_clear_focus =
+        uses_android && runtime_usage.contains("flux__android_clear_focus(");
+    let uses_android_focus_navigation =
+        uses_android_focus_next || uses_android_focus_previous || uses_android_clear_focus;
     let uses_android_create_notification_channel =
         uses_android && runtime_usage.contains("flux__android_create_notification_channel(");
     let uses_android_notification_permission_granted =
@@ -339,6 +347,7 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
+        || uses_android_focus_navigation
         || uses_android_notifications
         || uses_android_permission_granted
         || uses_android_request_permission
@@ -499,6 +508,61 @@ fn emit_runtime_prelude(
         }
         if uses_android_hide_keyboard {
             out.push_str("static inline void flux__android_hide_keyboard(void) { flux__android_set_keyboard_visible(false); }\n");
+        }
+    }
+    if uses_android_focus_navigation {
+        out.push_str("static void flux__android_change_focus(int direction) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = NULL; jclass view_class = NULL; jclass target_class = NULL;\n");
+        out.push_str("    jobject view = NULL; jobject target = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_focus = (*env)->GetMethodID(env, activity_class, \"getCurrentFocus\", \"()Landroid/view/View;\");\n");
+        out.push_str("    if (get_focus == NULL) goto done;\n");
+        out.push_str("    view = (*env)->CallObjectMethod(env, activity, get_focus);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || view == NULL) goto done;\n");
+        out.push_str("    view_class = (*env)->GetObjectClass(env, view);\n");
+        out.push_str("    if (view_class == NULL) goto done;\n");
+        out.push_str("    if (direction == 0) {\n");
+        out.push_str("        jmethodID clear_focus = (*env)->GetMethodID(env, view_class, \"clearFocus\", \"()V\");\n");
+        out.push_str(
+            "        if (clear_focus != NULL) (*env)->CallVoidMethod(env, view, clear_focus);\n",
+        );
+        out.push_str("        goto done;\n");
+        out.push_str("    }\n");
+        out.push_str("    jmethodID focus_search = (*env)->GetMethodID(env, view_class, \"focusSearch\", \"(I)Landroid/view/View;\");\n");
+        out.push_str("    if (focus_search == NULL) goto done;\n");
+        out.push_str(
+            "    target = (*env)->CallObjectMethod(env, view, focus_search, (jint)direction);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || target == NULL) goto done;\n");
+        out.push_str("    target_class = (*env)->GetObjectClass(env, target);\n");
+        out.push_str("    if (target_class == NULL) goto done;\n");
+        out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, target_class, \"requestFocus\", \"()Z\");\n");
+        out.push_str("    if (request_focus != NULL) (*env)->CallBooleanMethod(env, target, request_focus);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (target_class != NULL) (*env)->DeleteLocalRef(env, target_class);\n");
+        out.push_str("    if (target != NULL) (*env)->DeleteLocalRef(env, target);\n");
+        out.push_str("    if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class);\n");
+        out.push_str("    if (view != NULL) (*env)->DeleteLocalRef(env, view);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+        if uses_android_focus_next {
+            out.push_str("static inline void flux__android_focus_next(void) { flux__android_change_focus(2); }\n");
+        }
+        if uses_android_focus_previous {
+            out.push_str("static inline void flux__android_focus_previous(void) { flux__android_change_focus(1); }\n");
+        }
+        if uses_android_clear_focus {
+            out.push_str("static inline void flux__android_clear_focus(void) { flux__android_change_focus(0); }\n");
         }
     }
     if uses_android_share {
@@ -10832,6 +10896,21 @@ fn emit_qualified_call(
                     ));
                 }
                 return Ok((format!("flux__android_{name}()"), Vec::new(), None));
+            }
+            "focusNext" | "focusPrevious" | "clearFocus" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let runtime_name = match name {
+                    "focusNext" => "focus_next",
+                    "focusPrevious" => "focus_previous",
+                    "clearFocus" => "clear_focus",
+                    _ => unreachable!(),
+                };
+                return Ok((format!("flux__android_{runtime_name}()"), Vec::new(), None));
             }
             "vibrate" | "open_url" | "share" => {
                 if args.len() != 1 {

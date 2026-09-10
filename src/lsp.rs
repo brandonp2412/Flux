@@ -1177,6 +1177,27 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "focusNext",
+            3,
+            "fn android.focusNext() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "focusPrevious",
+            3,
+            "fn android.focusPrevious() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "clearFocus",
+            3,
+            "fn android.clearFocus() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "create_notification_channel",
             3,
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
@@ -2068,7 +2089,8 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "show_keyboard" | "hide_keyboard" => {
+                "show_keyboard" | "hide_keyboard" | "focusNext" | "focusPrevious"
+                | "clearFocus" => {
                     return Some(signature_help_for_builtin(
                         &format!("android.{member}"),
                         &[],
@@ -4969,6 +4991,9 @@ mod tests {
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.show_keyboard() -> void"));
         assert!(android_items.contains("fn android.hide_keyboard() -> void"));
+        assert!(android_items.contains("fn android.focusNext() -> void"));
+        assert!(android_items.contains("fn android.focusPrevious() -> void"));
+        assert!(android_items.contains("fn android.clearFocus() -> void"));
         assert!(android_items.contains(
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
         ));
@@ -5487,6 +5512,39 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("platform call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_android_focus_navigation() {
+        let uri = "file:///tmp/android-focus-signatures.flux";
+        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.clearFocus()\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("android.focusNext(", "fn android.focusNext() -> void"),
+            (
+                "android.focusPrevious(",
+                "fn android.focusPrevious() -> void",
+            ),
+            ("android.clearFocus(", "fn android.clearFocus() -> void"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("focus call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("focus call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }
