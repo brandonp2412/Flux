@@ -9930,7 +9930,9 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
+    android.focusNext(true)
     android.focusPrevious()
+    android.focusPrevious(true)
     android.focusFirst()
     android.focusLast()
     android.clearFocus()
@@ -10022,6 +10024,16 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("static inline void flux__android_hide_keyboard(void)"));
     assert!(generated.contains("static inline void flux__android_focus_next(void)"));
     assert!(generated.contains("static inline void flux__android_focus_previous(void)"));
+    assert!(generated.contains("static inline void flux__android_focus_next_wrap(bool wrap)"));
+    assert!(generated.contains("static inline void flux__android_focus_previous_wrap(bool wrap)"));
+    assert!(
+        generated
+            .contains("if (!flux__android_change_focus(2) && wrap) flux__android_focus_edge(2)")
+    );
+    assert!(
+        generated
+            .contains("if (!flux__android_change_focus(1) && wrap) flux__android_focus_edge(1)")
+    );
     assert!(generated.contains("static inline void flux__android_focus_first(void)"));
     assert!(generated.contains("static inline void flux__android_focus_last(void)"));
     assert!(generated.contains("static void flux__android_focus_edge(int direction)"));
@@ -10112,7 +10124,9 @@ fn main() -> i64 {
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
+    android.focusNext(true)
     android.focusPrevious()
+    android.focusPrevious(true)
     android.focusFirst()
     android.focusLast()
     android.clearFocus()
@@ -10144,6 +10158,8 @@ app Screen
     assert!(!tree_generated.contains("flux__android_hide_keyboard"));
     assert!(!tree_generated.contains("flux__android_focus_next"));
     assert!(!tree_generated.contains("flux__android_focus_previous"));
+    assert!(!tree_generated.contains("flux__android_focus_next_wrap"));
+    assert!(!tree_generated.contains("flux__android_focus_previous_wrap"));
     assert!(!tree_generated.contains("flux__android_focus_first"));
     assert!(!tree_generated.contains("flux__android_focus_last"));
     assert!(!tree_generated.contains("flux__android_focus_edge"));
@@ -10176,7 +10192,7 @@ fn main() -> i64 {
     android.showKeyboard(1)
     android.hideKeyboard(false)
     android.focusNext(1)
-    android.focusPrevious(false)
+    android.focusPrevious("bad")
     android.focusFirst(1)
     android.focusLast(false)
     android.clearFocus("bad")
@@ -10222,8 +10238,6 @@ fn main() -> i64 {
             .contains("android.hideKeyboard expects 0 arguments, got 1")
     }));
     for name in [
-        "focusNext",
-        "focusPrevious",
         "focusFirst",
         "focusLast",
         "clearFocus",
@@ -10236,6 +10250,13 @@ fn main() -> i64 {
                 .contains(&format!("android.{name} expects 0 arguments, got 1"))
         }));
     }
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.focusNext wrap") && error.message.contains("expected bool")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.focusPrevious wrap")
+            && error.message.contains("expected bool")
+    }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.setCaret position")
             && error.message.contains("expected i64")

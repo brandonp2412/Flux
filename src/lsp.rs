@@ -1179,14 +1179,14 @@ fn add_qualified_namespace_completions(
             seen,
             "focusNext",
             3,
-            "fn android.focusNext() -> void",
+            "fn android.focusNext(wrap: bool = false) -> void",
         );
         push_completion_item(
             items,
             seen,
             "focusPrevious",
             3,
-            "fn android.focusPrevious() -> void",
+            "fn android.focusPrevious(wrap: bool = false) -> void",
         );
         push_completion_item(
             items,
@@ -2131,8 +2131,15 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "focusFirst"
-                | "focusLast" | "clearFocus" => {
+                "focusNext" | "focusPrevious" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("android.{member}"),
+                        &["wrap: bool = false"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "showKeyboard" | "hideKeyboard" | "focusFirst" | "focusLast" | "clearFocus" => {
                     return Some(signature_help_for_builtin(
                         &format!("android.{member}"),
                         &[],
@@ -5057,8 +5064,8 @@ mod tests {
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
         assert!(android_items.contains("fn android.hideKeyboard() -> void"));
-        assert!(android_items.contains("fn android.focusNext() -> void"));
-        assert!(android_items.contains("fn android.focusPrevious() -> void"));
+        assert!(android_items.contains("fn android.focusNext(wrap: bool = false) -> void"));
+        assert!(android_items.contains("fn android.focusPrevious(wrap: bool = false) -> void"));
         assert!(android_items.contains("fn android.focusFirst() -> void"));
         assert!(android_items.contains("fn android.focusLast() -> void"));
         assert!(android_items.contains("fn android.clearFocus() -> void"));
@@ -5265,6 +5272,24 @@ mod tests {
         .to_json();
         assert!(interface_items.contains("fn Storage.load(receiver: Storage, path: str)"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn text_input_completion_exposes_multiline_submit_policy() {
+        let source = "view Form {\n    grid columns: 1fr\n    grid rows: auto\n    TextInput input at 1,1\n        \n}\nfn main() -> i64 { 0 }\n";
+        let uri = "file:///tmp/text-input-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let properties = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(4),
+        ))
+        .to_json();
+        assert!(properties.contains("\"label\":\"multiline\""));
+        assert!(properties.contains("TextInput.multiline: bool"));
+        assert!(properties.contains("\"label\":\"submitOnEnter\""));
+        assert!(properties.contains("TextInput.submitOnEnter: bool"));
     }
 
     #[test]
@@ -5597,10 +5622,13 @@ mod tests {
         let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.focusFirst()\n    android.focusLast()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            ("android.focusNext(", "fn android.focusNext() -> void"),
+            (
+                "android.focusNext(",
+                "fn android.focusNext(wrap: bool = false) -> void",
+            ),
             (
                 "android.focusPrevious(",
-                "fn android.focusPrevious() -> void",
+                "fn android.focusPrevious(wrap: bool = false) -> void",
             ),
             ("android.focusFirst(", "fn android.focusFirst() -> void"),
             ("android.focusLast(", "fn android.focusLast() -> void"),

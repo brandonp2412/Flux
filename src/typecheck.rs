@@ -4729,8 +4729,28 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
-            "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "focusFirst"
-            | "focusLast" | "clearFocus" => {
+            "focusNext" | "focusPrevious" => {
+                if args.len() > 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.{name} expects 0 or 1 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                if let Some(wrap) = args.first() {
+                    let actual = type_of_expr(wrap, env, signatures)?;
+                    require_type(
+                        wrap.span,
+                        &Type::Bool,
+                        &actual,
+                        &format!("android.{name} wrap"),
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
+            "showKeyboard" | "hideKeyboard" | "focusFirst" | "focusLast" | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,

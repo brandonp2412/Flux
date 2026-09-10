@@ -33,8 +33,8 @@ fn textChanged(value: str) -> void {
     print(value)
 }
 
-fn focusFirst() -> void {
-    android.focusFirst()
+fn focusNextWrapped() -> void {
+    android.focusNext(true)
 }
 
 fn focusLast() -> void {
@@ -96,8 +96,8 @@ view Screen {
         selected: choice == 1
         onSelect: choice => 1
     Button focusStart at 9,1
-        text: "Focus first control"
-        onPress: focusFirst
+        text: "Focus next (wrap)"
+        onPress: focusNextWrapped
     Button focusEnd at 10,1
         text: "Focus last control"
         onPress: focusLast
