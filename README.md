@@ -11,6 +11,23 @@
 
 </div>
 
+## Quick start
+
+```sh
+flux new my-flux-app
+flux run my-flux-app
+```
+
+## Built with Flux
+
+<div align="center">
+
+<img src="assets/readme/flux-mobile-showcase.png" alt="Luma wellness app compiled with Flux and running on Waydroid" width="360">
+
+<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
+
+</div>
+
 ## Why Flux
 
 Flux combines readable function-first syntax, Rust-class safety/performance goals, direct native platform access, and a flat declarative UI model.
@@ -28,23 +45,6 @@ Flux combines readable function-first syntax, Rust-class safety/performance goal
 Flux is an active Rust bootstrap compiler. It already supports substantial typed language semantics, modules/packages, exhaustive matching, first-class functions, typed collections/pipelines, semantic CFG and typed-IR foundations, tree shaking/interface specialization, a native GTK4 Linux GUI backend, and compiler-owned Android APK/AAB generation.
 
 Ownership/borrowing, owned strings/collections, broader platform coverage, production hot reload, the full beautiful-by-default UI system, and the long-term optimizing native backend remain roadmap work.
-
-## Quick start
-
-```sh
-flux new my-flux-app
-flux run my-flux-app
-```
-
-## Built with Flux
-
-<div align="center">
-
-<img src="assets/readme/flux-mobile-showcase.png" alt="Luma wellness app compiled with Flux and running on Waydroid" width="360">
-
-<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
-
-</div>
 
 The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), testing and dependency fakes in [`docs/testing.md`](docs/testing.md), the stable machine diagnostics contract in [`docs/diagnostics.md`](docs/diagnostics.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), generic native cross compilation in [`docs/cross-compilation.md`](docs/cross-compilation.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
 
