@@ -2062,8 +2062,17 @@ fn android_manifest_xml(
     } else {
         ""
     };
+    let notification_permission = if c_source.contains("flux__android_notify(")
+        || c_source.contains("flux__android_notify_url_action(")
+        || c_source.contains("flux__android_notification_permission_granted(")
+        || c_source.contains("flux__android_request_notification_permission(")
+    {
+        "    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n"
+    } else {
+        ""
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"1\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
         manifest.android.min_sdk,
         manifest.android.target_sdk,
         if mode == BuildMode::Debug {
@@ -2528,6 +2537,7 @@ mod tests {
             "int main(void) { return 0; }",
         );
         assert!(!plain.contains("android.permission.VIBRATE"));
+        assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
 
         let vibrating = android_manifest_xml(
             &manifest,
@@ -2535,6 +2545,17 @@ mod tests {
             "static void f(void) { flux__android_vibrate(25); }",
         );
         assert!(vibrating.contains("android.permission.VIBRATE"));
+        assert!(!vibrating.contains("android.permission.POST_NOTIFICATIONS"));
+
+        for source in [
+            "static void f(void) { flux__android_notify(\"c\", 1, \"t\", \"b\"); }",
+            "static void f(void) { flux__android_notify_url_action(\"c\", 1, \"t\", \"b\", \"open\", \"https://example.com\"); }",
+            "static bool f(void) { return flux__android_notification_permission_granted(); }",
+            "static void f(void) { flux__android_request_notification_permission(); }",
+        ] {
+            let notifying = android_manifest_xml(&manifest, BuildMode::Release, source);
+            assert!(notifying.contains("android.permission.POST_NOTIFICATIONS"));
+        }
     }
 
     #[test]

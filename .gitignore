@@ -1,4 +1,5 @@
 /target
 /hello
+**/build/
 *.o
 *.exe

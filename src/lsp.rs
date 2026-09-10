@@ -1160,6 +1160,48 @@ fn add_qualified_namespace_completions(
             3,
             "fn android.share(text: str) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "create_notification_channel",
+            3,
+            "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "notification_permission_granted",
+            3,
+            "fn android.notification_permission_granted() -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "request_notification_permission",
+            3,
+            "fn android.request_notification_permission() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "notify",
+            3,
+            "fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "notify_url_action",
+            3,
+            "fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "cancel_notification",
+            3,
+            "fn android.cancel_notification(notification_id: i64) -> void",
+        );
         return true;
     }
     if let Some(definition) = program
@@ -1994,6 +2036,66 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.share",
                         &["text: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "create_notification_channel" => {
+                    return Some(signature_help_for_builtin(
+                        "android.create_notification_channel",
+                        &["id: str", "name: str", "description: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "notification_permission_granted" => {
+                    return Some(signature_help_for_builtin(
+                        "android.notification_permission_granted",
+                        &[],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "request_notification_permission" => {
+                    return Some(signature_help_for_builtin(
+                        "android.request_notification_permission",
+                        &[],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "notify" => {
+                    return Some(signature_help_for_builtin(
+                        "android.notify",
+                        &[
+                            "channel_id: str",
+                            "notification_id: i64",
+                            "title: str",
+                            "body: str",
+                        ],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "notify_url_action" => {
+                    return Some(signature_help_for_builtin(
+                        "android.notify_url_action",
+                        &[
+                            "channel_id: str",
+                            "notification_id: i64",
+                            "title: str",
+                            "body: str",
+                            "action_label: str",
+                            "url: str",
+                        ],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "cancel_notification" => {
+                    return Some(signature_help_for_builtin(
+                        "android.cancel_notification",
+                        &["notification_id: i64"],
                         "void",
                         active_parameter,
                     ));
@@ -4813,6 +4915,16 @@ mod tests {
         assert!(android_items.contains("\"label\":\"open_url\""));
         assert!(android_items.contains("fn android.open_url(url: str) -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
+        assert!(android_items.contains(
+            "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
+        ));
+        assert!(android_items.contains("fn android.notification_permission_granted() -> bool"));
+        assert!(android_items.contains("fn android.request_notification_permission() -> void"));
+        assert!(android_items.contains("fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void"));
+        assert!(android_items.contains("fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void"));
+        assert!(
+            android_items.contains("fn android.cancel_notification(notification_id: i64) -> void")
+        );
     }
 
     #[test]
@@ -5261,7 +5373,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android.sdk_int())\n    android.vibrate(25)\n    android.open_url(\"https://example.com\")\n    android.share(\"hello\")\n    android.create_notification_channel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notification_permission_granted())\n    android.request_notification_permission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notify_url_action(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancel_notification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.sdk_int(", "fn android.sdk_int() -> i64"),
@@ -5271,6 +5383,30 @@ mod tests {
             ),
             ("android.open_url(", "fn android.open_url(url: str) -> void"),
             ("android.share(", "fn android.share(text: str) -> void"),
+            (
+                "android.create_notification_channel(",
+                "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
+            ),
+            (
+                "android.notification_permission_granted(",
+                "fn android.notification_permission_granted() -> bool",
+            ),
+            (
+                "android.request_notification_permission(",
+                "fn android.request_notification_permission() -> void",
+            ),
+            (
+                "android.notify(",
+                "fn android.notify(channel_id: str, notification_id: i64, title: str, body: str) -> void",
+            ),
+            (
+                "android.notify_url_action(",
+                "fn android.notify_url_action(channel_id: str, notification_id: i64, title: str, body: str, action_label: str, url: str) -> void",
+            ),
+            (
+                "android.cancel_notification(",
+                "fn android.cancel_notification(notification_id: i64) -> void",
+            ),
         ] {
             let line_index = source
                 .lines()

@@ -9783,6 +9783,12 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.vibrate(25)
     android.open_url("https://example.com")
     android.share("hello from Flux")
+    android.create_notification_channel("updates", "Updates", "Flux update notifications")
+    print(android.notification_permission_granted())
+    android.request_notification_permission()
+    android.notify("updates", 7, "Flux", "Native Android notification")
+    android.notify_url_action("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
+    android.cancel_notification(7)
     print("started")
 }
 fn resumed() -> void {
@@ -9835,6 +9841,25 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("createChooser"));
     assert!(generated.contains("startActivity"));
     assert!(generated.contains("flux__android_utf8_string"));
+    assert!(generated.contains("static void flux__android_create_notification_channel"));
+    assert!(generated.contains("android/app/NotificationChannel"));
+    assert!(generated.contains("createNotificationChannel"));
+    assert!(generated.contains("static bool flux__android_notification_permission_granted"));
+    assert!(generated.contains("android.permission.POST_NOTIFICATIONS"));
+    assert!(generated.contains("checkSelfPermission"));
+    assert!(generated.contains("static void flux__android_request_notification_permission"));
+    assert!(generated.contains("requestPermissions"));
+    assert!(generated.contains("static void flux__android_notify"));
+    assert!(generated.contains("android/app/Notification$Builder"));
+    assert!(generated.contains("setChannelId"));
+    assert!(generated.contains("setContentTitle"));
+    assert!(generated.contains("setContentText"));
+    assert!(generated.contains("\"notify\", \"(ILandroid/app/Notification;)V\""));
+    assert!(generated.contains("static void flux__android_notify_url_action"));
+    assert!(generated.contains("android/app/PendingIntent"));
+    assert!(generated.contains("addAction"));
+    assert!(generated.contains("static void flux__android_cancel_notification"));
+    assert!(generated.contains("\"cancel\", \"(I)V\""));
     assert!(generated.contains("flux__fn_exiting();"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("GtkApplication"));
@@ -9865,12 +9890,55 @@ fn main() -> i64 {
         .expect("unreachable platform-specific code should not poison another target");
     assert!(!generated.contains("flux__android_open_url"));
 
+    let android_tree_root = root.join("tree-shaken");
+    fs::create_dir_all(android_tree_root.join("src"))
+        .expect("Android tree-shaking fixture should be writable");
+    fs::write(
+        android_tree_root.join("flux.toml"),
+        "[package]\nname = \"tree-shaken-android\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android tree-shaking manifest should be writable");
+    fs::write(
+        android_tree_root.join("src/main.flux"),
+        r#"fn unused_android() -> void {
+    android.create_notification_channel("unused", "Unused", "Unused")
+    android.notify("unused", 1, "Unused", "Unused")
+    android.notify_url_action("unused", 2, "Unused", "Unused", "Open", "https://example.com")
+    android.cancel_notification(1)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#,
+    )
+    .expect("Android tree-shaking source should be writable");
+    let tree_analysis = fluxc::project::analyze(&android_tree_root)
+        .expect("Android tree-shaking fixture should analyze");
+    let tree_generated = tree_analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android tree-shaking fixture should lower");
+    assert!(!tree_generated.contains("flux__android_create_notification_channel"));
+    assert!(!tree_generated.contains("flux__android_notify("));
+    assert!(!tree_generated.contains("flux__android_notify_url_action"));
+    assert!(!tree_generated.contains("flux__android_cancel_notification"));
+    assert!(!tree_generated.contains("android/app/Notification$Builder"));
+    assert!(!tree_generated.contains("android/app/PendingIntent"));
+    assert!(!tree_generated.contains("android.permission.POST_NOTIFICATIONS"));
+
     let invalid = r#"
 fn main() -> i64 {
     android.sdk_int(1)
     android.vibrate("long")
     android.open_url(42)
     android.share(42)
+    android.create_notification_channel("updates", 1, false)
+    android.notification_permission_granted(1)
+    android.request_notification_permission(1)
+    android.notify(1, "bad", false, 42)
+    android.notify_url_action("updates", "bad", "title", "body", "Open", 42)
+    android.cancel_notification("bad")
     return 0
 }
 "#;
@@ -9889,6 +9957,38 @@ fn main() -> i64 {
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.create_notification_channel name")
+            && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.notification_permission_granted expects 0 arguments")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.request_notification_permission expects 0 arguments")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.notify channel_id")
+            && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.notify_url_action notification_id")
+            && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.cancel_notification notification_id")
+            && error.message.contains("expected i64")
     }));
 
     let _ = fs::remove_dir_all(&root);

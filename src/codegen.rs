@@ -289,7 +289,13 @@ fn emit_runtime_prelude(
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
-        if runtime_usage.contains("flux__android_sdk_int(") {
+        if runtime_usage.contains("flux__android_sdk_int(")
+            || runtime_usage.contains("flux__android_create_notification_channel(")
+            || runtime_usage.contains("flux__android_notification_permission_granted(")
+            || runtime_usage.contains("flux__android_request_notification_permission(")
+            || runtime_usage.contains("flux__android_notify(")
+            || runtime_usage.contains("flux__android_notify_url_action(")
+        {
             out.push_str("#include <android/api-level.h>\n");
         }
     }
@@ -299,8 +305,27 @@ fn emit_runtime_prelude(
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
-    let uses_android_platform_api =
-        uses_android_vibrate || uses_android_open_url || uses_android_share;
+    let uses_android_create_notification_channel =
+        uses_android && runtime_usage.contains("flux__android_create_notification_channel(");
+    let uses_android_notification_permission_granted =
+        uses_android && runtime_usage.contains("flux__android_notification_permission_granted(");
+    let uses_android_request_notification_permission =
+        uses_android && runtime_usage.contains("flux__android_request_notification_permission(");
+    let uses_android_notify = uses_android && runtime_usage.contains("flux__android_notify(");
+    let uses_android_notify_url_action =
+        uses_android && runtime_usage.contains("flux__android_notify_url_action(");
+    let uses_android_cancel_notification =
+        uses_android && runtime_usage.contains("flux__android_cancel_notification(");
+    let uses_android_notifications = uses_android_create_notification_channel
+        || uses_android_notification_permission_granted
+        || uses_android_request_notification_permission
+        || uses_android_notify
+        || uses_android_notify_url_action
+        || uses_android_cancel_notification;
+    let uses_android_platform_api = uses_android_vibrate
+        || uses_android_open_url
+        || uses_android_share
+        || uses_android_notifications;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
@@ -331,7 +356,7 @@ fn emit_runtime_prelude(
         out.push_str("    }\n");
         out.push_str("}\n");
     }
-    if uses_android_open_url || uses_android_share {
+    if uses_android_open_url || uses_android_share || uses_android_notifications {
         out.push_str(
             "static jstring flux__android_utf8_string(JNIEnv *env, const char *value) {\n",
         );
@@ -500,6 +525,433 @@ fn emit_runtime_prelude(
         out.push_str("    if (uri != NULL) (*env)->DeleteLocalRef(env, uri);\n");
         out.push_str("    if (url_string != NULL) (*env)->DeleteLocalRef(env, url_string);\n");
         out.push_str("    if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+
+    if uses_android_create_notification_channel {
+        out.push_str("static void flux__android_create_notification_channel(const char *channel_id, const char *name, const char *description) {\n");
+        out.push_str("    if (android_get_device_api_level() < 26 || channel_id == NULL || name == NULL || description == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = NULL; jclass channel_class = NULL; jclass manager_class = NULL;\n");
+        out.push_str("    jstring service_name = NULL; jstring id_string = NULL; jstring name_string = NULL; jstring description_string = NULL;\n");
+        out.push_str("    jobject manager = NULL; jobject channel = NULL;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"notification\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str("    manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_service, service_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str(
+            "    channel_class = (*env)->FindClass(env, \"android/app/NotificationChannel\");\n",
+        );
+        out.push_str("    if (channel_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, channel_class, \"<init>\", \"(Ljava/lang/String;Ljava/lang/CharSequence;I)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    id_string = flux__android_utf8_string(env, channel_id);\n");
+        out.push_str("    name_string = flux__android_utf8_string(env, name);\n");
+        out.push_str("    description_string = flux__android_utf8_string(env, description);\n");
+        out.push_str("    if (id_string == NULL || name_string == NULL || description_string == NULL) goto done;\n");
+        out.push_str("    channel = (*env)->NewObject(env, channel_class, ctor, id_string, name_string, (jint)3);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || channel == NULL) goto done;\n");
+        out.push_str("    jmethodID set_description = (*env)->GetMethodID(env, channel_class, \"setDescription\", \"(Ljava/lang/String;)V\");\n");
+        out.push_str("    if (set_description != NULL) (*env)->CallVoidMethod(env, channel, set_description, description_string);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID create_channel = (*env)->GetMethodID(env, manager_class, \"createNotificationChannel\", \"(Landroid/app/NotificationChannel;)V\");\n");
+        out.push_str("    if (create_channel != NULL) (*env)->CallVoidMethod(env, manager, create_channel, channel);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (channel != NULL) (*env)->DeleteLocalRef(env, channel);\n");
+        out.push_str("    if (description_string != NULL) (*env)->DeleteLocalRef(env, description_string);\n");
+        out.push_str("    if (name_string != NULL) (*env)->DeleteLocalRef(env, name_string);\n");
+        out.push_str("    if (id_string != NULL) (*env)->DeleteLocalRef(env, id_string);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str(
+            "    if (channel_class != NULL) (*env)->DeleteLocalRef(env, channel_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_notification_permission_granted
+        || uses_android_notify
+        || uses_android_notify_url_action
+    {
+        out.push_str("static bool flux__android_notification_permission_granted(void) {\n");
+        out.push_str("    if (android_get_device_api_level() < 33) return true;\n");
+        out.push_str("    if (flux__android_activity == NULL) return false;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return false;\n");
+        out.push_str("    bool granted = false;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n");
+        out.push_str("    jstring permission = NULL;\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID check_permission = (*env)->GetMethodID(env, activity_class, \"checkSelfPermission\", \"(Ljava/lang/String;)I\");\n");
+        out.push_str("    if (check_permission == NULL) goto done;\n");
+        out.push_str("    permission = (*env)->NewStringUTF(env, \"android.permission.POST_NOTIFICATIONS\");\n");
+        out.push_str("    if (permission == NULL) goto done;\n");
+        out.push_str("    jint result = (*env)->CallIntMethod(env, flux__android_activity->clazz, check_permission, permission);\n");
+        out.push_str("    if (!(*env)->ExceptionCheck(env)) granted = result == 0;\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (permission != NULL) (*env)->DeleteLocalRef(env, permission);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("    return granted;\n");
+        out.push_str("}\n");
+    }
+    if uses_android_request_notification_permission {
+        out.push_str("static void flux__android_request_notification_permission(void) {\n");
+        out.push_str("    if (android_get_device_api_level() < 33 || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = NULL; jclass string_class = NULL;\n");
+        out.push_str("    jstring permission = NULL; jobjectArray permissions = NULL;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID request_permissions = (*env)->GetMethodID(env, activity_class, \"requestPermissions\", \"([Ljava/lang/String;I)V\");\n");
+        out.push_str("    if (request_permissions == NULL) goto done;\n");
+        out.push_str("    string_class = (*env)->FindClass(env, \"java/lang/String\");\n");
+        out.push_str("    if (string_class == NULL) goto done;\n");
+        out.push_str("    permission = (*env)->NewStringUTF(env, \"android.permission.POST_NOTIFICATIONS\");\n");
+        out.push_str("    if (permission == NULL) goto done;\n");
+        out.push_str("    permissions = (*env)->NewObjectArray(env, 1, string_class, NULL);\n");
+        out.push_str("    if (permissions == NULL) goto done;\n");
+        out.push_str("    (*env)->SetObjectArrayElement(env, permissions, 0, permission);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, request_permissions, permissions, (jint)6171);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (permissions != NULL) (*env)->DeleteLocalRef(env, permissions);\n");
+        out.push_str("    if (permission != NULL) (*env)->DeleteLocalRef(env, permission);\n");
+        out.push_str("    if (string_class != NULL) (*env)->DeleteLocalRef(env, string_class);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_notify {
+        out.push_str("static void flux__android_notify(const char *channel_id, int64_t notification_id, const char *title, const char *body) {\n");
+        out.push_str("    if (channel_id == NULL || title == NULL || body == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str(
+            "    if (notification_id < INT32_MIN || notification_id > INT32_MAX) return;\n",
+        );
+        out.push_str("    if (!flux__android_notification_permission_granted()) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass builder_class = NULL; jclass activity_class = NULL; jclass manager_class = NULL;\n");
+        out.push_str("    jstring channel_string = NULL; jstring title_string = NULL; jstring body_string = NULL; jstring service_name = NULL;\n");
+        out.push_str("    jobject builder = NULL; jobject chained = NULL; jobject notification = NULL; jobject manager = NULL;\n");
+        out.push_str(
+            "    builder_class = (*env)->FindClass(env, \"android/app/Notification$Builder\");\n",
+        );
+        out.push_str("    if (builder_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, builder_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    builder = (*env)->NewObject(env, builder_class, ctor, flux__android_activity->clazz);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || builder == NULL) goto done;\n");
+        out.push_str("    jmethodID set_small_icon = (*env)->GetMethodID(env, builder_class, \"setSmallIcon\", \"(I)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    if (set_small_icon == NULL) goto done;\n");
+        out.push_str("    chained = (*env)->CallObjectMethod(env, builder, set_small_icon, (jint)17301625);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    title_string = flux__android_utf8_string(env, title);\n");
+        out.push_str("    body_string = flux__android_utf8_string(env, body);\n");
+        out.push_str("    if (title_string == NULL || body_string == NULL) goto done;\n");
+        out.push_str("    jmethodID set_title = (*env)->GetMethodID(env, builder_class, \"setContentTitle\", \"(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    jmethodID set_body = (*env)->GetMethodID(env, builder_class, \"setContentText\", \"(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    jmethodID set_auto_cancel = (*env)->GetMethodID(env, builder_class, \"setAutoCancel\", \"(Z)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    if (set_title == NULL || set_body == NULL || set_auto_cancel == NULL) goto done;\n");
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_title, title_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_body, body_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_auto_cancel, JNI_TRUE);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    if (android_get_device_api_level() >= 26) {\n");
+        out.push_str("        channel_string = flux__android_utf8_string(env, channel_id);\n");
+        out.push_str("        if (channel_string == NULL) goto done;\n");
+        out.push_str("        jmethodID set_channel = (*env)->GetMethodID(env, builder_class, \"setChannelId\", \"(Ljava/lang/String;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("        if (set_channel == NULL) goto done;\n");
+        out.push_str("        chained = (*env)->CallObjectMethod(env, builder, set_channel, channel_string);\n");
+        out.push_str("        if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str("        if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n");
+        out.push_str("    }\n");
+        out.push_str("    jmethodID build = (*env)->GetMethodID(env, builder_class, \"build\", \"()Landroid/app/Notification;\");\n");
+        out.push_str("    if (build == NULL) goto done;\n");
+        out.push_str("    notification = (*env)->CallObjectMethod(env, builder, build);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || notification == NULL) goto done;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"notification\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str("    manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_service, service_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID notify = (*env)->GetMethodID(env, manager_class, \"notify\", \"(ILandroid/app/Notification;)V\");\n");
+        out.push_str("    if (notify != NULL) (*env)->CallVoidMethod(env, manager, notify, (jint)notification_id, notification);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    if (notification != NULL) (*env)->DeleteLocalRef(env, notification);\n");
+        out.push_str("    if (body_string != NULL) (*env)->DeleteLocalRef(env, body_string);\n");
+        out.push_str("    if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string);\n");
+        out.push_str(
+            "    if (channel_string != NULL) (*env)->DeleteLocalRef(env, channel_string);\n",
+        );
+        out.push_str("    if (chained != NULL) (*env)->DeleteLocalRef(env, chained);\n");
+        out.push_str("    if (builder != NULL) (*env)->DeleteLocalRef(env, builder);\n");
+        out.push_str(
+            "    if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+
+    if uses_android_notify_url_action {
+        out.push_str("static void flux__android_notify_url_action(const char *channel_id, int64_t notification_id, const char *title, const char *body, const char *action_label, const char *url) {\n");
+        out.push_str("    if (channel_id == NULL || title == NULL || body == NULL || action_label == NULL || url == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str(
+            "    if (notification_id < INT32_MIN || notification_id > INT32_MAX) return;\n",
+        );
+        out.push_str("    if (!flux__android_notification_permission_granted()) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass builder_class = NULL; jclass activity_class = NULL; jclass manager_class = NULL; jclass uri_class = NULL; jclass intent_class = NULL; jclass pending_intent_class = NULL;\n");
+        out.push_str("    jstring channel_string = NULL; jstring title_string = NULL; jstring body_string = NULL; jstring service_name = NULL; jstring action_label_string = NULL; jstring url_string = NULL; jstring view_action = NULL;\n");
+        out.push_str("    jobject builder = NULL; jobject chained = NULL; jobject notification = NULL; jobject manager = NULL; jobject uri = NULL; jobject intent = NULL; jobject pending_intent = NULL;\n");
+        out.push_str(
+            "    builder_class = (*env)->FindClass(env, \"android/app/Notification$Builder\");\n",
+        );
+        out.push_str("    if (builder_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, builder_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    builder = (*env)->NewObject(env, builder_class, ctor, flux__android_activity->clazz);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || builder == NULL) goto done;\n");
+        out.push_str("    jmethodID set_small_icon = (*env)->GetMethodID(env, builder_class, \"setSmallIcon\", \"(I)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    if (set_small_icon == NULL) goto done;\n");
+        out.push_str("    chained = (*env)->CallObjectMethod(env, builder, set_small_icon, (jint)17301625);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    title_string = flux__android_utf8_string(env, title);\n");
+        out.push_str("    body_string = flux__android_utf8_string(env, body);\n");
+        out.push_str("    if (title_string == NULL || body_string == NULL) goto done;\n");
+        out.push_str("    jmethodID set_title = (*env)->GetMethodID(env, builder_class, \"setContentTitle\", \"(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    jmethodID set_body = (*env)->GetMethodID(env, builder_class, \"setContentText\", \"(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    jmethodID set_auto_cancel = (*env)->GetMethodID(env, builder_class, \"setAutoCancel\", \"(Z)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    if (set_title == NULL || set_body == NULL || set_auto_cancel == NULL) goto done;\n");
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_title, title_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_body, body_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str(
+            "    chained = (*env)->CallObjectMethod(env, builder, set_auto_cancel, JNI_TRUE);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    if (android_get_device_api_level() >= 26) {\n");
+        out.push_str("        channel_string = flux__android_utf8_string(env, channel_id);\n");
+        out.push_str("        if (channel_string == NULL) goto done;\n");
+        out.push_str("        jmethodID set_channel = (*env)->GetMethodID(env, builder_class, \"setChannelId\", \"(Ljava/lang/String;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("        if (set_channel == NULL) goto done;\n");
+        out.push_str("        chained = (*env)->CallObjectMethod(env, builder, set_channel, channel_string);\n");
+        out.push_str("        if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str("        if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n");
+        out.push_str("    }\n");
+        out.push_str("    uri_class = (*env)->FindClass(env, \"android/net/Uri\");\n");
+        out.push_str("    if (uri_class == NULL) goto done;\n");
+        out.push_str("    jmethodID parse = (*env)->GetStaticMethodID(env, uri_class, \"parse\", \"(Ljava/lang/String;)Landroid/net/Uri;\");\n");
+        out.push_str("    if (parse == NULL) goto done;\n");
+        out.push_str("    url_string = flux__android_utf8_string(env, url);\n");
+        out.push_str("    if (url_string == NULL) goto done;\n");
+        out.push_str(
+            "    uri = (*env)->CallStaticObjectMethod(env, uri_class, parse, url_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || uri == NULL) goto done;\n");
+        out.push_str("    intent_class = (*env)->FindClass(env, \"android/content/Intent\");\n");
+        out.push_str("    if (intent_class == NULL) goto done;\n");
+        out.push_str("    jmethodID intent_ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;Landroid/net/Uri;)V\");\n");
+        out.push_str("    if (intent_ctor == NULL) goto done;\n");
+        out.push_str(
+            "    view_action = (*env)->NewStringUTF(env, \"android.intent.action.VIEW\");\n",
+        );
+        out.push_str("    if (view_action == NULL) goto done;\n");
+        out.push_str(
+            "    intent = (*env)->NewObject(env, intent_class, intent_ctor, view_action, uri);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || intent == NULL) goto done;\n");
+        out.push_str(
+            "    pending_intent_class = (*env)->FindClass(env, \"android/app/PendingIntent\");\n",
+        );
+        out.push_str("    if (pending_intent_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_activity = (*env)->GetStaticMethodID(env, pending_intent_class, \"getActivity\", \"(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;\");\n");
+        out.push_str("    if (get_activity == NULL) goto done;\n");
+        out.push_str("    jint pending_flags = (jint)0x08000000;\n");
+        out.push_str(
+            "    if (android_get_device_api_level() >= 23) pending_flags |= (jint)0x04000000;\n",
+        );
+        out.push_str("    pending_intent = (*env)->CallStaticObjectMethod(env, pending_intent_class, get_activity, flux__android_activity->clazz, (jint)notification_id, intent, pending_flags);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || pending_intent == NULL) goto done;\n");
+        out.push_str("    action_label_string = flux__android_utf8_string(env, action_label);\n");
+        out.push_str("    if (action_label_string == NULL) goto done;\n");
+        out.push_str("    jmethodID add_action = (*env)->GetMethodID(env, builder_class, \"addAction\", \"(ILjava/lang/CharSequence;Landroid/app/PendingIntent;)Landroid/app/Notification$Builder;\");\n");
+        out.push_str("    if (add_action == NULL) goto done;\n");
+        out.push_str("    chained = (*env)->CallObjectMethod(env, builder, add_action, (jint)0, action_label_string, pending_intent);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) goto done;\n");
+        out.push_str(
+            "    if (chained != NULL) { (*env)->DeleteLocalRef(env, chained); chained = NULL; }\n",
+        );
+        out.push_str("    jmethodID build = (*env)->GetMethodID(env, builder_class, \"build\", \"()Landroid/app/Notification;\");\n");
+        out.push_str("    if (build == NULL) goto done;\n");
+        out.push_str("    notification = (*env)->CallObjectMethod(env, builder, build);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || notification == NULL) goto done;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"notification\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str("    manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_service, service_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID notify = (*env)->GetMethodID(env, manager_class, \"notify\", \"(ILandroid/app/Notification;)V\");\n");
+        out.push_str("    if (notify != NULL) (*env)->CallVoidMethod(env, manager, notify, (jint)notification_id, notification);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    if (notification != NULL) (*env)->DeleteLocalRef(env, notification);\n");
+        out.push_str(
+            "    if (pending_intent != NULL) (*env)->DeleteLocalRef(env, pending_intent);\n",
+        );
+        out.push_str("    if (intent != NULL) (*env)->DeleteLocalRef(env, intent);\n");
+        out.push_str("    if (uri != NULL) (*env)->DeleteLocalRef(env, uri);\n");
+        out.push_str("    if (view_action != NULL) (*env)->DeleteLocalRef(env, view_action);\n");
+        out.push_str("    if (url_string != NULL) (*env)->DeleteLocalRef(env, url_string);\n");
+        out.push_str("    if (action_label_string != NULL) (*env)->DeleteLocalRef(env, action_label_string);\n");
+        out.push_str("    if (pending_intent_class != NULL) (*env)->DeleteLocalRef(env, pending_intent_class);\n");
+        out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
+        out.push_str("    if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class);\n");
+        out.push_str("    if (body_string != NULL) (*env)->DeleteLocalRef(env, body_string);\n");
+        out.push_str("    if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string);\n");
+        out.push_str(
+            "    if (channel_string != NULL) (*env)->DeleteLocalRef(env, channel_string);\n",
+        );
+        out.push_str("    if (chained != NULL) (*env)->DeleteLocalRef(env, chained);\n");
+        out.push_str("    if (builder != NULL) (*env)->DeleteLocalRef(env, builder);\n");
+        out.push_str(
+            "    if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_cancel_notification {
+        out.push_str("static void flux__android_cancel_notification(int64_t notification_id) {\n");
+        out.push_str("    if (notification_id < INT32_MIN || notification_id > INT32_MAX || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = NULL; jclass manager_class = NULL;\n");
+        out.push_str("    jstring service_name = NULL; jobject manager = NULL;\n");
+        out.push_str(
+            "    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n",
+        );
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"notification\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str("    manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_service, service_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID cancel = (*env)->GetMethodID(env, manager_class, \"cancel\", \"(I)V\");\n");
+        out.push_str("    if (cancel != NULL) (*env)->CallVoidMethod(env, manager, cancel, (jint)notification_id);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
@@ -8335,34 +8787,139 @@ fn emit_qualified_call(
                 "invalid android platform call reached code generation",
             ));
         }
-        if name == "sdk_int" {
-            if !args.is_empty() {
-                return Err(diag(
-                    span,
-                    "invalid android platform call reached code generation",
+        match name {
+            "sdk_int" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
+            }
+            "notification_permission_granted" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok((
+                    "flux__android_notification_permission_granted()".to_string(),
+                    vec![Type::Bool],
+                    None,
                 ));
             }
-            return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
-        }
-        if args.len() != 1 {
-            return Err(diag(
-                span,
-                "invalid android platform call reached code generation",
-            ));
-        }
-        let value = emit_expr(&args[0], env, signatures)?;
-        let code = match name {
-            "vibrate" => format!("flux__android_vibrate({})", value.code),
-            "open_url" => format!("flux__android_open_url({})", value.code),
-            "share" => format!("flux__android_share({})", value.code),
+            "request_notification_permission" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok((
+                    "flux__android_request_notification_permission()".to_string(),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "vibrate" | "open_url" | "share" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                let code = match name {
+                    "vibrate" => format!("flux__android_vibrate({})", value.code),
+                    "open_url" => format!("flux__android_open_url({})", value.code),
+                    "share" => format!("flux__android_share({})", value.code),
+                    _ => unreachable!(),
+                };
+                return Ok((code, Vec::new(), None));
+            }
+            "create_notification_channel" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((
+                    format!(
+                        "flux__android_create_notification_channel({}, {}, {})",
+                        values[0], values[1], values[2]
+                    ),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "notify" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((
+                    format!(
+                        "flux__android_notify({}, {}, {}, {})",
+                        values[0], values[1], values[2], values[3]
+                    ),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "notify_url_action" => {
+                if args.len() != 6 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((
+                    format!(
+                        "flux__android_notify_url_action({}, {}, {}, {}, {}, {})",
+                        values[0], values[1], values[2], values[3], values[4], values[5]
+                    ),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "cancel_notification" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_cancel_notification({})", value.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
             _ => {
                 return Err(diag(
                     span,
                     "unknown android platform call reached code generation",
                 ));
             }
-        };
-        return Ok((code, Vec::new(), None));
+        }
     }
     if let Some(definition) = signatures.enum_type(namespace) {
         let variant = definition

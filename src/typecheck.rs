@@ -4704,6 +4704,132 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
+            "create_notification_channel" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.create_notification_channel expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                for (index, label) in [(0, "id"), (1, "name"), (2, "description")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("android.create_notification_channel {label}"),
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
+            "notification_permission_granted" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.notification_permission_granted expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            "request_notification_permission" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.request_notification_permission expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
+            "notify" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!("android.notify expects 4 arguments, got {}", args.len()),
+                    ));
+                }
+                let channel = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &channel,
+                    "android.notify channel_id",
+                )?;
+                let notification_id = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &notification_id,
+                    "android.notify notification_id",
+                )?;
+                let title = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &title, "android.notify title")?;
+                let body = type_of_expr(&args[3], env, signatures)?;
+                require_type(args[3].span, &Type::Str, &body, "android.notify body")?;
+                return Ok(Vec::new());
+            }
+            "notify_url_action" => {
+                if args.len() != 6 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.notify_url_action expects 6 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let channel = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &channel,
+                    "android.notify_url_action channel_id",
+                )?;
+                let notification_id = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &notification_id,
+                    "android.notify_url_action notification_id",
+                )?;
+                for (index, label) in [(2, "title"), (3, "body"), (4, "action_label"), (5, "url")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("android.notify_url_action {label}"),
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
+            "cancel_notification" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.cancel_notification expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let notification_id = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &notification_id,
+                    "android.cancel_notification notification_id",
+                )?;
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,
