@@ -1415,6 +1415,215 @@ fn main() -> i64 {
 }
 
 #[test]
+fn filesystem_capabilities_are_typed_native_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!("flux-fs-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem API fixture should be writable");
+    let created = root.join("created");
+    let content = root.join("content.txt");
+    let delete = root.join("delete.txt");
+    let copy_source = root.join("copy-source.txt");
+    let copy_destination = root.join("copy-destination.txt");
+    let renamed = root.join("renamed.txt");
+    let missing = root.join("missing.txt");
+    fs::write(&delete, "delete me").expect("delete fixture should be writable");
+    fs::write(&copy_source, "copy me").expect("copy fixture should be writable");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(fs.exists("{}"))
+    print(fs.isDirectory("{}"))
+    print(fs.exists("{}"))
+    print(fs.isFile("{}"))
+    print(fs.createDirectory("{}"))
+    print(fs.isDirectory("{}"))
+    print(fs.writeText("{}", "one"))
+    print(fs.appendText("{}", "two"))
+    print(fs.isFile("{}"))
+    print(fs.copyFile("{}", "{}"))
+    print(fs.isFile("{}"))
+    print(fs.rename("{}", "{}"))
+    print(fs.exists("{}"))
+    print(fs.isFile("{}"))
+    print(fs.removeFile("{}"))
+    print(fs.exists("{}"))
+    print(fs.removeDirectory("{}"))
+    print(fs.exists("{}"))
+    return 0
+}}
+"#,
+        path(&root),
+        path(&root),
+        path(&missing),
+        path(&delete),
+        path(&created),
+        path(&created),
+        path(&content),
+        path(&content),
+        path(&content),
+        path(&copy_source),
+        path(&copy_destination),
+        path(&copy_destination),
+        path(&copy_destination),
+        path(&renamed),
+        path(&copy_destination),
+        path(&renamed),
+        path(&delete),
+        path(&delete),
+        path(&created),
+        path(&created),
+    );
+
+    check_source(&source).expect("filesystem capabilities should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem capabilities should lower natively");
+    assert!(generated.contains("#include <sys/stat.h>"));
+    assert!(generated.contains("static inline bool flux__fs_exists(const char *path)"));
+    assert!(generated.contains("static inline bool flux__fs_is_file(const char *path)"));
+    assert!(generated.contains("static inline bool flux__fs_is_directory(const char *path)"));
+    assert!(
+        generated.contains("static inline const char *flux__fs_create_directory(const char *path)")
+    );
+    assert!(generated.contains("static inline const char *flux__fs_remove_file(const char *path)"));
+    assert!(
+        generated.contains("static inline const char *flux__fs_remove_directory(const char *path)")
+    );
+    assert!(generated.contains("static inline const char *flux__fs_write_text_mode"));
+    assert!(generated.contains(
+        "static inline const char *flux__fs_rename(const char *source, const char *destination)"
+    ));
+    assert!(generated.contains(
+        "static inline const char *flux__fs_copy_file(const char *source, const char *destination)"
+    ));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("filesystem API source should be writable");
+    let binary = root.join("fs-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem API binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            "true", "true", "false", "true", "nil", "true", "nil", "nil", "true", "nil", "true",
+            "nil", "false", "true", "nil", "false", "nil", "false"
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(&content).expect("written Flux file should be readable"),
+        "onetwo"
+    );
+    assert_eq!(
+        fs::read_to_string(&renamed).expect("copied and renamed Flux file should be readable"),
+        "copy me"
+    );
+    assert!(!copy_destination.exists());
+    assert!(!delete.exists());
+    assert!(!created.exists());
+
+    let unused = r#"
+fn hidden() -> void {
+    print(fs.exists("/tmp"))
+    print(fs.writeText("/tmp/unused-flux-file", "unused"))
+    print(fs.copyFile("/tmp/a", "/tmp/b"))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead filesystem calls should lower");
+    assert!(!unused_generated.contains("#include <sys/stat.h>"));
+    assert!(!unused_generated.contains("flux__fs_exists"));
+    assert!(!unused_generated.contains("flux__fs_write_text"));
+    assert!(!unused_generated.contains("flux__fs_copy_file"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    fs.exists(1)
+    fs.isFile(false)
+    fs.isDirectory(1)
+    fs.createDirectory(42)
+    fs.removeFile(false)
+    fs.removeDirectory(1)
+    fs.writeText("x", 1)
+    fs.appendText(1, "x")
+    fs.rename(false, "x")
+    fs.copyFile("x", 1)
+    fs.unknown("x")
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid filesystem calls should fail");
+    for call in [
+        "exists",
+        "isFile",
+        "isDirectory",
+        "createDirectory",
+        "removeFile",
+        "removeDirectory",
+    ] {
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains(&format!("fs.{call} path"))
+                    && error.message.contains("expected str"))
+        );
+    }
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("fs.writeText text")
+                && error.message.contains("expected str"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("fs.appendText path")
+                && error.message.contains("expected str"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("fs.rename source")
+                && error.message.contains("expected str"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("fs.copyFile destination")
+                && error.message.contains("expected str"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("fs module has no function 'unknown'")
+    }));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_invalid_typed_shell_operations() {
     let bad_pipe = r#"
 fn text() -> str {

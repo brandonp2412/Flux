@@ -4839,6 +4839,100 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "fs" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("fs.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "exists" | "isFile" | "isDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("fs.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    &format!("fs.{name} path"),
+                )?;
+                return Ok(vec![Type::Bool]);
+            }
+            "createDirectory" | "removeFile" | "removeDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("fs.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    &format!("fs.{name} path"),
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            "writeText" | "appendText" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("fs.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    &format!("fs.{name} path"),
+                )?;
+                let text_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &text_type,
+                    &format!("fs.{name} text"),
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            "rename" | "copyFile" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("fs.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let source_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &source_type,
+                    &format!("fs.{name} source"),
+                )?;
+                let destination_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &destination_type,
+                    &format!("fs.{name} destination"),
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("fs module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 418
 - Reported overall progress: **57%**
-- Current net scope growth after the baseline: 21 checkbox items
+- Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -367,6 +367,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Sets.
 - [ ] Byte buffers.
 - [ ] Paths and filesystem APIs.
+  - [x] Bootstrap compiler-owned filesystem capabilities: `fs.exists`, `fs.isFile`, `fs.isDirectory`, `fs.createDirectory`, `fs.removeFile`, `fs.removeDirectory`, `fs.writeText`, `fs.appendText`, `fs.rename`, and buffered `fs.copyFile` are strictly typed, lower directly to native/POSIX filesystem primitives, return explicit Flux `error` values for mutations, participate in LSP qualified completion/signature help, and tree-shake completely when unreachable.
+  - [ ] Owned path/string results, file reads, directory enumeration, richer filesystem metadata/errors, recursive directory creation/removal, and ownership-safe byte I/O after owned strings/collections exist.
 - [ ] Date/time/duration.
   - [x] Bootstrap native scalar time primitives: `time.unixMillis()` exposes wall-clock Unix milliseconds, `time.monotonicMillis()` provides an elapsed-time clock, and `time.sleepMillis(durationMs)` performs an EINTR-safe native sleep with compile-time rejection of constant negative durations plus a runtime guard for dynamic negatives. The helpers are tree-shaken when unreachable and participate in qualified LSP completion/signature help; calendar values, time zones, formatting, and richer duration types remain pending.
 - [ ] JSON parsing/encoding.

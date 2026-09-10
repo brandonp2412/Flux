@@ -1174,6 +1174,41 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "fs" {
+        for (label, detail) in [
+            ("exists", "fn fs.exists(path: str) -> bool"),
+            ("isFile", "fn fs.isFile(path: str) -> bool"),
+            ("isDirectory", "fn fs.isDirectory(path: str) -> bool"),
+            (
+                "createDirectory",
+                "fn fs.createDirectory(path: str) -> error",
+            ),
+            ("removeFile", "fn fs.removeFile(path: str) -> error"),
+            (
+                "removeDirectory",
+                "fn fs.removeDirectory(path: str) -> error",
+            ),
+            (
+                "writeText",
+                "fn fs.writeText(path: str, text: str) -> error",
+            ),
+            (
+                "appendText",
+                "fn fs.appendText(path: str, text: str) -> error",
+            ),
+            (
+                "rename",
+                "fn fs.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "copyFile",
+                "fn fs.copyFile(source: str, destination: str) -> error",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2201,6 +2236,43 @@ fn signature_help_for_document_cached(
                         "time.sleepMillis",
                         &["durationMs: i64"],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "fs" {
+            match member {
+                "exists" | "isFile" | "isDirectory" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("fs.{member}"),
+                        &["path: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "createDirectory" | "removeFile" | "removeDirectory" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("fs.{member}"),
+                        &["path: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "writeText" | "appendText" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("fs.{member}"),
+                        &["path: str", "text: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "rename" | "copyFile" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("fs.{member}"),
+                        &["source: str", "destination: str"],
+                        "error",
                         active_parameter,
                     ));
                 }
@@ -5116,7 +5188,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    time.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    time.\n    fs.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5190,6 +5262,25 @@ mod tests {
         assert!(time_items.contains("fn time.unixMillis() -> i64"));
         assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
         assert!(time_items.contains("fn time.sleepMillis(durationMs: i64) -> void"));
+
+        let fs_line = source
+            .lines()
+            .position(|line| line.trim() == "fs.")
+            .expect("filesystem completion line should exist");
+        let fs_source = source.lines().nth(fs_line).unwrap();
+        let fs_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(fs_line),
+            Some(fs_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(fs_items.contains("fn fs.exists(path: str) -> bool"));
+        assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
+        assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
+        assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
 
         let android_line = source
             .lines()
@@ -5782,6 +5873,61 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("time call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_filesystem_capabilities() {
+        let uri = "file:///tmp/filesystem-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("fs.exists(", "fn fs.exists(path: str) -> bool"),
+            ("fs.isFile(", "fn fs.isFile(path: str) -> bool"),
+            ("fs.isDirectory(", "fn fs.isDirectory(path: str) -> bool"),
+            (
+                "fs.createDirectory(",
+                "fn fs.createDirectory(path: str) -> error",
+            ),
+            ("fs.removeFile(", "fn fs.removeFile(path: str) -> error"),
+            (
+                "fs.removeDirectory(",
+                "fn fs.removeDirectory(path: str) -> error",
+            ),
+            (
+                "fs.writeText(",
+                "fn fs.writeText(path: str, text: str) -> error",
+            ),
+            (
+                "fs.appendText(",
+                "fn fs.appendText(path: str, text: str) -> error",
+            ),
+            (
+                "fs.rename(",
+                "fn fs.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "fs.copyFile(",
+                "fn fs.copyFile(source: str, destination: str) -> error",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("filesystem call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("filesystem call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

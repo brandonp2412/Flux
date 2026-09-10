@@ -734,6 +734,25 @@ print(process.env("APP_MODE", "development"))
 
 `process.pid()` and `process.parentPid()` return `i64`. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. These calls lower directly to the host C/POSIX process environment without a framework runtime and are tree-shaken when unreachable. The current bootstrap exposes them on desktop/server targets; Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
 
+## Filesystem capabilities
+
+Flux exposes a small compiler-owned filesystem surface without requiring an object API or a user-written native bridge:
+
+```flux
+print(fs.exists("cache"))
+print(fs.isFile("cache/data.txt"))
+print(fs.isDirectory("cache"))
+print(fs.createDirectory("cache"))
+print(fs.writeText("cache/data.txt", "hello"))
+print(fs.appendText("cache/data.txt", " world"))
+print(fs.copyFile("cache/data.txt", "cache/backup.txt"))
+print(fs.rename("cache/backup.txt", "cache/archive.txt"))
+print(fs.removeFile("cache/archive.txt"))
+print(fs.removeDirectory("cache"))
+```
+
+`exists`, `isFile`, and `isDirectory` return `bool`. Mutating operations return Flux `error`: `nil` means success and a non-nil error means the native operation failed. `writeText` truncates or creates a file, while `appendText` appends or creates it. `copyFile` streams bytes through a bounded native buffer and overwrites the destination; a failed copy may therefore leave a partial destination. `rename` uses the target platform's native rename operation. The generated helpers are emitted only when reachable. Reading file contents, directory enumeration, owned path values, and richer error details remain blocked on the owned-string/collection work rather than hiding heap-backed lifetime rules inside this bootstrap API.
+
 ## Native time primitives
 
 Current native targets expose scalar clock and sleep operations without allocating a date/time object or linking a framework runtime:

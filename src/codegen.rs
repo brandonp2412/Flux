@@ -300,8 +300,12 @@ fn emit_runtime_prelude(
     if uses_background
         || runtime_usage.contains("flux__process_pid(")
         || runtime_usage.contains("flux__process_parent_pid(")
+        || runtime_usage.contains("flux__fs_")
     {
         out.push_str("#include <unistd.h>\n");
+    }
+    if runtime_usage.contains("flux__fs_") {
+        out.push_str("#include <sys/stat.h>\n");
     }
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
@@ -1408,6 +1412,42 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__time_sleep_millis(") {
         out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
+    }
+
+    if runtime_usage.contains("flux__fs_exists(") {
+        out.push_str("static inline bool flux__fs_exists(const char *path) { struct stat info; return stat(path, &info) == 0; }\n");
+    }
+    if runtime_usage.contains("flux__fs_is_file(") {
+        out.push_str("static inline bool flux__fs_is_file(const char *path) { struct stat info; return stat(path, &info) == 0 && S_ISREG(info.st_mode); }\n");
+    }
+    if runtime_usage.contains("flux__fs_is_directory(") {
+        out.push_str("static inline bool flux__fs_is_directory(const char *path) { struct stat info; return stat(path, &info) == 0 && S_ISDIR(info.st_mode); }\n");
+    }
+    if runtime_usage.contains("flux__fs_create_directory(") {
+        out.push_str("static inline const char *flux__fs_create_directory(const char *path) { return mkdir(path, 0777) == 0 ? NULL : \"failed to create directory\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_remove_file(") {
+        out.push_str("static inline const char *flux__fs_remove_file(const char *path) { return unlink(path) == 0 ? NULL : \"failed to remove file\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_remove_directory(") {
+        out.push_str("static inline const char *flux__fs_remove_directory(const char *path) { return rmdir(path) == 0 ? NULL : \"failed to remove directory\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_rename(") {
+        out.push_str("static inline const char *flux__fs_rename(const char *source, const char *destination) { return rename(source, destination) == 0 ? NULL : \"failed to rename path\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_copy_file(") {
+        out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
+    }
+    if runtime_usage.contains("flux__fs_write_text(")
+        || runtime_usage.contains("flux__fs_append_text(")
+    {
+        out.push_str("static inline const char *flux__fs_write_text_mode(const char *path, const char *text, const char *mode) { FILE *file = fopen(path, mode); if (file == NULL) return \"failed to open file for writing\"; if (fputs(text, file) == EOF) { fclose(file); return \"failed to write file\"; } if (fclose(file) != 0) return \"failed to close file after writing\"; return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__fs_write_text(") {
+        out.push_str("static inline const char *flux__fs_write_text(const char *path, const char *text) { return flux__fs_write_text_mode(path, text, \"wb\"); }\n");
+    }
+    if runtime_usage.contains("flux__fs_append_text(") {
+        out.push_str("static inline const char *flux__fs_append_text(const char *path, const char *text) { return flux__fs_write_text_mode(path, text, \"ab\"); }\n");
     }
 
     if runtime_usage.contains("flux_print_i64(") {
@@ -11739,6 +11779,92 @@ fn emit_qualified_call(
                 ));
             }
             _ => return Err(diag(span, "unknown time call reached code generation")),
+        }
+    }
+    if namespace == "fs" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid filesystem call reached code generation",
+            ));
+        }
+        match name {
+            "exists" | "isFile" | "isDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid filesystem call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let helper = match name {
+                    "exists" => "flux__fs_exists",
+                    "isFile" => "flux__fs_is_file",
+                    _ => "flux__fs_is_directory",
+                };
+                return Ok((format!("{helper}({})", path.code), vec![Type::Bool], None));
+            }
+            "createDirectory" | "removeFile" | "removeDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid filesystem call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let helper = match name {
+                    "createDirectory" => "flux__fs_create_directory",
+                    "removeFile" => "flux__fs_remove_file",
+                    _ => "flux__fs_remove_directory",
+                };
+                return Ok((format!("{helper}({})", path.code), vec![Type::Error], None));
+            }
+            "writeText" | "appendText" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid filesystem call reached code generation",
+                    ));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let text = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "writeText" {
+                    "flux__fs_write_text"
+                } else {
+                    "flux__fs_append_text"
+                };
+                return Ok((
+                    format!("{helper}({}, {})", path.code, text.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "rename" | "copyFile" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid filesystem call reached code generation",
+                    ));
+                }
+                let source = emit_expr(&args[0], env, signatures)?;
+                let destination = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "rename" {
+                    "flux__fs_rename"
+                } else {
+                    "flux__fs_copy_file"
+                };
+                return Ok((
+                    format!("{helper}({}, {})", source.code, destination.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => {
+                return Err(diag(
+                    span,
+                    "unknown filesystem call reached code generation",
+                ));
+            }
         }
     }
     if namespace == "android" {
