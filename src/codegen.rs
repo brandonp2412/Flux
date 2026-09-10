@@ -307,6 +307,10 @@ fn emit_runtime_prelude(
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
+    let uses_android_show_keyboard =
+        uses_android && runtime_usage.contains("flux__android_show_keyboard(");
+    let uses_android_hide_keyboard =
+        uses_android && runtime_usage.contains("flux__android_hide_keyboard(");
     let uses_android_create_notification_channel =
         uses_android && runtime_usage.contains("flux__android_create_notification_channel(");
     let uses_android_notification_permission_granted =
@@ -333,6 +337,8 @@ fn emit_runtime_prelude(
     let uses_android_platform_api = uses_android_vibrate
         || uses_android_open_url
         || uses_android_share
+        || uses_android_show_keyboard
+        || uses_android_hide_keyboard
         || uses_android_notifications
         || uses_android_permission_granted
         || uses_android_request_permission
@@ -434,6 +440,66 @@ fn emit_runtime_prelude(
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
+    }
+    if uses_android_show_keyboard || uses_android_hide_keyboard {
+        out.push_str("static void flux__android_set_keyboard_visible(bool visible) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = NULL; jclass manager_class = NULL; jclass view_class = NULL;\n");
+        out.push_str("    jstring service_name = NULL; jobject manager = NULL; jobject view = NULL; jobject token = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_focus = (*env)->GetMethodID(env, activity_class, \"getCurrentFocus\", \"()Landroid/view/View;\");\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_focus == NULL || get_service == NULL) goto done;\n");
+        out.push_str("    view = (*env)->CallObjectMethod(env, activity, get_focus);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || view == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"input_method\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str(
+            "    manager = (*env)->CallObjectMethod(env, activity, get_service, service_name);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    if (visible) {\n");
+        out.push_str("        jmethodID show = (*env)->GetMethodID(env, manager_class, \"showSoftInput\", \"(Landroid/view/View;I)Z\");\n");
+        out.push_str("        if (show != NULL) (*env)->CallBooleanMethod(env, manager, show, view, (jint)0);\n");
+        out.push_str("    } else {\n");
+        out.push_str("        view_class = (*env)->GetObjectClass(env, view);\n");
+        out.push_str("        if (view_class != NULL) {\n");
+        out.push_str("            jmethodID get_token = (*env)->GetMethodID(env, view_class, \"getWindowToken\", \"()Landroid/os/IBinder;\");\n");
+        out.push_str("            if (get_token != NULL) token = (*env)->CallObjectMethod(env, view, get_token);\n");
+        out.push_str("        }\n");
+        out.push_str("        if (token != NULL && !(*env)->ExceptionCheck(env)) {\n");
+        out.push_str("            jmethodID hide = (*env)->GetMethodID(env, manager_class, \"hideSoftInputFromWindow\", \"(Landroid/os/IBinder;I)Z\");\n");
+        out.push_str("            if (hide != NULL) (*env)->CallBooleanMethod(env, manager, hide, token, (jint)0);\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (token != NULL) (*env)->DeleteLocalRef(env, token);\n");
+        out.push_str("    if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str("    if (view != NULL) (*env)->DeleteLocalRef(env, view);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+        if uses_android_show_keyboard {
+            out.push_str("static inline void flux__android_show_keyboard(void) { flux__android_set_keyboard_visible(true); }\n");
+        }
+        if uses_android_hide_keyboard {
+            out.push_str("static inline void flux__android_hide_keyboard(void) { flux__android_set_keyboard_visible(false); }\n");
+        }
     }
     if uses_android_share {
         out.push_str("static void flux__android_share(const char *text) {\n");
@@ -10386,6 +10452,15 @@ fn emit_qualified_call(
                     Vec::new(),
                     None,
                 ));
+            }
+            "show_keyboard" | "hide_keyboard" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok((format!("flux__android_{name}()"), Vec::new(), None));
             }
             "vibrate" | "open_url" | "share" => {
                 if args.len() != 1 {

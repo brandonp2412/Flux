@@ -4732,6 +4732,15 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
+            "show_keyboard" | "hide_keyboard" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("android.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
             "create_notification_channel" => {
                 if args.len() != 3 {
                     return Err(diag(

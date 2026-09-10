@@ -1900,6 +1900,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingStarts = new HashMap<>();
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private boolean restoringInput;
+    private boolean restoringFocus;
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -1986,8 +1987,24 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     @Override
+    public void setContentView(View view) {
+        View current = getCurrentFocus();
+        int previousFocusId = current == null ? View.NO_ID : current.getId();
+        restoringFocus = true;
+        try {
+            super.setContentView(view);
+            if (previousFocusId != View.NO_ID) {
+                View replacement = view.findViewById(previousFocusId);
+                if (replacement != null && replacement.isFocusable()) replacement.requestFocus();
+            }
+        } finally {
+            restoringFocus = false;
+        }
+    }
+
+    @Override
     public void onFocusChange(View view, boolean focused) {
-        nativeOnFocus(view.getId(), focused);
+        if (!restoringFocus) nativeOnFocus(view.getId(), focused);
     }
 
     @Override
@@ -3230,6 +3247,9 @@ mod tests {
         );
         assert!(activity.contains("selectionStarts"));
         assert!(activity.contains("rememberSelection"));
+        assert!(activity.contains("restoringFocus"));
+        assert!(activity.contains("view.findViewById(previousFocusId)"));
+        assert!(activity.contains("replacement.requestFocus()"));
         assert!(activity.contains("composingStarts"));
         assert!(activity.contains("BaseInputConnection.getComposingSpanStart"));
         assert!(activity.contains("setComposingRegion"));

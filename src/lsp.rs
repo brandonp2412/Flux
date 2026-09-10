@@ -1163,6 +1163,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "show_keyboard",
+            3,
+            "fn android.show_keyboard() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "hide_keyboard",
+            3,
+            "fn android.hide_keyboard() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "create_notification_channel",
             3,
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void",
@@ -2050,6 +2064,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.share",
                         &["text: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "show_keyboard" | "hide_keyboard" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("android.{member}"),
+                        &[],
                         "void",
                         active_parameter,
                     ));
@@ -4945,6 +4967,8 @@ mod tests {
         assert!(android_items.contains("\"label\":\"open_url\""));
         assert!(android_items.contains("fn android.open_url(url: str) -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
+        assert!(android_items.contains("fn android.show_keyboard() -> void"));
+        assert!(android_items.contains("fn android.hide_keyboard() -> void"));
         assert!(android_items.contains(
             "fn android.create_notification_channel(id: str, name: str, description: str) -> void"
         ));

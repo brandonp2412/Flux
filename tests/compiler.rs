@@ -9891,6 +9891,8 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.vibrate(25)
     android.open_url("https://example.com")
     android.share("hello from Flux")
+    android.show_keyboard()
+    android.hide_keyboard()
     print(android.permission_granted("android.permission.CAMERA"))
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("updates", "Updates", "Flux update notifications")
@@ -9971,6 +9973,11 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("android.intent.extra.TEXT"));
     assert!(generated.contains("createChooser"));
     assert!(generated.contains("startActivity"));
+    assert!(generated.contains("static inline void flux__android_show_keyboard(void)"));
+    assert!(generated.contains("static inline void flux__android_hide_keyboard(void)"));
+    assert!(generated.contains("showSoftInput"));
+    assert!(generated.contains("hideSoftInputFromWindow"));
+    assert!(generated.contains("\"input_method\""));
     assert!(generated.contains("flux__android_utf8_string"));
     assert!(generated.contains("static bool flux__android_permission_granted"));
     assert!(generated.contains("static void flux__android_request_permission"));
@@ -10036,6 +10043,8 @@ fn main() -> i64 {
     fs::write(
         android_tree_root.join("src/main.flux"),
         r#"fn unused_android() -> void {
+    android.show_keyboard()
+    android.hide_keyboard()
     android.permission_granted("android.permission.CAMERA")
     android.request_permission("android.permission.CAMERA")
     android.create_notification_channel("unused", "Unused", "Unused")
@@ -10056,6 +10065,10 @@ app Screen
     let tree_generated = tree_analysis
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android tree-shaking fixture should lower");
+    assert!(!tree_generated.contains("flux__android_show_keyboard"));
+    assert!(!tree_generated.contains("flux__android_hide_keyboard"));
+    assert!(!tree_generated.contains("showSoftInput"));
+    assert!(!tree_generated.contains("hideSoftInputFromWindow"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
     assert!(!tree_generated.contains("flux__android_request_permission"));
     assert!(!tree_generated.contains("flux__android_create_notification_channel"));
@@ -10072,6 +10085,8 @@ fn main() -> i64 {
     android.vibrate("long")
     android.open_url(42)
     android.share(42)
+    android.show_keyboard(1)
+    android.hide_keyboard(false)
     android.create_notification_channel("updates", 1, false)
     android.permission_granted(42)
     android.request_permission(false)
@@ -10098,6 +10113,16 @@ fn main() -> i64 {
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.show_keyboard expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.hide_keyboard expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error
