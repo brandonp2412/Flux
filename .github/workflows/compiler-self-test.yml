@@ -1,0 +1,28 @@
+name: Compiler self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  supported-targets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Install Android toolchain
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          printf 'ANDROID_NDK_HOME=%s\n' "$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Test compiler and supported native targets
+        run: ./tools/flux-self-test

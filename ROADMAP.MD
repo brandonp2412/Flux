@@ -849,10 +849,10 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Accessibility tests.
 - [ ] Platform end-to-end tests.
 - [ ] Deterministic test clocks/timers.
-- [ ] Dependency/interface fakes based on functions/interfaces rather than mocking class hierarchies.
+- [x] Dependency/interface fakes based on functions/interfaces rather than mocking class hierarchies: first-class function values provide lightweight single-capability injection, while ordinary interface values accept small fake implementations for grouped capabilities. `docs/testing.md` documents both patterns, and compiler regression coverage verifies the fake path uses normal typed native lowering without proxy objects, vtables, reflection, or heap allocation.
 - [x] Source-level coverage through `flux test --coverage`: opt-in LLVM instrumentation is merged across executed tests and mapped back to original `.flux` source lines rather than generated C/stdin locations; ordinary test binaries remain uninstrumented and `flux doctor` reports the required coverage tools.
 - [x] Benchmarks: the checked-in Flux/Rust/C native performance harness covers compute, collections, interface dispatch, and dynamic calls/control flow with output equivalence, runtime/code-size reporting, a checked-Rust threshold, and a push/PR CI performance gate.
-- [ ] Compiler self-tests across supported targets.
+- [x] Compiler self-tests across supported targets: `tools/flux-self-test` runs the complete Rust/compiler suite, then performs a real optimized Linux native build/execution and an Android x86_64 release APK build through the user-facing compiler. `.github/workflows/compiler-self-test.yml` provisions the Android SDK/NDK and runs the same cross-target self-test on every main push and pull request, so target-lowering/toolchain regressions fail CI rather than remaining codegen-only coverage.
 
 # Milestone 23 — LSP and editor experience
 

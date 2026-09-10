@@ -66,10 +66,12 @@ flux publish android my-app --json
 
 </div>
 
-The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), the stable machine diagnostics contract in [`docs/diagnostics.md`](docs/diagnostics.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), generic native cross compilation in [`docs/cross-compilation.md`](docs/cross-compilation.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
+The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), testing and dependency fakes in [`docs/testing.md`](docs/testing.md), the stable machine diagnostics contract in [`docs/diagnostics.md`](docs/diagnostics.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), generic native cross compilation in [`docs/cross-compilation.md`](docs/cross-compilation.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
 
 ## Development
 
 [`ROADMAP.MD`](ROADMAP.MD) is the single source of truth for both implementation work and persistent overall progress. [`docs/language.md`](docs/language.md) is the evolving language reference, and [`benchmarks/perf`](benchmarks/perf) contains the optimized Flux/Rust/C comparison workloads.
+
+Run `./tools/flux-self-test` for the compiler's supported-target regression gate. It runs the complete Rust/compiler test suite, executes an optimized Linux Flux program, and builds a release Android x86_64 APK through the same user-facing toolchain used in CI.
 
 Flux is under active development and is not yet a stable 1.0 language.

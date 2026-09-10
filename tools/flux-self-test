@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/flux-self-test.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+cd "$ROOT"
+
+printf '%s\n' '[flux-self-test] Rust/compiler test suite'
+cargo test --all-targets
+cargo build --quiet --bin flux
+FLUX="$ROOT/target/debug/flux"
+
+printf '%s\n' '[flux-self-test] Linux native release target'
+LINUX_BIN="$WORK/flux-linux-self-test"
+"$FLUX" build "$ROOT/examples/package" --mode release -o "$LINUX_BIN"
+LINUX_OUTPUT="$($LINUX_BIN)"
+if [[ "$LINUX_OUTPUT" != "42" ]]; then
+  printf 'Linux self-test output mismatch: expected 42, got %q\n' "$LINUX_OUTPUT" >&2
+  exit 1
+fi
+
+printf '%s\n' '[flux-self-test] Android native release target'
+ANDROID_APK="$WORK/flux-android-self-test.apk"
+"$FLUX" build android "$ROOT/examples/android_app" --mode release --abi x86_64 --format apk -o "$ANDROID_APK"
+if [[ ! -s "$ANDROID_APK" ]]; then
+  printf '%s\n' 'Android self-test did not produce a non-empty APK' >&2
+  exit 1
+fi
+
+printf '%s\n' '[flux-self-test] PASS: compiler tests, Linux native execution, and Android native packaging'

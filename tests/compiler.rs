@@ -723,6 +723,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn function_and_interface_dependencies_support_test_fakes() {
+    let source = r#"
+type Clock = fn() -> i64
+
+interface Settings {
+    fn load(key: str) -> str
+}
+
+struct FakeSettings {
+    value: str
+}
+
+impl Settings for FakeSettings {
+    load: fakeLoad
+}
+
+fn fakeLoad(settings: FakeSettings, _key: str) -> str {
+    return settings.value
+}
+
+fn fakeNow() -> i64 {
+    return 1000
+}
+
+fn expiresAt(now: Clock, ttl: i64) -> i64 {
+    return now() + ttl
+}
+
+fn settingValue(settings: Settings, key: str) -> str {
+    return Settings.load(settings, key)
+}
+
+fn main() -> i64 {
+    let fake: FakeSettings = FakeSettings { value: "dark" }
+    let settings: Settings = Settings(fake)
+    print(expiresAt(fakeNow, 25))
+    print(settingValue(settings, "theme"))
+    return 0
+}
+"#;
+
+    check_source(source).expect("function/interface fakes should typecheck without mock objects");
+    let generated = compile_to_c(source).expect("test fakes should lower through ordinary native code");
+    assert!(generated.contains("flux__fn_fakeNow"));
+    assert!(generated.contains("flux__fn_fakeLoad"));
+    assert!(generated.contains("flux__fn_settingValue"));
+    assert!(!generated.contains("vtable"));
+    assert!(!generated.contains("malloc("));
+}
+
+#[test]
 fn rejects_invalid_interface_value_conversions_and_layout_embedding() {
     let missing_impl = r#"
 interface Storage {
