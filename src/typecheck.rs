@@ -4685,11 +4685,11 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "sdk_int" => {
+            "sdkInt" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
-                        &format!("android.sdk_int expects 0 arguments, got {}", args.len()),
+                        &format!("android.sdkInt expects 0 arguments, got {}", args.len()),
                     ));
                 }
                 return Ok(vec![Type::I64]);
@@ -4706,19 +4706,19 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &actual,
-                    "android.vibrate duration_ms",
+                    "android.vibrate durationMs",
                 )?;
                 return Ok(Vec::new());
             }
-            "open_url" => {
+            "openUrl" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("android.open_url expects 1 argument, got {}", args.len()),
+                        &format!("android.openUrl expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "android.open_url url")?;
+                require_type(args[0].span, &Type::Str, &actual, "android.openUrl url")?;
                 return Ok(Vec::new());
             }
             "share" => {
@@ -4732,7 +4732,7 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
-            "show_keyboard" | "hide_keyboard" | "focusNext" | "focusPrevious" | "clearFocus" => {
+            "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
@@ -4787,12 +4787,12 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Bool]);
             }
-            "create_notification_channel" => {
+            "createNotificationChannel" => {
                 if args.len() != 3 {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.create_notification_channel expects 3 arguments, got {}",
+                            "android.createNotificationChannel expects 3 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4803,17 +4803,17 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &actual,
-                        &format!("android.create_notification_channel {label}"),
+                        &format!("android.createNotificationChannel {label}"),
                     )?;
                 }
                 return Ok(Vec::new());
             }
-            "permission_granted" => {
+            "permissionGranted" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.permission_granted expects 1 argument, got {}",
+                            "android.permissionGranted expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4823,16 +4823,16 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &actual,
-                    "android.permission_granted permission",
+                    "android.permissionGranted permission",
                 )?;
                 return Ok(vec![Type::Bool]);
             }
-            "request_permission" => {
+            "requestPermission" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.request_permission expects 1 argument, got {}",
+                            "android.requestPermission expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4842,28 +4842,28 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &actual,
-                    "android.request_permission permission",
+                    "android.requestPermission permission",
                 )?;
                 return Ok(Vec::new());
             }
-            "notification_permission_granted" => {
+            "notificationPermissionGranted" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.notification_permission_granted expects 0 arguments, got {}",
+                            "android.notificationPermissionGranted expects 0 arguments, got {}",
                             args.len()
                         ),
                     ));
                 }
                 return Ok(vec![Type::Bool]);
             }
-            "request_notification_permission" => {
+            "requestNotificationPermission" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.request_notification_permission expects 0 arguments, got {}",
+                            "android.requestNotificationPermission expects 0 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4882,14 +4882,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &channel,
-                    "android.notify channel_id",
+                    "android.notify channelId",
                 )?;
                 let notification_id = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &notification_id,
-                    "android.notify notification_id",
+                    "android.notify notificationId",
                 )?;
                 let title = type_of_expr(&args[2], env, signatures)?;
                 require_type(args[2].span, &Type::Str, &title, "android.notify title")?;
@@ -4897,12 +4897,12 @@ fn check_qualified_call(
                 require_type(args[3].span, &Type::Str, &body, "android.notify body")?;
                 return Ok(Vec::new());
             }
-            "notify_url_action" => {
+            "notifyUrlAction" => {
                 if args.len() != 6 {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.notify_url_action expects 6 arguments, got {}",
+                            "android.notifyUrlAction expects 6 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4912,32 +4912,32 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &channel,
-                    "android.notify_url_action channel_id",
+                    "android.notifyUrlAction channelId",
                 )?;
                 let notification_id = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &notification_id,
-                    "android.notify_url_action notification_id",
+                    "android.notifyUrlAction notificationId",
                 )?;
-                for (index, label) in [(2, "title"), (3, "body"), (4, "action_label"), (5, "url")] {
+                for (index, label) in [(2, "title"), (3, "body"), (4, "actionLabel"), (5, "url")] {
                     let actual = type_of_expr(&args[index], env, signatures)?;
                     require_type(
                         args[index].span,
                         &Type::Str,
                         &actual,
-                        &format!("android.notify_url_action {label}"),
+                        &format!("android.notifyUrlAction {label}"),
                     )?;
                 }
                 return Ok(Vec::new());
             }
-            "cancel_notification" => {
+            "cancelNotification" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
                         &format!(
-                            "android.cancel_notification expects 1 argument, got {}",
+                            "android.cancelNotification expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4947,7 +4947,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &notification_id,
-                    "android.cancel_notification notification_id",
+                    "android.cancelNotification notificationId",
                 )?;
                 return Ok(Vec::new());
             }

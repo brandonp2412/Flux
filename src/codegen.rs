@@ -10925,7 +10925,7 @@ fn emit_qualified_call(
             ));
         }
         match name {
-            "sdk_int" => {
+            "sdkInt" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
@@ -10934,7 +10934,7 @@ fn emit_qualified_call(
                 }
                 return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
             }
-            "permission_granted" => {
+            "permissionGranted" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -10948,7 +10948,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "request_permission" => {
+            "requestPermission" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -10962,7 +10962,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "notification_permission_granted" => {
+            "notificationPermissionGranted" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
@@ -10975,7 +10975,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "request_notification_permission" => {
+            "requestNotificationPermission" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
@@ -10988,14 +10988,19 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "show_keyboard" | "hide_keyboard" => {
+            "showKeyboard" | "hideKeyboard" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
                         "invalid android platform call reached code generation",
                     ));
                 }
-                return Ok((format!("flux__android_{name}()"), Vec::new(), None));
+                let runtime_name = if name == "showKeyboard" {
+                    "show_keyboard"
+                } else {
+                    "hide_keyboard"
+                };
+                return Ok((format!("flux__android_{runtime_name}()"), Vec::new(), None));
             }
             "focusNext" | "focusPrevious" | "clearFocus" => {
                 if !args.is_empty() {
@@ -11059,7 +11064,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "vibrate" | "open_url" | "share" => {
+            "vibrate" | "openUrl" | "share" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -11069,13 +11074,13 @@ fn emit_qualified_call(
                 let value = emit_expr(&args[0], env, signatures)?;
                 let code = match name {
                     "vibrate" => format!("flux__android_vibrate({})", value.code),
-                    "open_url" => format!("flux__android_open_url({})", value.code),
+                    "openUrl" => format!("flux__android_open_url({})", value.code),
                     "share" => format!("flux__android_share({})", value.code),
                     _ => unreachable!(),
                 };
                 return Ok((code, Vec::new(), None));
             }
-            "create_notification_channel" => {
+            "createNotificationChannel" => {
                 if args.len() != 3 {
                     return Err(diag(
                         span,
@@ -11115,7 +11120,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "notify_url_action" => {
+            "notifyUrlAction" => {
                 if args.len() != 6 {
                     return Err(diag(
                         span,
@@ -11135,7 +11140,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "cancel_notification" => {
+            "cancelNotification" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

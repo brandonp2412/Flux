@@ -1,27 +1,27 @@
 fn started() -> void {
     android.vibrate(25)
-    print(android.permission_granted("android.permission.VIBRATE"))
-    android.create_notification_channel("updates", "Flux updates", "Native Flux Android notifications")
-    if android.notification_permission_granted():
-        android.notify_url_action("updates", 1, "Flux", "Native Android notifications work", "Open", "https://example.com")
+    print(android.permissionGranted("android.permission.VIBRATE"))
+    android.createNotificationChannel("updates", "Flux updates", "Native Flux Android notifications")
+    if android.notificationPermissionGranted():
+        android.notifyUrlAction("updates", 1, "Flux", "Native Android notifications work", "Open", "https://example.com")
     else:
-        android.request_notification_permission()
+        android.requestNotificationPermission()
     print("Flux Android started")
 }
 
-fn configuration_changed() -> void {
+fn configurationChanged() -> void {
     print("Flux Android configuration changed")
 }
 
-fn low_memory() -> void {
+fn lowMemory() -> void {
     print("Flux Android low memory")
 }
 
-fn save_state() -> str {
+fn saveState() -> str {
     return "flux-android-example"
 }
 
-fn restore_state(value: str) -> void {
+fn restoreState(value: str) -> void {
     print(value)
 }
 
@@ -29,7 +29,7 @@ fn pressed() -> void {
     print("Flux Android button pressed")
 }
 
-fn text_changed(value: str) -> void {
+fn textChanged(value: str) -> void {
     print(value)
 }
 
@@ -71,8 +71,8 @@ view Screen {
         tooltip: "Native Android text input"
         accessibilityLabel: "Flux text input"
         accessibilityDescription: "Type text to exercise native Android input callbacks"
-        onChange: text_changed
-        onSubmit: text_changed
+        onChange: textChanged
+        onSubmit: textChanged
     Toggle details at 6,1
         label: "Show details"
         checked: expanded
@@ -87,4 +87,4 @@ view Screen {
         onSelect: choice => 1
 }
 
-app Screen(on_start: started, on_configuration_changed: configuration_changed, on_low_memory: low_memory, on_save_state: save_state, on_restore_state: restore_state)
+app Screen(onStart: started, on_configurationChanged: configurationChanged, on_lowMemory: lowMemory, on_saveState: saveState, on_restoreState: restoreState)

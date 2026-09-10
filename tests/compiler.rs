@@ -9887,12 +9887,12 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     fs::write(
         root.join("src/main.flux"),
         r#"fn started() -> void {
-    print(android.sdk_int())
+    print(android.sdkInt())
     android.vibrate(25)
-    android.open_url("https://example.com")
+    android.openUrl("https://example.com")
     android.share("hello from Flux")
-    android.show_keyboard()
-    android.hide_keyboard()
+    android.showKeyboard()
+    android.hideKeyboard()
     android.focusNext()
     android.focusPrevious()
     android.clearFocus()
@@ -9900,14 +9900,14 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     print(android.selectionEnd())
     print(android.setCaret(1))
     print(android.setSelection(0, 1))
-    print(android.permission_granted("android.permission.CAMERA"))
-    android.request_permission("android.permission.CAMERA")
-    android.create_notification_channel("updates", "Updates", "Flux update notifications")
-    print(android.notification_permission_granted())
-    android.request_notification_permission()
+    print(android.permissionGranted("android.permission.CAMERA"))
+    android.requestPermission("android.permission.CAMERA")
+    android.createNotificationChannel("updates", "Updates", "Flux update notifications")
+    print(android.notificationPermissionGranted())
+    android.requestNotificationPermission()
     android.notify("updates", 7, "Flux", "Native Android notification")
-    android.notify_url_action("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
-    android.cancel_notification(7)
+    android.notifyUrlAction("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
+    android.cancelNotification(7)
     print("started")
 }
 fn resumed() -> void {
@@ -10046,7 +10046,7 @@ fn main() -> i64 {
 
     let tree_shaken = r#"
 fn android_only() -> void {
-    android.open_url("https://example.com")
+    android.openUrl("https://example.com")
 }
 fn main() -> i64 {
     return 0
@@ -10067,8 +10067,8 @@ fn main() -> i64 {
     fs::write(
         android_tree_root.join("src/main.flux"),
         r#"fn unused_android() -> void {
-    android.show_keyboard()
-    android.hide_keyboard()
+    android.showKeyboard()
+    android.hideKeyboard()
     android.focusNext()
     android.focusPrevious()
     android.clearFocus()
@@ -10076,12 +10076,12 @@ fn main() -> i64 {
     android.selectionEnd()
     android.setCaret(1)
     android.setSelection(0, 1)
-    android.permission_granted("android.permission.CAMERA")
-    android.request_permission("android.permission.CAMERA")
-    android.create_notification_channel("unused", "Unused", "Unused")
+    android.permissionGranted("android.permission.CAMERA")
+    android.requestPermission("android.permission.CAMERA")
+    android.createNotificationChannel("unused", "Unused", "Unused")
     android.notify("unused", 1, "Unused", "Unused")
-    android.notify_url_action("unused", 2, "Unused", "Unused", "Open", "https://example.com")
-    android.cancel_notification(1)
+    android.notifyUrlAction("unused", 2, "Unused", "Unused", "Open", "https://example.com")
+    android.cancelNotification(1)
 }
 view Screen {
     grid columns: 1fr
@@ -10121,12 +10121,12 @@ app Screen
 
     let invalid = r#"
 fn main() -> i64 {
-    android.sdk_int(1)
+    android.sdkInt(1)
     android.vibrate("long")
-    android.open_url(42)
+    android.openUrl(42)
     android.share(42)
-    android.show_keyboard(1)
-    android.hide_keyboard(false)
+    android.showKeyboard(1)
+    android.hideKeyboard(false)
     android.focusNext(1)
     android.focusPrevious(false)
     android.clearFocus("bad")
@@ -10134,14 +10134,14 @@ fn main() -> i64 {
     android.selectionEnd(false)
     android.setCaret("bad")
     android.setSelection(0, "bad")
-    android.create_notification_channel("updates", 1, false)
-    android.permission_granted(42)
-    android.request_permission(false)
-    android.notification_permission_granted(1)
-    android.request_notification_permission(1)
+    android.createNotificationChannel("updates", 1, false)
+    android.permissionGranted(42)
+    android.requestPermission(false)
+    android.notificationPermissionGranted(1)
+    android.requestNotificationPermission(1)
     android.notify(1, "bad", false, 42)
-    android.notify_url_action("updates", "bad", "title", "body", "Open", 42)
-    android.cancel_notification("bad")
+    android.notifyUrlAction("updates", "bad", "title", "body", "Open", 42)
+    android.cancelNotification("bad")
     return 0
 }
 "#;
@@ -10149,14 +10149,14 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.sdk_int expects 0 arguments, got 1")
+            .contains("android.sdkInt expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.vibrate duration_ms")
+        error.message.contains("android.vibrate durationMs")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.open_url url") && error.message.contains("expected str")
+        error.message.contains("android.openUrl url") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")
@@ -10164,12 +10164,12 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.show_keyboard expects 0 arguments, got 1")
+            .contains("android.showKeyboard expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.hide_keyboard expects 0 arguments, got 1")
+            .contains("android.hideKeyboard expects 0 arguments, got 1")
     }));
     for name in [
         "focusNext",
@@ -10194,45 +10194,44 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.create_notification_channel name")
+            .contains("android.createNotificationChannel name")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.permission_granted permission")
+            .contains("android.permissionGranted permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.request_permission permission")
+            .contains("android.requestPermission permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.notification_permission_granted expects 0 arguments")
+            .contains("android.notificationPermissionGranted expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.request_notification_permission expects 0 arguments")
+            .contains("android.requestNotificationPermission expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.notify channel_id")
-            && error.message.contains("expected str")
+        error.message.contains("android.notify channelId") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.notify_url_action notification_id")
+            .contains("android.notifyUrlAction notificationId")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.cancel_notification notification_id")
+            .contains("android.cancelNotification notificationId")
             && error.message.contains("expected i64")
     }));
 
