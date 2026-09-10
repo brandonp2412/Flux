@@ -7942,6 +7942,47 @@ fn flux_test_propagates_native_nonzero_exit_status() {
 }
 
 #[test]
+fn flux_test_coverage_reports_flux_source_lines() {
+    let llvm_cov_ready = Command::new("llvm-cov")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    let llvm_profdata_ready = Command::new("llvm-profdata")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !llvm_cov_ready || !llvm_profdata_ready {
+        return;
+    }
+
+    let path = std::env::temp_dir().join(format!("flux-coverage-test-{}.flux", std::process::id()));
+    fs::write(
+        &path,
+        "fn choose(flag: bool) -> i64 {\n    if flag:\n        return 1\n    return 2\n}\n\nfn main() -> i64 {\n    let value: i64 = choose(false)\n    if value == 2:\n        return 0\n    return 1\n}\n",
+    )
+    .expect("coverage Flux test should be writable");
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&path)
+        .arg("--coverage")
+        .output()
+        .expect("flux test --coverage should run");
+    let _ = fs::remove_file(&path);
+    assert!(
+        output.status.success(),
+        "flux test --coverage failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("coverage: Flux source lines"));
+    assert!(stdout.contains(&path.display().to_string()));
+    assert!(stdout.contains("TOTAL"));
+    assert!(!stdout.contains("<stdin>"));
+}
+
+#[test]
 fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     let root = std::env::temp_dir().join(format!("flux-package-manifest-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

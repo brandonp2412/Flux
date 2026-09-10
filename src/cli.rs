@@ -1,5 +1,5 @@
 use crate as fluxc;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
 const FLUX_GDB_SUPPORT: &str = include_str!("../tools/flux-gdb.py");
+const COVERAGE_COMPILATION_DIR: &str = "/__flux_coverage__";
 
 enum CliError {
     Message(String),
@@ -57,6 +58,7 @@ impl BuildMode {
 enum NativeInstrumentation {
     None,
     Gprof,
+    Coverage,
 }
 
 impl NativeInstrumentation {
@@ -64,6 +66,7 @@ impl NativeInstrumentation {
         match self {
             Self::None => "none",
             Self::Gprof => "gprof",
+            Self::Coverage => "coverage-v2",
         }
     }
 }
@@ -79,6 +82,12 @@ struct DebugOptions {
     target: PathBuf,
     breakpoints: Vec<String>,
     run_immediately: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TestOptions {
+    mode: BuildMode,
+    coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,13 +365,8 @@ fn run() -> Result<(), CliError> {
         }
         "test" => {
             let path = require_target(&args)?;
-            let options = build_options(&args[2..], BuildMode::Debug)?;
-            if options.output.is_some() {
-                return Err(CliError::Message(
-                    "test does not accept '-o'; test binaries are temporary".to_string(),
-                ));
-            }
-            run_tests(path, options.mode)
+            let options = test_options(&args[2..])?;
+            run_tests(path, options)
         }
         "debug" => {
             let options = debug_options(&args[1..])?;
@@ -1029,9 +1033,53 @@ fn project_name_from_path(target: &Path) -> String {
     }
 }
 
-fn run_tests(target: &Path, mode: BuildMode) -> Result<(), CliError> {
+fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
     let tests = discover_test_targets(target)?;
+    let coverage_dir = options.coverage.then(coverage_data_dir);
+    if let Some(directory) = &coverage_dir {
+        command_first_line("llvm-profdata", &["--version"]).map_err(|message| {
+            CliError::Message(format!(
+                "Flux test coverage requires llvm-profdata: {message}"
+            ))
+        })?;
+        command_first_line("llvm-cov", &["--version"]).map_err(|message| {
+            CliError::Message(format!("Flux test coverage requires llvm-cov: {message}"))
+        })?;
+        if directory.exists() {
+            fs::remove_dir_all(directory).map_err(|error| {
+                format!(
+                    "failed to clear coverage data '{}': {error}",
+                    directory.display()
+                )
+            })?;
+        }
+        fs::create_dir_all(directory).map_err(|error| {
+            format!(
+                "failed to create coverage data '{}': {error}",
+                directory.display()
+            )
+        })?;
+    }
+
+    let result = run_tests_inner(&tests, options, coverage_dir.as_deref());
+    for index in 0..tests.len() {
+        let _ = fs::remove_file(test_binary_path(index));
+    }
+    if let Some(directory) = &coverage_dir {
+        let _ = fs::remove_dir_all(directory);
+    }
+    result
+}
+
+fn run_tests_inner(
+    tests: &[PathBuf],
+    options: TestOptions,
+    coverage_dir: Option<&Path>,
+) -> Result<(), CliError> {
     let mut passed = 0usize;
+    let mut binaries = Vec::new();
+    let mut raw_profiles = Vec::new();
+    let mut generated_sources = Vec::new();
     for (index, test) in tests.iter().enumerate() {
         let analysis = match fluxc::project::analyze(test) {
             Ok(analysis) => analysis,
@@ -1057,14 +1105,28 @@ fn run_tests(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             }
         };
         let binary = test_binary_path(index);
-        build_native(&generated, &binary, mode)?;
-        let status = Command::new(&binary).status().map_err(|error| {
+        if options.coverage {
+            build_native_instrumented(
+                &generated,
+                &binary,
+                options.mode,
+                NativeInstrumentation::Coverage,
+            )?;
+        } else {
+            build_native(&generated, &binary, options.mode)?;
+        }
+        let raw_profile =
+            coverage_dir.map(|directory| directory.join(format!("test-{index}.profraw")));
+        let mut command = Command::new(&binary);
+        if let Some(raw_profile) = &raw_profile {
+            command.env("LLVM_PROFILE_FILE", raw_profile);
+        }
+        let status = command.status().map_err(|error| {
             format!(
                 "failed to launch test binary '{}': {error}",
                 binary.display()
             )
         })?;
-        let _ = fs::remove_file(&binary);
         if !status.success() {
             eprintln!("test {} ... FAILED", test.display());
             return Err(CliError::Message(format!(
@@ -1076,14 +1138,227 @@ fn run_tests(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     .unwrap_or_else(|| "a signal".to_string())
             )));
         }
+        if options.coverage {
+            binaries.push(binary);
+            generated_sources.push(generated);
+            if let Some(raw_profile) = raw_profile {
+                raw_profiles.push(raw_profile);
+            }
+        } else {
+            let _ = fs::remove_file(&binary);
+        }
         println!("test {} ... ok", test.display());
         passed += 1;
     }
+
+    if let Some(directory) = coverage_dir {
+        print_coverage_report(&binaries, &raw_profiles, &generated_sources, directory)?;
+    }
     println!(
-        "test result: ok. {passed} passed; 0 failed; mode {}",
-        mode.name()
+        "test result: ok. {passed} passed; 0 failed; mode {}{}",
+        options.mode.name(),
+        if options.coverage {
+            "; coverage reported"
+        } else {
+            ""
+        }
     );
     Ok(())
+}
+
+fn coverage_data_dir() -> PathBuf {
+    env::temp_dir().join(format!("flux-coverage-{}", std::process::id()))
+}
+
+fn print_coverage_report(
+    binaries: &[PathBuf],
+    raw_profiles: &[PathBuf],
+    generated_sources: &[String],
+    directory: &Path,
+) -> Result<(), CliError> {
+    if binaries.is_empty() || raw_profiles.is_empty() {
+        return Err(CliError::Message(
+            "coverage requires at least one successfully executed Flux test".to_string(),
+        ));
+    }
+    if binaries.len() != raw_profiles.len() || binaries.len() != generated_sources.len() {
+        return Err(CliError::Message(
+            "internal coverage artifact count mismatch".to_string(),
+        ));
+    }
+    for profile in raw_profiles {
+        if !profile.is_file() {
+            return Err(CliError::Message(format!(
+                "test coverage data '{}' was not produced",
+                profile.display()
+            )));
+        }
+    }
+    let merged = directory.join("coverage.profdata");
+    let mut merge = Command::new("llvm-profdata");
+    merge.args(["merge", "-sparse", "-o"]).arg(&merged);
+    for profile in raw_profiles {
+        merge.arg(profile);
+    }
+    run_checked(&mut merge, "llvm-profdata merge")?;
+
+    let generated_path = directory.join("<stdin>");
+    let path_equivalence = format!(
+        "--path-equivalence={COVERAGE_COMPILATION_DIR},{}",
+        directory.display()
+    );
+    let mut source_lines: BTreeMap<PathBuf, BTreeMap<usize, bool>> = BTreeMap::new();
+    for (binary, generated) in binaries.iter().zip(generated_sources) {
+        fs::write(&generated_path, generated).map_err(|error| {
+            format!(
+                "failed to stage generated coverage source '{}': {error}",
+                generated_path.display()
+            )
+        })?;
+        let output = Command::new("llvm-cov")
+            .arg("show")
+            .arg(binary)
+            .arg("-instr-profile")
+            .arg(&merged)
+            .arg("--show-line-counts-or-regions")
+            .arg("--use-color=false")
+            .arg(&path_equivalence)
+            .output()
+            .map_err(|error| format!("failed to launch llvm-cov: {error}"))?;
+        if !output.status.success() {
+            return Err(CliError::Message(format!(
+                "llvm-cov failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let locations = coverage_source_locations(generated);
+        collect_flux_coverage(
+            &String::from_utf8_lossy(&output.stdout),
+            &locations,
+            &mut source_lines,
+        );
+    }
+    let _ = fs::remove_file(&generated_path);
+
+    if source_lines.is_empty() {
+        return Err(CliError::Message(
+            "coverage instrumentation produced no Flux source locations".to_string(),
+        ));
+    }
+    print_flux_coverage_summary(&source_lines);
+    Ok(())
+}
+
+fn coverage_source_locations(generated: &str) -> Vec<Option<(PathBuf, usize)>> {
+    let mut locations = vec![None; generated.lines().count() + 1];
+    let mut current: Option<(PathBuf, usize)> = None;
+    for (index, line) in generated.lines().enumerate() {
+        if let Some(rest) = line.strip_prefix("#line ") {
+            if let Some((number, quoted_path)) = rest.split_once(' ')
+                && let Ok(line_number) = number.parse::<usize>()
+                && let Some(path) = quoted_path
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+            {
+                current = Some((PathBuf::from(path), line_number));
+                continue;
+            }
+        }
+        if let Some((path, line_number)) = &mut current {
+            if path.extension().and_then(|value| value.to_str()) == Some("flux") {
+                locations[index + 1] = Some((path.clone(), *line_number));
+            }
+            *line_number += 1;
+        }
+    }
+    locations
+}
+
+fn collect_flux_coverage(
+    report: &str,
+    locations: &[Option<(PathBuf, usize)>],
+    source_lines: &mut BTreeMap<PathBuf, BTreeMap<usize, bool>>,
+) {
+    for line in report.lines() {
+        let mut columns = line.splitn(3, '|');
+        let Some(generated_line) = columns
+            .next()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some(count) = columns.next().map(str::trim) else {
+            continue;
+        };
+        if count.is_empty() {
+            continue;
+        }
+        let Some(Some((source_path, source_line))) = locations.get(generated_line) else {
+            continue;
+        };
+        let covered = count.bytes().any(|value| matches!(value, b'1'..=b'9'));
+        source_lines
+            .entry(source_path.clone())
+            .or_default()
+            .entry(*source_line)
+            .and_modify(|existing| *existing |= covered)
+            .or_insert(covered);
+    }
+}
+
+fn print_flux_coverage_summary(source_lines: &BTreeMap<PathBuf, BTreeMap<usize, bool>>) {
+    let display_paths = source_lines
+        .keys()
+        .map(|path| {
+            env::current_dir()
+                .ok()
+                .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+                .unwrap_or_else(|| path.clone())
+        })
+        .collect::<Vec<_>>();
+    let width = display_paths
+        .iter()
+        .map(|path| path.display().to_string().len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    println!("coverage: Flux source lines");
+    println!(
+        "{:<width$}  {:>8}  {:>8}  {:>8}",
+        "Filename", "Lines", "Missed", "Cover%"
+    );
+    let mut total_lines = 0usize;
+    let mut total_covered = 0usize;
+    for ((_, lines), display_path) in source_lines.iter().zip(&display_paths) {
+        let covered = lines.values().filter(|covered| **covered).count();
+        let count = lines.len();
+        total_lines += count;
+        total_covered += covered;
+        let percent = if count == 0 {
+            100.0
+        } else {
+            covered as f64 * 100.0 / count as f64
+        };
+        println!(
+            "{:<width$}  {:>8}  {:>8}  {:>7.2}",
+            display_path.display(),
+            count,
+            count - covered,
+            percent
+        );
+    }
+    let total_percent = if total_lines == 0 {
+        100.0
+    } else {
+        total_covered as f64 * 100.0 / total_lines as f64
+    };
+    println!(
+        "{:<width$}  {:>8}  {:>8}  {:>7.2}",
+        "TOTAL",
+        total_lines,
+        total_lines - total_covered,
+        total_percent
+    );
 }
 
 fn discover_test_targets(target: &Path) -> Result<Vec<PathBuf>, CliError> {
@@ -2215,6 +2490,14 @@ fn run_doctor() -> Result<(), CliError> {
         Ok(version) => println!("  [ok] gprof CPU profiler: {version}"),
         Err(message) => println!("  [warn] gprof CPU profiler unavailable: {message}"),
     }
+    match command_first_line("llvm-cov", &["--version"]) {
+        Ok(version) => println!("  [ok] LLVM coverage reporter: {version}"),
+        Err(message) => println!("  [warn] LLVM coverage reporter unavailable: {message}"),
+    }
+    match command_first_line("llvm-profdata", &["--version"]) {
+        Ok(version) => println!("  [ok] LLVM coverage profile merger: {version}"),
+        Err(message) => println!("  [warn] LLVM coverage profile merger unavailable: {message}"),
+    }
 
     if let Some(display) = env::var_os("WAYLAND_DISPLAY") {
         println!("  [ok] display: Wayland ({})", display.to_string_lossy());
@@ -2415,6 +2698,41 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
         output,
         json,
     })
+}
+
+fn test_options(args: &[String]) -> Result<TestOptions, String> {
+    let mut mode = BuildMode::Debug;
+    let mut mode_seen = false;
+    let mut coverage = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--mode" => {
+                if mode_seen {
+                    return Err("test mode may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--mode' requires debug, profile, or release".to_string());
+                };
+                mode = BuildMode::parse(value)?;
+                mode_seen = true;
+                index += 2;
+            }
+            "--coverage" => {
+                if coverage {
+                    return Err("'--coverage' may only be specified once".to_string());
+                }
+                coverage = true;
+                index += 1;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>' or '--coverage'"
+                ));
+            }
+        }
+    }
+    Ok(TestOptions { mode, coverage })
 }
 
 fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
@@ -3896,8 +4214,17 @@ fn build_native_instrumented(
     command
         .args(["-std=c17", "-fwrapv"])
         .args(mode.clang_args());
-    if instrumentation == NativeInstrumentation::Gprof {
-        command.arg("-pg");
+    match instrumentation {
+        NativeInstrumentation::None => {}
+        NativeInstrumentation::Gprof => {
+            command.arg("-pg");
+        }
+        NativeInstrumentation::Coverage => {
+            command.args(["-fprofile-instr-generate", "-fcoverage-mapping"]);
+            command.arg(format!(
+                "-fcoverage-compilation-dir={COVERAGE_COMPILATION_DIR}"
+            ));
+        }
     }
     let gtk = c_source.contains("#include <gtk/gtk.h>");
     if gtk {
@@ -4000,7 +4327,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -4012,8 +4339,23 @@ mod tests {
         android_build_options, android_manifest_xml, android_publish_options, build_options,
         debug_options, demangle_profile_symbols, json_string, native_build_cache_path,
         output_with_timeout, parse_adb_devices, profile_report_addresses,
-        select_android_run_target, validate_android_publish_manifest, waydroid_status_is_running,
+        select_android_run_target, test_options, validate_android_publish_manifest,
+        waydroid_status_is_running,
     };
+
+    #[test]
+    fn test_options_accept_coverage_without_confusing_build_output() {
+        let options = test_options(&[
+            "--coverage".to_string(),
+            "--mode".to_string(),
+            "profile".to_string(),
+        ])
+        .expect("test options should parse");
+        assert!(options.coverage);
+        assert_eq!(options.mode, BuildMode::Profile);
+        assert!(test_options(&["-o".to_string(), "test-bin".to_string()]).is_err());
+        assert!(test_options(&["--coverage".to_string(), "--coverage".to_string()]).is_err());
+    }
 
     #[test]
     fn profiler_extracts_addresses_and_demangles_flux_functions() {

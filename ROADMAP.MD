@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 411
 - Reported overall progress: **56%**
-- Current net scope growth after the baseline: 19 checkbox items
+- Current net scope growth after the baseline: 20 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -929,6 +929,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Bootstrap `fluxc build` compatibility entry remains available while the product CLI transitions to `flux`.
 - [x] `flux build`: user-facing native builds support debug/profile/release modes and package/source targets.
 - [x] `flux test`: user-facing native integration-test discovery/execution for direct `.flux` tests and package `tests/*.flux`, with debug/profile/release mode selection and real exit-status reporting.
+  - [x] Opt-in `flux test --coverage` uses Clang/LLVM instrumentation without affecting ordinary test binaries, merges per-test profiles, and maps generated-C execution regions back onto original `.flux` source lines for a concise source-level coverage summary. `flux doctor` reports both required LLVM coverage tools, and an end-to-end test rejects regressions back to generated `<stdin>` reporting.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
 - [x] `flux devices`: the CLI reports Linux desktop display readiness, connected ADB Android devices with their real transport states, and a running local Waydroid container as a runnable Android target; external device probes are bounded so an unresponsive transport cannot stall the command forever.
