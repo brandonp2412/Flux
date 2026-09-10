@@ -1760,6 +1760,17 @@ fn add_builtin_ui_context_completions(
                     );
                 }
             }
+            if property.trim() == "status" {
+                for state in crate::typecheck::UI_PRESENTATION_STATES {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{state}\""),
+                        12,
+                        "semantic Flux UI presentation status",
+                    );
+                }
+            }
             if property.trim() == "accessibilityRole" {
                 for role in crate::typecheck::ACCESSIBILITY_ROLES {
                     push_completion_item(
@@ -5753,6 +5764,24 @@ mod tests {
         }
         assert!(items.iter().any(|item| {
             item.get("detail").and_then(JsonValue::as_str) == Some("semantic Flux UI color")
+        }));
+    }
+
+    #[test]
+    fn completion_suggests_ui_presentation_states() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: \"Flux\"\n        status: \n}\n";
+        let uri = "file:///tmp/ui-presentation-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(5));
+        for state in crate::typecheck::UI_PRESENTATION_STATES {
+            let expected = format!("\"{state}\"");
+            assert!(items.iter().any(|item| {
+                item.get("label").and_then(JsonValue::as_str) == Some(expected.as_str())
+            }));
+        }
+        assert!(items.iter().any(|item| {
+            item.get("detail").and_then(JsonValue::as_str)
+                == Some("semantic Flux UI presentation status")
         }));
     }
 

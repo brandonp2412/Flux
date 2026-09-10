@@ -1294,6 +1294,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "align_x"
             | "align_y"
+            | "status"
             | "background_color"
             | "border_color"
             | "border_top_color"
@@ -1440,6 +1441,7 @@ pub const ACCESSIBILITY_ROLES: &[&str] = &[
 ];
 
 pub const TEXT_INPUT_VALIDATION_STATES: &[&str] = &["normal", "error", "success", "warning"];
+pub const UI_PRESENTATION_STATES: &[&str] = &["normal", "loading", "empty", "error"];
 
 pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "surface",
@@ -1501,6 +1503,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "visible",
     "clip",
     "focusable",
+    "status",
     "tooltip",
     "accessibility_label",
     "accessibility_description",
@@ -1845,6 +1848,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         Err(_) => diagnostics.push(diag(
                             property.value.span,
                             "accessibilityRole must be a compile-time string value",
+                        )),
+                    }
+                }
+                if internal_property == "status" {
+                    match evaluate_default_expr(&property.value, signatures) {
+                        Ok(ConstantValue::Str(state))
+                            if UI_PRESENTATION_STATES.contains(&state.as_str()) => {}
+                        Ok(ConstantValue::Str(state)) => diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!("unsupported UI status '{state}'"),
+                            )
+                            .with_note(format!(
+                                "supported UI statuses: {}",
+                                UI_PRESENTATION_STATES.join(", ")
+                            )),
+                        ),
+                        Ok(_) => {}
+                        Err(_) => diagnostics.push(diag(
+                            property.value.span,
+                            "status must be a compile-time string value",
                         )),
                     }
                 }

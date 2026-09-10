@@ -4048,6 +4048,16 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         view.setBackgroundColor(parseFluxColor("surface"));
     }
 
+    public void stylePresentationState(View view, String status) {
+        if ("loading".equals(status)) {
+            view.setAlpha(0.68f);
+        } else if ("empty".equals(status)) {
+            if (view instanceof TextView) ((TextView)view).setTextColor(parseFluxColor("textMuted"));
+        } else if ("error".equals(status)) {
+            if (view instanceof TextView) ((TextView)view).setTextColor(parseFluxColor("danger"));
+        }
+    }
+
     private void applyFluxTextLocales(TextView view) {
         if (Build.VERSION.SDK_INT >= 24) {
             view.setTextLocales(getResources().getConfiguration().getLocales());
@@ -5780,6 +5790,12 @@ mod tests {
         assert!(activity.contains("String shadowColor"));
         assert!(activity.contains("view.setBackgroundTintList(null);"));
         assert!(activity.contains("public void styleRoot(View view)"));
+        assert!(activity.contains("public void stylePresentationState(View view, String status)"));
+        assert!(activity.contains("\"loading\".equals(status)"));
+        assert!(activity.contains("\"empty\".equals(status)"));
+        assert!(activity.contains("\"error\".equals(status)"));
+        assert!(activity.contains("view.setAlpha(0.68f);"));
+        assert!(activity.contains("parseFluxColor(\"textMuted\")"));
         assert!(activity.contains("case \"surface\":"));
         assert!(activity.contains("case \"accent\":"));
         assert!(activity.contains("case \"textMuted\":"));

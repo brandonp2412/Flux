@@ -10672,6 +10672,67 @@ app Form
 }
 
 #[test]
+fn ui_presentation_status_uses_semantic_native_feedback() {
+    let source = r#"
+view Statuses {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text loading at 1,1
+        text: "Loading"
+        status: "loading"
+    Text empty at 2,1
+        text: "Nothing here"
+        status: "empty"
+    Text failed at 3,1
+        text: "Could not load"
+        status: "error"
+}
+app Statuses
+"#;
+    check_source(source).expect("semantic UI presentation status should typecheck");
+
+    let linux = compile_to_c(source).expect("UI presentation status should lower on Linux");
+    assert!(linux.contains(".flux-status-loading { opacity: 0.68; }"));
+    assert!(linux.contains(".flux-status-empty { color: @flux_text_muted; }"));
+    assert!(linux.contains(".flux-status-error { color: @flux_danger; }"));
+    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_loading, \"flux-status-loading\")"));
+    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_empty, \"flux-status-empty\")"));
+    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_failed, \"flux-status-error\")"));
+    assert!(linux.contains(".flux-button:disabled, .flux-input:disabled, .flux-check:disabled"));
+    assert!(linux.contains(".flux-button:focus, .flux-input:focus, .flux-check:focus"));
+    assert!(linux.contains(".flux-button:active"));
+    assert!(linux.contains(".flux-check:checked"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("presentation-status fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("UI presentation status should lower on Android");
+    assert!(android.contains("stylePresentationState"));
+    assert!(android.contains("NewStringUTF(env, \"loading\")"));
+    assert!(android.contains("NewStringUTF(env, \"empty\")"));
+    assert!(android.contains("NewStringUTF(env, \"error\")"));
+
+    let invalid = r#"
+view Invalid {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+        status: "busy"
+}
+app Invalid
+"#;
+    let error =
+        check_source(invalid).expect_err("unknown presentation status must fail statically");
+    assert!(error.message.contains("unsupported UI status 'busy'"));
+}
+
+#[test]
 fn semantic_ui_dimension_tokens_lower_without_runtime_theme_objects() {
     let source = r#"
 view Tokens {

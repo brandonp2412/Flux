@@ -2104,6 +2104,37 @@ fn emit_android_native_application(
             out.push_str("    (*env)->CallVoidMethod(env, activity, style_checkable, child);\n");
             out.push_str("    (*env)->DeleteLocalRef(env, check_style_activity_class);\n");
         }
+        let presentation_status = match view_property(element, "status") {
+            Some(property) => {
+                let Some(status) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android status must be a compile-time string value",
+                    ));
+                };
+                if !typecheck::UI_PRESENTATION_STATES.contains(&status.as_str()) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("unsupported UI status '{status}'"),
+                    ));
+                }
+                status
+            }
+            None => "normal".to_string(),
+        };
+        if presentation_status != "normal" {
+            out.push_str(
+                "    jclass presentation_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (presentation_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_presentation = (*env)->GetMethodID(env, presentation_activity_class, \"stylePresentationState\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (style_presentation == NULL) return;\n");
+            out.push_str(&format!(
+                "    jstring child_presentation_status = (*env)->NewStringUTF(env, {});\n    (*env)->CallVoidMethod(env, activity, style_presentation, child, child_presentation_status);\n    if (child_presentation_status != NULL) (*env)->DeleteLocalRef(env, child_presentation_status);\n",
+                c_string(&presentation_status)
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, presentation_activity_class);\n");
+        }
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jmethodID set_visibility = (*env)->GetMethodID(env, child_class, \"setVisibility\", \"(I)V\");\n");
@@ -3887,7 +3918,7 @@ fn emit_linux_gtk_application(
             .unwrap_or_else(|| fallback.to_string());
         theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
     }
-    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-input-error { border-color: @flux_danger; box-shadow: 0 0 0 1px @flux_danger; } .flux-input-success { border-color: @flux_success; box-shadow: 0 0 0 1px @flux_success; } .flux-input-warning { border-color: @flux_warning; box-shadow: 0 0 0 1px @flux_warning; } .flux-check { padding: 4px; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
+    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-button:hover { background-image: linear-gradient(alpha(@flux_text, 0.06), alpha(@flux_text, 0.06)); } .flux-button:active { background-image: linear-gradient(alpha(@flux_text, 0.12), alpha(@flux_text, 0.12)); } .flux-button:focus, .flux-input:focus, .flux-check:focus { outline: 2px solid @flux_accent; outline-offset: 2px; } .flux-button:disabled, .flux-input:disabled, .flux-check:disabled { opacity: 0.56; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-input-error { border-color: @flux_danger; box-shadow: 0 0 0 1px @flux_danger; } .flux-input-success { border-color: @flux_success; box-shadow: 0 0 0 1px @flux_success; } .flux-input-warning { border-color: @flux_warning; box-shadow: 0 0 0 1px @flux_warning; } .flux-check { padding: 4px; } .flux-check:checked { color: @flux_accent; } .flux-status-loading { opacity: 0.68; } .flux-status-empty { color: @flux_text_muted; } .flux-status-error { color: @flux_danger; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
     out.push_str(&format!(
         "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
         c_string(&theme_css)
@@ -4639,6 +4670,29 @@ fn emit_linux_gtk_application(
                 }
             }
             _ => unreachable!("unsupported app element rejected before lowering"),
+        }
+        let presentation_status = match view_property(element, "status") {
+            Some(property) => {
+                let Some(status) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Linux status must be a compile-time string value",
+                    ));
+                };
+                if !typecheck::UI_PRESENTATION_STATES.contains(&status.as_str()) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("unsupported UI status '{status}'"),
+                    ));
+                }
+                status
+            }
+            None => "normal".to_string(),
+        };
+        if presentation_status != "normal" {
+            out.push_str(&format!(
+                "    gtk_widget_add_css_class({variable}, \"flux-status-{presentation_status}\");\n"
+            ));
         }
         if let Some(property) = view_property(element, "tooltip") {
             let tooltip = ui_expr_c(&property.value, view, signatures)?;
