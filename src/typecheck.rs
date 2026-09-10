@@ -5040,6 +5040,94 @@ fn check_qualified_call(
                 }
                 return Ok(Vec::new());
             }
+            "sleepUntilMonotonic" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "time.sleepUntilMonotonic expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "time.sleepUntilMonotonic deadlineMillis",
+                )?;
+                return Ok(Vec::new());
+            }
+            "utcUnixMillis" => {
+                if args.len() != 7 {
+                    return Err(diag(
+                        span,
+                        &format!("time.utcUnixMillis expects 7 arguments, got {}", args.len()),
+                    ));
+                }
+                for (arg, label) in args.iter().zip([
+                    "year",
+                    "month",
+                    "day",
+                    "hour",
+                    "minute",
+                    "second",
+                    "millisecond",
+                ]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &Type::I64,
+                        &actual,
+                        &format!("time.utcUnixMillis {label}"),
+                    )?;
+                }
+                for (index, minimum, maximum, label) in [
+                    (1, 1, 12, "month"),
+                    (2, 1, 31, "day"),
+                    (3, 0, 23, "hour"),
+                    (4, 0, 59, "minute"),
+                    (5, 0, 59, "second"),
+                    (6, 0, 999, "millisecond"),
+                ] {
+                    if matches!(
+                        constant_primitive_value(&args[index], signatures),
+                        Some(ConstantValue::I64(value)) if value < minimum || value > maximum
+                    ) {
+                        return Err(diag(
+                            args[index].span,
+                            &format!("time.utcUnixMillis {label} must be in {minimum}..={maximum}"),
+                        ));
+                    }
+                }
+                if let (
+                    Some(ConstantValue::I64(year)),
+                    Some(ConstantValue::I64(month)),
+                    Some(ConstantValue::I64(day)),
+                ) = (
+                    constant_primitive_value(&args[0], signatures),
+                    constant_primitive_value(&args[1], signatures),
+                    constant_primitive_value(&args[2], signatures),
+                ) {
+                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                    let max_day = match month {
+                        2 if leap => 29,
+                        2 => 28,
+                        4 | 6 | 9 | 11 => 30,
+                        _ => 31,
+                    };
+                    if day > max_day {
+                        return Err(diag(
+                            args[2].span,
+                            &format!(
+                                "time.utcUnixMillis day {day} is invalid for year {year}, month {month}"
+                            ),
+                        ));
+                    }
+                }
+                return Ok(vec![Type::I64]);
+            }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
             | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
                 if args.len() != 1 {

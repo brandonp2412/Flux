@@ -290,7 +290,10 @@ fn emit_runtime_prelude(
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
-    if uses_background || runtime_usage.contains("flux__time_sleep_millis(") {
+    if uses_background
+        || runtime_usage.contains("flux__time_sleep_millis(")
+        || runtime_usage.contains("flux__time_sleep_until_monotonic(")
+    {
         out.push_str("#include <errno.h>\n");
     }
     if uses_background {
@@ -1437,6 +1440,7 @@ fn emit_runtime_prelude(
 
     if runtime_usage.contains("flux__time_unix_millis(")
         || runtime_usage.contains("flux__time_monotonic_millis(")
+        || runtime_usage.contains("flux__time_sleep_until_monotonic(")
     {
         out.push_str("static inline int64_t flux__time_clock_millis(clockid_t clock_id) { struct timespec value; if (clock_gettime(clock_id, &value) != 0) { fputs(\"Flux runtime error: clock query failed\\n\", stderr); abort(); } if (value.tv_sec > (time_t)(INT64_MAX / INT64_C(1000)) || value.tv_sec < (time_t)(INT64_MIN / INT64_C(1000))) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t whole = (int64_t)value.tv_sec * INT64_C(1000); int64_t fraction = (int64_t)(value.tv_nsec / 1000000L); if (__builtin_add_overflow(whole, fraction, &whole)) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } return whole; }\n");
     }
@@ -1446,11 +1450,19 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_monotonic_millis(") {
         out.push_str("static inline int64_t flux__time_monotonic_millis(void) { return flux__time_clock_millis(CLOCK_MONOTONIC); }\n");
     }
-    if runtime_usage.contains("flux__time_sleep_millis(") {
+    if runtime_usage.contains("flux__time_sleep_millis(")
+        || runtime_usage.contains("flux__time_sleep_until_monotonic(")
+    {
         out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
     }
-    if runtime_usage.contains("flux__time_utc_") {
+    if runtime_usage.contains("flux__time_sleep_until_monotonic(") {
+        out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { for (;;) { int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
+    }
+    if runtime_usage.contains("flux__time_utc_part(") {
         out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
+    }
+    if runtime_usage.contains("flux__time_utc_unix_millis(") {
+        out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
 
     if runtime_usage.contains("flux__fs_exists(") {
@@ -12288,6 +12300,40 @@ fn emit_qualified_call(
                 return Ok((
                     format!("flux__time_sleep_millis({})", duration.code),
                     Vec::new(),
+                    None,
+                ));
+            }
+            "sleepUntilMonotonic" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let deadline = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__time_sleep_until_monotonic({})", deadline.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "utcUnixMillis" => {
+                if args.len() != 7 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((
+                    format!(
+                        "flux__time_utc_unix_millis({}, {}, {}, {}, {}, {}, {})",
+                        values[0].code,
+                        values[1].code,
+                        values[2].code,
+                        values[3].code,
+                        values[4].code,
+                        values[5].code,
+                        values[6].code
+                    ),
+                    vec![Type::I64],
                     None,
                 ));
             }

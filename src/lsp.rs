@@ -1185,6 +1185,20 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.sleepMillis(durationMs: i64) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "sleepUntilMonotonic",
+            3,
+            "fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "utcUnixMillis",
+            3,
+            "fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
+        );
         for member in [
             "utcYear",
             "utcMonth",
@@ -2306,6 +2320,30 @@ fn signature_help_for_document_cached(
                         "time.sleepMillis",
                         &["durationMs: i64"],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                "sleepUntilMonotonic" => {
+                    return Some(signature_help_for_builtin(
+                        "time.sleepUntilMonotonic",
+                        &["deadlineMillis: i64"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "utcUnixMillis" => {
+                    return Some(signature_help_for_builtin(
+                        "time.utcUnixMillis",
+                        &[
+                            "year: i64",
+                            "month: i64",
+                            "day: i64",
+                            "hour: i64",
+                            "minute: i64",
+                            "second: i64",
+                            "millisecond: i64",
+                        ],
+                        "i64",
                         active_parameter,
                     ));
                 }
@@ -5362,6 +5400,8 @@ mod tests {
         assert!(time_items.contains("fn time.unixMillis() -> i64"));
         assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
         assert!(time_items.contains("fn time.sleepMillis(durationMs: i64) -> void"));
+        assert!(time_items.contains("fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void"));
+        assert!(time_items.contains("fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64"));
         assert!(time_items.contains("fn time.utcYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.utcMillisecond(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.utcWeekday(unixMillis: i64) -> i64"));
@@ -5990,7 +6030,7 @@ mod tests {
     #[test]
     fn signature_help_supports_time_capabilities() {
         let uri = "file:///tmp/time-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    time.sleepUntilMonotonic(time.monotonicMillis())\n    print(time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6))\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("time.unixMillis(", "fn time.unixMillis() -> i64"),
@@ -5998,6 +6038,14 @@ mod tests {
             (
                 "time.sleepMillis(",
                 "fn time.sleepMillis(durationMs: i64) -> void",
+            ),
+            (
+                "time.sleepUntilMonotonic(",
+                "fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void",
+            ),
+            (
+                "time.utcUnixMillis(",
+                "fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
             ),
             ("time.utcYear(", "fn time.utcYear(unixMillis: i64) -> i64"),
             (

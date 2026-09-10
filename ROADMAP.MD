@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 440
 - Reported overall progress: **60%**
-- Current net scope growth after the baseline: 24 checkbox items
+- Current net scope growth after the baseline: 26 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -372,6 +372,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Date/time/duration.
   - [x] Bootstrap native scalar time primitives: `time.unixMillis()` exposes wall-clock Unix milliseconds, `time.monotonicMillis()` provides an elapsed-time clock, and `time.sleepMillis(durationMs)` performs an EINTR-safe native sleep with compile-time rejection of constant negative durations plus a runtime guard for dynamic negatives. The helpers are tree-shaken when unreachable and participate in qualified LSP completion/signature help; calendar values, time zones, formatting, and richer duration types remain pending.
   - [x] Allocation-free UTC calendar decomposition from Unix milliseconds: `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` are strictly typed scalar accessors, normalize negative pre-epoch timestamps correctly, lower through the native UTC calendar conversion on current targets, participate in LSP completion/signature help, and tree-shake when unreachable. First-class calendar values, formatting, named time zones/local-time conversion, and richer duration types remain pending.
+  - [x] Allocation-free UTC calendar construction with `time.utcUnixMillis(year, month, day, hour, minute, second, millisecond)`: component arguments are strictly typed, statically known invalid ranges/impossible month-day combinations are rejected during checking, dynamic invalid inputs trap instead of silently normalizing, native lowering uses checked integer calendar arithmetic including pre-epoch dates, LSP completion/signature help expose the full contract, and unreachable use tree-shakes completely.
 - [ ] JSON parsing/encoding.
 - [ ] URI/URL support.
 - [ ] HTTP primitives.
@@ -388,6 +389,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Structured concurrency.
 - [ ] Cancellation propagation.
 - [ ] Timers.
+  - [x] Bootstrap blocking monotonic deadline timer with `time.sleepUntilMonotonic(deadlineMillis)`: the absolute `i64` deadline composes directly with `time.monotonicMillis()`, already-expired deadlines return immediately, native lowering rechecks the monotonic clock around EINTR-safe sleeps to avoid cumulative relative-sleep drift, LSP completion/signature help expose the contract, and unreachable timer support tree-shakes completely. Asynchronous task-integrated timers remain pending with the task/structured-concurrency model.
 - [ ] Channels/message passing.
 - [ ] Worker/thread execution.
 - [ ] Data-race prevention integrated with ownership.

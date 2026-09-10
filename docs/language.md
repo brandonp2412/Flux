@@ -785,19 +785,21 @@ Current native targets expose scalar clock and sleep operations without allocati
 ```flux
 let started: i64 = time.monotonicMillis()
 time.sleepMillis(50)
+let deadline: i64 = time.monotonicMillis() + 50
+time.sleepUntilMonotonic(deadline)
 let elapsed: i64 = time.monotonicMillis() - started
 print(elapsed)
 print(time.unixMillis())
-let timestamp: i64 = 946782245006
+let timestamp: i64 = time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6)
 print(time.utcYear(timestamp))
 print(time.utcMonth(timestamp))
 print(time.utcDay(timestamp))
 print(time.utcWeekday(timestamp))
 ```
 
-`time.unixMillis()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonicMillis()` is the clock for measuring elapsed durations. `time.sleepMillis(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay.
+`time.unixMillis()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonicMillis()` is the clock for measuring elapsed durations. `time.sleepMillis(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. `time.sleepUntilMonotonic(deadlineMillis)` blocks until the monotonic clock reaches an absolute deadline; already-expired deadlines return immediately, and the implementation rechecks the monotonic clock so interruptions or oversleep do not accumulate scheduling drift across repeated deadline-based loops.
 
-UTC calendar decomposition remains allocation-free: `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` each accept Unix milliseconds and return an `i64`. Months and days are one-based, `utcWeekday` uses ISO numbering (`1` Monday through `7` Sunday), and `utcDayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These accessors use the platform's native UTC conversion and are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
+UTC calendar conversion remains allocation-free. `time.utcUnixMillis(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `utcWeekday` uses ISO numbering (`1` Monday through `7` Sunday), and `utcDayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
 
 ## Performance and safety contract
 

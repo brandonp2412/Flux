@@ -1652,9 +1652,15 @@ fn main() -> i64 {
     let before: i64 = time.monotonicMillis()
     time.sleepMillis(2)
     let after: i64 = time.monotonicMillis()
+    time.sleepUntilMonotonic(after + 2)
+    let finished: i64 = time.monotonicMillis()
     print(time.unixMillis())
+    print(time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6))
+    print(time.utcUnixMillis(1970, 1, 1, 0, 0, 0, 0))
+    print(time.utcUnixMillis(1969, 12, 31, 23, 59, 59, 999))
     print(before)
     print(after)
+    print(finished)
     print(time.utcYear(946782245006))
     print(time.utcMonth(946782245006))
     print(time.utcDay(946782245006))
@@ -1686,6 +1692,11 @@ fn main() -> i64 {
     assert!(generated.contains("static inline int64_t flux__time_unix_millis(void)"));
     assert!(generated.contains("static inline int64_t flux__time_monotonic_millis(void)"));
     assert!(generated.contains("static inline void flux__time_sleep_millis(int64_t duration_ms)"));
+    assert!(
+        generated
+            .contains("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms)")
+    );
+    assert!(generated.contains("static inline int64_t flux__time_utc_unix_millis(int64_t year"));
     assert!(generated.contains("CLOCK_REALTIME"));
     assert!(generated.contains("CLOCK_MONOTONIC"));
     assert!(generated.contains("nanosleep(&remaining, &remaining)"));
@@ -1720,18 +1731,24 @@ fn main() -> i64 {
         .lines()
         .map(|line| line.parse::<i64>().expect("time output should be i64"))
         .collect::<Vec<_>>();
-    assert_eq!(values.len(), 21);
+    assert_eq!(values.len(), 25);
     assert!(values[0] > 0);
-    assert!(values[1] >= 0);
-    assert!(values[2] >= values[1]);
-    assert_eq!(&values[3..12], &[2000, 1, 2, 3, 4, 5, 6, 7, 2]);
-    assert_eq!(&values[12..21], &[1969, 12, 31, 23, 59, 59, 999, 3, 365]);
+    assert_eq!(values[1], 946782245006);
+    assert_eq!(values[2], 0);
+    assert_eq!(values[3], -1);
+    assert!(values[4] >= 0);
+    assert!(values[5] >= values[4]);
+    assert!(values[6] >= values[5] + 2);
+    assert_eq!(&values[7..16], &[2000, 1, 2, 3, 4, 5, 6, 7, 2]);
+    assert_eq!(&values[16..25], &[1969, 12, 31, 23, 59, 59, 999, 3, 365]);
 
     let unused = r#"
 fn hidden() -> void {
     print(time.unixMillis())
+    print(time.utcUnixMillis(1970, 1, 1, 0, 0, 0, 0))
     print(time.utcYear(0))
     time.sleepMillis(1)
+    time.sleepUntilMonotonic(0)
 }
 fn main() -> i64 {
     return 0
@@ -1741,6 +1758,8 @@ fn main() -> i64 {
     assert!(!unused_generated.contains("#include <time.h>"));
     assert!(!unused_generated.contains("flux__time_clock_millis"));
     assert!(!unused_generated.contains("flux__time_sleep_millis"));
+    assert!(!unused_generated.contains("flux__time_sleep_until_monotonic"));
+    assert!(!unused_generated.contains("flux__time_utc_unix_millis"));
     assert!(!unused_generated.contains("flux__time_utc_part"));
 
     let invalid = r#"
@@ -1749,6 +1768,12 @@ fn main() -> i64 {
     time.monotonicMillis(false)
     time.sleepMillis("later")
     time.sleepMillis(-1)
+    time.sleepUntilMonotonic("later")
+    time.sleepUntilMonotonic(1, 2)
+    time.utcUnixMillis(2000, 1, 2, 3, 4, 5)
+    time.utcUnixMillis("2000", 1, 2, 3, 4, 5, 6)
+    time.utcUnixMillis(2000, 13, 2, 3, 4, 5, 6)
+    time.utcUnixMillis(2023, 2, 29, 3, 4, 5, 6)
     time.utcYear()
     time.utcMonth("now")
     time.utcDay(1, 2)
@@ -1775,6 +1800,35 @@ fn main() -> i64 {
         error
             .message
             .contains("time.sleepMillis durationMs must be non-negative")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.sleepUntilMonotonic deadlineMillis")
+            && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.sleepUntilMonotonic expects 1 argument, got 2")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.utcUnixMillis expects 7 arguments, got 6")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("time.utcUnixMillis year") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.utcUnixMillis month must be in 1..=12")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.utcUnixMillis day 29 is invalid for year 2023, month 2")
     }));
     assert!(errors.iter().any(|error| {
         error
