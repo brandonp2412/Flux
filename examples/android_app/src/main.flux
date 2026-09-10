@@ -24,11 +24,18 @@ fn restore_state(value: str) -> void {
     print(value)
 }
 
+fn pressed() -> void {
+    print("Flux Android button pressed")
+}
+
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text title at 1,1
         text: "Flux on Android"
+    Button action at 2,1
+        text: "Press from Flux"
+        onPress: pressed
 }
 
 app Screen(on_start: started, on_configuration_changed: configuration_changed, on_low_memory: low_memory, on_save_state: save_state, on_restore_state: restore_state)

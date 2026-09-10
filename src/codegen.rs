@@ -316,6 +316,8 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_notify_url_action(");
     let uses_android_cancel_notification =
         uses_android && runtime_usage.contains("flux__android_cancel_notification(");
+    let uses_android_generated_ui =
+        uses_android && runtime_usage.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi");
     let uses_android_notifications = uses_android_create_notification_channel
         || uses_android_notification_permission_granted
         || uses_android_request_notification_permission
@@ -325,7 +327,8 @@ fn emit_runtime_prelude(
     let uses_android_platform_api = uses_android_vibrate
         || uses_android_open_url
         || uses_android_share
-        || uses_android_notifications;
+        || uses_android_notifications
+        || uses_android_generated_ui;
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
@@ -356,7 +359,11 @@ fn emit_runtime_prelude(
         out.push_str("    }\n");
         out.push_str("}\n");
     }
-    if uses_android_open_url || uses_android_share || uses_android_notifications {
+    if uses_android_open_url
+        || uses_android_share
+        || uses_android_notifications
+        || uses_android_generated_ui
+    {
         out.push_str(
             "static jstring flux__android_utf8_string(JNIEnv *env, const char *value) {\n",
         );
@@ -1082,22 +1089,174 @@ fn emit_runtime_prelude(
 fn emit_android_native_application(
     out: &mut String,
     program: &Program,
-    _signatures: &Signatures,
+    signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let application = program
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    if program
+    let view = program
         .views
         .iter()
-        .all(|view| view.name != application.view_name)
-    {
-        return Err(diag(
-            application.view_span,
-            "app root view was not found during Android codegen",
+        .find(|view| view.name == application.view_name)
+        .ok_or_else(|| {
+            diag(
+                application.view_span,
+                "app root view was not found during Android codegen",
+            )
+        })?;
+
+    for element in &view.elements {
+        if !matches!(element.kind.as_str(), "Text" | "Button") {
+            return Err(diag(
+                element.kind_span,
+                "bootstrap Android app backend currently renders Text and Button elements",
+            ));
+        }
+    }
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeBuildUi(JNIEnv *env, jobject activity) {\n");
+    out.push_str(
+        "    jclass grid_class = (*env)->FindClass(env, \"android/widget/GridLayout\");\n",
+    );
+    out.push_str("    if (grid_class == NULL) return;\n");
+    out.push_str("    jmethodID grid_ctor = (*env)->GetMethodID(env, grid_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
+    out.push_str("    jmethodID set_columns = (*env)->GetMethodID(env, grid_class, \"setColumnCount\", \"(I)V\");\n");
+    out.push_str("    jmethodID set_rows = (*env)->GetMethodID(env, grid_class, \"setRowCount\", \"(I)V\");\n");
+    out.push_str("    jmethodID set_padding = (*env)->GetMethodID(env, grid_class, \"setPadding\", \"(IIII)V\");\n");
+    out.push_str("    jmethodID add_view = (*env)->GetMethodID(env, grid_class, \"addView\", \"(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V\");\n");
+    out.push_str("    jmethodID grid_spec = (*env)->GetStaticMethodID(env, grid_class, \"spec\", \"(II)Landroid/widget/GridLayout$Spec;\");\n");
+    out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || add_view == NULL || grid_spec == NULL) return;\n");
+    out.push_str("    jobject grid = (*env)->NewObject(env, grid_class, grid_ctor, activity);\n");
+    out.push_str("    if (grid == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+    out.push_str(&format!(
+        "    (*env)->CallVoidMethod(env, grid, set_columns, (jint){});\n",
+        view.grid.columns.len().max(1)
+    ));
+    out.push_str(&format!(
+        "    (*env)->CallVoidMethod(env, grid, set_rows, (jint){});\n",
+        view.grid.rows.len().max(1)
+    ));
+    let padding = view.grid.padding.unwrap_or(20);
+    out.push_str(&format!(
+        "    (*env)->CallVoidMethod(env, grid, set_padding, (jint){padding}, (jint){padding}, (jint){padding}, (jint){padding});\n"
+    ));
+    out.push_str("    jclass params_class = (*env)->FindClass(env, \"android/widget/GridLayout$LayoutParams\");\n");
+    out.push_str("    if (params_class == NULL) return;\n");
+    out.push_str("    jmethodID params_ctor = (*env)->GetMethodID(env, params_class, \"<init>\", \"()V\");\n");
+    out.push_str("    jfieldID row_spec_field = (*env)->GetFieldID(env, params_class, \"rowSpec\", \"Landroid/widget/GridLayout$Spec;\");\n");
+    out.push_str("    jfieldID column_spec_field = (*env)->GetFieldID(env, params_class, \"columnSpec\", \"Landroid/widget/GridLayout$Spec;\");\n");
+    out.push_str("    if (params_ctor == NULL || row_spec_field == NULL || column_spec_field == NULL) return;\n");
+
+    let mut button_id = 0i32;
+    for element in &view.elements {
+        out.push_str("    {\n");
+        let text = match view_property(element, "text") {
+            Some(property) => static_expr_str(&property.value, signatures).ok_or_else(|| {
+                diag(
+                    property.value.span,
+                    &format!(
+                        "bootstrap Android {}.text currently requires a compile-time str value",
+                        element.kind
+                    ),
+                )
+            })?,
+            None => element.name.clone(),
+        };
+        let class_name = if element.kind == "Text" {
+            "android/widget/TextView"
+        } else {
+            "android/widget/Button"
+        };
+        out.push_str(&format!(
+            "    jclass child_class = (*env)->FindClass(env, \"{class_name}\");\n"
+        ));
+        out.push_str("    if (child_class == NULL) return;\n");
+        out.push_str("    jmethodID child_ctor = (*env)->GetMethodID(env, child_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
+        out.push_str("    jmethodID set_text = (*env)->GetMethodID(env, child_class, \"setText\", \"(Ljava/lang/CharSequence;)V\");\n");
+        out.push_str("    if (child_ctor == NULL || set_text == NULL) return;\n");
+        out.push_str(
+            "    jobject child = (*env)->NewObject(env, child_class, child_ctor, activity);\n",
+        );
+        out.push_str("    if (child == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+        out.push_str(&format!(
+            "    jstring child_text = flux__android_utf8_string(env, {});\n",
+            c_string(&text)
+        ));
+        out.push_str("    if (child_text == NULL) return;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
+        if element.kind == "Button" {
+            if let Some(action) = view_property(element, "on_press") {
+                if action.transition.is_some() {
+                    return Err(diag(
+                        action.span,
+                        "bootstrap Android Button.on_press state transitions remain pending; use a named fn() -> void callback",
+                    ));
+                }
+                if !matches!(action.value.kind, ExprKind::Var(_)) {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap Android Button.on_press currently requires a named fn() -> void callback",
+                    ));
+                }
+                button_id += 1;
+                out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+                out.push_str("    jmethodID set_click = (*env)->GetMethodID(env, child_class, \"setOnClickListener\", \"(Landroid/view/View$OnClickListener;)V\");\n");
+                out.push_str("    if (set_id == NULL || set_click == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_id, (jint){button_id});\n"
+                ));
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_click, activity);\n");
+            }
+        }
+        out.push_str("    jobject params = (*env)->NewObject(env, params_class, params_ctor);\n");
+        out.push_str("    if (params == NULL) return;\n");
+        out.push_str(&format!(
+            "    jobject row_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){}, (jint){});\n",
+            element.row.saturating_sub(1),
+            element.row_span
+        ));
+        out.push_str(&format!(
+            "    jobject column_spec = (*env)->CallStaticObjectMethod(env, grid_class, grid_spec, (jint){}, (jint){});\n",
+            element.column.saturating_sub(1),
+            element.column_span
+        ));
+        out.push_str("    if (row_spec == NULL || column_spec == NULL) return;\n");
+        out.push_str("    (*env)->SetObjectField(env, params, row_spec_field, row_spec);\n");
+        out.push_str("    (*env)->SetObjectField(env, params, column_spec_field, column_spec);\n");
+        out.push_str("    (*env)->CallVoidMethod(env, grid, add_view, child, params);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, column_spec);\n    (*env)->DeleteLocalRef(env, row_spec);\n    (*env)->DeleteLocalRef(env, params);\n    (*env)->DeleteLocalRef(env, child_text);\n    (*env)->DeleteLocalRef(env, child);\n    (*env)->DeleteLocalRef(env, child_class);\n");
+        out.push_str("    }\n");
+    }
+    out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+    out.push_str("    if (activity_class == NULL) return;\n");
+    out.push_str("    jmethodID set_content = (*env)->GetMethodID(env, activity_class, \"setContentView\", \"(Landroid/view/View;)V\");\n");
+    out.push_str(
+        "    if (set_content != NULL) (*env)->CallVoidMethod(env, activity, set_content, grid);\n",
+    );
+    out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+    out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
+    out.push_str("}\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
+    button_id = 0;
+    for element in &view.elements {
+        if element.kind != "Button" {
+            continue;
+        }
+        let Some(action) = view_property(element, "on_press") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            continue;
+        };
+        button_id += 1;
+        out.push_str(&format!(
+            "        case {button_id}: {}(); break;\n",
+            function_c_name(function)
         ));
     }
+    out.push_str("        default: break;\n    }\n}\n\n");
 
     for (metadata, callback) in [
         ("on_start", "start"),

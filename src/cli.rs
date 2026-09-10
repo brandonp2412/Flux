@@ -1553,11 +1553,18 @@ fn run_doctor() -> Result<(), CliError> {
                 Err(CliError::Reported) => unreachable!(),
             }
             match find_android_build_tools(&sdk) {
-                Ok(tools) => println!("  [ok] Android build-tools: {}", tools.display()),
+                Ok(tools) => println!(
+                    "  [ok] Android build-tools (aapt2/zipalign/apksigner/d8): {}",
+                    tools.display()
+                ),
                 Err(CliError::Message(message)) => {
                     println!("  [warn] Android build-tools: {message}")
                 }
                 Err(CliError::Reported) => unreachable!(),
+            }
+            match command_first_line("javac", &["-version"]) {
+                Ok(version) => println!("  [ok] javac (generated Android runtime glue): {version}"),
+                Err(message) => println!("  [warn] javac: {message}"),
             }
         }
         Err(CliError::Message(message)) => println!("  [warn] Android SDK: {message}"),
@@ -1839,6 +1846,85 @@ fn compile_android_native_library(
     Ok(native_library)
 }
 
+fn android_has_generated_activity(c_source: &str) -> bool {
+    c_source.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi")
+}
+
+fn android_activity_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+import android.app.NativeActivity;
+import android.os.Bundle;
+import android.view.View;
+
+public final class FluxActivity extends NativeActivity implements View.OnClickListener {
+    private native void nativeBuildUi();
+    private static native void nativeOnClick(int viewId);
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        nativeBuildUi();
+    }
+
+    @Override
+    public void onClick(View view) {
+        nativeOnClick(view.getId());
+    }
+}
+"#
+}
+
+fn compile_android_activity_dex(
+    c_source: &str,
+    manifest: &fluxc::project::PackageManifest,
+    toolchain: &AndroidToolchain,
+    staging: &Path,
+    dex_output: &Path,
+) -> Result<(), CliError> {
+    if !android_has_generated_activity(c_source) {
+        return Ok(());
+    }
+    let d8 = toolchain.build_tools.join("d8");
+    if !d8.is_file() {
+        return Err(CliError::Message(format!(
+            "Android build-tools '{}' do not include d8, which is required for compiler-generated native UI glue",
+            toolchain.build_tools.display()
+        )));
+    }
+    let java_dir = staging.join("java/app/flux/runtime");
+    let classes_dir = staging.join("java-classes");
+    fs::create_dir_all(&java_dir)
+        .map_err(|error| format!("failed to create generated Android Java directory: {error}"))?;
+    fs::create_dir_all(&classes_dir)
+        .map_err(|error| format!("failed to create generated Android class directory: {error}"))?;
+    fs::create_dir_all(dex_output)
+        .map_err(|error| format!("failed to create generated Android dex directory: {error}"))?;
+    let java_source = java_dir.join("FluxActivity.java");
+    fs::write(&java_source, android_activity_java_source())
+        .map_err(|error| format!("failed to write compiler-generated Android activity: {error}"))?;
+    run_checked(
+        Command::new("javac")
+            .args(["-source", "8", "-target", "8", "-classpath"])
+            .arg(&toolchain.android_jar)
+            .arg("-d")
+            .arg(&classes_dir)
+            .arg(&java_source),
+        "javac compiler-generated Android activity",
+    )?;
+    let activity_class = classes_dir.join("app/flux/runtime/FluxActivity.class");
+    run_checked(
+        Command::new(&d8)
+            .arg("--min-api")
+            .arg(manifest.android.min_sdk.to_string())
+            .arg("--output")
+            .arg(dex_output)
+            .arg(&activity_class),
+        "d8 compiler-generated Android activity",
+    )?;
+    Ok(())
+}
+
 fn ensure_parent_directory(output: &Path) -> Result<(), CliError> {
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
@@ -1871,6 +1957,7 @@ fn build_android_aab(
         compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &base)?;
         let _ = fs::remove_file(base.join(format!("app-{}.c", abi.name())));
     }
+    compile_android_activity_dex(c_source, manifest, &toolchain, &staging, &base.join("dex"))?;
 
     let manifest_path = staging.join("AndroidManifest.xml");
     fs::write(
@@ -1977,6 +2064,12 @@ fn build_android_apk(
     let toolchain = android_toolchain(manifest)?;
     let staging = android_staging_dir();
     compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &staging)?;
+    let dex_dir = staging.join("dex");
+    compile_android_activity_dex(c_source, manifest, &toolchain, &staging, &dex_dir)?;
+    if android_has_generated_activity(c_source) {
+        fs::copy(dex_dir.join("classes.dex"), staging.join("classes.dex"))
+            .map_err(|error| format!("failed to stage compiler-generated Android dex: {error}"))?;
+    }
 
     let manifest_xml = android_manifest_xml(manifest, mode, c_source);
     let manifest_path = staging.join("AndroidManifest.xml");
@@ -1999,14 +2092,15 @@ fn build_android_apk(
             .arg(manifest.android.target_sdk.to_string()),
         "aapt2 link",
     )?;
-    run_checked(
-        Command::new("zip")
-            .current_dir(&staging)
-            .args(["-q", "-r"])
-            .arg(&unsigned)
-            .arg("lib"),
-        "zip native Android library",
-    )?;
+    let mut zip = Command::new("zip");
+    zip.current_dir(&staging)
+        .args(["-q", "-r"])
+        .arg(&unsigned)
+        .arg("lib");
+    if android_has_generated_activity(c_source) {
+        zip.arg("classes.dex");
+    }
+    run_checked(&mut zip, "zip Android application payload")?;
     let aligned = staging.join("aligned.apk");
     run_checked(
         Command::new(toolchain.build_tools.join("zipalign"))
@@ -2071,8 +2165,15 @@ fn android_manifest_xml(
     } else {
         ""
     };
+    let generated_activity = android_has_generated_activity(c_source);
+    let has_code = if generated_activity { "true" } else { "false" };
+    let activity_name = if generated_activity {
+        "app.flux.runtime.FluxActivity"
+    } else {
+        "android.app.NativeActivity"
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"false\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"android.app.NativeActivity\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{vibrate_permission}{notification_permission}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
         manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
@@ -2143,10 +2244,11 @@ fn find_android_build_tools(sdk: &Path) -> Result<PathBuf, CliError> {
         path.join("aapt2").is_file()
             && path.join("zipalign").is_file()
             && path.join("apksigner").is_file()
+            && path.join("d8").is_file()
     })
     .ok_or_else(|| {
         CliError::Message(
-            "Android build-tools with aapt2/zipalign/apksigner were not found".to_string(),
+            "Android build-tools with aapt2/zipalign/apksigner/d8 were not found".to_string(),
         )
     })
 }
@@ -2431,8 +2533,9 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
-        android_abi_from_runtime, android_build_options, android_manifest_xml, build_options,
-        parse_adb_devices, select_android_run_target, waydroid_status_is_running,
+        android_abi_from_runtime, android_activity_java_source, android_build_options,
+        android_manifest_xml, build_options, parse_adb_devices, select_android_run_target,
+        waydroid_status_is_running,
     };
 
     #[test]
@@ -2542,6 +2645,21 @@ mod tests {
         assert!(plain.contains("android:targetSdkVersion=\"36\""));
         assert!(!plain.contains("android.permission.VIBRATE"));
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
+        assert!(plain.contains("android:hasCode=\"false\""));
+        assert!(plain.contains("android:name=\"android.app.NativeActivity\""));
+
+        let generated_ui = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeBuildUi(void);",
+        );
+        assert!(generated_ui.contains("android:hasCode=\"true\""));
+        assert!(generated_ui.contains("android:name=\"app.flux.runtime.FluxActivity\""));
+        let activity = android_activity_java_source();
+        assert!(activity.contains("extends NativeActivity implements View.OnClickListener"));
+        assert!(activity.contains("private native void nativeBuildUi();"));
+        assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
+        assert!(activity.contains("nativeBuildUi();"));
 
         let vibrating = android_manifest_xml(
             &manifest,

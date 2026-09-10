@@ -10048,6 +10048,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn android_native_ui_lowers_flat_grid_text_button_and_click_dispatch() {
+    let root = std::env::temp_dir().join(format!("flux-android-ui-codegen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("Android UI fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"native-ui\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android UI manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r#"fn pressed() -> void {
+    print("pressed")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Hello Android"
+    Button action at 2,1
+        text: "Press"
+        onPress: pressed
+}
+app Screen
+"#,
+    )
+    .expect("Android UI source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("Android UI app should analyze");
+    let generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android UI app should lower to target C");
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi"));
+    assert!(generated.contains("android/widget/GridLayout"));
+    assert!(generated.contains("android/widget/TextView"));
+    assert!(generated.contains("android/widget/Button"));
+    assert!(generated.contains("setOnClickListener"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
+    assert!(generated.contains("case 1: flux__fn_pressed(); break;"));
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {
