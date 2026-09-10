@@ -12,7 +12,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARKS = ROOT / "benchmarks" / "perf"
 OUTPUT = ROOT / "target" / "flux-bench"
-WORKLOADS = ("compute", "collections", "dispatch")
+WORKLOADS = ("compute", "collections", "dispatch", "calls")
 
 
 def run(command, *, capture=False):
