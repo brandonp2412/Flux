@@ -3388,6 +3388,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
@@ -4024,6 +4025,26 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         } else {
             view.setContentDescription(label + ". " + description);
         }
+    }
+
+    public void setAccessibilityRole(View view, String role) {
+        if (role == null) return;
+        if (Build.VERSION.SDK_INT >= 28) view.setAccessibilityHeading("heading".equals(role));
+        final String className;
+        if ("button".equals(role)) className = "android.widget.Button";
+        else if ("textBox".equals(role)) className = "android.widget.EditText";
+        else if ("checkbox".equals(role)) className = "android.widget.CheckBox";
+        else if ("radio".equals(role)) className = "android.widget.RadioButton";
+        else if ("image".equals(role)) className = "android.widget.ImageView";
+        else if ("switch".equals(role)) className = "android.widget.Switch";
+        else className = "android.widget.TextView";
+        view.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                info.setClassName(className);
+                if (Build.VERSION.SDK_INT >= 28) info.setHeading("heading".equals(role));
+            }
+        });
     }
 
     public void setAccessibilityHidden(View view, boolean hidden) {
@@ -5510,6 +5531,9 @@ mod tests {
         assert!(activity.contains("private native int nativeThemeMode();"));
         assert!(activity.contains("private native String nativeThemeColor(String token);"));
         assert!(activity.contains("view.setContentDescription"));
+        assert!(activity.contains("setAccessibilityRole(View view, String role)"));
+        assert!(activity.contains("info.setClassName(className)"));
+        assert!(activity.contains("info.setHeading(\"heading\".equals(role))"));
         assert!(activity.contains("String custom = nativeThemeColor(value);"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));

@@ -2361,6 +2361,32 @@ fn emit_android_native_application(
             out.push_str("    if (child_accessibility_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_label);\n");
             out.push_str("    if (child_accessibility_description != NULL) (*env)->DeleteLocalRef(env, child_accessibility_description);\n");
         }
+        if let Some(property) = view_property(element, "accessibility_role") {
+            let Some(role) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "accessibilityRole must be a compile-time string value",
+                ));
+            };
+            if !typecheck::ACCESSIBILITY_ROLES.contains(&role.as_str()) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("unsupported accessibilityRole '{role}'"),
+                ));
+            }
+            out.push_str(&format!(
+                "    jstring child_accessibility_role = flux__android_utf8_string(env, {});\n",
+                c_string(&role)
+            ));
+            out.push_str("    if (child_accessibility_role == NULL) return;\n");
+            out.push_str("    jclass accessibility_role_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (accessibility_role_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility_role = (*env)->GetMethodID(env, accessibility_role_activity_class, \"setAccessibilityRole\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_accessibility_role == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, set_accessibility_role, child, child_accessibility_role);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_role_activity_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_accessibility_role);\n");
+        }
         if let Some(property) = view_property(element, "accessibility_hidden") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jclass accessibility_hidden_activity_class = (*env)->GetObjectClass(env, activity);\n");
@@ -4528,6 +4554,33 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
             ));
+        }
+        if let Some(property) = view_property(element, "accessibility_role") {
+            let Some(role) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "accessibilityRole must be a compile-time string value",
+                ));
+            };
+            if !typecheck::ACCESSIBILITY_ROLES.contains(&role.as_str()) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("unsupported accessibilityRole '{role}'"),
+                ));
+            }
+            let role_description = match role.as_str() {
+                "textBox" => "text box",
+                other => other,
+            };
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, {}, -1);\n",
+                c_string(role_description)
+            ));
+            if role == "heading" {
+                out.push_str(&format!(
+                    "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_LEVEL, 1, -1);\n"
+                ));
+            }
         }
         if let Some(property) = view_property(element, "accessibility_hidden") {
             let hidden = ui_expr_c(&property.value, view, signatures)?;

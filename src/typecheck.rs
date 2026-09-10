@@ -1246,7 +1246,10 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             "visible" | "clip" | "focusable" | "accessibility_hidden" => {
                 return Some(Type::Bool);
             }
-            "tooltip" | "accessibility_label" | "accessibility_description" => {
+            "tooltip"
+            | "accessibility_label"
+            | "accessibility_description"
+            | "accessibility_role" => {
                 return Some(Type::Str);
             }
             "min_width"
@@ -1431,6 +1434,10 @@ pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
     "Content",
 ];
 
+pub const ACCESSIBILITY_ROLES: &[&str] = &[
+    "label", "heading", "button", "textBox", "checkbox", "radio", "image", "switch",
+];
+
 pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "surface",
     "surfaceRaised",
@@ -1494,6 +1501,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "tooltip",
     "accessibility_label",
     "accessibility_description",
+    "accessibility_role",
     "accessibility_hidden",
     "accessibility_order",
     "on_tap",
@@ -1814,6 +1822,28 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             }
 
             for property in &element.properties {
+                let internal_property = source_name_to_internal(&property.name);
+                if internal_property == "accessibility_role" {
+                    match evaluate_default_expr(&property.value, signatures) {
+                        Ok(ConstantValue::Str(role))
+                            if ACCESSIBILITY_ROLES.contains(&role.as_str()) => {}
+                        Ok(ConstantValue::Str(role)) => diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!("unsupported accessibilityRole '{role}'"),
+                            )
+                            .with_note(format!(
+                                "supported semantic roles: {}",
+                                ACCESSIBILITY_ROLES.join(", ")
+                            )),
+                        ),
+                        Ok(_) => {}
+                        Err(_) => diagnostics.push(diag(
+                            property.value.span,
+                            "accessibilityRole must be a compile-time string value",
+                        )),
+                    }
+                }
                 if let Some(transition) = &property.transition {
                     let internal_property = source_name_to_internal(&property.name);
                     let transition_property = matches!(

@@ -11049,6 +11049,95 @@ app Screen
 }
 
 #[test]
+fn semantic_accessibility_roles_validate_and_lower_to_native_backends() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto
+    Text title at 1,1
+        text: "Flux"
+        accessibilityRole: "heading"
+    Button action at 2,1
+        text: "Continue"
+        accessibilityRole: "button"
+    TextInput input at 3,1
+        accessibilityRole: "textBox"
+    Toggle toggle at 4,1
+        label: "Enabled"
+        accessibilityRole: "switch"
+    Radio radio at 5,1
+        label: "Choice"
+        accessibilityRole: "radio"
+    Image image at 6,1
+        source: ""
+        alt: "Preview"
+        accessibilityRole: "image"
+}
+app Screen
+"#;
+    check_source(source).expect("semantic accessibility roles should typecheck");
+    let linux = compile_to_c(source).expect("semantic roles should lower on Linux");
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, \"heading\""));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_LEVEL, 1"));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, \"text box\""));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, \"switch\""));
+
+    let program = fluxc::parser::parse(source).expect("semantic role app should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("semantic role app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("semantic roles should lower on Android");
+    assert!(android.contains("setAccessibilityRole"));
+    assert!(android.contains("\"heading\""));
+    assert!(android.contains("\"textBox\""));
+    assert!(android.contains("\"switch\""));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        accessibilityRole: "spaceship"
+}
+app Screen
+"#;
+    let errors = check_source_all(invalid).expect_err("unknown semantic roles must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unsupported accessibilityRole 'spaceship'")
+    }));
+
+    let dynamic = r#"
+view SemanticText(role: str) {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        accessibilityRole: role
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    SemanticText title at 1,1
+        role: "heading"
+}
+app Screen
+"#;
+    let errors = check_source_all(dynamic).expect_err("runtime semantic roles must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityRole must be a compile-time string value")
+    }));
+}
+
+#[test]
 fn text_input_lowers_native_entry_and_typed_submit_callback() {
     let source = r#"
 fn submit(value: str) -> void {

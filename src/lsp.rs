@@ -1731,8 +1731,8 @@ fn add_builtin_ui_context_completions(
     if indent >= 8
         && let Some((kind, element_line)) = enclosing_view_element(&lines, line_index)
     {
-        if let Some((property, _)) = current.trim().split_once(':')
-            && matches!(
+        if let Some((property, _)) = current.trim().split_once(':') {
+            if matches!(
                 property.trim(),
                 "color"
                     | "backgroundColor"
@@ -1742,16 +1742,27 @@ fn add_builtin_ui_context_completions(
                     | "borderStartColor"
                     | "borderEndColor"
                     | "shadowColor"
-            )
-        {
-            for token in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS {
-                push_completion_item(
-                    items,
-                    seen,
-                    &format!("\"{token}\""),
-                    12,
-                    "semantic Flux UI color",
-                );
+            ) {
+                for token in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{token}\""),
+                        12,
+                        "semantic Flux UI color",
+                    );
+                }
+            }
+            if property.trim() == "accessibilityRole" {
+                for role in crate::typecheck::ACCESSIBILITY_ROLES {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{role}\""),
+                        12,
+                        "native accessibility semantic role",
+                    );
+                }
             }
         }
         let existing = view_properties_before_cursor(&lines, element_line, line_index);
@@ -5714,6 +5725,20 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.get("detail").and_then(JsonValue::as_str) == Some("semantic Flux UI color")
         }));
+    }
+
+    #[test]
+    fn completion_suggests_accessibility_roles() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: \"Flux\"\n        accessibilityRole: \n}\n";
+        let uri = "file:///tmp/accessibility-role-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(5));
+        for role in crate::typecheck::ACCESSIBILITY_ROLES {
+            let expected = format!("\"{role}\"");
+            assert!(items.iter().any(|item| {
+                item.get("label").and_then(JsonValue::as_str) == Some(expected.as_str())
+            }));
+        }
     }
 
     #[test]
