@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 444
+- Completed baseline units: 445
 - Reported overall progress: **60%**
 - Current net scope growth after the baseline: 27 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -979,7 +979,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] Efficient I/O.
 - [ ] Database connectivity.
 - [ ] Static/self-contained deployment where platform permits.
-- [ ] Container-friendly builds.
+- [x] Container-friendly builds: `flux package --format container` emits a headless-only native container build context containing the optimized Flux executable plus a minimal `Containerfile`, without requiring Docker/Podman during compilation or conflating this with the separate static/self-contained deployment goal. Compiler regression coverage verifies the generated context and executable, while GUI `app` packages are rejected from this server-oriented format.
 - [ ] Profiling/observability hooks.
 
 # Milestone 29 — Flux 1.0 stability

@@ -25,6 +25,15 @@ flux package . --format tar.gz -o dist/my-app.tar.gz
 
 The archive contains the same host-labelled bundle directory. Flux builds it with sorted entries, a fixed archive timestamp, and normalized numeric owner/group metadata; same-host/same-toolchain identical package inputs are regression-tested to produce byte-identical `.tar.gz` files. `tar` is only required when this archive format is requested.
 
+For a headless `fn main() -> i64` service, Flux can also emit a ready-to-build container context:
+
+```sh
+flux package . --format container
+podman build -f dist/my-service-1.2.3-linux-x86_64-container/Containerfile dist/my-service-1.2.3-linux-x86_64-container
+```
+
+The context contains the optimized native executable as `app` plus a minimal `Containerfile` that copies it into `debian:stable-slim` and uses it as the container entry point. Flux deliberately emits a build context rather than invoking Docker or Podman, so CI can choose its container engine, registry, platform flags, and image metadata explicitly. GUI `app` declarations are rejected for this format; container packaging is the headless/server path. This does not claim a fully static executable: static/self-contained deployment remains a separate roadmap item.
+
 `flux package` refuses to overwrite an existing output directory or archive. Build automation should remove or version old artifacts explicitly instead of relying on implicit replacement.
 
 ## Runtime dependencies
@@ -53,4 +62,4 @@ Reproducible release infrastructure should still pin the Flux compiler revision 
 
 ## Current boundary
 
-Flux currently automates native compilation, the host directory bundle, and reproducible host `.tar.gz` archives. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.
+Flux currently automates native compilation, the host directory bundle, reproducible host `.tar.gz` archives, and headless container build contexts. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, registry publication, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.

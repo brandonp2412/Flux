@@ -88,6 +88,7 @@ struct BuildOptions {
 enum PackageFormat {
     Directory,
     TarGz,
+    Container,
 }
 
 impl PackageFormat {
@@ -95,8 +96,9 @@ impl PackageFormat {
         match value {
             "directory" | "dir" => Ok(Self::Directory),
             "tar.gz" | "tgz" => Ok(Self::TarGz),
+            "container" => Ok(Self::Container),
             _ => Err(format!(
-                "unknown package format '{value}'; expected directory or tar.gz"
+                "unknown package format '{value}'; expected directory, tar.gz, or container"
             )),
         }
     }
@@ -977,6 +979,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         PackageFormat::TarGz => package_root
             .join("dist")
             .join(format!("{artifact_name}.tar.gz")),
+        PackageFormat::Container => package_root
+            .join("dist")
+            .join(format!("{artifact_name}-container")),
     };
     let output = options.output.unwrap_or(default_output);
     if output.exists() {
@@ -984,6 +989,22 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
             "package output '{}' already exists; remove it or choose another path with -o",
             output.display()
         )));
+    }
+
+    if options.format == PackageFormat::Container {
+        let analysis = fluxc::project::analyze(&manifest.path).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        if analysis.program.application.is_some() {
+            return Err(CliError::Message(
+                "container packaging currently supports headless 'fn main() -> i64' packages only"
+                    .to_string(),
+            ));
+        }
     }
 
     let sources = validate_project(&manifest.path)?;
@@ -1056,6 +1077,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 return Err(error);
             }
         }
+        PackageFormat::Container => {
+            build_container_context(&generated, &output, options.mode, &options.native_target)?;
+        }
     }
     println!("packaged ({}): {}", options.mode.name(), output.display());
     Ok(())
@@ -1085,6 +1109,39 @@ fn build_package_directory(
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(format!(
             "failed to copy package manifest: {error}"
+        )));
+    }
+    Ok(())
+}
+
+fn build_container_context(
+    generated: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<(), CliError> {
+    fs::create_dir_all(output).map_err(|error| {
+        format!(
+            "failed to create container build context '{}': {error}",
+            output.display()
+        )
+    })?;
+    let binary = output.join("app");
+    if let Err(error) = build_native_configured(
+        generated,
+        &binary,
+        mode,
+        NativeInstrumentation::None,
+        native_target,
+    ) {
+        let _ = fs::remove_dir_all(output);
+        return Err(CliError::Message(error));
+    }
+    let containerfile = "FROM debian:stable-slim\nWORKDIR /app\nCOPY app /app/flux-app\nENTRYPOINT [\"/app/flux-app\"]\n";
+    if let Err(error) = fs::write(output.join("Containerfile"), containerfile) {
+        let _ = fs::remove_dir_all(output);
+        return Err(CliError::Message(format!(
+            "failed to write container build context: {error}"
         )));
     }
     Ok(())
@@ -3154,7 +3211,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                     return Err("package format may only be specified once".to_string());
                 }
                 let Some(value) = args.get(index + 1) else {
-                    return Err("'--format' requires directory or tar.gz".to_string());
+                    return Err("'--format' requires directory, tar.gz, or container".to_string());
                 };
                 format = PackageFormat::parse(value)?;
                 format_seen = true;
@@ -3182,7 +3239,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
             }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz>', '--target <triple>', or '--sysroot <directory>'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container>', '--target <triple>', or '--sysroot <directory>'"
                 ));
             }
         }
@@ -5019,7 +5076,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -5123,6 +5180,9 @@ mod tests {
             archive.native_target.sysroot.as_deref(),
             Some(std::path::Path::new("/opt/aarch64-sysroot"))
         );
+        let container = package_options(&["--format".to_string(), "container".to_string()])
+            .expect("container package options should parse");
+        assert_eq!(container.format, PackageFormat::Container);
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
     }

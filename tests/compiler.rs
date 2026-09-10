@@ -9215,6 +9215,31 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
         assert_eq!(String::from_utf8_lossy(&archived_run.stdout).trim(), "42");
     }
 
+    let container = root.join("container");
+    let packaged_container = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "container", "-o"])
+        .arg(&container)
+        .output()
+        .expect("flux package container should run");
+    assert!(
+        packaged_container.status.success(),
+        "flux package container failed: {}",
+        String::from_utf8_lossy(&packaged_container.stderr)
+    );
+    assert!(container.join("app").is_file());
+    assert_eq!(
+        fs::read_to_string(container.join("Containerfile"))
+            .expect("container build recipe should be readable"),
+        "FROM debian:stable-slim\nWORKDIR /app\nCOPY app /app/flux-app\nENTRYPOINT [\"/app/flux-app\"]\n"
+    );
+    let container_run = Command::new(container.join("app"))
+        .output()
+        .expect("container-context native binary should execute on its build host");
+    assert!(container_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&container_run.stdout).trim(), "42");
+
     let repeated = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("package")
         .arg(&root)
