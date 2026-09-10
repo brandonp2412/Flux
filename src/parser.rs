@@ -1265,6 +1265,7 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "height"
                     | "resizable"
                     | "theme"
+                    | "layoutDirection"
                     | "surfaceColor"
                     | "surfaceRaisedColor"
                     | "textColor"

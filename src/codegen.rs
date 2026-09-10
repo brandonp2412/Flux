@@ -1754,6 +1754,16 @@ fn emit_android_native_application(
     out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || set_clip_children == NULL || set_clip_to_padding == NULL || add_view == NULL || grid_spec == NULL || grid_spec_weight == NULL) return;\n");
     out.push_str("    jobject grid = (*env)->NewObject(env, grid_class, grid_ctor, activity);\n");
     out.push_str("    if (grid == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+    if let Some(direction) =
+        application_metadata_string(application, "layout_direction", signatures)
+    {
+        match direction.as_str() {
+            "ltr" => out.push_str("    jmethodID set_layout_direction = (*env)->GetMethodID(env, grid_class, \"setLayoutDirection\", \"(I)V\");\n    if (set_layout_direction == NULL) return;\n    (*env)->CallVoidMethod(env, grid, set_layout_direction, (jint)0);\n"),
+            "rtl" => out.push_str("    jmethodID set_layout_direction = (*env)->GetMethodID(env, grid_class, \"setLayoutDirection\", \"(I)V\");\n    if (set_layout_direction == NULL) return;\n    (*env)->CallVoidMethod(env, grid, set_layout_direction, (jint)1);\n"),
+            "system" => {}
+            _ => unreachable!("application layoutDirection validated by type checking"),
+        }
+    }
     out.push_str(&format!(
         "    (*env)->CallVoidMethod(env, grid, set_columns, (jint){});\n",
         view.grid.columns.len().max(1)
@@ -3678,6 +3688,16 @@ fn emit_linux_gtk_application(
         ));
     }
     out.push_str("    GtkWidget *grid = gtk_grid_new();\n    gtk_widget_add_css_class(grid, \"flux-root\");\n");
+    if let Some(direction) =
+        application_metadata_string(application, "layout_direction", signatures)
+    {
+        match direction.as_str() {
+            "ltr" => out.push_str("    gtk_widget_set_direction(grid, GTK_TEXT_DIR_LTR);\n"),
+            "rtl" => out.push_str("    gtk_widget_set_direction(grid, GTK_TEXT_DIR_RTL);\n"),
+            "system" => {}
+            _ => unreachable!("application layoutDirection validated by type checking"),
+        }
+    }
     let gap = view.grid.gap.unwrap_or(12);
     out.push_str(&format!(
         "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"

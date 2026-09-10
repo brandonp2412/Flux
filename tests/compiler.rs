@@ -10918,6 +10918,72 @@ app Screen(theme: "sepia")
 }
 
 #[test]
+fn application_layout_direction_validates_and_lowers_on_native_backends() {
+    let rtl = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "مرحبا"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    check_source(rtl).expect("RTL application direction should typecheck");
+    let formatted = fluxc::formatter::format_source(rtl).expect("RTL metadata should format");
+    assert!(formatted.contains("app Screen(layoutDirection: \"rtl\")"));
+
+    let linux = compile_to_c(rtl).expect("RTL direction should lower to GTK");
+    assert!(linux.contains("gtk_widget_set_direction(grid, GTK_TEXT_DIR_RTL)"));
+
+    let program = fluxc::parser::parse(rtl).expect("RTL app should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("RTL app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("RTL direction should lower to Android");
+    assert!(android.contains("setLayoutDirection"));
+    assert!(android.contains("set_layout_direction, (jint)1"));
+
+    let system = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(layoutDirection: "system")
+"#;
+    let linux = compile_to_c(system).expect("system direction should preserve GTK locale choice");
+    assert!(!linux.contains("gtk_widget_set_direction(grid"));
+    let program = fluxc::parser::parse(system).expect("system direction app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("system direction app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("system direction should preserve Android locale choice");
+    assert!(!android.contains("setLayoutDirection"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(layoutDirection: "vertical")
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid layout direction must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application layoutDirection must be one of 'system', 'ltr', or 'rtl'")
+    }));
+}
+
+#[test]
 fn custom_application_theme_palette_validates_and_lowers() {
     let source = r##"
 view Screen {

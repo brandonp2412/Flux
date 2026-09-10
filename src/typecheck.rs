@@ -1082,10 +1082,10 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
             match evaluate_default_expr(&field.value, &signatures) {
                 Ok(value) => match field.name.as_str() {
-                    "title" | "id" | "theme" | "surfaceColor" | "surfaceRaisedColor"
-                    | "textColor" | "textMutedColor" | "accentColor" | "onAccentColor"
-                    | "outlineColor" | "dangerColor" | "successColor" | "warningColor"
-                    | "shadowColor"
+                    "title" | "id" | "theme" | "layoutDirection" | "surfaceColor"
+                    | "surfaceRaisedColor" | "textColor" | "textMutedColor" | "accentColor"
+                    | "onAccentColor" | "outlineColor" | "dangerColor" | "successColor"
+                    | "warningColor" | "shadowColor"
                         if value.ty() != Type::Str =>
                     {
                         diagnostics.push(diag(
@@ -1114,6 +1114,16 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                             diagnostics.push(diag(
                                 field.value.span,
                                 "application theme must be one of 'system', 'light', or 'dark'",
+                            ));
+                        }
+                    }
+                    "layoutDirection" => {
+                        if let ConstantValue::Str(value) = value
+                            && !matches!(value.as_str(), "system" | "ltr" | "rtl")
+                        {
+                            diagnostics.push(diag(
+                                field.value.span,
+                                "application layoutDirection must be one of 'system', 'ltr', or 'rtl'",
                             ));
                         }
                     }
