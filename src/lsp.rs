@@ -1185,6 +1185,25 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.sleepMillis(durationMs: i64) -> void",
         );
+        for member in [
+            "utcYear",
+            "utcMonth",
+            "utcDay",
+            "utcHour",
+            "utcMinute",
+            "utcSecond",
+            "utcMillisecond",
+            "utcWeekday",
+            "utcDayOfYear",
+        ] {
+            push_completion_item(
+                items,
+                seen,
+                member,
+                3,
+                &format!("fn time.{member}(unixMillis: i64) -> i64"),
+            );
+        }
         return true;
     }
     if namespace == "fs" {
@@ -2278,6 +2297,15 @@ fn signature_help_for_document_cached(
                         "time.sleepMillis",
                         &["durationMs: i64"],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
+                | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("time.{member}"),
+                        &["unixMillis: i64"],
+                        "i64",
                         active_parameter,
                     ));
                 }
@@ -5324,6 +5352,10 @@ mod tests {
         assert!(time_items.contains("fn time.unixMillis() -> i64"));
         assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
         assert!(time_items.contains("fn time.sleepMillis(durationMs: i64) -> void"));
+        assert!(time_items.contains("fn time.utcYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.utcMillisecond(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.utcWeekday(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.utcDayOfYear(unixMillis: i64) -> i64"));
 
         let fs_line = source
             .lines()
@@ -5944,7 +5976,7 @@ mod tests {
     #[test]
     fn signature_help_supports_time_capabilities() {
         let uri = "file:///tmp/time-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("time.unixMillis(", "fn time.unixMillis() -> i64"),
@@ -5952,6 +5984,11 @@ mod tests {
             (
                 "time.sleepMillis(",
                 "fn time.sleepMillis(durationMs: i64) -> void",
+            ),
+            ("time.utcYear(", "fn time.utcYear(unixMillis: i64) -> i64"),
+            (
+                "time.utcWeekday(",
+                "fn time.utcWeekday(unixMillis: i64) -> i64",
             ),
         ] {
             let line_index = source

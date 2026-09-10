@@ -1552,6 +1552,24 @@ fn main() -> i64 {
     print(time.unixMillis())
     print(before)
     print(after)
+    print(time.utcYear(946782245006))
+    print(time.utcMonth(946782245006))
+    print(time.utcDay(946782245006))
+    print(time.utcHour(946782245006))
+    print(time.utcMinute(946782245006))
+    print(time.utcSecond(946782245006))
+    print(time.utcMillisecond(946782245006))
+    print(time.utcWeekday(946782245006))
+    print(time.utcDayOfYear(946782245006))
+    print(time.utcYear(-1))
+    print(time.utcMonth(-1))
+    print(time.utcDay(-1))
+    print(time.utcHour(-1))
+    print(time.utcMinute(-1))
+    print(time.utcSecond(-1))
+    print(time.utcMillisecond(-1))
+    print(time.utcWeekday(-1))
+    print(time.utcDayOfYear(-1))
     return 0
 }
 "#;
@@ -1568,6 +1586,10 @@ fn main() -> i64 {
     assert!(generated.contains("CLOCK_REALTIME"));
     assert!(generated.contains("CLOCK_MONOTONIC"));
     assert!(generated.contains("nanosleep(&remaining, &remaining)"));
+    assert!(
+        generated.contains("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part)")
+    );
+    assert!(generated.contains("gmtime_r(&native_seconds, &value)"));
 
     let root = std::env::temp_dir().join(format!("flux-time-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -1595,14 +1617,17 @@ fn main() -> i64 {
         .lines()
         .map(|line| line.parse::<i64>().expect("time output should be i64"))
         .collect::<Vec<_>>();
-    assert_eq!(values.len(), 3);
+    assert_eq!(values.len(), 21);
     assert!(values[0] > 0);
     assert!(values[1] >= 0);
     assert!(values[2] >= values[1]);
+    assert_eq!(&values[3..12], &[2000, 1, 2, 3, 4, 5, 6, 7, 2]);
+    assert_eq!(&values[12..21], &[1969, 12, 31, 23, 59, 59, 999, 3, 365]);
 
     let unused = r#"
 fn hidden() -> void {
     print(time.unixMillis())
+    print(time.utcYear(0))
     time.sleepMillis(1)
 }
 fn main() -> i64 {
@@ -1613,6 +1638,7 @@ fn main() -> i64 {
     assert!(!unused_generated.contains("#include <time.h>"));
     assert!(!unused_generated.contains("flux__time_clock_millis"));
     assert!(!unused_generated.contains("flux__time_sleep_millis"));
+    assert!(!unused_generated.contains("flux__time_utc_part"));
 
     let invalid = r#"
 fn main() -> i64 {
@@ -1620,6 +1646,9 @@ fn main() -> i64 {
     time.monotonicMillis(false)
     time.sleepMillis("later")
     time.sleepMillis(-1)
+    time.utcYear()
+    time.utcMonth("now")
+    time.utcDay(1, 2)
     time.unknown()
     return 0
 }
@@ -1643,6 +1672,19 @@ fn main() -> i64 {
         error
             .message
             .contains("time.sleepMillis durationMs must be non-negative")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.utcYear expects 1 argument, got 0")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("time.utcMonth unixMillis") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("time.utcDay expects 1 argument, got 2")
     }));
     assert!(errors.iter().any(|error| {
         error

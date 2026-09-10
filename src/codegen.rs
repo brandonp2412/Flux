@@ -1449,6 +1449,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_sleep_millis(") {
         out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
     }
+    if runtime_usage.contains("flux__time_utc_") {
+        out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
+    }
 
     if runtime_usage.contains("flux__fs_exists(") {
         out.push_str("static inline bool flux__fs_exists(const char *path) { struct stat info; return stat(path, &info) == 0; }\n");
@@ -11951,6 +11954,30 @@ fn emit_qualified_call(
                 return Ok((
                     format!("flux__time_sleep_millis({})", duration.code),
                     Vec::new(),
+                    None,
+                ));
+            }
+            "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
+            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let unix_millis = emit_expr(&args[0], env, signatures)?;
+                let part = match name {
+                    "utcYear" => 0,
+                    "utcMonth" => 1,
+                    "utcDay" => 2,
+                    "utcHour" => 3,
+                    "utcMinute" => 4,
+                    "utcSecond" => 5,
+                    "utcMillisecond" => 6,
+                    "utcWeekday" => 7,
+                    "utcDayOfYear" => 8,
+                    _ => unreachable!(),
+                };
+                return Ok((
+                    format!("flux__time_utc_part({}, {part})", unix_millis.code),
+                    vec![Type::I64],
                     None,
                 ));
             }

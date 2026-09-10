@@ -788,9 +788,16 @@ time.sleepMillis(50)
 let elapsed: i64 = time.monotonicMillis() - started
 print(elapsed)
 print(time.unixMillis())
+let timestamp: i64 = 946782245006
+print(time.utcYear(timestamp))
+print(time.utcMonth(timestamp))
+print(time.utcDay(timestamp))
+print(time.utcWeekday(timestamp))
 ```
 
-`time.unixMillis()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonicMillis()` is the clock for measuring elapsed durations. `time.sleepMillis(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. The helpers are emitted only when reachable. Calendar/date values, formatting, time zones, and richer duration types remain separate standard-library work.
+`time.unixMillis()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonicMillis()` is the clock for measuring elapsed durations. `time.sleepMillis(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay.
+
+UTC calendar decomposition remains allocation-free: `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` each accept Unix milliseconds and return an `i64`. Months and days are one-based, `utcWeekday` uses ISO numbering (`1` Monday through `7` Sunday), and `utcDayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These accessors use the platform's native UTC conversion and are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
 
 ## Performance and safety contract
 
