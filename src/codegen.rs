@@ -3120,8 +3120,9 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
+            let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
-                "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;\n",
+                "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
                 ui_state_c_name(&transition.state)
             ));
             continue;
@@ -3157,8 +3158,9 @@ fn emit_android_native_application(
         };
         if let Some(transition) = &action.transition {
             let next = ui_expr_c(&action.value, view, signatures)?;
+            let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
-                "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;\n",
+                "        case {element_id}: {radio_guard}{} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
                 ui_state_c_name(&transition.state)
             ));
             continue;
@@ -3486,7 +3488,7 @@ fn emit_linux_gtk_application(
     out.push('\n');
     emit_ui_refresh(out, view, signatures)?;
     out.push_str(
-        "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n    flux__ui_refresh();\n}\n\n",
+        "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n    flux__ui_refresh_changed(-2);\n}\n\n",
     );
 
     for element in &view.elements {
@@ -3553,8 +3555,9 @@ fn emit_linux_gtk_application(
             } else {
                 ""
             };
+            let state_index = ui_state_index(view, &transition.state);
             out.push_str(&format!(
-                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {} = {next}; flux__ui_refresh(); }}\n",
+                "static void flux__ui_click_{}(GtkWidget *widget, gpointer data) {{{active_guard} (void)widget; (void)data; {} = {next}; flux__ui_refresh_changed({state_index}); }}\n",
                 element.name,
                 ui_state_c_name(&transition.state),
             ));
@@ -4715,6 +4718,143 @@ fn ordered_accessibility_elements<'a>(
     Ok(ordered.into_iter().map(|(_, element)| element).collect())
 }
 
+#[derive(Debug, Clone, Default)]
+struct UiRefreshDependencies {
+    states: HashSet<usize>,
+    environment: bool,
+}
+
+fn ui_runtime_dependency_map(view: &crate::ast::ViewDef) -> HashMap<String, UiRefreshDependencies> {
+    let mut dependencies = HashMap::new();
+    for (index, state) in view.states.iter().enumerate() {
+        let mut state_dependencies = UiRefreshDependencies::default();
+        state_dependencies.states.insert(index);
+        dependencies.insert(state.name.clone(), state_dependencies);
+    }
+    for derived in &view.derived {
+        let mut reads = HashSet::new();
+        typecheck::collect_expr_reads(&derived.value, &mut reads);
+        let mut derived_dependencies = UiRefreshDependencies::default();
+        for name in reads {
+            if typecheck::view_environment_type(&name).is_some() {
+                derived_dependencies.environment = true;
+            }
+            if let Some(read_dependencies) = dependencies.get(&name) {
+                derived_dependencies
+                    .states
+                    .extend(read_dependencies.states.iter().copied());
+                derived_dependencies.environment |= read_dependencies.environment;
+            }
+        }
+        dependencies.insert(derived.name.clone(), derived_dependencies);
+    }
+    dependencies
+}
+
+fn ui_expr_refresh_dependencies(
+    expr: &Expr,
+    runtime_dependencies: &HashMap<String, UiRefreshDependencies>,
+) -> UiRefreshDependencies {
+    let mut reads = HashSet::new();
+    typecheck::collect_expr_reads(expr, &mut reads);
+    let mut dependencies = UiRefreshDependencies::default();
+    for name in reads {
+        if typecheck::view_environment_type(&name).is_some() {
+            dependencies.environment = true;
+        }
+        if let Some(read_dependencies) = runtime_dependencies.get(&name) {
+            dependencies
+                .states
+                .extend(read_dependencies.states.iter().copied());
+            dependencies.environment |= read_dependencies.environment;
+        }
+    }
+    dependencies
+}
+
+fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
+    if matches!(
+        property_name,
+        "visible"
+            | "enabled"
+            | "clip"
+            | "tooltip"
+            | "accessibility_label"
+            | "accessibility_description"
+            | "accessibility_hidden"
+            | "translate_x"
+            | "translate_y"
+            | "rotate_degrees"
+            | "scale_percent"
+            | "scale_x_percent"
+            | "scale_y_percent"
+            | "skew_x_degrees"
+            | "skew_y_degrees"
+            | "transform_origin_x_percent"
+            | "transform_origin_y_percent"
+    ) {
+        return true;
+    }
+    matches!(
+        (element_kind, property_name),
+        ("Text", "text")
+            | ("Text", "selectable")
+            | ("Text", "wrap")
+            | ("Button", "text")
+            | ("TextInput", "placeholder")
+            | ("Image", "source")
+            | ("Image", "alt")
+            | ("Image", "can_shrink")
+            | ("Toggle", "label")
+            | ("Toggle", "checked")
+            | ("Radio", "label")
+            | ("Radio", "selected")
+    )
+}
+
+fn ui_element_refresh_dependencies(
+    element: &crate::ast::ViewElement,
+    runtime_dependencies: &HashMap<String, UiRefreshDependencies>,
+) -> UiRefreshDependencies {
+    let mut dependencies = UiRefreshDependencies::default();
+    for property in &element.properties {
+        if !ui_property_is_refreshable(&element.kind, &property.name) {
+            continue;
+        }
+        let property_dependencies =
+            ui_expr_refresh_dependencies(&property.value, runtime_dependencies);
+        dependencies
+            .states
+            .extend(property_dependencies.states.iter().copied());
+        dependencies.environment |= property_dependencies.environment;
+    }
+    dependencies
+}
+
+fn ui_refresh_condition(dependencies: &UiRefreshDependencies) -> String {
+    let mut states = dependencies.states.iter().copied().collect::<Vec<_>>();
+    states.sort_unstable();
+    let mut clauses = Vec::new();
+    if dependencies.environment {
+        clauses.push("changed_state < 0".to_string());
+    } else {
+        clauses.push("changed_state == -1".to_string());
+    }
+    clauses.extend(
+        states
+            .into_iter()
+            .map(|state| format!("changed_state == {state}")),
+    );
+    clauses.join(" || ")
+}
+
+fn ui_state_index(view: &crate::ast::ViewDef, state_name: &str) -> usize {
+    view.states
+        .iter()
+        .position(|state| state.name == state_name)
+        .expect("validated UI transition state exists in its declaring view")
+}
+
 fn android_ui_runtime_value_names(view: &crate::ast::ViewDef) -> HashSet<String> {
     let mut runtime_names = view
         .states
@@ -4791,14 +4931,19 @@ fn emit_android_ui_refresh(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let runtime_names = android_ui_runtime_value_names(view);
-    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeRefreshUi(JNIEnv *env, jobject activity) {\n");
+    let runtime_dependencies = ui_runtime_dependency_map(view);
+    out.push_str("static void flux__android_ui_refresh(JNIEnv *env, jobject activity, int changed_state) {\n");
     for derived in &view.derived {
         if !runtime_names.contains(&derived.name) {
             continue;
         }
         let value = ui_expr_c(&derived.value, view, signatures)?;
+        let dependencies = runtime_dependencies
+            .get(&derived.name)
+            .expect("derived runtime dependency metadata exists");
+        let condition = ui_refresh_condition(dependencies);
         out.push_str(&format!(
-            "    {} = {value};\n",
+            "    if ({condition}) {} = {value};\n",
             ui_derived_c_name(&derived.name)
         ));
     }
@@ -4813,8 +4958,10 @@ fn emit_android_ui_refresh(
         if !android_ui_element_needs_refresh(element, &runtime_names) {
             continue;
         }
+        let dependencies = ui_element_refresh_dependencies(element, &runtime_dependencies);
+        let condition = ui_refresh_condition(&dependencies);
         let element_id = stable_android_element_id(&view.name, &element.name);
-        out.push_str("    {\n");
+        out.push_str(&format!("    if ({condition}) {{\n"));
         out.push_str(&format!(
             "        jobject child = (*env)->CallObjectMethod(env, activity, find_view, (jint){element_id});\n"
         ));
@@ -5086,6 +5233,7 @@ fn emit_android_ui_refresh(
     }
     out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
     out.push_str("}\n\n");
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeRefreshUi(JNIEnv *env, jobject activity) { flux__android_ui_refresh(env, activity, -1); }\n\n");
     Ok(())
 }
 
@@ -5097,8 +5245,9 @@ fn android_ui_zero_arg_event_body(
     let refresh = "if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz);";
     if let Some(transition) = &action.transition {
         let next = ui_expr_c(&action.value, view, signatures)?;
+        let state_index = ui_state_index(view, &transition.state);
         return Ok(format!(
-            "{} = {next}; {refresh}",
+            "{} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index});",
             ui_state_c_name(&transition.state)
         ));
     }
@@ -5118,8 +5267,9 @@ fn ui_zero_arg_event_body(
 ) -> Result<String, Diagnostic> {
     if let Some(transition) = &action.transition {
         let next = ui_expr_c(&action.value, view, signatures)?;
+        let state_index = ui_state_index(view, &transition.state);
         return Ok(format!(
-            "{} = {next}; flux__ui_refresh();",
+            "{} = {next}; flux__ui_refresh_changed({state_index});",
             ui_state_c_name(&transition.state)
         ));
     }
@@ -5403,15 +5553,23 @@ fn emit_ui_refresh(
     view: &crate::ast::ViewDef,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    out.push_str("static void flux__ui_refresh(void) {\n");
+    let runtime_dependencies = ui_runtime_dependency_map(view);
+    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n");
     for derived in &view.derived {
         let value = ui_expr_c(&derived.value, view, signatures)?;
+        let dependencies = runtime_dependencies
+            .get(&derived.name)
+            .expect("derived runtime dependency metadata exists");
+        let condition = ui_refresh_condition(dependencies);
         out.push_str(&format!(
-            "    {} = {value};\n",
+            "    if ({condition}) {} = {value};\n",
             ui_derived_c_name(&derived.name)
         ));
     }
     for element in &view.elements {
+        let dependencies = ui_element_refresh_dependencies(element, &runtime_dependencies);
+        let condition = ui_refresh_condition(&dependencies);
+        out.push_str(&format!("    if ({condition}) {{\n"));
         let widget = ui_widget_c_name(&element.name);
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
@@ -5561,8 +5719,10 @@ fn emit_ui_refresh(
             }
             _ => {}
         }
+        out.push_str("    }\n");
     }
     out.push_str("}\n\n");
+    out.push_str("static inline void flux__ui_refresh(void) { flux__ui_refresh_changed(-1); }\n\n");
     Ok(())
 }
 

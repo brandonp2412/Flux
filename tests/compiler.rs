@@ -9754,6 +9754,58 @@ app Counter
 }
 
 #[test]
+fn ui_refresh_tracks_state_and_environment_dependencies() {
+    let source = r#"
+view Dashboard {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto
+    state count: i64 = 0
+    state expanded: bool = false
+    derived hasCount: bool = count > 0
+    Text countLabel at 1,1
+        text: "Count"
+        visible: hasCount
+    Text panel at 2,1
+        text: "Panel"
+        visible: expanded
+    Text widthLabel at 3,1
+        text: "Wide"
+        visible: windowWidth > 500
+    Text staticLabel at 4,1
+        text: "Static"
+    Button increment at 5,1
+        text: "Increment"
+        onPress: count => count + 1
+    Button toggle at 6,1
+        text: "Toggle"
+        onPress: expanded => !expanded
+}
+app Dashboard
+"#;
+
+    check_source(source).expect("dependency-tracked view should typecheck");
+    let generated = compile_to_c(source).expect("dependency-tracked view should lower natively");
+    assert!(generated.contains("static void flux__ui_refresh_changed(int changed_state)"));
+    assert!(
+        generated
+            .contains("if (changed_state == -1 || changed_state == 0) flux__ui_derived_hasCount")
+    );
+    assert!(generated.contains(
+        "if (changed_state == -1 || changed_state == 0) {\n    if (flux__ui_countLabel != NULL) gtk_widget_set_visible"
+    ));
+    assert!(generated.contains(
+        "if (changed_state == -1 || changed_state == 1) {\n    if (flux__ui_panel != NULL) gtk_widget_set_visible"
+    ));
+    assert!(generated.contains(
+        "if (changed_state < 0) {\n    if (flux__ui_widthLabel != NULL) gtk_widget_set_visible"
+    ));
+    assert!(generated.contains("if (changed_state == -1) {\n    if (flux__ui_staticLabel"));
+    assert!(generated.contains("flux__ui_refresh_changed(0);"));
+    assert!(generated.contains("flux__ui_refresh_changed(1);"));
+    assert!(generated.contains("flux__ui_refresh_changed(-2);"));
+}
+
+#[test]
 fn rejects_invalid_bootstrap_text_color() {
     let source = r#"
 view Screen {
@@ -11148,8 +11200,8 @@ app HoverCard
     assert!(
         generated.contains("gtk_widget_add_controller(flux__ui_title, flux__long_press_title)")
     );
-    assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
-    assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
+    assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh_changed(0);"));
+    assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, \"Hover me\")"));
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
@@ -12213,7 +12265,7 @@ app Screen
     assert!(generated.contains("setEnabled"));
     assert!(generated.contains("flux__ui_state_expanded = (!(flux__ui_state_expanded))"));
     assert!(generated.contains(&format!(
-        "case {toggle_id}: flux__ui_state_expanded = (!(flux__ui_state_expanded)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
+        "case {toggle_id}: flux__ui_state_expanded = (!(flux__ui_state_expanded)); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;"
     )));
     assert!(generated.contains(&format!("case {action_id}: flux__fn_pressed(); break;")));
     assert!(generated.contains(
@@ -12344,7 +12396,7 @@ app Gallery
     assert!(generated.contains("setMinimumHeight"));
     let resize_id = android_stable_view_id("Gallery", "resize");
     assert!(generated.contains(&format!(
-        "case {resize_id}: flux__ui_state_compact = (!(flux__ui_state_compact)); if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"
+        "case {resize_id}: flux__ui_state_compact = (!(flux__ui_state_compact)); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;"
     )));
     assert!(generated.contains("refresh_image_can_shrink"));
     assert!(!generated.contains("refresh_image_source"));
@@ -12550,10 +12602,10 @@ app Settings(theme: "dark")
     let cache_only_id = android_stable_view_id("Settings", "cache_only");
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
     assert!(generated.contains("setOnTouchListener"));
-    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = true; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;")));
+    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
     assert!(generated.contains("setOnLongClickListener"));
-    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;")));
+    assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnKey"));
     assert!(generated.contains("setOnKeyListener"));
     assert!(generated.contains("setFocusableInTouchMode"));
