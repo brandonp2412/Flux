@@ -2831,12 +2831,16 @@ fn emit_android_native_application(
         }
         if view_property(element, "on_tap").is_some() {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
-            out.push_str("    jmethodID set_touch_listener = (*env)->GetMethodID(env, child_class, \"setOnTouchListener\", \"(Landroid/view/View$OnTouchListener;)V\");\n");
-            out.push_str("    if (set_id == NULL || set_touch_listener == NULL) return;\n");
+            out.push_str("    jmethodID set_click_listener = (*env)->GetMethodID(env, child_class, \"setOnClickListener\", \"(Landroid/view/View$OnClickListener;)V\");\n");
+            out.push_str("    jmethodID set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+            out.push_str("    if (set_id == NULL || set_click_listener == NULL || set_focusable == NULL) return;\n");
             out.push_str(&format!(
                 "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
             ));
-            out.push_str("    (*env)->CallVoidMethod(env, child, set_touch_listener, activity);\n");
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_click_listener, activity);\n");
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, child, set_focusable, (jboolean)true);\n",
+            );
         }
         if view_property(element, "on_long_press").is_some() {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
@@ -3624,6 +3628,14 @@ fn emit_linux_gtk_application(
                 "static void flux__ui_tap_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)gesture; (void)n_press; (void)x; (void)y; (void)data; {body} }}\n",
                 element.name,
             ));
+            if matches!(element.kind.as_str(), "Text" | "Image")
+                && view_property(element, "on_key").is_none()
+            {
+                out.push_str(&format!(
+                    "static gboolean flux__ui_tap_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter || keyval == GDK_KEY_space) {{ flux__ui_tap_{}(NULL, 0, 0, 0, NULL); return TRUE; }} return FALSE; }}\n",
+                    element.name, element.name
+                ));
+            }
         }
         if let Some(action) = view_property(element, "on_long_press") {
             let body = ui_zero_arg_event_body(action, view, signatures)?;
@@ -4493,6 +4505,15 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
+            if matches!(element.kind.as_str(), "Text" | "Image")
+                && view_property(element, "on_key").is_none()
+            {
+                let key_controller = format!("flux__tap_key_{}", element.name);
+                out.push_str(&format!(
+                    "    gtk_widget_set_focusable({variable}, TRUE);\n    GtkEventController *{key_controller} = gtk_event_controller_key_new();\n    g_signal_connect({key_controller}, \"key-pressed\", G_CALLBACK(flux__ui_tap_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {key_controller});\n",
+                    element.name
+                ));
+            }
         }
         if view_property(element, "on_long_press").is_some() {
             let controller = format!("flux__long_press_{}", element.name);

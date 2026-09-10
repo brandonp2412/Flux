@@ -10846,6 +10846,71 @@ app Screen
 }
 
 #[test]
+fn native_controls_preserve_platform_screen_reader_bridges() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto
+    Text title at 1,1
+        text: "Title"
+        accessibilityLabel: "Screen title"
+    Button action at 2,1
+        text: "Continue"
+        accessibilityDescription: "Continue to the next step"
+    TextInput input at 3,1
+        accessibilityLabel: "Name"
+    Toggle toggle at 4,1
+        label: "Enabled"
+        accessibilityLabel: "Enabled setting"
+    Radio radio at 5,1
+        label: "Choice"
+        accessibilityLabel: "Choice option"
+    Image image at 6,1
+        source: ""
+        alt: "Preview"
+        accessibilityLabel: "Preview image"
+}
+app Screen
+"#;
+
+    check_source(source).expect("native accessibility bridge sample should typecheck");
+    let linux =
+        compile_to_c(source).expect("native accessibility bridge sample should lower on Linux");
+    assert!(linux.contains("gtk_label_new"));
+    assert!(linux.contains("gtk_button_new_with_label"));
+    assert!(linux.contains("gtk_entry_new"));
+    assert!(linux.contains("gtk_check_button_new_with_label"));
+    assert!(linux.contains("gtk_picture_new"));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_LABEL"));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION"));
+
+    let program = fluxc::parser::parse(source).expect("screen-reader bridge app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("screen-reader bridge app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("native accessibility bridge sample should lower on Android");
+    for class_name in [
+        "android/widget/TextView",
+        "android/widget/Button",
+        "app/flux/runtime/FluxActivity$FluxEditText",
+        "android/widget/CheckBox",
+        "android/widget/RadioButton",
+        "android/widget/ImageView",
+    ] {
+        assert!(
+            android.contains(class_name),
+            "missing native Android accessibility-bearing control {class_name}"
+        );
+    }
+    assert!(android.contains("setAccessibility"));
+}
+
+#[test]
 fn text_input_lowers_native_entry_and_typed_submit_callback() {
     let source = r#"
 fn submit(value: str) -> void {
@@ -11258,6 +11323,12 @@ app HoverCard
     assert!(generated.contains("gtk_gesture_click_new()"));
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_tap_title)"));
     assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_title)"));
+    assert!(generated.contains("flux__ui_tap_key_title"));
+    assert!(generated.contains("GDK_KEY_Return"));
+    assert!(generated.contains("GDK_KEY_KP_Enter"));
+    assert!(generated.contains("GDK_KEY_space"));
+    assert!(generated.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
+    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_key_title)"));
     assert!(generated.contains("GtkGestureLongPress *gesture"));
     assert!(generated.contains("gtk_gesture_long_press_new()"));
     assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
@@ -12665,7 +12736,9 @@ app Settings(theme: "dark")
     let second_id = android_stable_view_id("Settings", "second");
     let cache_only_id = android_stable_view_id("Settings", "cache_only");
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
-    assert!(generated.contains("setOnTouchListener"));
+    assert!(generated.contains("setOnClickListener"));
+    assert!(generated.contains("setFocusable"));
+    assert!(!generated.contains("setOnTouchListener"));
     assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
     assert!(generated.contains("setOnLongClickListener"));

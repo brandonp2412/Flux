@@ -3385,7 +3385,7 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener, View.OnKeyListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -3400,7 +3400,6 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
-    private int suppressTapViewId = View.NO_ID;
     private int fluxThemeMode;
     private float fluxContrast;
     private native int nativeThemeMode();
@@ -3515,23 +3514,13 @@ public final class FluxActivity extends Activity implements View.OnClickListener
 
     @Override
     public void onClick(View view) {
-        nativeOnClick(view.getId());
-    }
-
-    @Override
-    public boolean onTouch(View view, MotionEvent event) {
         int viewId = view.getId();
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN && suppressTapViewId == viewId) suppressTapViewId = View.NO_ID;
-        if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-            if (suppressTapViewId == viewId) suppressTapViewId = View.NO_ID;
-            else nativeOnTap(viewId);
-        }
-        return false;
+        nativeOnClick(viewId);
+        nativeOnTap(viewId);
     }
 
     @Override
     public boolean onLongClick(View view) {
-        suppressTapViewId = view.getId();
         nativeOnLongPress(view.getId());
         return true;
     }
@@ -5327,14 +5316,14 @@ mod tests {
         let activity = android_activity_java_source();
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
-            activity.contains(
-                "View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener, View.OnKeyListener"
-            )
+            activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener")
         );
+        assert!(!activity.contains("View.OnTouchListener"));
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
         assert!(activity.contains("private native int nativeThemeMode();"));
         assert!(activity.contains("private native String nativeThemeColor(String token);"));
+        assert!(activity.contains("view.setContentDescription"));
         assert!(activity.contains("String custom = nativeThemeColor(value);"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));
@@ -5355,9 +5344,8 @@ mod tests {
         assert!(activity.contains("return \"ArrowLeft\";"));
         assert!(activity.contains("nativeOnKey(view.getId(), fluxKeyName(keyCode, event));"));
         assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
-        assert!(activity.contains("suppressTapViewId = View.NO_ID;"));
-        assert!(activity.contains("else nativeOnTap(viewId);"));
-        assert!(activity.contains("suppressTapViewId = view.getId();"));
+        assert!(activity.contains("nativeOnClick(viewId);"));
+        assert!(activity.contains("nativeOnTap(viewId);"));
         assert!(activity.contains("nativeOnLongPress(view.getId());"));
         assert!(
             activity.contains(
