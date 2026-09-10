@@ -1853,37 +1853,113 @@ fn android_has_generated_activity(c_source: &str) -> bool {
 fn android_activity_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
-import android.app.NativeActivity;
+import android.app.Activity;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.TextView;
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class FluxActivity extends NativeActivity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener {
+    private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
+
+    static {
+        System.loadLibrary("flux");
+    }
+
     private final Map<Integer, String> textValues = new HashMap<>();
+    private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
+    private native void nativeStart();
+    private native void nativeResume();
+    private native void nativePause();
+    private native void nativeStop();
+    private native void nativeLowMemory();
+    private native void nativeConfigurationChanged();
+    private native String nativeSaveState();
+    private native void nativeDestroy();
     private static native void nativeOnClick(int viewId);
     private static native void nativeOnChecked(int viewId, boolean checked);
+    private static native void nativeOnFocus(int viewId, boolean focused);
+    private static native void nativeOnHover(int viewId, boolean hovered);
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        String restoredState = savedInstanceState == null ? null : savedInstanceState.getString(FLUX_STATE_KEY);
+        nativeCreate(restoredState);
         nativeBuildUi();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        nativeStart();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        nativeResume();
+    }
+
+    @Override
+    protected void onPause() {
+        nativePause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        nativeStop();
+        super.onStop();
+    }
+
+    @Override
+    public void onLowMemory() {
+        nativeLowMemory();
+        super.onLowMemory();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        nativeConfigurationChanged();
+        nativeBuildUi();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        String savedState = nativeSaveState();
+        if (savedState != null) state.putString(FLUX_STATE_KEY, savedState);
+        super.onSaveInstanceState(state);
+    }
+
+    @Override
+    protected void onDestroy() {
+        nativeDestroy();
+        super.onDestroy();
     }
 
     @Override
@@ -1894,6 +1970,18 @@ public final class FluxActivity extends NativeActivity implements View.OnClickLi
     @Override
     public void onCheckedChanged(CompoundButton button, boolean checked) {
         nativeOnChecked(button.getId(), checked);
+    }
+
+    @Override
+    public void onFocusChange(View view, boolean focused) {
+        nativeOnFocus(view.getId(), focused);
+    }
+
+    @Override
+    public boolean onHover(View view, MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) nativeOnHover(view.getId(), true);
+        else if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) nativeOnHover(view.getId(), false);
+        return false;
     }
 
     public String initialText(int viewId, String fallback) {
@@ -1912,12 +2000,18 @@ public final class FluxActivity extends NativeActivity implements View.OnClickLi
         return Color.parseColor(value);
     }
 
-    public void styleView(View view, String background, String border, int borderWidth, float radius) {
-        if (background == null && (border == null || borderWidth <= 0) && radius <= 0) return;
+    public void styleView(View view, String background, String border, int borderWidth, float topLeft, float topRight, float bottomRight, float bottomLeft) {
+        if (background == null && (border == null || borderWidth <= 0)
+                && topLeft <= 0 && topRight <= 0 && bottomRight <= 0 && bottomLeft <= 0) return;
         GradientDrawable drawable = new GradientDrawable();
         if (background != null) drawable.setColor(parseFluxColor(background));
         if (border != null && borderWidth > 0) drawable.setStroke(borderWidth, parseFluxColor(border));
-        if (radius > 0) drawable.setCornerRadius(radius);
+        if (topLeft > 0 || topRight > 0 || bottomRight > 0 || bottomLeft > 0) {
+            drawable.setCornerRadii(new float[] {
+                topLeft, topLeft, topRight, topRight,
+                bottomRight, bottomRight, bottomLeft, bottomLeft
+            });
+        }
         view.setBackground(drawable);
     }
 
@@ -1930,6 +2024,65 @@ public final class FluxActivity extends NativeActivity implements View.OnClickLi
         if (underline) flags |= Paint.UNDERLINE_TEXT_FLAG;
         if (strike) flags |= Paint.STRIKE_THRU_TEXT_FLAG;
         view.setPaintFlags(flags);
+    }
+
+    public void styleTextLayout(TextView view, String fontFamily, int letterSpacing, int lineHeightPercent, String align, String wrapMode, String ellipsize, int maxLines) {
+        if (fontFamily != null && !fontFamily.isEmpty()) {
+            int style = view.getTypeface() == null ? Typeface.NORMAL : view.getTypeface().getStyle();
+            view.setTypeface(Typeface.create(fontFamily, style));
+        }
+        if (letterSpacing != Integer.MIN_VALUE) {
+            float density = getResources().getDisplayMetrics().density;
+            float textSize = Math.max(view.getTextSize(), 1.0f);
+            view.setLetterSpacing((letterSpacing * density) / textSize);
+        }
+        if (lineHeightPercent > 0) view.setLineSpacing(0.0f, lineHeightPercent / 100.0f);
+        if (align != null) {
+            int vertical = view.getGravity() & Gravity.VERTICAL_GRAVITY_MASK;
+            int horizontal = Gravity.LEFT;
+            if ("center".equals(align)) horizontal = Gravity.CENTER_HORIZONTAL;
+            else if ("right".equals(align)) horizontal = Gravity.RIGHT;
+            else if ("fill".equals(align)) horizontal = Gravity.FILL_HORIZONTAL;
+            view.setGravity(vertical | horizontal);
+        }
+        if (wrapMode != null && Build.VERSION.SDK_INT >= 23) {
+            if ("char".equals(wrapMode)) view.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_SIMPLE);
+            else view.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
+        }
+        if (ellipsize != null) {
+            if ("none".equals(ellipsize)) view.setEllipsize(null);
+            else if ("start".equals(ellipsize)) view.setEllipsize(TextUtils.TruncateAt.START);
+            else if ("middle".equals(ellipsize)) view.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            else if ("end".equals(ellipsize)) view.setEllipsize(TextUtils.TruncateAt.END);
+        }
+        if (maxLines > 0) view.setMaxLines(maxLines);
+    }
+
+    public void configureImage(ImageView view, String source, String fit, String alt, boolean canShrink) {
+        view.setAdjustViewBounds(canShrink);
+        if ("fill".equals(fit)) view.setScaleType(ImageView.ScaleType.FIT_XY);
+        else if ("cover".equals(fit)) view.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        else if ("scaleDown".equals(fit) || "scale_down".equals(fit)) view.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        else view.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        view.setContentDescription(alt);
+        if (source == null || source.isEmpty()) {
+            view.setImageDrawable(null);
+            return;
+        }
+        Uri uri = source.contains("://") ? Uri.parse(source) : Uri.fromFile(new File(source));
+        view.setImageURI(uri);
+    }
+
+    public void transformView(View view, float translateX, float translateY, float rotation, float scaleX, float scaleY, float originXPercent, float originYPercent) {
+        view.setTranslationX(translateX);
+        view.setTranslationY(translateY);
+        view.setRotation(rotation);
+        view.setScaleX(scaleX);
+        view.setScaleY(scaleY);
+        view.post(() -> {
+            view.setPivotX(view.getWidth() * originXPercent / 100.0f);
+            view.setPivotY(view.getHeight() * originYPercent / 100.0f);
+        });
     }
 
     public void setTooltip(View view, String text) {
@@ -2281,8 +2434,18 @@ fn android_manifest_xml(
     } else {
         "android.app.NativeActivity"
     };
+    let activity_config = if generated_activity {
+        " android:configChanges=\"orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|fontScale|keyboard|keyboardHidden|navigation\""
+    } else {
+        ""
+    };
+    let native_activity_metadata = if generated_activity {
+        ""
+    } else {
+        "            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n"
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\">\n            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\"{activity_config}>\n{native_activity_metadata}            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
         manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
@@ -2766,9 +2929,21 @@ mod tests {
         );
         assert!(generated_ui.contains("android:hasCode=\"true\""));
         assert!(generated_ui.contains("android:name=\"app.flux.runtime.FluxActivity\""));
+        assert!(
+            generated_ui
+                .contains("android:configChanges=\"orientation|screenSize|smallestScreenSize")
+        );
+        assert!(!generated_ui.contains("android.app.lib_name"));
         let activity = android_activity_java_source();
-        assert!(activity.contains("extends NativeActivity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
+        assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
+        assert!(!activity.contains("extends NativeActivity"));
+        assert!(activity.contains("System.loadLibrary(\"flux\");"));
+        assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));
+        assert!(activity.contains("private native String nativeSaveState();"));
+        assert!(activity.contains("nativeCreate(restoredState);"));
+        assert!(activity.contains("nativeConfigurationChanged();"));
+        assert!(activity.contains("nativeDestroy();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
         assert!(
             activity.contains(

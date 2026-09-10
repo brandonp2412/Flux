@@ -10150,6 +10150,59 @@ app Screen
 }
 
 #[test]
+fn android_native_ui_lowers_image_source_fit_alt_and_state_refresh() {
+    let root =
+        std::env::temp_dir().join(format!("flux-android-image-codegen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("Android image fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"native-image\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android image manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r#"view Gallery {
+    state compact: bool = false
+    derived source: str = "cover.png"
+    grid columns: 1fr
+    grid rows: 1fr auto
+    Image artwork at 1,1
+        source: source
+        alt: "Cover art"
+        fit: "cover"
+        can_shrink: compact
+        min_width: 240
+        min_height: 160
+    Button resize at 2,1
+        text: "Resize"
+        on_press: compact => !compact
+}
+app Gallery
+"#,
+    )
+    .expect("Android image source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("Android image app should analyze");
+    let generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android Image should lower to target C");
+    assert!(generated.contains("android/widget/ImageView"));
+    assert!(generated.contains("configureImage"));
+    assert!(generated.contains("cover.png"));
+    assert!(generated.contains("Cover art"));
+    assert!(generated.contains("\"cover\""));
+    assert!(generated.contains("flux__ui_state_compact"));
+    assert!(generated.contains("setMinimumWidth"));
+    assert!(generated.contains("setMinimumHeight"));
+    assert!(generated.contains(
+        "Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz)"
+    ));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn android_native_ui_lowers_text_input_toggle_radio_and_direct_callbacks() {
     let root = std::env::temp_dir().join(format!(
         "flux-android-controls-codegen-{}",
@@ -10179,6 +10232,7 @@ view Settings {
     grid rows: auto auto auto auto auto
     grid gap: 12
     grid padding: 18
+    grid scroll: true
     TextInput query at 1,1
         text: "initial"
         placeholder: "Search Flux"
@@ -10195,6 +10249,8 @@ view Settings {
         border_width: 2
         border_style: "solid"
         radius: 8
+        radius_top_left: 16
+        radius_bottom_right: 2
         tooltip: "Search"
         accessibility_label: "Search query"
         accessibility_description: "Enter text to search"
@@ -10215,11 +10271,26 @@ view Settings {
     Text styled at 5,1
         text: "Styled"
         color: "#AABBCCDD"
+        font_family: "sans-serif"
         size: 18
         bold: true
         italic: true
         underline: true
         strikethrough: true
+        letter_spacing: 2
+        line_height_percent: 140
+        text_align: "center"
+        wrap: true
+        wrap_mode: "word_char"
+        ellipsize: "end"
+        max_lines: 2
+        translate_x: selected
+        translate_y: -4
+        rotate_degrees: selected + 15
+        scale_percent: 125
+        scale_y_percent: 80
+        transform_origin_x_percent: 0
+        transform_origin_y_percent: 100
 }
 app Settings
 "##,
@@ -10246,15 +10317,28 @@ app Settings
     assert!(generated.contains("INT64_C(6) * flux__ui_display_scale"));
     assert!(generated.contains("setMinimumWidth"));
     assert!(generated.contains("styleView"));
+    assert!(generated.contains("INT64_C(16) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(2) * flux__ui_display_scale"));
+    assert!(generated.contains("android/widget/ScrollView"));
+    assert!(generated.contains("setFillViewport"));
+    assert!(generated.contains("content_root"));
     assert!(generated.contains("#112233"));
     assert!(generated.contains("#445566FF"));
     assert!(generated.contains("set_child_padding"));
     assert!(generated.contains("setGravity"));
     assert!(generated.contains("styleText"));
+    assert!(generated.contains("styleTextLayout"));
+    assert!(generated.contains("sans-serif"));
+    assert!(generated.contains("word_char"));
     assert!(generated.contains("#AABBCCDD"));
     assert!(generated.contains("(jfloat)18.0f"));
+    assert!(generated.contains("(jint)140"));
+    assert!(generated.contains("(jint)2"));
     assert!(generated.contains("setTooltip"));
     assert!(generated.contains("setAccessibility"));
+    assert!(generated.contains("transformView"));
+    assert!(generated.contains("flux__ui_state_selected"));
+    assert!(generated.contains("/ 100.0f"));
     assert!(generated.contains("Search query"));
     assert!(generated.contains("Enter text to search"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));

@@ -340,6 +340,9 @@ fn emit_runtime_prelude(
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
+    if uses_android_generated_ui {
+        out.push_str("static ANativeActivity flux__android_activity_compat = {0};\n");
+    }
     if uses_android_sdk_int {
         out.push_str("static inline int64_t flux__android_sdk_int(void) { return (int64_t)android_get_device_api_level(); }\n");
     }
@@ -1186,11 +1189,11 @@ fn emit_android_native_application(
     for element in &view.elements {
         if !matches!(
             element.kind.as_str(),
-            "Text" | "Button" | "TextInput" | "Toggle" | "Radio"
+            "Text" | "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
         ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Android app backend currently renders Text, Button, TextInput, Toggle, and Radio elements",
+                "bootstrap Android app backend currently renders Text, Button, TextInput, Image, Toggle, and Radio elements",
             ));
         }
     }
@@ -1343,19 +1346,11 @@ fn emit_android_native_application(
     for (element_index, element) in view.elements.iter().enumerate() {
         let element_id = element_index + 1;
         out.push_str("    {\n");
-        let text_property = match element.kind.as_str() {
-            "Toggle" | "Radio" => "label",
-            _ => "text",
-        };
-        let text = match view_property(element, text_property) {
-            Some(property) => ui_expr_c(&property.value, view, signatures)?,
-            None if element.kind == "TextInput" => c_string(""),
-            None => c_string(&element.name),
-        };
         let class_name = match element.kind.as_str() {
             "Text" => "android/widget/TextView",
             "Button" => "android/widget/Button",
             "TextInput" => "android/widget/EditText",
+            "Image" => "android/widget/ImageView",
             "Toggle" => "android/widget/CheckBox",
             "Radio" => "android/widget/RadioButton",
             _ => unreachable!("validated Android native control kind"),
@@ -1365,32 +1360,102 @@ fn emit_android_native_application(
         ));
         out.push_str("    if (child_class == NULL) return;\n");
         out.push_str("    jmethodID child_ctor = (*env)->GetMethodID(env, child_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
-        out.push_str("    jmethodID set_text = (*env)->GetMethodID(env, child_class, \"setText\", \"(Ljava/lang/CharSequence;)V\");\n");
-        out.push_str("    if (child_ctor == NULL || set_text == NULL) return;\n");
+        out.push_str("    if (child_ctor == NULL) return;\n");
         out.push_str(
             "    jobject child = (*env)->NewObject(env, child_class, child_ctor, activity);\n",
         );
         out.push_str("    if (child == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
-        out.push_str(&format!(
-            "    jstring child_text = flux__android_utf8_string(env, {text});\n"
-        ));
-        out.push_str("    if (child_text == NULL) return;\n");
-        if element.kind == "TextInput" {
-            out.push_str(
-                "    jclass initial_activity_class = (*env)->GetObjectClass(env, activity);\n",
-            );
-            out.push_str("    if (initial_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID initial_text = (*env)->GetMethodID(env, initial_activity_class, \"initialText\", \"(ILjava/lang/String;)Ljava/lang/String;\");\n");
-            out.push_str("    if (initial_text == NULL) return;\n");
+        if element.kind == "Image" {
+            let source = match view_property(element, "source") {
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None => c_string(""),
+            };
+            let alt = match view_property(element, "alt") {
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None => c_string(""),
+            };
+            let fit = match view_property(element, "fit") {
+                Some(property) => {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Image.fit must be a compile-time string",
+                        ));
+                    };
+                    if !matches!(
+                        value.as_str(),
+                        "fill" | "contain" | "cover" | "scaleDown" | "scale_down"
+                    ) {
+                        return Err(diag(
+                            property.value.span,
+                            "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
+                        ));
+                    }
+                    value
+                }
+                None => "contain".to_string(),
+            };
+            let can_shrink = match view_property(element, "can_shrink") {
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None => "false".to_string(),
+            };
             out.push_str(&format!(
-                "    jstring restored_text = (jstring)(*env)->CallObjectMethod(env, activity, initial_text, (jint){element_id}, child_text);\n"
+                "    jstring child_image_source = flux__android_utf8_string(env, {source});\n"
             ));
-            out.push_str("    if (restored_text == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
-            out.push_str("    (*env)->CallVoidMethod(env, child, set_text, restored_text);\n");
-            out.push_str("    (*env)->DeleteLocalRef(env, restored_text);\n");
-            out.push_str("    (*env)->DeleteLocalRef(env, initial_activity_class);\n");
+            out.push_str(&format!(
+                "    jstring child_image_alt = flux__android_utf8_string(env, {alt});\n"
+            ));
+            out.push_str(&format!(
+                "    jstring child_image_fit = flux__android_utf8_string(env, {});\n",
+                c_string(&fit)
+            ));
+            out.push_str("    if (child_image_source == NULL || child_image_alt == NULL || child_image_fit == NULL) return;\n");
+            out.push_str(
+                "    jclass image_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (image_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID configure_image = (*env)->GetMethodID(env, image_activity_class, \"configureImage\", \"(Landroid/widget/ImageView;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V\");\n");
+            out.push_str("    if (configure_image == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, configure_image, child, child_image_source, child_image_fit, child_image_alt, (jboolean)({can_shrink}));\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, image_activity_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_image_source);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_image_alt);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_image_fit);\n");
         } else {
-            out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
+            let text_property = match element.kind.as_str() {
+                "Toggle" | "Radio" => "label",
+                _ => "text",
+            };
+            let text = match view_property(element, text_property) {
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None if element.kind == "TextInput" => c_string(""),
+                None => c_string(&element.name),
+            };
+            out.push_str("    jmethodID set_text = (*env)->GetMethodID(env, child_class, \"setText\", \"(Ljava/lang/CharSequence;)V\");\n");
+            out.push_str("    if (set_text == NULL) return;\n");
+            out.push_str(&format!(
+                "    jstring child_text = flux__android_utf8_string(env, {text});\n"
+            ));
+            out.push_str("    if (child_text == NULL) return;\n");
+            if element.kind == "TextInput" {
+                out.push_str(
+                    "    jclass initial_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (initial_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID initial_text = (*env)->GetMethodID(env, initial_activity_class, \"initialText\", \"(ILjava/lang/String;)Ljava/lang/String;\");\n");
+                out.push_str("    if (initial_text == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jstring restored_text = (jstring)(*env)->CallObjectMethod(env, activity, initial_text, (jint){element_id}, child_text);\n"
+                ));
+                out.push_str("    if (restored_text == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_text, restored_text);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, restored_text);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, initial_activity_class);\n");
+            } else {
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
+            }
         }
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
@@ -1459,6 +1524,18 @@ fn emit_android_native_application(
         let border_width =
             static_non_negative_style_i64(element, "border_width", signatures)?.unwrap_or(0);
         let radius = static_non_negative_style_i64(element, "radius", signatures)?.unwrap_or(0);
+        let radius_top_left =
+            static_non_negative_style_i64(element, "radius_top_left", signatures)?
+                .unwrap_or(radius);
+        let radius_top_right =
+            static_non_negative_style_i64(element, "radius_top_right", signatures)?
+                .unwrap_or(radius);
+        let radius_bottom_left =
+            static_non_negative_style_i64(element, "radius_bottom_left", signatures)?
+                .unwrap_or(radius);
+        let radius_bottom_right =
+            static_non_negative_style_i64(element, "radius_bottom_right", signatures)?
+                .unwrap_or(radius);
         if let Some(property) = view_property(element, "border_style") {
             let Some(style) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -1473,7 +1550,14 @@ fn emit_android_native_application(
                 ));
             }
         }
-        if background_color.is_some() || border_color.is_some() || border_width > 0 || radius > 0 {
+        if background_color.is_some()
+            || border_color.is_some()
+            || border_width > 0
+            || radius_top_left > 0
+            || radius_top_right > 0
+            || radius_bottom_left > 0
+            || radius_bottom_right > 0
+        {
             if let Some(value) = background_color.as_ref() {
                 out.push_str(&format!(
                     "    jstring child_background = flux__android_utf8_string(env, {});\n",
@@ -1496,10 +1580,10 @@ fn emit_android_native_application(
                 "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
             out.push_str("    if (style_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;IF)V\");\n");
+            out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;IFFFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border, (jint)(INT64_C({border_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border, (jint)(INT64_C({border_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_left}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_display_scale));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
             out.push_str("    if (child_background != NULL) (*env)->DeleteLocalRef(env, child_background);\n");
@@ -1522,6 +1606,48 @@ fn emit_android_native_application(
             out.push_str(&format!(
                 "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)(INT64_C({padding_start}) * flux__ui_display_scale), (jint)(INT64_C({padding_top}) * flux__ui_display_scale), (jint)(INT64_C({padding_end}) * flux__ui_display_scale), (jint)(INT64_C({padding_bottom}) * flux__ui_display_scale));\n"
             ));
+        }
+        if element_has_transform(element) {
+            for property_name in ["skew_x_degrees", "skew_y_degrees"] {
+                if let Some(property) = view_property(element, property_name)
+                    && static_expr_i64(&property.value, signatures) != Some(0)
+                {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "bootstrap Android {property_name} is not supported yet; translate/rotate/scale transforms are native"
+                        ),
+                    ));
+                }
+            }
+            let transform_value =
+                |property_name: &str, fallback: &str| -> Result<String, Diagnostic> {
+                    view_property(element, property_name)
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .unwrap_or_else(|| Ok(fallback.to_string()))
+                };
+            let translate_x = transform_value("translate_x", "0")?;
+            let translate_y = transform_value("translate_y", "0")?;
+            let rotate_degrees = transform_value("rotate_degrees", "0")?;
+            let scale_percent = transform_value("scale_percent", "100")?;
+            let scale_x_percent = view_property(element, "scale_x_percent")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            let scale_y_percent = view_property(element, "scale_y_percent")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            let origin_x = transform_value("transform_origin_x_percent", "50")?;
+            let origin_y = transform_value("transform_origin_y_percent", "50")?;
+            out.push_str(
+                "    jclass transform_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (transform_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID transform_view = (*env)->GetMethodID(env, transform_activity_class, \"transformView\", \"(Landroid/view/View;FFFFFFF)V\");\n");
+            out.push_str("    if (transform_view == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, transform_view, child, (jfloat)(({translate_x}) * flux__ui_display_scale), (jfloat)(({translate_y}) * flux__ui_display_scale), (jfloat)({rotate_degrees}), (jfloat)(({scale_x_percent}) / 100.0f), (jfloat)(({scale_y_percent}) / 100.0f), (jfloat)({origin_x}), (jfloat)({origin_y}));\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, transform_activity_class);\n");
         }
         if let Some(property) = view_property(element, "tooltip") {
             let value = ui_expr_c(&property.value, view, signatures)?;
@@ -1642,6 +1768,165 @@ fn emit_android_native_application(
                 ));
                 out.push_str("    (*env)->DeleteLocalRef(env, text_style_activity_class);\n");
                 out.push_str("    if (child_text_color != NULL) (*env)->DeleteLocalRef(env, child_text_color);\n");
+            }
+            let font_family = view_property(element, "font_family")
+                .map(|property| {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.font_family must be a compile-time str value",
+                        ));
+                    };
+                    if value.is_empty() {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.font_family cannot be empty",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let letter_spacing = view_property(element, "letter_spacing")
+                .map(|property| {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.letter_spacing must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.letter_spacing is outside the supported native range",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let line_height_percent = view_property(element, "line_height_percent")
+                .map(|property| {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.line_height_percent must be a compile-time i64 value",
+                        ));
+                    };
+                    if value <= 0 || value > i64::from(i32::MAX) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let text_align = view_property(element, "text_align")
+                .map(|property| {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.text_align must be a compile-time str value",
+                        ));
+                    };
+                    if !matches!(value.as_str(), "left" | "center" | "right" | "fill") {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.text_align must be one of 'left', 'center', 'right', or 'fill'",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let wrap_mode = view_property(element, "wrap_mode")
+                .map(|property| {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.wrap_mode must be a compile-time str value",
+                        ));
+                    };
+                    if !matches!(value.as_str(), "word" | "char" | "wordChar" | "word_char") {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let ellipsize = view_property(element, "ellipsize")
+                .map(|property| {
+                    let Some(value) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.ellipsize must be a compile-time str value",
+                        ));
+                    };
+                    if !matches!(value.as_str(), "none" | "start" | "middle" | "end") {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            let max_lines = view_property(element, "max_lines")
+                .map(|property| {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android Text.max_lines must be a compile-time i64 value",
+                        ));
+                    };
+                    if !(1..=i64::from(i32::MAX)).contains(&value) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.max_lines must be between 1 and 2147483647",
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            if font_family.is_some()
+                || letter_spacing.is_some()
+                || line_height_percent.is_some()
+                || text_align.is_some()
+                || wrap_mode.is_some()
+                || ellipsize.is_some()
+                || max_lines.is_some()
+            {
+                let emit_optional_text =
+                    |out: &mut String, variable: &str, value: Option<&String>| {
+                        if let Some(value) = value {
+                            out.push_str(&format!(
+                                "    jstring {variable} = flux__android_utf8_string(env, {});\n",
+                                c_string(value)
+                            ));
+                            out.push_str(&format!("    if ({variable} == NULL) return;\n"));
+                        } else {
+                            out.push_str(&format!("    jstring {variable} = NULL;\n"));
+                        }
+                    };
+                emit_optional_text(out, "child_font_family", font_family.as_ref());
+                emit_optional_text(out, "child_text_align", text_align.as_ref());
+                emit_optional_text(out, "child_wrap_mode", wrap_mode.as_ref());
+                emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
+                out.push_str("    jclass text_layout_activity_class = (*env)->GetObjectClass(env, activity);\n");
+                out.push_str("    if (text_layout_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V\");\n");
+                out.push_str("    if (style_text_layout == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){}, (jint){}, child_text_align, child_wrap_mode, child_ellipsize, (jint){});\n",
+                    letter_spacing.unwrap_or(i64::from(i32::MIN)),
+                    line_height_percent.unwrap_or(0),
+                    max_lines.unwrap_or(0),
+                ));
+                out.push_str("    (*env)->DeleteLocalRef(env, text_layout_activity_class);\n");
+                out.push_str("    if (child_font_family != NULL) (*env)->DeleteLocalRef(env, child_font_family);\n");
+                out.push_str("    if (child_text_align != NULL) (*env)->DeleteLocalRef(env, child_text_align);\n");
+                out.push_str("    if (child_wrap_mode != NULL) (*env)->DeleteLocalRef(env, child_wrap_mode);\n");
+                out.push_str("    if (child_ellipsize != NULL) (*env)->DeleteLocalRef(env, child_ellipsize);\n");
             }
             if let Some(property) = view_property(element, "selectable") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
@@ -1791,6 +2076,28 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
             ));
             out.push_str("    (*env)->CallVoidMethod(env, child, set_click, activity);\n");
+        }
+        if view_property(element, "on_focus").is_some()
+            || view_property(element, "on_blur").is_some()
+        {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_focus_listener = (*env)->GetMethodID(env, child_class, \"setOnFocusChangeListener\", \"(Landroid/view/View$OnFocusChangeListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_focus_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_focus_listener, activity);\n");
+        }
+        if view_property(element, "on_hover").is_some()
+            || view_property(element, "on_leave").is_some()
+        {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_hover_listener = (*env)->GetMethodID(env, child_class, \"setOnHoverListener\", \"(Landroid/view/View$OnHoverListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_hover_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_hover_listener, activity);\n");
         }
         out.push_str("    jobject params = (*env)->NewObject(env, params_class, params_ctor);\n");
         out.push_str("    if (params == NULL) return;\n");
@@ -1944,17 +2251,41 @@ fn emit_android_native_application(
             out.push_str("    (*env)->SetIntField(env, params, height_field, (jint)0);\n");
         }
         out.push_str("    (*env)->CallVoidMethod(env, grid, add_view, child, params);\n");
-        out.push_str("    (*env)->DeleteLocalRef(env, column_spec);\n    (*env)->DeleteLocalRef(env, row_spec);\n    (*env)->DeleteLocalRef(env, params);\n    (*env)->DeleteLocalRef(env, child_text);\n    (*env)->DeleteLocalRef(env, child);\n    (*env)->DeleteLocalRef(env, child_class);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, column_spec);\n    (*env)->DeleteLocalRef(env, row_spec);\n    (*env)->DeleteLocalRef(env, params);\n");
+        if element.kind != "Image" {
+            out.push_str("    (*env)->DeleteLocalRef(env, child_text);\n");
+        }
+        out.push_str("    (*env)->DeleteLocalRef(env, child);\n    (*env)->DeleteLocalRef(env, child_class);\n");
         out.push_str("    }\n");
+    }
+    if view.grid.scroll.unwrap_or(false) {
+        out.push_str(
+            "    jclass scroll_class = (*env)->FindClass(env, \"android/widget/ScrollView\");\n",
+        );
+        out.push_str("    if (scroll_class == NULL) return;\n");
+        out.push_str("    jmethodID scroll_ctor = (*env)->GetMethodID(env, scroll_class, \"<init>\", \"(Landroid/content/Context;)V\");\n");
+        out.push_str("    jmethodID scroll_add_view = (*env)->GetMethodID(env, scroll_class, \"addView\", \"(Landroid/view/View;)V\");\n");
+        out.push_str("    jmethodID scroll_fill_viewport = (*env)->GetMethodID(env, scroll_class, \"setFillViewport\", \"(Z)V\");\n");
+        out.push_str("    if (scroll_ctor == NULL || scroll_add_view == NULL || scroll_fill_viewport == NULL) return;\n");
+        out.push_str("    jobject content_root = (*env)->NewObject(env, scroll_class, scroll_ctor, activity);\n");
+        out.push_str("    if (content_root == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+        out.push_str("    (*env)->CallVoidMethod(env, content_root, scroll_fill_viewport, (jboolean)true);\n");
+        out.push_str("    (*env)->CallVoidMethod(env, content_root, scroll_add_view, grid);\n");
+    } else {
+        out.push_str("    jobject content_root = grid;\n");
     }
     out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
     out.push_str("    if (activity_class == NULL) return;\n");
     out.push_str("    jmethodID set_content = (*env)->GetMethodID(env, activity_class, \"setContentView\", \"(Landroid/view/View;)V\");\n");
     out.push_str(
-        "    if (set_content != NULL) (*env)->CallVoidMethod(env, activity, set_content, grid);\n",
+        "    if (set_content != NULL) (*env)->CallVoidMethod(env, activity, set_content, content_root);\n",
     );
     out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
-    out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
+    out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
+    if view.grid.scroll.unwrap_or(false) {
+        out.push_str("    (*env)->DeleteLocalRef(env, content_root);\n    (*env)->DeleteLocalRef(env, scroll_class);\n");
+    }
+    out.push_str("    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
     out.push_str("}\n");
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
@@ -2024,6 +2355,35 @@ fn emit_android_native_application(
     }
     out.push_str("        default: break;\n    }\n}\n\n");
 
+    for (native_name, positive_property, negative_property) in [
+        ("nativeOnFocus", "on_focus", "on_blur"),
+        ("nativeOnHover", "on_hover", "on_leave"),
+    ] {
+        out.push_str(&format!(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_{native_name}(JNIEnv *env, jclass activity_class, jint view_id, jboolean active) {{\n    (void)activity_class;\n    switch (view_id) {{\n"
+        ));
+        for (element_index, element) in view.elements.iter().enumerate() {
+            let positive = view_property(element, positive_property);
+            let negative = view_property(element, negative_property);
+            if positive.is_none() && negative.is_none() {
+                continue;
+            }
+            let element_id = element_index + 1;
+            let positive_body = positive
+                .map(|action| android_ui_zero_arg_event_body(action, view, signatures))
+                .transpose()?
+                .unwrap_or_default();
+            let negative_body = negative
+                .map(|action| android_ui_zero_arg_event_body(action, view, signatures))
+                .transpose()?
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "        case {element_id}: if (active) {{ {positive_body} }} else {{ {negative_body} }} break;\n"
+            ));
+        }
+        out.push_str("        default: break;\n    }\n}\n\n");
+    }
+
     for (property_name, native_name) in [
         ("on_change", "nativeOnTextChanged"),
         ("on_submit", "nativeOnSubmit"),
@@ -2054,6 +2414,57 @@ fn emit_android_native_application(
         }
         out.push_str("        default: break;\n    }\n    (*env)->ReleaseStringUTFChars(env, text, value);\n}\n\n");
     }
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeCreate(JNIEnv *env, jobject activity, jstring restored_state) {\n");
+    out.push_str("    JavaVM *vm = NULL;\n    if ((*env)->GetJavaVM(env, &vm) != JNI_OK || vm == NULL) return;\n");
+    out.push_str("    jobject global_activity = (*env)->NewGlobalRef(env, activity);\n    if (global_activity == NULL) return;\n");
+    out.push_str("    if (flux__android_activity == &flux__android_activity_compat && flux__android_activity_compat.clazz != NULL) (*env)->DeleteGlobalRef(env, flux__android_activity_compat.clazz);\n");
+    out.push_str("    memset(&flux__android_activity_compat, 0, sizeof(flux__android_activity_compat));\n    flux__android_activity_compat.vm = vm;\n    flux__android_activity_compat.env = env;\n    flux__android_activity_compat.clazz = global_activity;\n    flux__android_activity = &flux__android_activity_compat;\n");
+    if let Some(function) = application_metadata_function(application, "on_restore_state") {
+        out.push_str("    if (restored_state != NULL) {\n        const char *restored = (*env)->GetStringUTFChars(env, restored_state, NULL);\n        if (restored != NULL) {\n");
+        out.push_str(&format!(
+            "            {}(restored);\n",
+            function_c_name(function)
+        ));
+        out.push_str("            (*env)->ReleaseStringUTFChars(env, restored_state, restored);\n        }\n    }\n");
+    } else {
+        out.push_str("    (void)restored_state;\n");
+    }
+    out.push_str("}\n\n");
+
+    for (metadata, native_name) in [
+        ("on_start", "nativeStart"),
+        ("on_resume", "nativeResume"),
+        ("on_pause", "nativePause"),
+        ("on_stop", "nativeStop"),
+        ("on_low_memory", "nativeLowMemory"),
+        ("on_configuration_changed", "nativeConfigurationChanged"),
+    ] {
+        out.push_str(&format!(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_{native_name}(JNIEnv *env, jobject activity) {{\n    (void)env;\n    (void)activity;\n"
+        ));
+        if let Some(function) = application_metadata_function(application, metadata) {
+            out.push_str(&format!("    {}();\n", function_c_name(function)));
+        }
+        out.push_str("}\n\n");
+    }
+
+    out.push_str("JNIEXPORT jstring JNICALL Java_app_flux_runtime_FluxActivity_nativeSaveState(JNIEnv *env, jobject activity) {\n    (void)activity;\n");
+    if let Some(function) = application_metadata_function(application, "on_save_state") {
+        out.push_str(&format!(
+            "    const char *state = {}();\n    return state == NULL ? NULL : flux__android_utf8_string(env, state);\n",
+            function_c_name(function)
+        ));
+    } else {
+        out.push_str("    (void)env;\n    return NULL;\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeDestroy(JNIEnv *env, jobject activity) {\n    (void)activity;\n");
+    if let Some(function) = application_metadata_function(application, "on_exit") {
+        out.push_str(&format!("    {}();\n", function_c_name(function)));
+    }
+    out.push_str("    if (flux__android_activity == &flux__android_activity_compat) {\n        jobject global_activity = flux__android_activity_compat.clazz;\n        flux__android_activity = NULL;\n        memset(&flux__android_activity_compat, 0, sizeof(flux__android_activity_compat));\n        if (global_activity != NULL) (*env)->DeleteGlobalRef(env, global_activity);\n    }\n}\n\n");
 
     for (metadata, callback) in [
         ("on_start", "start"),
@@ -3127,6 +3538,28 @@ fn view_property<'a>(
         .properties
         .iter()
         .find(|property| property.name == source_name || property.name == name)
+}
+
+fn android_ui_zero_arg_event_body(
+    action: &crate::ast::ViewProperty,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    let refresh = "if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeBuildUi(env, flux__android_activity->clazz);";
+    if let Some(transition) = &action.transition {
+        let next = ui_expr_c(&action.value, view, signatures)?;
+        return Ok(format!(
+            "{} = {next}; {refresh}",
+            ui_state_c_name(&transition.state)
+        ));
+    }
+    let ExprKind::Var(function) = &action.value.kind else {
+        return Err(diag(
+            action.value.span,
+            "bootstrap Android UI event lowering requires a named fn() -> void callback or state transition",
+        ));
+    };
+    Ok(format!("{}(); {refresh}", function_c_name(function)))
 }
 
 fn ui_zero_arg_event_body(
