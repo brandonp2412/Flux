@@ -379,6 +379,7 @@ fn collect_expr_pattern_symbols(
                                 signatures,
                             );
                         }
+                        MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {}
                     }
                 }
                 if let Some(guard) = &arm.guard {
@@ -792,6 +793,7 @@ fn collect_block_symbols(
                                     signatures,
                                 );
                             }
+                            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {}
                         }
                     }
                     if let Some(guard) = &arm.guard {

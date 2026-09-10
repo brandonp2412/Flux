@@ -1648,7 +1648,9 @@ impl<'a> ControlFlowBuilder<'a> {
                         &pattern.struct_name,
                         &mut definitions,
                     ),
-                crate::ast::MatchPattern::Binding(_) => {}
+                crate::ast::MatchPattern::Binding(_)
+                | crate::ast::MatchPattern::Relational(_)
+                | crate::ast::MatchPattern::Logical { .. } => {}
             }
         }
         definitions
@@ -2108,6 +2110,7 @@ fn bind_match_pattern(
         crate::ast::MatchPattern::Struct(pattern) => {
             bind_struct_pattern_fields(&pattern.fields, &pattern.struct_name, env, signatures);
         }
+        crate::ast::MatchPattern::Relational(_) | crate::ast::MatchPattern::Logical { .. } => {}
     }
 }
 

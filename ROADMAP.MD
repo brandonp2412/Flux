@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 426
+- Completed baseline units: 427
 - Reported overall progress: **58%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -279,7 +279,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [ ] Map patterns.
 - [x] Struct patterns for bindings and enum match payloads; map/record pattern forms remain pending with their value types.
 - [x] Enum/tagged-union variant patterns with typed positional payload bindings, ignored positions, nested struct payload patterns, and exhaustive statement/value matching.
-- [ ] Relational/logical patterns where readable.
+- [x] Relational/logical scalar enum-payload patterns where readable: `==`, `!=`, `<`, `<=`, `>`, and `>=` compare against compile-time primitive constants, `&&`/`||` compose relational tests, statement/value matches share native lowering and formatter support, and refutable pattern arms remain conservatively non-exhaustive until a later irrefutable arm covers the variant.
 - [x] Boolean pattern guards on enum/list statement and value-producing `match` arms, with pattern bindings in scope, formatter/semantic support, native lowering, guarded-arm fallthrough, conservative exhaustiveness, and unreachable-arm diagnostics after an unguarded covering arm.
 - [x] Exhaustiveness checking for the implemented closed enum and list-length pattern domains, including unreachable/duplicate-arm rejection.
 - [ ] Pattern-based variable declarations/assignments beyond the implemented struct/list/multi-value `let` destructuring forms.

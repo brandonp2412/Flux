@@ -4641,6 +4641,110 @@ fn main() -> i64 {
 }
 
 #[test]
+fn relational_and_logical_enum_payload_patterns_are_typed_formatted_and_native() {
+    let source = r#"
+const SMALL_LIMIT: i64 = 10
+
+enum Reading {
+    Number(i64)
+    Label(str)
+    Enabled(bool)
+}
+
+fn classify(reading: Reading) -> i64 {
+    return match reading:
+        Reading.Number(< 0): -1
+        Reading.Number(>= 0 && < SMALL_LIMIT): 1
+        Reading.Number(>= SMALL_LIMIT): 2
+        Reading.Number(_): 3
+        Reading.Label(== "ready" || == "go"): 4
+        Reading.Label(_): 5
+        Reading.Enabled(== true): 6
+        Reading.Enabled(_): 7
+}
+
+fn main() -> i64 {
+    return classify(Reading.Number(7))
+}
+"#;
+
+    check_source(source).expect("relational/logical payload patterns should typecheck");
+    let generated =
+        compile_to_c(source).expect("relational/logical patterns should lower natively");
+    assert!(generated.contains("< INT64_C(0)"));
+    assert!(generated.contains(">= INT64_C(0)"));
+    assert!(generated.contains("< INT64_C(10)"));
+    assert!(generated.contains("&&"));
+    assert!(generated.contains("||"));
+    assert!(generated.contains("strcmp("));
+
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("relational/logical payload patterns should format");
+    assert!(formatted.contains("Reading.Number(>= 0 && < SMALL_LIMIT): 1"));
+    assert!(formatted.contains("Reading.Label(== \"ready\" || == \"go\"): 4"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted relational/logical patterns should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_invalid_or_non_exhaustive_relational_match_patterns() {
+    let non_exhaustive = r#"
+enum Reading {
+    Number(i64)
+}
+fn main() -> i64 {
+    let reading: Reading = Reading.Number(4)
+    return match reading:
+        Reading.Number(>= 0): 1
+}
+"#;
+    let error = check_source(non_exhaustive)
+        .expect_err("a relational pattern alone must not make a variant exhaustive");
+    assert!(error.message.contains("non-exhaustive match"));
+
+    let dynamic_rhs = r#"
+enum Reading {
+    Number(i64)
+}
+fn classify(reading: Reading, limit: i64) -> i64 {
+    return match reading:
+        Reading.Number(< limit): 1
+        Reading.Number(_): 0
+}
+fn main() -> i64 {
+    return classify(Reading.Number(4), 5)
+}
+"#;
+    let error = check_source(dynamic_rhs)
+        .expect_err("relational pattern bounds must be compile-time values");
+    assert!(
+        error
+            .message
+            .contains("relational match pattern values must be compile-time primitive constants")
+    );
+
+    let ordered_bool = r#"
+enum Reading {
+    Enabled(bool)
+}
+fn main() -> i64 {
+    let reading: Reading = Reading.Enabled(true)
+    return match reading:
+        Reading.Enabled(> false): 1
+        Reading.Enabled(_): 0
+}
+"#;
+    let error =
+        check_source(ordered_bool).expect_err("ordered relational patterns should reject booleans");
+    assert!(
+        error
+            .message
+            .contains("ordered relational match patterns currently require i64 payloads")
+    );
+}
+
+#[test]
 fn match_guards_use_pattern_bindings_and_preserve_exhaustiveness() {
     let source = r#"
 enum Outcome {

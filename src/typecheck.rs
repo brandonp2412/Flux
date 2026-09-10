@@ -2226,7 +2226,9 @@ fn collect_binding_declarations(
                             MatchPattern::Struct(pattern) => {
                                 collect_struct_pattern_declarations(&pattern.fields, declarations);
                             }
-                            MatchPattern::Binding(_) => {}
+                            MatchPattern::Binding(_)
+                            | MatchPattern::Relational(_)
+                            | MatchPattern::Logical { .. } => {}
                         }
                     }
                     collect_binding_declarations(&arm.body, declarations);
@@ -2267,7 +2269,9 @@ fn collect_expr_pattern_declarations(
                         MatchPattern::Struct(pattern) => {
                             collect_struct_pattern_declarations(&pattern.fields, declarations);
                         }
-                        MatchPattern::Binding(_) => {}
+                        MatchPattern::Binding(_)
+                        | MatchPattern::Relational(_)
+                        | MatchPattern::Logical { .. } => {}
                     }
                 }
                 collect_expr_pattern_declarations(&arm.value, declarations);
@@ -3280,6 +3284,13 @@ fn check_block_all(
                                     diagnostics,
                                 );
                             }
+                            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
+                                if let Err(diagnostic) = validate_relational_match_pattern(
+                                    pattern, payload_ty, signatures,
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
+                            }
                         }
                     }
                     if let Some(guard) = &arm.guard {
@@ -3293,7 +3304,7 @@ fn check_block_all(
                             }
                             Err(diagnostic) => diagnostics.push(diagnostic),
                         }
-                    } else {
+                    } else if arm.patterns.iter().all(match_pattern_is_irrefutable) {
                         covered.insert(arm.variant.as_str());
                     }
                     let mut nested_mutable = mutable.clone();
@@ -3430,6 +3441,58 @@ fn check_cfg_moved_reads(
             }
         }
         diagnostics.push(diagnostic);
+    }
+}
+
+fn match_pattern_is_irrefutable(pattern: &MatchPattern) -> bool {
+    matches!(pattern, MatchPattern::Binding(_) | MatchPattern::Struct(_))
+}
+
+fn validate_relational_match_pattern(
+    pattern: &MatchPattern,
+    payload_ty: &Type,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    match pattern {
+        MatchPattern::Relational(pattern) => {
+            let Some(value) = constant_primitive_value(&pattern.value, signatures) else {
+                return Err(diag(
+                    pattern.value.span,
+                    "relational match pattern values must be compile-time primitive constants",
+                ));
+            };
+            let payload_ty = signatures.canonical_type(payload_ty);
+            let value_ty = value.ty();
+            require_type(
+                pattern.value.span,
+                &payload_ty,
+                &value_ty,
+                "relational match pattern",
+            )?;
+            if matches!(pattern.op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                && payload_ty != Type::I64
+            {
+                return Err(diag(
+                    pattern.span,
+                    "ordered relational match patterns currently require i64 payloads",
+                ));
+            }
+            if !matches!(payload_ty, Type::I64 | Type::Bool | Type::Str) {
+                return Err(diag(
+                    pattern.span,
+                    &format!(
+                        "relational match patterns are not supported for {} payloads",
+                        payload_ty.name()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        MatchPattern::Logical { left, right, .. } => {
+            validate_relational_match_pattern(left, payload_ty, signatures)?;
+            validate_relational_match_pattern(right, payload_ty, signatures)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -4534,12 +4597,15 @@ pub fn type_of_expr(
                                 return Err(diagnostic);
                             }
                         }
+                        MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
+                            validate_relational_match_pattern(pattern, payload_ty, signatures)?;
+                        }
                     }
                 }
                 if let Some(guard) = &arm.guard {
                     let guard_ty = type_of_expr(guard, &nested, signatures)?;
                     require_type(guard.span, &Type::Bool, &guard_ty, "match guard")?;
-                } else {
+                } else if arm.patterns.iter().all(match_pattern_is_irrefutable) {
                     covered.insert(arm.variant.as_str());
                 }
                 let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;

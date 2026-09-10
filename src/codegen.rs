@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg, Program,
-    ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField, Type, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
+    PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField,
+    Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
@@ -9377,6 +9378,7 @@ fn emit_block(
                     for arm in variant_arms {
                         out.push_str(&format!("{pad}        {{\n"));
                         let mut nested = env.clone();
+                        let mut pattern_conditions = Vec::new();
                         let dead_arm_definitions = context
                             .dead_definition_names
                             .get(&source_span_key(arm.span));
@@ -9424,13 +9426,38 @@ fn emit_block(
                                         },
                                     )?;
                                 }
+                                MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
+                                    if let Some(condition) = emit_match_pattern_condition(
+                                        pattern,
+                                        &payload_access,
+                                        payload_ty,
+                                        &nested,
+                                        signatures,
+                                    )? {
+                                        pattern_conditions.push(condition);
+                                    }
+                                }
                             }
                         }
                         if let Some(guard) = &arm.guard {
                             let guard = emit_expr(guard, &nested, signatures)?;
+                            pattern_conditions.push(c_condition(&guard.code));
+                        }
+                        if pattern_conditions.is_empty() {
+                            emit_block(
+                                out,
+                                &arm.body,
+                                depth + 3,
+                                &mut nested,
+                                signatures,
+                                temp_counter,
+                                context,
+                            )?;
+                            out.push_str(&format!("{pad}            break;\n"));
+                        } else {
                             out.push_str(&format!(
                                 "{pad}            if ({}) {{\n",
-                                c_condition(&guard.code)
+                                pattern_conditions.join(" && ")
                             ));
                             emit_block(
                                 out,
@@ -9443,17 +9470,6 @@ fn emit_block(
                             )?;
                             out.push_str(&format!("{pad}                break;\n"));
                             out.push_str(&format!("{pad}            }}\n"));
-                        } else {
-                            emit_block(
-                                out,
-                                &arm.body,
-                                depth + 3,
-                                &mut nested,
-                                signatures,
-                                temp_counter,
-                                context,
-                            )?;
-                            out.push_str(&format!("{pad}            break;\n"));
                         }
                         out.push_str(&format!("{pad}        }}\n"));
                     }
@@ -9710,6 +9726,7 @@ fn emit_match_expr_into(
         for arm in variant_arms {
             out.push_str(&format!("{pad}        {{\n"));
             let mut nested = env.clone();
+            let mut pattern_conditions = Vec::new();
             for (index, (pattern, payload_ty)) in
                 arm.patterns.iter().zip(&variant.payloads).enumerate()
             {
@@ -9749,13 +9766,34 @@ fn emit_match_expr_into(
                             },
                         )?;
                     }
+                    MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
+                        if let Some(condition) = emit_match_pattern_condition(
+                            pattern,
+                            &payload_access,
+                            payload_ty,
+                            &nested,
+                            signatures,
+                        )? {
+                            pattern_conditions.push(condition);
+                        }
+                    }
                 }
             }
             if let Some(guard) = &arm.guard {
                 let guard = emit_expr(guard, &nested, signatures)?;
+                pattern_conditions.push(c_condition(&guard.code));
+            }
+            if pattern_conditions.is_empty() {
+                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                out.push_str(&format!(
+                    "{pad}            {target} = {};\n",
+                    arm_value.code
+                ));
+                out.push_str(&format!("{pad}            break;\n"));
+            } else {
                 out.push_str(&format!(
                     "{pad}            if ({}) {{\n",
-                    c_condition(&guard.code)
+                    pattern_conditions.join(" && ")
                 ));
                 let arm_value = emit_expr(&arm.value, &nested, signatures)?;
                 out.push_str(&format!(
@@ -9764,13 +9802,6 @@ fn emit_match_expr_into(
                 ));
                 out.push_str(&format!("{pad}                break;\n"));
                 out.push_str(&format!("{pad}            }}\n"));
-            } else {
-                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-                out.push_str(&format!(
-                    "{pad}            {target} = {};\n",
-                    arm_value.code
-                ));
-                out.push_str(&format!("{pad}            break;\n"));
             }
             out.push_str(&format!("{pad}        }}\n"));
         }
@@ -13840,6 +13871,49 @@ fn fold_primitive_binary(
             span,
             "invalid primitive constant expression reached code generation",
         )),
+    }
+}
+
+fn emit_match_pattern_condition(
+    pattern: &MatchPattern,
+    payload_access: &str,
+    payload_ty: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<String>, Diagnostic> {
+    match pattern {
+        MatchPattern::Binding(_) | MatchPattern::Struct(_) => Ok(None),
+        MatchPattern::Relational(pattern) => {
+            let right = emit_expr(&pattern.value, env, signatures)?;
+            let payload_ty = signatures.canonical_type(payload_ty);
+            let condition =
+                if payload_ty == Type::Str && matches!(pattern.op, BinOp::Eq | BinOp::Ne) {
+                    let comparator = if pattern.op == BinOp::Eq { "==" } else { "!=" };
+                    format!("(strcmp({payload_access}, {}) {comparator} 0)", right.code)
+                } else {
+                    format!(
+                        "({payload_access} {} {})",
+                        c_operator(pattern.op),
+                        right.code
+                    )
+                };
+            Ok(Some(condition))
+        }
+        MatchPattern::Logical {
+            left, op, right, ..
+        } => {
+            let left =
+                emit_match_pattern_condition(left, payload_access, payload_ty, env, signatures)?
+                    .expect("logical match pattern sides are relational");
+            let right =
+                emit_match_pattern_condition(right, payload_access, payload_ty, env, signatures)?
+                    .expect("logical match pattern sides are relational");
+            let op = match op {
+                PatternLogicalOp::And => "&&",
+                PatternLogicalOp::Or => "||",
+            };
+            Ok(Some(format!("({left} {op} {right})")))
+        }
     }
 }
 

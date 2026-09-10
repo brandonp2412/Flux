@@ -582,6 +582,26 @@ pub enum ListMatchPattern {
 pub enum MatchPattern {
     Binding(PatternBinding),
     Struct(StructPattern),
+    Relational(RelationalPattern),
+    Logical {
+        left: Box<MatchPattern>,
+        op: PatternLogicalOp,
+        right: Box<MatchPattern>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RelationalPattern {
+    pub op: BinOp,
+    pub value: Expr,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternLogicalOp {
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone)]

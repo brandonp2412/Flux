@@ -682,18 +682,7 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     let patterns = arm
                         .patterns
                         .iter()
-                        .map(|pattern| match pattern {
-                            MatchPattern::Binding(binding) => binding.name.clone(),
-                            MatchPattern::Struct(pattern) => {
-                                let fields = pattern
-                                    .fields
-                                    .iter()
-                                    .map(format_struct_pattern_field)
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                format!("{} {{ {} }}", pattern.struct_name, fields)
-                            }
-                        })
+                        .map(format_match_pattern)
                         .collect::<Vec<_>>()
                         .join(", ");
                     let guard = arm
@@ -744,18 +733,7 @@ fn format_match_expr_arms(
         let patterns = arm
             .patterns
             .iter()
-            .map(|pattern| match pattern {
-                crate::ast::MatchPattern::Binding(binding) => binding.name.clone(),
-                crate::ast::MatchPattern::Struct(pattern) => {
-                    let fields = pattern
-                        .fields
-                        .iter()
-                        .map(format_struct_pattern_field)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{} {{ {} }}", pattern.struct_name, fields)
-                }
-            })
+            .map(format_match_pattern)
             .collect::<Vec<_>>()
             .join(", ");
         let guard = arm
@@ -795,6 +773,46 @@ fn format_list_match_expr_arms(
                 format_expr(&arm.value, 0)
             ),
         );
+    }
+}
+
+fn format_match_pattern(pattern: &MatchPattern) -> String {
+    match pattern {
+        MatchPattern::Binding(binding) => binding.name.clone(),
+        MatchPattern::Struct(pattern) => {
+            let fields = pattern
+                .fields
+                .iter()
+                .map(format_struct_pattern_field)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} {{ {} }}", pattern.struct_name, fields)
+        }
+        MatchPattern::Relational(pattern) => {
+            let op = match pattern.op {
+                BinOp::Eq => "==",
+                BinOp::Ne => "!=",
+                BinOp::Lt => "<",
+                BinOp::Le => "<=",
+                BinOp::Gt => ">",
+                BinOp::Ge => ">=",
+                _ => unreachable!("relational match pattern stores only comparison operators"),
+            };
+            format!("{op} {}", format_expr(&pattern.value, 0))
+        }
+        MatchPattern::Logical {
+            left, op, right, ..
+        } => {
+            let op = match op {
+                crate::ast::PatternLogicalOp::And => "&&",
+                crate::ast::PatternLogicalOp::Or => "||",
+            };
+            format!(
+                "{} {op} {}",
+                format_match_pattern(left),
+                format_match_pattern(right)
+            )
+        }
     }
 }
 

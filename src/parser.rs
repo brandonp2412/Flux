@@ -3,9 +3,10 @@ use crate::ast::{
     EnumVariant, Expr, ExprKind, Function, GridLayout, GridTrack, ImportDef, InterfaceDef,
     InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, ListMatchArm,
     ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm, MatchPattern,
-    NamedArg, Param, PatternBinding, Program, ShellRedirect, ShellRedirectMode, Stmt, StmtKind,
-    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
-    UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
+    NamedArg, Param, PatternBinding, PatternLogicalOp, Program, RelationalPattern, ShellRedirect,
+    ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
+    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty,
+    ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -603,17 +604,7 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
                     arm.enum_span = arm.enum_span.with_source(source_id);
                     arm.variant_span = arm.variant_span.with_source(source_id);
                     for pattern in &mut arm.patterns {
-                        match pattern {
-                            MatchPattern::Binding(binding) => {
-                                binding.span = binding.span.with_source(source_id);
-                            }
-                            MatchPattern::Struct(pattern) => {
-                                pattern.struct_span = pattern.struct_span.with_source(source_id);
-                                for field in &mut pattern.fields {
-                                    attach_struct_pattern_field_source(field, source_id);
-                                }
-                            }
-                        }
+                        attach_match_pattern_source(pattern, source_id);
                     }
                     if let Some(guard) = &mut arm.guard {
                         attach_expr_source(guard, source_id);
@@ -781,17 +772,7 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 arm.enum_span = arm.enum_span.with_source(source_id);
                 arm.variant_span = arm.variant_span.with_source(source_id);
                 for pattern in &mut arm.patterns {
-                    match pattern {
-                        MatchPattern::Binding(binding) => {
-                            binding.span = binding.span.with_source(source_id);
-                        }
-                        MatchPattern::Struct(pattern) => {
-                            pattern.struct_span = pattern.struct_span.with_source(source_id);
-                            for field in &mut pattern.fields {
-                                attach_struct_pattern_field_source(field, source_id);
-                            }
-                        }
-                    }
+                    attach_match_pattern_source(pattern, source_id);
                 }
                 if let Some(guard) = &mut arm.guard {
                     attach_expr_source(guard, source_id);
@@ -1135,6 +1116,17 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
 fn shift_match_pattern_columns(pattern: &mut MatchPattern, offset: usize) {
     match pattern {
         MatchPattern::Binding(binding) => binding.span.column += offset,
+        MatchPattern::Relational(pattern) => {
+            pattern.span.column += offset;
+            shift_expr_columns(&mut pattern.value, offset);
+        }
+        MatchPattern::Logical {
+            left, right, span, ..
+        } => {
+            span.column += offset;
+            shift_match_pattern_columns(left, offset);
+            shift_match_pattern_columns(right, offset);
+        }
         MatchPattern::Struct(pattern) => {
             pattern.struct_span.column += offset;
             for field in &mut pattern.fields {
@@ -3169,6 +3161,104 @@ fn parse_list_match_arm_header(
     ))
 }
 
+fn parse_relational_match_pattern(
+    input: &str,
+    line: usize,
+    column: usize,
+) -> Result<Option<MatchPattern>, Diagnostic> {
+    for (token, op) in [("||", PatternLogicalOp::Or), ("&&", PatternLogicalOp::And)] {
+        if let Some(index) = find_top_level_pattern_operator(input, token) {
+            let (left_source, left_column) = trim_with_column(&input[..index], column);
+            let (right_source, right_column) =
+                trim_with_column(&input[index + token.len()..], column + index + token.len());
+            let Some(left) = parse_relational_match_pattern(left_source, line, left_column)? else {
+                return Err(diag(
+                    line,
+                    "logical match patterns require relational patterns on both sides",
+                ));
+            };
+            let Some(right) = parse_relational_match_pattern(right_source, line, right_column)?
+            else {
+                return Err(diag(
+                    line,
+                    "logical match patterns require relational patterns on both sides",
+                ));
+            };
+            return Ok(Some(MatchPattern::Logical {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+                span: SourceSpan::new(line, column, input.len()),
+            }));
+        }
+    }
+
+    let (token, op) = if input.starts_with(">=") {
+        (">=", BinOp::Ge)
+    } else if input.starts_with("<=") {
+        ("<=", BinOp::Le)
+    } else if input.starts_with("==") {
+        ("==", BinOp::Eq)
+    } else if input.starts_with("!=") {
+        ("!=", BinOp::Ne)
+    } else if input.starts_with('>') {
+        (">", BinOp::Gt)
+    } else if input.starts_with('<') {
+        ("<", BinOp::Lt)
+    } else {
+        return Ok(None);
+    };
+    let (value_source, value_column) =
+        trim_with_column(&input[token.len()..], column + token.len());
+    if value_source.is_empty() {
+        return Err(diag(
+            line,
+            "relational match pattern requires a comparison value",
+        ));
+    }
+    Ok(Some(MatchPattern::Relational(RelationalPattern {
+        op,
+        value: parse_expression_at(value_source, line, value_column)?,
+        span: SourceSpan::new(line, column, input.len()),
+    })))
+}
+
+fn find_top_level_pattern_operator(input: &str, token: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index + token.len() <= bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+                _ if depth == 0 && input[index..].starts_with(token) => return Some(index),
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
 fn parse_list_match_pattern(
     input: &str,
     line: usize,
@@ -3238,6 +3328,11 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
                     struct_span,
                     fields,
                 }));
+                continue;
+            }
+            if let Some(relational) = parse_relational_match_pattern(pattern, line.number, column)?
+            {
+                patterns.push(relational);
                 continue;
             }
             validate_identifier(pattern, line.number)?;
@@ -3739,6 +3834,29 @@ fn find_shell_redirect(input: &str) -> Option<(usize, bool)> {
         index += 1;
     }
     None
+}
+
+fn attach_match_pattern_source(pattern: &mut MatchPattern, source_id: SourceId) {
+    match pattern {
+        MatchPattern::Binding(binding) => binding.span = binding.span.with_source(source_id),
+        MatchPattern::Struct(pattern) => {
+            pattern.struct_span = pattern.struct_span.with_source(source_id);
+            for field in &mut pattern.fields {
+                attach_struct_pattern_field_source(field, source_id);
+            }
+        }
+        MatchPattern::Relational(pattern) => {
+            pattern.span = pattern.span.with_source(source_id);
+            attach_expr_source(&mut pattern.value, source_id);
+        }
+        MatchPattern::Logical {
+            left, right, span, ..
+        } => {
+            *span = span.with_source(source_id);
+            attach_match_pattern_source(left, source_id);
+            attach_match_pattern_source(right, source_id);
+        }
+    }
 }
 
 fn attach_list_match_pattern_source(pattern: &mut ListMatchPattern, source_id: SourceId) {

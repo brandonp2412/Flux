@@ -421,7 +421,18 @@ fn describe(event: Event) -> i64 {
 }
 ```
 
-Every variant must appear exactly once, every arm must target the scrutinee's enum type, and payload pattern arity must match the variant declaration. Struct payload patterns are checked against the concrete payload type, bind projected fields with their declared static types, may nest recursively, and lower directly to native field access without constructing intermediary values. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis.
+Every arm must target the scrutinee's enum type, and payload pattern arity must match the variant declaration. Scalar enum payloads may also use relational patterns `==`, `!=`, `<`, `<=`, `>`, and `>=`; `&&` and `||` combine relational tests without introducing a binding. Relational right-hand sides are compile-time primitive constants, ordered comparisons require `i64`, and equality/inequality additionally support `bool` and `str`. Because these patterns are refutable, a later ordinary binding/`_`/struct arm is still required to make that variant exhaustive. Struct payload patterns are checked against the concrete payload type, bind projected fields with their declared static types, may nest recursively, and lower directly to native field access without constructing intermediary values. A `match` scrutinee is evaluated once, and an exhaustive match whose arms all return satisfies function return analysis.
+
+```flux
+fn classify(reading: Reading) -> i64 {
+    return match reading:
+        Reading.Number(< 0): -1
+        Reading.Number(>= 0 && < 10): 1
+        Reading.Number(_): 2
+        Reading.Label(== "ready" || == "go"): 3
+        Reading.Label(_): 4
+}
+```
 
 `match` can also produce a value while keeping Flux's indentation-based control-flow style. The current multiline expression form is supported directly in typed bindings and returns:
 
@@ -491,7 +502,7 @@ fn classifyList(values: i64[]) -> i64 {
 }
 ```
 
-Guards must have type `bool`. A guarded arm does not make its variant or list-length domain exhaustive because the guard may be false, so an unguarded covering arm is still required somewhere later. Once an unguarded arm covers a variant or list shape, a later arm for that already-covered domain is rejected as unreachable. These rules apply to both statement and value-producing `match` forms.
+Guards must have type `bool`. A guarded arm does not make its variant or list-length domain exhaustive because the guard may be false, so an unguarded covering arm is still required somewhere later. Relational/logical payload patterns have the same conservative exhaustiveness rule: they may fail at runtime, while an ordinary binding, `_`, or struct payload pattern is irrefutable for the already-selected variant. Once an irrefutable unguarded arm covers a variant or list shape, a later arm for that already-covered domain is rejected as unreachable. These rules apply to both statement and value-producing `match` forms.
 
 ## String literals
 
