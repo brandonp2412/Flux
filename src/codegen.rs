@@ -2142,6 +2142,8 @@ fn emit_android_native_application(
             out.push_str("    (*env)->DeleteLocalRef(env, accessibility_hidden_activity_class);\n");
         }
         if element.kind == "Text" {
+            let (default_size, default_bold, default_line_height_percent) =
+                text_semantic_typography(element, signatures)?;
             let text_color = view_property(element, "color")
                 .map(|property| {
                     let Some(value) = static_expr_str(&property.value, signatures) else {
@@ -2176,10 +2178,10 @@ fn emit_android_native_application(
                     Ok(value)
                 })
                 .transpose()?
-                .unwrap_or(0);
-            let text_flag = |name: &str| -> Result<bool, Diagnostic> {
+                .unwrap_or(default_size);
+            let text_flag = |name: &str, default: bool| -> Result<bool, Diagnostic> {
                 let Some(property) = view_property(element, name) else {
-                    return Ok(false);
+                    return Ok(default);
                 };
                 static_expr_bool(&property.value, signatures).ok_or_else(|| {
                     diag(
@@ -2188,10 +2190,10 @@ fn emit_android_native_application(
                     )
                 })
             };
-            let bold = text_flag("bold")?;
-            let italic = text_flag("italic")?;
-            let underline = text_flag("underline")?;
-            let strikethrough = text_flag("strikethrough")?;
+            let bold = text_flag("bold", default_bold)?;
+            let italic = text_flag("italic", false)?;
+            let underline = text_flag("underline", false)?;
+            let strikethrough = text_flag("strikethrough", false)?;
             if text_color.is_some() || text_size > 0 || bold || italic || underline || strikethrough
             {
                 if let Some(value) = text_color.as_ref() {
@@ -2263,7 +2265,8 @@ fn emit_android_native_application(
                     }
                     Ok(value)
                 })
-                .transpose()?;
+                .transpose()?
+                .or(Some(default_line_height_percent));
             let text_align = view_property(element, "text_align")
                 .map(|property| {
                     let Some(value) = static_expr_str(&property.value, signatures) else {
@@ -3429,6 +3432,8 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    gtk_label_set_wrap(GTK_LABEL({variable}), {wrap});\n"
                 ));
+                let (default_size, default_bold, default_line_height_percent) =
+                    text_semantic_typography(element, signatures)?;
                 let size = view_property(element, "size");
                 let bold = view_property(element, "bold");
                 let italic = view_property(element, "italic");
@@ -3438,15 +3443,6 @@ fn emit_linux_gtk_application(
                 let letter_spacing = view_property(element, "letter_spacing");
                 let line_height_percent = view_property(element, "line_height_percent");
                 let color = view_property(element, "color");
-                if size.is_some()
-                    || bold.is_some()
-                    || italic.is_some()
-                    || underline.is_some()
-                    || strikethrough.is_some()
-                    || font_family.is_some()
-                    || letter_spacing.is_some()
-                    || line_height_percent.is_some()
-                    || color.is_some()
                 {
                     let attrs = format!("flux__ui_attrs_{}", element.name);
                     out.push_str(&format!(
@@ -3468,6 +3464,10 @@ fn emit_linux_gtk_application(
                         out.push_str(&format!(
                             "    pango_attr_list_insert({attrs}, pango_attr_size_new({value} * PANGO_SCALE));\n"
                         ));
+                    } else {
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_size_new({default_size} * PANGO_SCALE));\n"
+                        ));
                     }
                     if let Some(property) = bold {
                         let Some(value) = static_expr_bool(&property.value, signatures) else {
@@ -3481,6 +3481,10 @@ fn emit_linux_gtk_application(
                                 "    pango_attr_list_insert({attrs}, pango_attr_weight_new(PANGO_WEIGHT_BOLD));\n"
                             ));
                         }
+                    } else if default_bold {
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_weight_new(PANGO_WEIGHT_BOLD));\n"
+                        ));
                     }
                     if let Some(property) = italic {
                         let Some(value) = static_expr_bool(&property.value, signatures) else {
@@ -3574,6 +3578,11 @@ fn emit_linux_gtk_application(
                         out.push_str(&format!(
                             "    pango_attr_list_insert({attrs}, pango_attr_line_height_new({:.4}));\n",
                             value as f64 / 100.0
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    pango_attr_list_insert({attrs}, pango_attr_line_height_new({:.4}));\n",
+                            default_line_height_percent as f64 / 100.0
                         ));
                     }
                     if let Some(property) = color {
@@ -4980,6 +4989,35 @@ fn emit_ui_refresh(
     }
     out.push_str("}\n\n");
     Ok(())
+}
+
+fn text_semantic_typography(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> Result<(i64, bool, i64), Diagnostic> {
+    let variant = match view_property(element, "variant") {
+        Some(property) => static_expr_str(&property.value, signatures).ok_or_else(|| {
+            diag(
+                property.value.span,
+                "Text.variant must be a compile-time string",
+            )
+        })?,
+        None => "body".to_string(),
+    };
+    match variant.as_str() {
+        "body" => Ok((16, false, 140)),
+        "caption" => Ok((13, false, 135)),
+        "heading" => Ok((20, true, 125)),
+        "title" => Ok((28, true, 120)),
+        "display" => Ok((36, true, 115)),
+        _ => Err(diag(
+            view_property(element, "variant")
+                .expect("non-default variant has a source property")
+                .value
+                .span,
+            "Text.variant must be one of 'body', 'caption', 'heading', 'title', or 'display'",
+        )),
+    }
 }
 
 fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {

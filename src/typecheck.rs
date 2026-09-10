@@ -1277,6 +1277,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     }
     match (kind, property) {
         ("Text", "text")
+        | ("Text", "variant")
         | ("Text", "color")
         | ("Text", "font_family")
         | ("Text", "text_align")
@@ -1458,6 +1459,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
     let specific: &[&str] = match kind {
         "Text" => &[
             "text",
+            "variant",
             "selectable",
             "size",
             "bold",

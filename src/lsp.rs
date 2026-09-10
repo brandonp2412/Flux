@@ -4956,7 +4956,9 @@ mod tests {
         let element = hover_for_document(uri, source, &documents, 3, 5, PositionEncoding::Utf8)
             .expect("built-in element hover should survive incomplete source")
             .to_json();
-        assert!(element.contains("element Text { text: str, selectable: bool, size: i64"));
+        assert!(
+            element.contains("element Text { text: str, variant: str, selectable: bool, size: i64")
+        );
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("onHover: fn() -> void"));
         assert!(element.contains("alignX: str"));

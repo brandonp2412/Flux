@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 376
 - Reported overall progress: **51%**
-- Current net scope growth after the baseline: 15 checkbox items
+- Current net scope growth after the baseline: 16 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -505,6 +505,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Native platform control mapping where beneficial without exposing platform classes to Flux code.
 - [ ] **Beautiful-by-default visual system** that makes minimally styled Flux apps look production-quality out of the box rather than exposing raw platform-widget defaults.
   - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere.
+    - [x] Bootstrap semantic typography roles: `Text.variant` accepts `body`, `caption`, `heading`, `title`, and `display`; omitted variants use a polished body role, both native backends apply scalable role size/weight/line-height defaults, and explicit `size`, `bold`, or `lineHeightPercent` values override the role without requiring a theme framework/runtime.
   - [ ] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions.
   - [ ] Layout defaults provide readable line lengths, comfortable touch targets, consistent rhythm, and sensible density on phone/tablet/desktop sizes without requiring design expertise.
     - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, and Linux equivalents receive a desktop-appropriate 40px minimum. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.

@@ -796,7 +796,7 @@ Android native layout dimensions are density-independent: the backend divides ph
 
 ## UI direction
 
-Flux UI syntax should be declarative and HTML-like, but layout should be flat and grid-first. Deep widget nesting should not be the normal way to express placement. When `grid gap` is omitted, native app roots use a 12-logical-unit default rhythm; auto-sized interactive controls also receive platform-appropriate minimum heights (48dp on Android, 40px on Linux). Explicit gap, fixed track sizes, and `minHeight` override those defaults, so the polished baseline does not prevent deliberate compact layouts.
+Flux UI syntax should be declarative and HTML-like, but layout should be flat and grid-first. Deep widget nesting should not be the normal way to express placement. When `grid gap` is omitted, native app roots use a 12-logical-unit default rhythm; auto-sized interactive controls also receive platform-appropriate minimum heights (48dp on Android, 40px on Linux). Text also has semantic typography defaults: omitting `variant` uses the readable `body` role, while `caption`, `heading`, `title`, and `display` provide increasingly prominent native-scaled typography. Explicit `size`, `bold`, and `lineHeightPercent` remain direct overrides. Explicit gap, fixed track sizes, and `minHeight` likewise override the layout defaults, so the polished baseline does not prevent deliberate compact layouts.
 
 Conceptual direction:
 

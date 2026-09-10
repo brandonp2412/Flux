@@ -8629,6 +8629,75 @@ app Screen
 }
 
 #[test]
+fn text_semantic_variants_supply_polished_native_defaults() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text body at 1,1
+        text: "Body"
+    Text title at 2,1
+        text: "Title"
+        variant: "title"
+    Text custom at 3,1
+        text: "Custom"
+        variant: "display"
+        size: 30
+        bold: false
+        line_height_percent: 150
+}
+app Screen
+"#;
+    check_source(source)
+        .expect("semantic Text variants should have a compiler-owned string contract");
+
+    let linux = compile_to_c(source).expect("semantic Text variants should lower on Linux");
+    assert!(linux.contains("pango_attr_size_new(16 * PANGO_SCALE)"));
+    assert!(linux.contains("pango_attr_line_height_new(1.4000)"));
+    assert!(linux.contains("pango_attr_size_new(28 * PANGO_SCALE)"));
+    assert!(linux.contains("pango_attr_line_height_new(1.2000)"));
+    assert!(linux.contains("pango_attr_size_new(30 * PANGO_SCALE)"));
+    assert!(linux.contains("pango_attr_line_height_new(1.5000)"));
+    assert_eq!(
+        linux
+            .matches("pango_attr_weight_new(PANGO_WEIGHT_BOLD)")
+            .count(),
+        1,
+        "explicit bold: false should override the display role while title stays bold"
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("semantic Text variant fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("semantic Text variants should lower on Android");
+    assert!(android.contains("(jfloat)16.0f, (jboolean)false"));
+    assert!(android.contains("(jfloat)28.0f, (jboolean)true"));
+    assert!(android.contains("(jfloat)30.0f, (jboolean)false"));
+    assert!(android.contains("(jint)140"));
+    assert!(android.contains("(jint)120"));
+    assert!(android.contains("(jint)150"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        variant: "hero"
+}
+app Screen
+"#;
+    check_source(invalid).expect("variant membership is validated during native lowering");
+    let error = compile_to_c(invalid).expect_err("unknown semantic Text variant should fail");
+    assert!(error.message.contains("Text.variant must be one of"));
+}
+
+#[test]
 fn text_typography_properties_lower_to_native_pango_attributes() {
     let source = r#"
 view Screen {
