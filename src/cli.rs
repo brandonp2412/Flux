@@ -289,13 +289,18 @@ fn run() -> Result<(), CliError> {
             Err(CliError::Reported)
         }
         "format" => {
+            if args.len() == 2 && args[1] == "--version" {
+                println!("{}", fluxc::formatter::FORMATTER_VERSION);
+                return Ok(());
+            }
             let path = require_source(&args)?;
             let check_only = match &args[2..] {
                 [] => false,
                 [flag] if flag == "--check" => true,
                 _ => {
                     return Err(CliError::Message(
-                        "format syntax is 'format <file.flux> [--check]'".to_string(),
+                        "format syntax is 'format <file.flux> [--check]' or 'format --version'"
+                            .to_string(),
                     ));
                 }
             };
@@ -1208,7 +1213,8 @@ fn create_project(target: &Path) -> Result<(), CliError> {
         .map_err(|error| format!("failed to create '{}': {error}", tests.display()))?;
     let package_name = project_name_from_path(target);
     let manifest = format!(
-        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n"
+        "[package]\nformat_version = {}\nname = \"{package_name}\"\nversion = \"0.1.0\"\nentry = \"src/main.flux\"\n",
+        fluxc::project::PACKAGE_FORMAT_VERSION
     );
     let main = "view App {\n    grid columns: 1fr\n    grid rows: auto auto\n    grid gap: 12\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello, Flux!\"\n        visible: !clicked\n\n    Button action at 2,1\n        text: \"Toggle\"\n        onPress: clicked => !clicked\n}\n\napp App\n";
     fs::write(target.join("flux.toml"), manifest)
@@ -5084,7 +5090,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -5505,6 +5511,7 @@ mod tests {
         );
 
         let mut manifest = crate::project::PackageManifest {
+            format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "example".to_string(),
             version: None,
             entry: std::path::PathBuf::from("src/main.flux"),
@@ -5548,6 +5555,7 @@ mod tests {
     #[test]
     fn android_manifest_adds_vibrate_permission_only_when_needed() {
         let manifest = crate::project::PackageManifest {
+            format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "example".to_string(),
             version: Some("1.0.0".to_string()),
             entry: std::path::PathBuf::from("src/main.flux"),

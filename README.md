@@ -42,6 +42,7 @@ flux build examples/hello.flux --target aarch64-unknown-linux-gnu --sysroot /opt
 flux test examples/package
 flux check examples/hello.flux
 flux format examples/hello.flux
+flux format --version
 flux debug examples/branches.flux --break examples/branches.flux:3
 flux profile benchmarks/perf/compute.flux
 flux lsp

@@ -6765,6 +6765,19 @@ fn formatter_is_deterministic_without_comments() {
 }
 
 #[test]
+fn formatter_contract_has_a_stable_discoverable_version() {
+    assert_eq!(fluxc::formatter::FORMATTER_VERSION, 1);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["format", "--version"])
+        .output()
+        .expect("flux format --version should launch");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn semantic_database_exposes_structural_control_flow_graphs_with_source_spans() {
     let source_id = SourceId::new(1305);
     let source = r#"
@@ -8697,6 +8710,7 @@ fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
 
     let manifest =
         fs::read_to_string(root.join("flux.toml")).expect("new project should contain a manifest");
+    assert!(manifest.contains("format_version = 1"));
     assert!(manifest.contains("name = \"flux-new-app-"));
     assert!(manifest.contains("entry = \"src/main.flux\""));
     let source = fs::read_to_string(root.join("src/main.flux"))
@@ -9406,6 +9420,10 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     .expect("package entry should be writable");
 
     let parsed = fluxc::project::read_manifest(&manifest).expect("manifest should parse");
+    assert_eq!(
+        parsed.format_version,
+        fluxc::project::PACKAGE_FORMAT_VERSION
+    );
     assert_eq!(parsed.name, "sample");
     assert_eq!(parsed.version.as_deref(), Some("0.1.0"));
     assert_eq!(parsed.entry, fs::canonicalize(&entry).unwrap());
@@ -9467,6 +9485,21 @@ fn package_manifest_rejects_invalid_schema_and_escaping_entries() {
         error
             .message
             .contains("requires a non-empty [package].name")
+    }));
+
+    let unsupported_version = root.join("unsupported-version.toml");
+    fs::write(
+        &unsupported_version,
+        "[package]\nformat_version = 2\nname = \"sample\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("versioned manifest should be writable");
+    let errors = fluxc::project::read_manifest(&unsupported_version)
+        .expect_err("unknown package format versions must fail explicitly");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unsupported [package].format_version 2")
+            && error.message.contains("supports version 1")
     }));
 
     let unknown = root.join("unknown.toml");

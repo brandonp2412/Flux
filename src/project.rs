@@ -181,8 +181,11 @@ pub struct AndroidPackageConfig {
     pub key_alias: Option<String>,
 }
 
+pub const PACKAGE_FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
+    pub format_version: u32,
     pub name: String,
     pub version: Option<String>,
     pub entry: PathBuf,
@@ -408,6 +411,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     })?;
     let source_id = SourceId::from_name(canonical_manifest.to_string_lossy().as_ref());
     let mut section = None::<String>;
+    let mut format_version = None::<u32>;
     let mut name = None::<String>;
     let mut version = None::<String>;
     let mut entry = None::<String>;
@@ -458,6 +462,23 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         let raw_value = raw_value.trim();
         match section.as_deref() {
             Some("package") => {
+                if key == "format_version" {
+                    let value = match parse_manifest_u32(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    if format_version.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            "duplicate [package] field 'format_version'",
+                        ));
+                    }
+                    continue;
+                }
                 let value = match parse_manifest_string(raw_value) {
                     Ok(value) => value,
                     Err(message) => {
@@ -561,6 +582,16 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         }
     }
 
+    if format_version.is_some_and(|value| value != PACKAGE_FORMAT_VERSION) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "unsupported [package].format_version {}; this compiler supports version {}",
+                format_version.expect("format version was checked"),
+                PACKAGE_FORMAT_VERSION
+            ),
+        ));
+    }
     if name.as_deref().is_none_or(str::is_empty) {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
@@ -685,6 +716,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         }
     });
     Ok(PackageManifest {
+        format_version: format_version.unwrap_or(PACKAGE_FORMAT_VERSION),
         android: AndroidPackageConfig {
             application_id: android_application_id
                 .unwrap_or_else(|| default_android_application_id(&name)),

@@ -7,6 +7,12 @@ use crate::ast::{
 use crate::diagnostic::Diagnostic;
 use crate::parser;
 
+/// Compatibility version of Flux's canonical source formatter.
+///
+/// A change that intentionally rewrites already-canonical source differently must
+/// increment this value so editor/CI integrations can pin formatter behavior.
+pub const FORMATTER_VERSION: u32 = 1;
+
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
     let mut formatted = HashMap::new();
