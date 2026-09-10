@@ -36,27 +36,6 @@ flux new my-flux-app
 flux run my-flux-app
 ```
 
-```sh
-flux build examples/hello.flux -o hello
-flux build examples/hello.flux --target aarch64-unknown-linux-gnu --sysroot /opt/aarch64-sysroot -o hello-aarch64
-flux test examples/package
-flux check examples/hello.flux
-flux format examples/hello.flux
-flux format --version
-flux debug examples/branches.flux --break examples/branches.flux:3
-flux profile benchmarks/perf/compute.flux
-flux lsp
-```
-
-Android:
-
-```sh
-flux build android examples/android_app --mode debug --abi arm64-v8a
-flux run android examples/android_app --device waydroid
-flux build android examples/android_app --mode release --format aab
-flux publish android my-app --json
-```
-
 ## Built with Flux
 
 <div align="center">
