@@ -279,7 +279,9 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
 ) {
-    if runtime_usage.contains("flux__time_") {
+    if runtime_usage.contains("flux__time_")
+        || runtime_usage.contains("flux__process_termination_requested(")
+    {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
     out.push_str("#include <stdbool.h>\n");
@@ -297,6 +299,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__time_") {
         out.push_str("#include <time.h>\n");
+    }
+    if runtime_usage.contains("flux__process_termination_requested(") {
+        out.push_str("#include <signal.h>\n");
     }
     if uses_background
         || runtime_usage.contains("flux__process_pid(")
@@ -1400,6 +1405,15 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_env(") {
         out.push_str("static inline const char *flux__process_env(const char *name, const char *fallback) { const char *value = getenv(name); return value != NULL ? value : fallback; }\n");
+    }
+    if runtime_usage.contains("flux__process_termination_requested(") {
+        out.push_str("static volatile sig_atomic_t flux__process_termination_flag = 0;\n");
+        out.push_str("static void flux__process_termination_handler(int signal_number) { (void)signal_number; flux__process_termination_flag = 1; }\n");
+        out.push_str("static inline void flux__process_install_termination_handlers(void) { static bool installed = false; if (installed) return; struct sigaction action; memset(&action, 0, sizeof(action)); action.sa_handler = flux__process_termination_handler; sigemptyset(&action.sa_mask); if (sigaction(SIGINT, &action, NULL) != 0 || sigaction(SIGTERM, &action, NULL) != 0) { fputs(\"Flux runtime error: failed to install process termination handlers\\n\", stderr); abort(); } installed = true; }\n");
+        out.push_str("static inline bool flux__process_termination_requested(void) { flux__process_install_termination_handlers(); return flux__process_termination_flag != 0; }\n");
+    }
+    if runtime_usage.contains("flux__process_exit(") {
+        out.push_str("static inline void flux__process_exit(int64_t code) { if (code < 0 || code > 255) { fputs(\"Flux runtime error: process.exit code must be between 0 and 255\\n\", stderr); abort(); } exit((int)code); }\n");
     }
 
     if uses_locale && !uses_android {
@@ -11852,6 +11866,27 @@ fn emit_qualified_call(
                     "flux__process_parent_pid"
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
+            }
+            "terminationRequested" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid process call reached code generation"));
+                }
+                return Ok((
+                    "flux__process_termination_requested()".to_string(),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "exit" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid process call reached code generation"));
+                }
+                let code = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__process_exit({})", code.code),
+                    Vec::new(),
+                    None,
+                ));
             }
             "hasEnv" => {
                 if args.len() != 1 {

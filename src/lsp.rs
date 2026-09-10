@@ -1143,6 +1143,14 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "terminationRequested",
+            3,
+            "fn process.terminationRequested() -> bool",
+        );
+        push_completion_item(items, seen, "exit", 3, "fn process.exit(code: i64) -> void");
+        push_completion_item(
+            items,
+            seen,
             "hasEnv",
             3,
             "fn process.hasEnv(name: str) -> bool",
@@ -2204,6 +2212,22 @@ fn signature_help_for_document_cached(
                         &format!("process.{member}"),
                         &[],
                         "i64",
+                        active_parameter,
+                    ));
+                }
+                "terminationRequested" => {
+                    return Some(signature_help_for_builtin(
+                        "process.terminationRequested",
+                        &[],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "exit" => {
+                    return Some(signature_help_for_builtin(
+                        "process.exit",
+                        &["code: i64"],
+                        "void",
                         active_parameter,
                     ));
                 }
@@ -5261,6 +5285,8 @@ mod tests {
         .to_json();
         assert!(process_items.contains("fn process.pid() -> i64"));
         assert!(process_items.contains("fn process.parentPid() -> i64"));
+        assert!(process_items.contains("fn process.terminationRequested() -> bool"));
+        assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
 
@@ -5850,11 +5876,16 @@ mod tests {
     #[test]
     fn signature_help_supports_process_capabilities() {
         let uri = "file:///tmp/process-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.terminationRequested())\n    process.exit(0)\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("process.pid(", "fn process.pid() -> i64"),
             ("process.parentPid(", "fn process.parentPid() -> i64"),
+            (
+                "process.terminationRequested(",
+                "fn process.terminationRequested() -> bool",
+            ),
+            ("process.exit(", "fn process.exit(code: i64) -> void"),
             ("process.hasEnv(", "fn process.hasEnv(name: str) -> bool"),
             (
                 "process.env(",

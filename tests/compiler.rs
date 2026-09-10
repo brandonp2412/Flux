@@ -1228,6 +1228,8 @@ fn main() -> i64 {
 fn hidden() -> void {
     print(process.pid())
     print(process.env("HOME", ""))
+    print(process.terminationRequested())
+    process.exit(0)
 }
 fn main() -> i64 {
     return 0
@@ -1237,11 +1239,16 @@ fn main() -> i64 {
         compile_to_c(unused).expect("dead process calls should not poison Linux");
     assert!(!unused_generated.contains("flux__process_pid(void)"));
     assert!(!unused_generated.contains("flux__process_env(const char"));
+    assert!(!unused_generated.contains("flux__process_termination_requested(void)"));
+    assert!(!unused_generated.contains("flux__process_exit(int64_t code)"));
 
     let invalid = r#"
 fn main() -> i64 {
     process.pid(1)
     process.parentPid(false)
+    process.terminationRequested(1)
+    process.exit(false)
+    process.exit(256)
     process.hasEnv(42)
     process.env("HOME", 1)
     process.unknown()
@@ -1259,6 +1266,19 @@ fn main() -> i64 {
         error
             .message
             .contains("process.parentPid expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.terminationRequested expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("process.exit code") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.exit code must be between 0 and 255")
     }));
     assert!(
         errors
@@ -1301,6 +1321,91 @@ fn main() -> i64 {
             .message
             .contains("process.* APIs require a desktop/server target")
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn process_lifecycle_handles_termination_signals_and_explicit_exit() {
+    let root = std::env::temp_dir().join(format!("flux-process-lifecycle-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("process lifecycle fixture should be writable");
+
+    let marker = root.join("ready");
+    let signal_source = format!(
+        "fn main() -> i64 {{\n    print(process.terminationRequested())\n    print(fs.writeText(\"{}\", \"ready\"))\n    while !process.terminationRequested():\n        time.sleepMillis(5)\n    print(\"terminated\")\n    return 0\n}}\n",
+        marker.display()
+    );
+    check_source(&signal_source).expect("termination polling should typecheck");
+    let generated =
+        compile_to_c(&signal_source).expect("termination polling should lower natively");
+    assert!(generated.contains("#include <signal.h>"));
+    assert!(generated.contains("sigaction(SIGINT"));
+    assert!(generated.contains("sigaction(SIGTERM"));
+    assert!(generated.contains("static inline bool flux__process_termination_requested(void)"));
+
+    let signal_source_path = root.join("signal.flux");
+    let signal_binary = root.join("signal");
+    fs::write(&signal_source_path, signal_source).expect("signal source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&signal_source_path)
+        .arg("-o")
+        .arg(&signal_binary)
+        .output()
+        .expect("signal fixture should build");
+    assert!(
+        built.status.success(),
+        "signal fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&signal_binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("signal fixture should start");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        marker.exists(),
+        "Flux process never installed its termination handler"
+    );
+    let kill = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status()
+        .expect("SIGTERM should be deliverable");
+    assert!(kill.success());
+    let output = child
+        .wait_with_output()
+        .expect("signal fixture should exit cleanly");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("terminated"));
+
+    let exit_source = "fn main() -> i64 {\n    process.exit(23)\n    return 0\n}\n";
+    check_source(exit_source).expect("explicit process exit should typecheck");
+    let exit_generated = compile_to_c(exit_source).expect("process exit should lower natively");
+    assert!(exit_generated.contains("static inline void flux__process_exit(int64_t code)"));
+    let exit_source_path = root.join("exit.flux");
+    let exit_binary = root.join("exit");
+    fs::write(&exit_source_path, exit_source).expect("exit source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&exit_source_path)
+        .arg("-o")
+        .arg(&exit_binary)
+        .output()
+        .expect("exit fixture should build");
+    assert!(
+        built.status.success(),
+        "exit fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&exit_binary)
+        .status()
+        .expect("exit fixture should run");
+    assert_eq!(status.code(), Some(23));
+
     let _ = fs::remove_dir_all(&root);
 }
 

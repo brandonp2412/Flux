@@ -4867,6 +4867,38 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
+            "terminationRequested" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "process.terminationRequested expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            "exit" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("process.exit expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &actual, "process.exit code")?;
+                if matches!(
+                    constant_primitive_value(&args[0], signatures),
+                    Some(ConstantValue::I64(value)) if !(0..=255).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[0].span,
+                        "process.exit code must be between 0 and 255",
+                    ));
+                }
+                return Ok(Vec::new());
+            }
             "hasEnv" => {
                 if args.len() != 1 {
                     return Err(diag(
