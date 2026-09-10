@@ -33,6 +33,10 @@ fn textChanged(value: str) -> void {
     print(value)
 }
 
+fn keyPressed(key: str) -> void {
+    print(key)
+}
+
 fn focusNextWrapped() -> void {
     android.focusNext(true)
 }
@@ -86,6 +90,7 @@ view Screen {
         accessibilityDescription: "Type text to exercise native Android input callbacks"
         onChange: textChanged
         onSubmit: textChanged
+        onKey: keyPressed
     Toggle details at 6,1
         label: "Show details"
         checked: expanded

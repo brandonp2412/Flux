@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 398
+- Completed baseline units: 399
 - Reported overall progress: **54%**
 - Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -566,8 +566,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Touch input for the bootstrap native UI: portable tap and native long-press recognition are wired on current application backends; multi-touch/drag/scale/velocity semantics remain in the dedicated gesture work.
   - [x] The same `onTap` contract lowers on Android to a compiler-wired native `View.OnTouchListener` and dispatches `ACTION_UP` directly back into compiled Flux callbacks/state transitions, with no application-authored Java/Kotlin/JNI bridge.
   - [x] Common `onLongPress: fn() -> void` lowers to Android's native `View.OnLongClickListener`, consumes the recognized long press after direct Flux dispatch, and supports typed functional state transitions without exposing `MotionEvent` or listener objects.
-- [ ] Keyboard input.
-  - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Portable key events and explicit keyboard handling remain pending.
+- [x] Keyboard input.
+  - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Common `onKey: fn(str) -> void` now provides portable explicit key-down handling on Linux and Android without exposing toolkit event objects: focused elements receive normalized names such as `Enter`, `Escape`, `Backspace`, `Delete`, `ArrowLeft`/`ArrowRight`/`ArrowUp`/`ArrowDown`, `Home`, `End`, and `PageUp`/`PageDown`, while printable Unicode keys are passed as their text value. Linux uses a capture-phase GTK key controller and Android uses the native `View.OnKeyListener`; declaring `onKey` also makes otherwise non-focusable native elements keyboard-focusable.
 - [ ] Focus model.
   - [x] Bootstrap `TextInput.autofocus: bool` provides explicit initial focus and native GTK focus traversal remains available without exposing focus/controller objects to Flux source. Common `onFocus` / `onBlur` events on native controls accept named `fn() -> void` callbacks or typed functional state transitions through native focus controllers. Programmatic focus movement, focus scopes, and restoration remain pending.
 - [x] Hover.

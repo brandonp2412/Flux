@@ -9644,6 +9644,55 @@ app Shortcuts
 }
 
 #[test]
+fn native_elements_support_portable_keyboard_callbacks() {
+    let source = r#"
+fn key_notice(key: str) -> void {
+    print(key)
+}
+
+view KeyCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Keyboard target"
+        onKey: key_notice
+}
+app KeyCard
+"#;
+
+    check_source(source).expect("portable key callbacks should typecheck");
+    let generated = compile_to_c(source).expect("portable key callbacks should lower to GTK4");
+    assert!(generated.contains("static const char *flux__ui_key_name(guint keyval, char utf8[8])"));
+    assert!(generated.contains("case GDK_KEY_Return:"));
+    assert!(generated.contains("return \"Enter\";"));
+    assert!(generated.contains("return \"ArrowLeft\";"));
+    assert!(generated.contains("gdk_keyval_to_unicode(keyval)"));
+    assert!(generated.contains("g_unichar_to_utf8(character, utf8)"));
+    assert!(generated.contains("flux__fn_key_notice(key); flux__ui_refresh(); return FALSE;"));
+    assert!(generated.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
+    assert!(generated.contains("gtk_event_controller_key_new()"));
+    assert!(generated.contains(
+        "gtk_event_controller_set_propagation_phase(flux__key_title, GTK_PHASE_CAPTURE)"
+    ));
+    assert!(generated.contains("\"key-pressed\", G_CALLBACK(flux__ui_key_title)"));
+
+    let invalid = r#"
+fn no_key() -> void {
+    print("missing key")
+}
+view BadKey {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+        onKey: no_key
+}
+app BadKey
+"#;
+    check_source_all(invalid).expect_err("onKey callbacks must accept the portable str key name");
+}
+
+#[test]
 fn native_elements_support_hover_leave_callbacks_and_state_transitions() {
     let source = r#"
 fn leave_notice() -> void {
@@ -10851,6 +10900,10 @@ fn submitted(value: str) -> void {
     print(value)
 }
 
+fn key_pressed(key: str) -> void {
+    print(key)
+}
+
 view Settings {
     state enabled: bool = false
     state selected: i64 = 0
@@ -10894,6 +10947,7 @@ view Settings {
         accessibilityHidden: !enabled
         onTap: enabled => true
         onLongPress: enabled => false
+        onKey: key_pressed
         on_change: changed
         on_submit: submitted
     Toggle enabled_toggle at 2,1
@@ -11025,6 +11079,12 @@ app Settings(theme: "dark")
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
     assert!(generated.contains("setOnLongClickListener"));
     assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;")));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnKey"));
+    assert!(generated.contains("setOnKeyListener"));
+    assert!(generated.contains("setFocusableInTouchMode"));
+    assert!(generated.contains(&format!(
+        "case {query_id}: flux__fn_key_pressed(value); break;"
+    )));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));

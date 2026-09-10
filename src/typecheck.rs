@@ -1294,6 +1294,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                     returns: Vec::new(),
                 });
             }
+            "on_key" => {
+                return Some(Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                });
+            }
             _ => {}
         }
     }
@@ -1452,6 +1458,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_leave",
     "on_focus",
     "on_blur",
+    "on_key",
     "align_x",
     "align_y",
     "margin",

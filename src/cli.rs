@@ -2019,7 +2019,7 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener, View.OnKeyListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -2054,6 +2054,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
     private static native void nativeOnHover(int viewId, boolean hovered);
+    private static native void nativeOnKey(int viewId, String key);
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
 
@@ -2182,6 +2183,38 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     public boolean onHover(View view, MotionEvent event) {
         if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) nativeOnHover(view.getId(), true);
         else if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) nativeOnHover(view.getId(), false);
+        return false;
+    }
+
+    private static String fluxKeyName(int keyCode, KeyEvent event) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER: return "Enter";
+            case KeyEvent.KEYCODE_ESCAPE: return "Escape";
+            case KeyEvent.KEYCODE_TAB: return "Tab";
+            case KeyEvent.KEYCODE_DEL: return "Backspace";
+            case KeyEvent.KEYCODE_FORWARD_DEL: return "Delete";
+            case KeyEvent.KEYCODE_DPAD_LEFT: return "ArrowLeft";
+            case KeyEvent.KEYCODE_DPAD_RIGHT: return "ArrowRight";
+            case KeyEvent.KEYCODE_DPAD_UP: return "ArrowUp";
+            case KeyEvent.KEYCODE_DPAD_DOWN: return "ArrowDown";
+            case KeyEvent.KEYCODE_MOVE_HOME: return "Home";
+            case KeyEvent.KEYCODE_MOVE_END: return "End";
+            case KeyEvent.KEYCODE_PAGE_UP: return "PageUp";
+            case KeyEvent.KEYCODE_PAGE_DOWN: return "PageDown";
+            default:
+                int codePoint = event.getUnicodeChar();
+                if (codePoint > 0 && !Character.isISOControl(codePoint)) {
+                    return new String(Character.toChars(codePoint));
+                }
+                String fallback = KeyEvent.keyCodeToString(keyCode);
+                return fallback.startsWith("KEYCODE_") ? fallback.substring(8) : fallback;
+        }
+    }
+
+    @Override
+    public boolean onKey(View view, int keyCode, KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) nativeOnKey(view.getId(), fluxKeyName(keyCode, event));
         return false;
     }
 
@@ -3578,8 +3611,9 @@ mod tests {
         let activity = android_activity_java_source();
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
-            activity
-                .contains("View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener")
+            activity.contains(
+                "View.OnHoverListener, View.OnTouchListener, View.OnLongClickListener, View.OnKeyListener"
+            )
         );
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
@@ -3599,6 +3633,11 @@ mod tests {
         assert!(activity.contains("nativeDestroy();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
         assert!(activity.contains("private static native void nativeOnTap(int viewId);"));
+        assert!(
+            activity.contains("private static native void nativeOnKey(int viewId, String key);")
+        );
+        assert!(activity.contains("return \"ArrowLeft\";"));
+        assert!(activity.contains("nativeOnKey(view.getId(), fluxKeyName(keyCode, event));"));
         assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
         assert!(activity.contains("suppressTapViewId = View.NO_ID;"));
         assert!(activity.contains("else nativeOnTap(viewId);"));

@@ -2703,6 +2703,21 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->CallVoidMethod(env, child, set_hover_listener, activity);\n");
         }
+        if view_property(element, "on_key").is_some() {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+            out.push_str("    jmethodID set_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+            out.push_str("    jmethodID set_key_listener = (*env)->GetMethodID(env, child_class, \"setOnKeyListener\", \"(Landroid/view/View$OnKeyListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_focusable == NULL || set_focusable_in_touch_mode == NULL || set_key_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, child, set_focusable, (jboolean)true);\n",
+            );
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_focusable_in_touch_mode, (jboolean)true);\n");
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_key_listener, activity);\n");
+        }
         out.push_str("    jobject params = (*env)->NewObject(env, params_class, params_ctor);\n");
         out.push_str("    if (params == NULL) return;\n");
         let row_start = element.row.saturating_sub(1) as usize;
@@ -2903,6 +2918,31 @@ fn emit_android_native_application(
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
+
+    if view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "on_key").is_some())
+    {
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnKey(JNIEnv *env, jclass activity_class, jint view_id, jstring key) {\n    (void)activity_class;\n    if (key == NULL) return;\n    const char *value = (*env)->GetStringUTFChars(env, key, NULL);\n    if (value == NULL) return;\n    switch (view_id) {\n");
+        for element in &view.elements {
+            let Some(action) = view_property(element, "on_key") else {
+                continue;
+            };
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onKey requires a named fn(str) -> void callback",
+                ));
+            };
+            let element_id = stable_android_element_id(&view.name, &element.name);
+            out.push_str(&format!(
+                "        case {element_id}: {}(value); break;\n",
+                function_c_name(function)
+            ));
+        }
+        out.push_str("        default: break;\n    }\n    (*env)->ReleaseStringUTFChars(env, key, value);\n}\n\n");
+    }
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnLongPress(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
     for element in &view.elements {
@@ -3391,6 +3431,15 @@ fn emit_linux_gtk_application(
             ));
         }
     }
+    if view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "on_key").is_some())
+    {
+        out.push_str(
+            "static const char *flux__ui_key_name(guint keyval, char utf8[8]) {\n    switch (keyval) {\n        case GDK_KEY_Return:\n        case GDK_KEY_KP_Enter: return \"Enter\";\n        case GDK_KEY_Escape: return \"Escape\";\n        case GDK_KEY_Tab:\n        case GDK_KEY_ISO_Left_Tab: return \"Tab\";\n        case GDK_KEY_BackSpace: return \"Backspace\";\n        case GDK_KEY_Delete:\n        case GDK_KEY_KP_Delete: return \"Delete\";\n        case GDK_KEY_Left:\n        case GDK_KEY_KP_Left: return \"ArrowLeft\";\n        case GDK_KEY_Right:\n        case GDK_KEY_KP_Right: return \"ArrowRight\";\n        case GDK_KEY_Up:\n        case GDK_KEY_KP_Up: return \"ArrowUp\";\n        case GDK_KEY_Down:\n        case GDK_KEY_KP_Down: return \"ArrowDown\";\n        case GDK_KEY_Home:\n        case GDK_KEY_KP_Home: return \"Home\";\n        case GDK_KEY_End:\n        case GDK_KEY_KP_End: return \"End\";\n        case GDK_KEY_Page_Up:\n        case GDK_KEY_KP_Page_Up: return \"PageUp\";\n        case GDK_KEY_Page_Down:\n        case GDK_KEY_KP_Page_Down: return \"PageDown\";\n        default: break;\n    }\n    gunichar character = gdk_keyval_to_unicode(keyval);\n    if (character != 0 && !g_unichar_iscntrl(character)) {\n        int length = g_unichar_to_utf8(character, utf8);\n        utf8[length] = '\\0';\n        return utf8;\n    }\n    const char *name = gdk_keyval_name(keyval);\n    return name != NULL ? name : \"Unknown\";\n}\n"
+        );
+    }
     for element in &view.elements {
         if let Some(action) = view_property(element, "on_tap") {
             let body = ui_zero_arg_event_body(action, view, signatures)?;
@@ -3404,6 +3453,19 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static void flux__ui_long_press_{}(GtkGestureLongPress *gesture, double x, double y, gpointer data) {{ (void)gesture; (void)x; (void)y; (void)data; {body} }}\n",
                 element.name,
+            ));
+        }
+        if let Some(action) = view_property(element, "on_key") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onKey requires a named fn(str) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static gboolean flux__ui_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; char utf8[8] = {{0}}; const char *key = flux__ui_key_name(keyval, utf8); {}(key); flux__ui_refresh(); return FALSE; }}\n",
+                element.name,
+                function_c_name(function),
             ));
         }
         for (property_name, callback_name) in [("on_hover", "hover"), ("on_leave", "leave")] {
@@ -4272,6 +4334,13 @@ fn emit_linux_gtk_application(
             }
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
+        if view_property(element, "on_key").is_some() {
+            let controller = format!("flux__key_{}", element.name);
+            out.push_str(&format!(
+                "    gtk_widget_set_focusable({variable}, TRUE);\n    GtkEventController *{controller} = gtk_event_controller_key_new();\n    gtk_event_controller_set_propagation_phase({controller}, GTK_PHASE_CAPTURE);\n    g_signal_connect({controller}, \"key-pressed\", G_CALLBACK(flux__ui_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {controller});\n",
+                element.name
             ));
         }
         if view_property(element, "on_focus").is_some()
