@@ -70,7 +70,7 @@ fn countTo(limit: i64) -> i64 {
 }
 ```
 
-`while` conditions must have type `bool`; `break` and `continue` use the same statically checked loop scope as `for`. Assignment is a statement, not a value-producing expression. The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions. `i64` arithmetic is checked: `+`, `-`, `*`, unary `-`, and `/` fail explicitly on overflow or invalid division. Integer `/` truncates toward zero, so Flux does not need a second Dart-style `~/` operator with identical `i64` semantics.
+`while` conditions must have type `bool`; `break` and `continue` use the same statically checked loop scope as `for`. Assignment is deliberately statement-only rather than a value-producing expression: nested forms such as `let next: i64 = (count = 1)` are parse errors, keeping mutation locally visible and preventing assignment from being hidden inside conditions, calls, or larger expressions. The bootstrap compiler intentionally performs no implicit `bool`/integer/string conversions. `i64` arithmetic is checked: `+`, `-`, `*`, unary `-`, and `/` fail explicitly on overflow or invalid division. Integer `/` truncates toward zero, so Flux does not need a second Dart-style `~/` operator with identical `i64` semantics.
 
 ## Flat grid views
 

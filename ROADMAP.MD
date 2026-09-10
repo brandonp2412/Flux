@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 427
+- Completed baseline units: 428
 - Reported overall progress: **58%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -298,7 +298,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [x] No separate Dart-style `~/`: Flux `i64` `/` already truncates toward zero and is checked for division by zero and `i64::MIN / -1`, so a second operator would duplicate semantics.
 - [x] Concise inclusive integer ranges with `start..=end` alongside exclusive `start..end`, including single-evaluation bounds and overflow-safe native iteration.
 - [x] Match expressions returning values; broader switch-like pattern expression ergonomics can build on the same lowering.
-- [ ] Assignment expressions only where they remain readable and analyzable. Ordinary assignment is now a statement restricted to explicitly mutable `var` bindings; do not conflate that with value-producing assignment expressions.
+- [x] Assignment expressions are intentionally not part of Flux: assignment remains a statement restricted to explicitly mutable `var` bindings, keeping mutation locally visible and preventing hidden side effects inside conditions/calls/larger expressions. A standalone `=` inside an expression now produces a targeted parse diagnostic while `==` remains ordinary equality.
 - [x] Strong primitive constant folding for literal/constant expression trees in ordinary code and compile-time UI/application metadata, with checked integer semantics, comparisons/equality, and boolean short-circuiting; runtime-dependent expressions remain dynamic.
 
 ## Async/generator ergonomics

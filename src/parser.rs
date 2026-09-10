@@ -4903,6 +4903,14 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
                 b'=' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::EqEq, 2),
+                b'=' => {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        SourceSpan::new(line, column + index, 1),
+                        "assignment is a statement, not a value-producing expression",
+                    )
+                    .with_note("declare mutable locals with 'var' and write assignment as its own statement"));
+                }
                 b'<' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::Le, 2),
                 b'<' => (TokenKind::Lt, 1),
                 b'>' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::Ge, 2),

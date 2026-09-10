@@ -11126,11 +11126,11 @@ app Screen
 "#;
     let errors =
         check_source_all(wrong_property).expect_err("transition syntax outside on_press must fail");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("unexpected character '='"))
-    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("assignment is a statement, not a value-producing expression")
+    }));
 }
 
 #[test]
@@ -13753,6 +13753,41 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_count = flux_add_i64(flux__local_count, INT64_C(1));"));
     assert!(generated.contains("continue;"));
     assert!(generated.contains("break;"));
+}
+
+#[test]
+fn assignment_expressions_are_rejected_with_statement_only_guidance() {
+    let source = r#"
+fn main() -> i64 {
+    var count: i64 = 0
+    let next: i64 = (count = 1)
+    return next
+}
+"#;
+    let errors =
+        check_source_all(source).expect_err("assignment expressions must stay unsupported");
+    let assignment = errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("assignment is a statement, not a value-producing expression")
+        })
+        .expect("assignment-expression rejection should explain the language rule");
+    assert!(assignment.notes.iter().any(|note| {
+        note.contains("declare mutable locals with 'var'")
+            && note.contains("assignment as its own statement")
+    }));
+
+    let statement = r#"
+fn main() -> i64 {
+    var count: i64 = 0
+    count = 1
+    return count
+}
+"#;
+    check_source(statement).expect("ordinary mutable assignment statements must remain valid");
+    compile_to_c(statement).expect("ordinary assignment statements must still lower natively");
 }
 
 #[test]
