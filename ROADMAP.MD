@@ -47,6 +47,7 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [x] No comments in Flux source; `#...` outside strings is a syntax error rather than a comment form.
 - [x] No lint/warning tier for source cleanliness: violations such as unused named bindings/parameters/loop or pattern variables are compile errors. A leading `_` explicitly marks an intentionally ignored binding.
 - [x] No ternary/conditional-expression syntax; value selection uses control flow or value-producing `match` rather than `a if condition else b`/`?:` forms.
+- [x] Namespace, enum, interface, and platform qualification uses dot syntax (`Outcome.Ok(...)`, `Storage.load(...)`, `android.vibrate(...)`).
 - [x] No source-language generics.
 - [x] No `try` / `catch` / exceptions for recoverable failures.
 - [x] Explicit multi-value returns and `error` values form the recoverable-error model.
@@ -175,6 +176,7 @@ The interface/capability foundation is complete for the bootstrap compiler: decl
 - [x] Explicit public/private visibility: top-level functions, constants, aliases, structs, enums, and interfaces are module-private by default; `pub` exports cross-file API, public signatures cannot leak private named types, formatter/source spans preserve visibility, and imports/implementation blocks cannot be `pub`.
 - [x] Package manifest (`flux.toml`) with dependency-free `[package]` parsing, required `name`/`entry`, optional `version`, strict schema diagnostics, validated package-root containment, checked-in native example coverage, and project-aware CLI targeting by source file, package directory, or manifest path.
 - [x] Stable module naming rules: imports use normalized relative `.flux` paths without `.`/`..` segments, package imports cannot escape the manifest root, and every loaded source receives a deterministic package-qualified module name derived from `[package].name` plus its root-relative source path (direct source projects use the entry-directory-relative path).
+- [x] Qualified names consistently use dot syntax; `.` distinguishes namespace/type qualification by static context while remaining ordinary value field access for values.
 - [x] Cyclic dependency diagnostics with the cycle reported at the importing path span and the resolved cycle chain attached as a note.
 - [ ] Package-level constants/resources.
 - [ ] Stable ABI rules for native/library boundaries.
