@@ -1877,6 +1877,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.widget.CompoundButton;
 import android.widget.EditText;
@@ -1896,6 +1897,8 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, String> textValues = new HashMap<>();
     private final Map<Integer, Integer> selectionStarts = new HashMap<>();
     private final Map<Integer, Integer> selectionEnds = new HashMap<>();
+    private final Map<Integer, Integer> composingStarts = new HashMap<>();
+    private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private boolean restoringInput;
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
@@ -2026,6 +2029,12 @@ public final class FluxActivity extends Activity implements View.OnClickListener
             int start = Math.max(0, Math.min(length, selectionStarts.getOrDefault(viewId, length)));
             int end = Math.max(start, Math.min(length, selectionEnds.getOrDefault(viewId, start)));
             view.setSelection(start, end);
+            Integer composingStart = composingStarts.get(viewId);
+            Integer composingEnd = composingEnds.get(viewId);
+            if (composingStart != null && composingEnd != null
+                    && composingStart >= 0 && composingEnd > composingStart && composingEnd <= length) {
+                new BaseInputConnection(view, true).setComposingRegion(composingStart, composingEnd);
+            }
         } finally {
             restoringInput = false;
         }
@@ -2333,6 +2342,15 @@ public final class FluxActivity extends Activity implements View.OnClickListener
             }
             @Override public void afterTextChanged(Editable s) {
                 rememberSelection(viewId, view.getSelectionStart(), view.getSelectionEnd());
+                int composingStart = BaseInputConnection.getComposingSpanStart(s);
+                int composingEnd = BaseInputConnection.getComposingSpanEnd(s);
+                if (composingStart >= 0 && composingEnd > composingStart) {
+                    composingStarts.put(viewId, composingStart);
+                    composingEnds.put(viewId, composingEnd);
+                } else {
+                    composingStarts.remove(viewId);
+                    composingEnds.remove(viewId);
+                }
             }
         });
         if (onSubmit) {
@@ -3212,6 +3230,9 @@ mod tests {
         );
         assert!(activity.contains("selectionStarts"));
         assert!(activity.contains("rememberSelection"));
+        assert!(activity.contains("composingStarts"));
+        assert!(activity.contains("BaseInputConnection.getComposingSpanStart"));
+        assert!(activity.contains("setComposingRegion"));
         assert!(activity.contains("private static final class FluxStyleDrawable extends Drawable"));
         assert!(activity.contains("new DashPathEffect"));
         assert!(activity.contains("drawHorizontalBorder"));

@@ -1309,7 +1309,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 returns: Vec::new(),
             })
         }
-        ("TextInput", "text") | ("TextInput", "placeholder") => Some(Type::Str),
+        ("TextInput", "text") | ("TextInput", "placeholder") | ("TextInput", "keyboard_type") => {
+            Some(Type::Str)
+        }
         ("TextInput", "enabled") | ("TextInput", "autofocus") | ("TextInput", "password") => {
             Some(Type::Bool)
         }
@@ -1482,6 +1484,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "autofocus",
             "password",
             "max_length",
+            "keyboard_type",
             "on_change",
             "on_submit",
         ],

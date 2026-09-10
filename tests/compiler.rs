@@ -9237,6 +9237,7 @@ view Form {
         enabled: true
         autofocus: true
         password: true
+        keyboard_type: "email"
         max_length: 64
         tooltip: "Type a query"
         accessibility_label: "Search query"
@@ -9268,6 +9269,9 @@ app Form
     ));
     assert!(generated.contains("gtk_widget_grab_focus(flux__ui_query)"));
     assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_query), FALSE)"));
+    assert!(generated.contains(
+        "gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_query), GTK_INPUT_PURPOSE_EMAIL)"
+    ));
     assert!(generated.contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_query), 64)"));
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_query, \"Type a query\")"));
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, \"Search query\", -1"));
@@ -9306,6 +9310,24 @@ app Form
         error
             .message
             .contains("TextInput.max_length must be between 0")
+    );
+
+    let invalid_keyboard_type = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        keyboard_type: "carrierPigeon"
+}
+app Form
+"#;
+    check_source(invalid_keyboard_type).expect("keyboard_type has the expected str type");
+    let error = compile_to_c(invalid_keyboard_type)
+        .expect_err("unsupported keyboard_type must fail native lowering");
+    assert!(
+        error
+            .message
+            .contains("TextInput.keyboard_type must be one of")
     );
 }
 
@@ -10346,6 +10368,7 @@ view Settings {
         transform_origin_y_percent: 100
     TextInput cache_only at 6,1
         text: "cache me"
+        keyboard_type: "email"
 }
 app Settings
 "##,
@@ -10366,6 +10389,7 @@ app Settings
     assert!(generated.contains("(jboolean)false, (jboolean)false"));
     assert!(generated.contains("setMaxLength"));
     assert!(generated.contains("setInputType"));
+    assert!(generated.contains("(jint)33"));
     assert!(generated.contains("requestFocus"));
     assert!(generated.contains("setOnCheckedChangeListener"));
     assert!(generated.contains("grid_spec_weight"));

@@ -477,7 +477,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `onPress` dispatch.
 - [ ] Text inputs.
-  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking and validated maximum length, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
+  - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, compile-time `keyboardType: str`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking/validated maximum length plus text/email/number/decimal/phone/URL input purposes, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
   - [ ] Editable Flux-owned text state, selection/caret APIs, richer validation, multiline forms, and portable IME semantics.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `onChange` event; Linux lowers to `GtkCheckButton`, while `onChange: state => nextExpression` reuses the same functional transition/state refresh model as buttons.
@@ -673,7 +673,10 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Secure storage.
 - [ ] Files/media picker.
 - [ ] Android keyboard/IME.
-  - [x] Bootstrap native text input supports compiler-managed autofocus, password input type, maximum length, live `onChange: fn(str)`, and IME Done/Enter `onSubmit: fn(str)` callbacks without application Java/Kotlin code. Keyboard visibility control, input-method variants, multiline submit policy, selection/composition semantics, and full focus traversal remain pending.
+  - [x] Bootstrap native text input supports compiler-managed autofocus, password input type, maximum length, live `onChange: fn(str)`, and IME Done/Enter `onSubmit: fn(str)` callbacks without application Java/Kotlin code.
+  - [x] Portable compile-time `TextInput.keyboardType` selects `text`, `email`, `number`, `decimal`, `phone`, or `url`; Android lowers to the corresponding native `InputType` flags and Linux lowers to the corresponding GTK input purpose, with unsupported values rejected at compile time.
+  - [x] Compiler-owned Android text caching preserves caret/selection plus active IME composing ranges across full native-view rebuilds, avoiding silent composition loss when functional state refresh reconstructs the current bootstrap Android grid.
+  - [ ] Keyboard visibility control, multiline submit policy, explicit selection/caret APIs, and full focus traversal/restoration.
 - [ ] Platform FFI/bindings to Kotlin/Java/NDK where needed, generated or compiler-owned for normal platform access rather than exposed as application bridge boilerplate.
 - [x] Verify generated Android glue is tree-shakeable and zero/near-zero overhead beyond boundaries Android itself requires; no mandatory Flutter-style channel serialization or plugin registry.
   - [x] Android runtime helpers are emitted from reachable generated-call usage rather than linked as a permanent platform runtime. Compiler tests prove unreachable notification channel/post/action/cancel code omits `Notification.Builder`, `PendingIntent`, notification helpers, and permission machinery entirely; platform calls cross JNI directly with no serialization bus, plugin registry, or user-written bridge.

@@ -2024,6 +2024,29 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_hint, child_hint);\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, child_hint);\n");
             }
+            let mut android_input_type = None;
+            if let Some(property) = view_property(element, "keyboard_type") {
+                let Some(keyboard_type) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.keyboard_type must be a compile-time string",
+                    ));
+                };
+                android_input_type = Some(match keyboard_type.as_str() {
+                    "text" => 1,
+                    "email" => 33,
+                    "number" => 2,
+                    "decimal" => 8194,
+                    "phone" => 3,
+                    "url" => 17,
+                    _ => {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.keyboard_type must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
+                        ));
+                    }
+                });
+            }
             if let Some(property) = view_property(element, "password") {
                 let Some(password) = static_expr_bool(&property.value, signatures) else {
                     return Err(diag(
@@ -2032,12 +2055,15 @@ fn emit_android_native_application(
                     ));
                 };
                 if password {
-                    out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
-                    out.push_str("    if (set_input_type == NULL) return;\n");
-                    out.push_str(
-                        "    (*env)->CallVoidMethod(env, child, set_input_type, (jint)129);\n",
-                    );
+                    android_input_type = Some(129);
                 }
+            }
+            if let Some(input_type) = android_input_type {
+                out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
+                out.push_str("    if (set_input_type == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_input_type, (jint){input_type});\n"
+                ));
             }
             if let Some(property) = view_property(element, "max_length") {
                 let Some(max_length) = static_expr_i64(&property.value, signatures) else {
@@ -3192,6 +3218,31 @@ fn emit_linux_gtk_application(
                         "    gtk_widget_set_sensitive({variable}, {enabled});\n"
                     ));
                 }
+                if let Some(property) = view_property(element, "keyboard_type") {
+                    let Some(keyboard_type) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.keyboard_type must be a compile-time string",
+                        ));
+                    };
+                    let purpose = match keyboard_type.as_str() {
+                        "text" => "GTK_INPUT_PURPOSE_FREE_FORM",
+                        "email" => "GTK_INPUT_PURPOSE_EMAIL",
+                        "number" => "GTK_INPUT_PURPOSE_DIGITS",
+                        "decimal" => "GTK_INPUT_PURPOSE_NUMBER",
+                        "phone" => "GTK_INPUT_PURPOSE_PHONE",
+                        "url" => "GTK_INPUT_PURPOSE_URL",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "TextInput.keyboard_type must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
+                            ));
+                        }
+                    };
+                    out.push_str(&format!(
+                        "    gtk_entry_set_input_purpose(GTK_ENTRY({variable}), {purpose});\n"
+                    ));
+                }
                 if let Some(property) = view_property(element, "password") {
                     let Some(password) = static_expr_bool(&property.value, signatures) else {
                         return Err(diag(
@@ -3203,6 +3254,11 @@ fn emit_linux_gtk_application(
                         out.push_str(&format!(
                             "    gtk_entry_set_visibility(GTK_ENTRY({variable}), FALSE);\n"
                         ));
+                        if view_property(element, "keyboard_type").is_none() {
+                            out.push_str(&format!(
+                                "    gtk_entry_set_input_purpose(GTK_ENTRY({variable}), GTK_INPUT_PURPOSE_PASSWORD);\n"
+                            ));
+                        }
                     }
                 }
                 if let Some(property) = view_property(element, "max_length") {
