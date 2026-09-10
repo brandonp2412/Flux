@@ -16,7 +16,16 @@ Release mode is the default. The output directory is versioned and host-labelled
 flux package . -o dist/stage
 ```
 
-`flux package` refuses to overwrite an existing output directory. Build automation should remove or version old staging directories explicitly instead of relying on implicit replacement.
+For a directly distributable archive, request the native tarball format:
+
+```sh
+flux package . --format tar.gz
+flux package . --format tar.gz -o dist/my-app.tar.gz
+```
+
+The archive contains the same host-labelled bundle directory. Flux builds it with sorted entries, a fixed archive timestamp, and normalized numeric owner/group metadata; same-host/same-toolchain identical package inputs are regression-tested to produce byte-identical `.tar.gz` files. `tar` is only required when this archive format is requested.
+
+`flux package` refuses to overwrite an existing output directory or archive. Build automation should remove or version old artifacts explicitly instead of relying on implicit replacement.
 
 ## Runtime dependencies
 
@@ -32,14 +41,14 @@ A graphical application can provide a standard freedesktop desktop entry under `
 
 ## Archives and distro packages
 
-The `flux package` directory is the staging boundary for current Linux distribution tooling. It can be wrapped by ordinary tar/zip release automation or used as input to deb/rpm/Arch/AppImage/Flatpak packaging. Flux does not currently pretend that one of those formats is universally correct, and it does not silently vendor GTK into the bundle.
+The `flux package` directory remains the staging boundary for distro-specific Linux tooling, while `--format tar.gz` supplies the portable archive shape directly. The directory bundle can be used as input to deb/rpm/Arch/AppImage/Flatpak packaging. Flux does not currently pretend that one distro/container format is universally correct, and it does not silently vendor GTK into the bundle.
 
 For distro packages, declare GTK4 through the distro's dependency metadata instead of copying shared libraries beside the executable. For sandboxed formats such as Flatpak, select a runtime that supplies a compatible GTK stack and keep application permissions explicit in the packaging manifest.
 
 ## Reproducibility and symbols
 
-Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility. Reproducible release infrastructure should pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Cross-machine/toolchain reproducibility and formal debug-symbol separation remain separate roadmap work.
+Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility, as are current `.tar.gz` package archives. Reproducible release infrastructure should pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Cross-machine/toolchain reproducibility remains separate roadmap work. For detached native debug information and crash address resolution, see [`debugging.md`](debugging.md).
 
 ## Current boundary
 
-Flux currently automates native compilation and the host bundle. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.
+Flux currently automates native compilation, the host directory bundle, and reproducible host `.tar.gz` archives. It does not yet automate distro repository publication, AppImage/Flatpak construction, deb/rpm metadata, desktop-file/icon generation, signing, or package-manager upload. Those steps should remain explicit downstream packaging operations rather than hidden compiler side effects until dedicated target support is implemented.

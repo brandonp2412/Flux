@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 420
+- Completed baseline units: 421
 - Reported overall progress: **57%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -738,7 +738,7 @@ Android is the first application-platform target. Android integration must feel 
   - [x] Bootstrap GUI was built and launched end-to-end on a real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
 - [ ] Menus/tray/clipboard/file dialogs.
 - [ ] Multi-window.
-- [ ] Packaging formats/integration guidance.
+- [x] Packaging formats/integration guidance for the current Linux target: `flux package` produces either the existing host-labelled directory bundle or a directly distributable `--format tar.gz` archive with normalized ordering/timestamps/ownership metadata; same-host identical archives are byte-reproducibility tested, extracted archives execute successfully, and distro-specific deb/rpm/Arch/AppImage/Flatpak integration remains documented as an explicit downstream layer rather than hidden compiler behavior.
 
 ## Windows
 
@@ -938,7 +938,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux devices`: the CLI reports Linux desktop display readiness, connected ADB Android devices with their real transport states, and a running local Waydroid container as a runnable Android target; external device probes are bounded so an unresponsive transport cannot stall the command forever.
 - [x] `flux doctor`: doctor reports Linux host/Clang/GTK/display readiness plus Android SDK, NDK, build-tools including D8, `javac` for compiler-generated Android runtime glue, ADB, optional Waydroid readiness, GDB/gprof, native crash symbolization/debug-symbol tools, and LLVM coverage tools; Neovim dogfood availability remains reported separately.
 - [x] `flux clean`: target-aware cleanup removes the default native build artifact plus the runner's last-known development-status artifact and is safely idempotent when nothing exists.
-- [x] Bootstrap `flux package`: manifest-backed packages build into a deterministic host-labelled bundle directory containing the package-named native executable plus the exact `flux.toml`; release is the default, build modes are supported, existing outputs are never overwritten, and raw source files are rejected rather than silently treated as distributable packages. Archive formats, dependency vendoring, platform metadata, signing, and store packaging remain in the distribution/platform tracks.
+- [x] Bootstrap `flux package`: manifest-backed packages build into a deterministic host-labelled bundle directory containing the package-named native executable plus the exact `flux.toml`, or a reproducible `.tar.gz` wrapping that same bundle via `--format tar.gz`; release is the default, build modes are supported, existing outputs are never overwritten, and raw source files are rejected rather than silently treated as distributable packages. Dependency vendoring, richer platform metadata, signing, and store packaging remain in the distribution/platform tracks.
 - [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
 - [ ] Cross-compilation configuration.
 - [x] Bootstrap native build cache: generated C + build mode + compiler package version + host OS/architecture are content-addressed into a persistent native artifact cache (`$FLUX_CACHE_DIR`, XDG cache, or `~/.cache/flux`), transparently reused by build/run/test/package across output paths. Semantic/codegen incremental reuse remains tracked under the compiler/hot-reload caches; eviction, integrity metadata, toolchain/SDK fingerprints, and explicit cache-management commands remain follow-up work.

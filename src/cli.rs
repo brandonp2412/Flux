@@ -77,6 +77,31 @@ struct BuildOptions {
     mode: BuildMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageFormat {
+    Directory,
+    TarGz,
+}
+
+impl PackageFormat {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "directory" | "dir" => Ok(Self::Directory),
+            "tar.gz" | "tgz" => Ok(Self::TarGz),
+            _ => Err(format!(
+                "unknown package format '{value}'; expected directory or tar.gz"
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PackageOptions {
+    output: Option<PathBuf>,
+    mode: BuildMode,
+    format: PackageFormat,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct DebugOptions {
     target: PathBuf,
@@ -348,7 +373,7 @@ fn run() -> Result<(), CliError> {
         }
         "package" => {
             let path = require_target(&args)?;
-            let options = build_options(&args[2..], BuildMode::Release)?;
+            let options = package_options(&args[2..])?;
             package_target(path, options)
         }
         "publish" => {
@@ -902,7 +927,7 @@ fn run_android_apk_waydroid(build: &AndroidBuildResult) -> Result<(), CliError> 
     Ok(())
 }
 
-fn package_target(target: &Path, options: BuildOptions) -> Result<(), CliError> {
+fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError> {
     let manifest_path = if target.is_dir() {
         target.join("flux.toml")
     } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
@@ -924,9 +949,13 @@ fn package_target(target: &Path, options: BuildOptions) -> Result<(), CliError> 
         .parent()
         .expect("canonical manifest has a parent");
     let artifact_name = package_artifact_name(&manifest.name, manifest.version.as_deref())?;
-    let output = options
-        .output
-        .unwrap_or_else(|| package_root.join("dist").join(&artifact_name));
+    let default_output = match options.format {
+        PackageFormat::Directory => package_root.join("dist").join(&artifact_name),
+        PackageFormat::TarGz => package_root
+            .join("dist")
+            .join(format!("{artifact_name}.tar.gz")),
+    };
+    let output = options.output.unwrap_or(default_output);
     if output.exists() {
         return Err(CliError::Message(format!(
             "package output '{}' already exists; remove it or choose another path with -o",
@@ -942,21 +971,89 @@ fn package_target(target: &Path, options: BuildOptions) -> Result<(), CliError> 
             return Err(CliError::Reported);
         }
     };
-    fs::create_dir_all(&output)
+
+    match options.format {
+        PackageFormat::Directory => {
+            build_package_directory(&manifest, &generated, &output, options.mode)?;
+        }
+        PackageFormat::TarGz => {
+            command_first_line("tar", &["--version"]).map_err(|message| {
+                CliError::Message(format!("Flux tar.gz packaging requires tar: {message}"))
+            })?;
+            if let Some(parent) = output.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "failed to create package output directory '{}': {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            let staging_root = package_staging_dir();
+            let staged_bundle = staging_root.join(&artifact_name);
+            let result = (|| -> Result<(), CliError> {
+                fs::create_dir_all(&staging_root).map_err(|error| {
+                    format!("failed to create package staging directory: {error}")
+                })?;
+                build_package_directory(&manifest, &generated, &staged_bundle, options.mode)?;
+                run_checked(
+                    Command::new("tar")
+                        .args([
+                            "--sort=name",
+                            "--mtime=@0",
+                            "--owner=0",
+                            "--group=0",
+                            "--numeric-owner",
+                            "-czf",
+                        ])
+                        .arg(&output)
+                        .arg("-C")
+                        .arg(&staging_root)
+                        .arg(&artifact_name),
+                    "tar.gz package archive",
+                )?;
+                Ok(())
+            })();
+            let _ = fs::remove_dir_all(&staging_root);
+            if let Err(error) = result {
+                let _ = fs::remove_file(&output);
+                return Err(error);
+            }
+        }
+    }
+    println!("packaged ({}): {}", options.mode.name(), output.display());
+    Ok(())
+}
+
+fn build_package_directory(
+    manifest: &fluxc::project::PackageManifest,
+    generated: &str,
+    output: &Path,
+    mode: BuildMode,
+) -> Result<(), CliError> {
+    fs::create_dir_all(output)
         .map_err(|error| format!("failed to create package '{}': {error}", output.display()))?;
     let binary = output.join(&manifest.name);
-    if let Err(error) = build_native(&generated, &binary, options.mode) {
-        let _ = fs::remove_dir_all(&output);
+    if let Err(error) = build_native(generated, &binary, mode) {
+        let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(error));
     }
     if let Err(error) = fs::copy(&manifest.path, output.join("flux.toml")) {
-        let _ = fs::remove_dir_all(&output);
+        let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(format!(
             "failed to copy package manifest: {error}"
         )));
     }
-    println!("packaged ({}): {}", options.mode.name(), output.display());
     Ok(())
+}
+
+fn package_staging_dir() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    env::temp_dir().join(format!("flux-package-{}-{nonce}", std::process::id()))
 }
 
 fn package_artifact_name(name: &str, version: Option<&str>) -> Result<String, CliError> {
@@ -2713,6 +2810,10 @@ fn run_doctor() -> Result<(), CliError> {
         Ok(version) => println!("  [ok] objcopy debug-symbol tool: {version}"),
         Err(message) => println!("  [warn] objcopy debug-symbol tool unavailable: {message}"),
     }
+    match command_first_line("tar", &["--version"]) {
+        Ok(version) => println!("  [ok] tar package archive tool: {version}"),
+        Err(message) => println!("  [warn] tar package archive tool unavailable: {message}"),
+    }
     match command_first_line("llvm-cov", &["--version"]) {
         Ok(version) => println!("  [ok] LLVM coverage reporter: {version}"),
         Err(message) => println!("  [warn] LLVM coverage reporter unavailable: {message}"),
@@ -2956,6 +3057,61 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
         }
     }
     Ok(TestOptions { mode, coverage })
+}
+
+fn package_options(args: &[String]) -> Result<PackageOptions, String> {
+    let mut output = None;
+    let mut mode = BuildMode::Release;
+    let mut mode_seen = false;
+    let mut format = PackageFormat::Directory;
+    let mut format_seen = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("output path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'-o' requires an output path".to_string());
+                };
+                output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--mode" => {
+                if mode_seen {
+                    return Err("build mode may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--mode' requires debug, profile, or release".to_string());
+                };
+                mode = BuildMode::parse(value)?;
+                mode_seen = true;
+                index += 2;
+            }
+            "--format" => {
+                if format_seen {
+                    return Err("package format may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--format' requires directory or tar.gz".to_string());
+                };
+                format = PackageFormat::parse(value)?;
+                format_seen = true;
+                index += 2;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', or '--format <directory|tar.gz>'"
+                ));
+            }
+        }
+    }
+    Ok(PackageOptions {
+        output,
+        mode,
+        format,
+    })
 }
 
 fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
@@ -4550,7 +4706,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -4558,12 +4714,13 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
-        NativeInstrumentation, android_abi_from_runtime, android_activity_java_source,
-        android_build_options, android_manifest_xml, android_publish_options, build_options,
-        debug_options, demangle_profile_symbols, display_flux_symbol, json_string,
-        native_build_cache_path, output_with_timeout, parse_adb_devices, profile_report_addresses,
-        select_android_run_target, split_symbols_options, symbolize_options, test_options,
-        validate_android_publish_manifest, waydroid_status_is_running,
+        NativeInstrumentation, PackageFormat, android_abi_from_runtime,
+        android_activity_java_source, android_build_options, android_manifest_xml,
+        android_publish_options, build_options, debug_options, demangle_profile_symbols,
+        display_flux_symbol, json_string, native_build_cache_path, output_with_timeout,
+        package_options, parse_adb_devices, profile_report_addresses, select_android_run_target,
+        split_symbols_options, symbolize_options, test_options, validate_android_publish_manifest,
+        waydroid_status_is_running,
     };
 
     #[test]
@@ -4615,6 +4772,31 @@ mod tests {
             Some(std::path::Path::new("symbols"))
         );
         assert!(split_symbols_options(&["app".to_string(), "--bad".to_string()]).is_err());
+    }
+
+    #[test]
+    fn package_options_support_directory_and_archive_formats() {
+        let defaults = package_options(&[]).expect("default package options should parse");
+        assert_eq!(defaults.mode, BuildMode::Release);
+        assert_eq!(defaults.format, PackageFormat::Directory);
+        assert!(defaults.output.is_none());
+
+        let archive = package_options(&[
+            "--format".to_string(),
+            "tar.gz".to_string(),
+            "--mode".to_string(),
+            "profile".to_string(),
+            "-o".to_string(),
+            "app.tar.gz".to_string(),
+        ])
+        .expect("archive package options should parse");
+        assert_eq!(archive.mode, BuildMode::Profile);
+        assert_eq!(archive.format, PackageFormat::TarGz);
+        assert_eq!(
+            archive.output.as_deref(),
+            Some(std::path::Path::new("app.tar.gz"))
+        );
+        assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
     }
 
     #[test]

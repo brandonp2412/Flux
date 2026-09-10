@@ -8484,6 +8484,65 @@ fn flux_package_builds_a_manifest_backed_linux_bundle() {
     assert!(run.status.success());
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
 
+    let tar_ready = Command::new("tar")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if tar_ready {
+        let first_archive = root.join("first.tar.gz");
+        let second_archive = root.join("second.tar.gz");
+        for archive in [&first_archive, &second_archive] {
+            let packaged = Command::new(env!("CARGO_BIN_EXE_flux"))
+                .arg("package")
+                .arg(&root)
+                .args(["--format", "tar.gz", "-o"])
+                .arg(archive)
+                .output()
+                .expect("flux package tar.gz should run");
+            assert!(
+                packaged.status.success(),
+                "flux package tar.gz failed: {}",
+                String::from_utf8_lossy(&packaged.stderr)
+            );
+        }
+        assert_eq!(
+            fs::read(&first_archive).expect("first package archive should be readable"),
+            fs::read(&second_archive).expect("second package archive should be readable"),
+            "identical same-host package archives should be byte reproducible"
+        );
+        let listing = Command::new("tar")
+            .arg("-tzf")
+            .arg(&first_archive)
+            .output()
+            .expect("package archive should be listable");
+        assert!(listing.status.success());
+        let artifact_name = format!(
+            "package-test-1.2.3-{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        assert!(listing.contains(&format!("{artifact_name}/package-test")));
+        assert!(listing.contains(&format!("{artifact_name}/flux.toml")));
+
+        let extracted = root.join("extracted");
+        fs::create_dir_all(&extracted).expect("archive extraction directory should be writable");
+        let extract = Command::new("tar")
+            .arg("-xzf")
+            .arg(&first_archive)
+            .arg("-C")
+            .arg(&extracted)
+            .output()
+            .expect("package archive should extract");
+        assert!(extract.status.success());
+        let archived_run = Command::new(extracted.join(artifact_name).join("package-test"))
+            .output()
+            .expect("archived native binary should execute");
+        assert!(archived_run.status.success());
+        assert_eq!(String::from_utf8_lossy(&archived_run.stdout).trim(), "42");
+    }
+
     let repeated = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("package")
         .arg(&root)
