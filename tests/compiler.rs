@@ -8227,6 +8227,125 @@ fn flux_debugger_evaluates_flux_primitive_expressions() {
 }
 
 #[test]
+fn native_symbol_tools_split_and_resolve_flux_source_locations() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let tool_ready = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    };
+    if !tool_ready("nm") || !tool_ready("addr2line") || !tool_ready("objcopy") {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("flux-symbol-tools-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("symbol tools fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn crashPoint(value: i64) -> i64 {\n    let adjusted: i64 = value + 1\n    print(adjusted)\n    return adjusted\n}\n\nfn main() -> i64 {\n    let value: i64 = crashPoint(41)\n    print(value)\n    return 0\n}\n",
+    )
+    .expect("symbol tools source should be writable");
+    let binary = root.join("symbol-app");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug", "-o"])
+        .arg(&binary)
+        .output()
+        .expect("symbol tools binary should build");
+    assert!(
+        built.status.success(),
+        "symbol tools fixture failed to build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let nm = Command::new("nm")
+        .arg("-n")
+        .arg(&binary)
+        .output()
+        .expect("nm should inspect the Flux binary");
+    assert!(nm.status.success());
+    let nm_stdout = String::from_utf8_lossy(&nm.stdout);
+    let address = nm_stdout
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let address = fields.next()?;
+            let _kind = fields.next()?;
+            let name = fields.next()?;
+            (name == "flux__fn_crashPoint").then(|| address.to_string())
+        })
+        .expect("debug binary should retain the reachable Flux function symbol");
+
+    let symbolized = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("symbolize")
+        .arg(&binary)
+        .arg(&address)
+        .output()
+        .expect("Flux symbolizer should run");
+    assert!(
+        symbolized.status.success(),
+        "Flux symbolizer failed: {}",
+        String::from_utf8_lossy(&symbolized.stderr)
+    );
+    let symbolized_stdout = String::from_utf8_lossy(&symbolized.stdout);
+    assert!(symbolized_stdout.contains("crashPoint"));
+    assert!(symbolized_stdout.contains("main.flux:"));
+    assert!(!symbolized_stdout.contains("flux__fn_crashPoint"));
+
+    let original = fs::read(&binary).expect("original debug binary should be readable");
+    let output_directory = root.join("symbols");
+    let split = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["symbols", "split"])
+        .arg(&binary)
+        .arg("-o")
+        .arg(&output_directory)
+        .output()
+        .expect("Flux symbol splitter should run");
+    assert!(
+        split.status.success(),
+        "Flux symbol splitter failed: {}",
+        String::from_utf8_lossy(&split.stderr)
+    );
+    assert_eq!(
+        fs::read(&binary).expect("original binary should remain readable"),
+        original,
+        "symbol splitting must not mutate the input binary"
+    );
+    let stripped = output_directory.join("symbol-app");
+    let symbols = output_directory.join("symbol-app.debug");
+    assert!(stripped.is_file());
+    assert!(symbols.is_file());
+    assert!(
+        fs::metadata(&stripped).unwrap().len() < fs::metadata(&binary).unwrap().len(),
+        "stripped executable should be smaller than the debug input"
+    );
+
+    let separate_symbols = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("symbolize")
+        .arg(&symbols)
+        .arg(&address)
+        .output()
+        .expect("separate debug symbols should be directly symbolizable");
+    assert!(
+        separate_symbols.status.success(),
+        "separate symbols failed to symbolize: {}",
+        String::from_utf8_lossy(&separate_symbols.stderr)
+    );
+    let separate_stdout = String::from_utf8_lossy(&separate_symbols.stdout);
+    assert!(separate_stdout.contains("crashPoint"));
+    assert!(separate_stdout.contains("main.flux:"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_builds_are_byte_reproducible_with_isolated_caches() {
     let root = std::env::temp_dir().join(format!("flux-reproducible-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

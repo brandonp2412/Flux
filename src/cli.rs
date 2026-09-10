@@ -84,6 +84,18 @@ struct DebugOptions {
     run_immediately: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct SymbolizeOptions {
+    binary: PathBuf,
+    addresses: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SplitSymbolsOptions {
+    binary: PathBuf,
+    output_directory: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TestOptions {
     mode: BuildMode,
@@ -380,6 +392,19 @@ fn run() -> Result<(), CliError> {
                 ));
             }
             profile_target(path)
+        }
+        "symbolize" => {
+            let options = symbolize_options(&args[1..])?;
+            symbolize_binary(&options)
+        }
+        "symbols" => {
+            if !args.get(1).is_some_and(|value| value == "split") {
+                return Err(CliError::Message(
+                    "symbols syntax is 'symbols split <native-binary> [-o directory]'".to_string(),
+                ));
+            }
+            let options = split_symbols_options(&args[2..])?;
+            split_debug_symbols(&options)
         }
         "devices" => {
             if args.len() != 1 {
@@ -1517,6 +1542,196 @@ fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
     }
 }
 
+fn symbolize_options(args: &[String]) -> Result<SymbolizeOptions, String> {
+    let Some(binary) = args.first() else {
+        return Err(
+            "symbolize syntax is 'symbolize <native-binary> <address> [address ...]'".to_string(),
+        );
+    };
+    if binary.starts_with('-') || args.len() < 2 {
+        return Err(
+            "symbolize syntax is 'symbolize <native-binary> <address> [address ...]'".to_string(),
+        );
+    }
+    let mut addresses = Vec::with_capacity(args.len() - 1);
+    for address in &args[1..] {
+        let normalized = address.strip_prefix("0x").unwrap_or(address);
+        if normalized.is_empty() || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(format!(
+                "invalid native address '{address}'; expected hexadecimal such as 0x401234"
+            ));
+        }
+        addresses.push(normalized.to_ascii_lowercase());
+    }
+    Ok(SymbolizeOptions {
+        binary: PathBuf::from(binary),
+        addresses,
+    })
+}
+
+fn symbolize_binary(options: &SymbolizeOptions) -> Result<(), CliError> {
+    if !options.binary.is_file() {
+        return Err(CliError::Message(format!(
+            "symbolization input '{}' is not a native binary file",
+            options.binary.display()
+        )));
+    }
+    command_first_line("addr2line", &["--version"]).map_err(|message| {
+        CliError::Message(format!(
+            "Flux crash symbolization requires addr2line: {message}"
+        ))
+    })?;
+
+    let mut command = Command::new("addr2line");
+    command.args(["-f", "-e"]).arg(&options.binary);
+    for address in &options.addresses {
+        command.arg(format!("0x{address}"));
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to launch addr2line: {error}"))?;
+    if !output.status.success() {
+        return Err(CliError::Message(format!(
+            "addr2line failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if lines.len() < options.addresses.len() * 2 {
+        return Err(CliError::Message(
+            "addr2line returned incomplete symbolization output".to_string(),
+        ));
+    }
+    for (index, address) in options.addresses.iter().enumerate() {
+        let function = display_flux_symbol(lines[index * 2].trim());
+        let location = lines[index * 2 + 1].trim();
+        println!("0x{address}  {function}  {location}");
+    }
+    Ok(())
+}
+
+fn split_symbols_options(args: &[String]) -> Result<SplitSymbolsOptions, String> {
+    let Some(binary) = args.first() else {
+        return Err(
+            "symbols split syntax is 'symbols split <native-binary> [-o directory]'".to_string(),
+        );
+    };
+    if binary.starts_with('-') {
+        return Err("symbols split requires a native binary before options".to_string());
+    }
+    let mut output_directory = None;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output_directory.is_some() {
+                    return Err("symbol output directory may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'-o' requires an output directory".to_string());
+                };
+                if value.is_empty() || value.starts_with('-') {
+                    return Err("'-o' requires an output directory".to_string());
+                }
+                output_directory = Some(PathBuf::from(value));
+                index += 2;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown symbols split option '{flag}'; expected '-o <directory>'"
+                ));
+            }
+        }
+    }
+    Ok(SplitSymbolsOptions {
+        binary: PathBuf::from(binary),
+        output_directory,
+    })
+}
+
+fn split_debug_symbols(options: &SplitSymbolsOptions) -> Result<(), CliError> {
+    if !cfg!(target_os = "linux") {
+        return Err(CliError::Message(
+            "bootstrap debug-symbol separation currently supports Linux ELF binaries".to_string(),
+        ));
+    }
+    if !options.binary.is_file() {
+        return Err(CliError::Message(format!(
+            "debug-symbol input '{}' is not a native binary file",
+            options.binary.display()
+        )));
+    }
+    command_first_line("objcopy", &["--version"]).map_err(|message| {
+        CliError::Message(format!(
+            "Flux debug-symbol separation requires objcopy: {message}"
+        ))
+    })?;
+    let file_name = options
+        .binary
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            CliError::Message("native binary must have a filesystem name".to_string())
+        })?;
+    let output_directory = options.output_directory.clone().unwrap_or_else(|| {
+        options
+            .binary
+            .with_file_name(format!("{file_name}.symbols"))
+    });
+    if output_directory.exists() {
+        return Err(CliError::Message(format!(
+            "symbol output '{}' already exists; remove it or choose another path with -o",
+            output_directory.display()
+        )));
+    }
+    fs::create_dir_all(&output_directory).map_err(|error| {
+        CliError::Message(format!(
+            "failed to create symbol output '{}': {error}",
+            output_directory.display()
+        ))
+    })?;
+    let symbols = output_directory.join(format!("{file_name}.debug"));
+    let stripped = output_directory.join(file_name);
+    let result = (|| -> Result<(), CliError> {
+        run_checked(
+            Command::new("objcopy")
+                .arg("--only-keep-debug")
+                .arg(&options.binary)
+                .arg(&symbols),
+            "debug-symbol extraction",
+        )?;
+        run_checked(
+            Command::new("objcopy")
+                .arg("--strip-debug")
+                .arg(&options.binary)
+                .arg(&stripped),
+            "debug-symbol stripping",
+        )?;
+        run_checked(
+            Command::new("objcopy")
+                .arg(format!("--add-gnu-debuglink={}", symbols.display()))
+                .arg(&stripped),
+            "debug-symbol link",
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&output_directory);
+        return Err(error);
+    }
+    println!("stripped: {}", stripped.display());
+    println!("symbols: {}", symbols.display());
+    Ok(())
+}
+
+fn display_flux_symbol(symbol: &str) -> &str {
+    symbol.strip_prefix("flux__fn_").unwrap_or(symbol)
+}
+
 fn debug_binary_path() -> PathBuf {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     env::temp_dir().join(format!("flux-debug-{}{suffix}", std::process::id()))
@@ -2489,6 +2704,14 @@ fn run_doctor() -> Result<(), CliError> {
     match command_first_line("gprof", &["--version"]) {
         Ok(version) => println!("  [ok] gprof CPU profiler: {version}"),
         Err(message) => println!("  [warn] gprof CPU profiler unavailable: {message}"),
+    }
+    match command_first_line("addr2line", &["--version"]) {
+        Ok(version) => println!("  [ok] addr2line crash symbolizer: {version}"),
+        Err(message) => println!("  [warn] addr2line crash symbolizer unavailable: {message}"),
+    }
+    match command_first_line("objcopy", &["--version"]) {
+        Ok(version) => println!("  [ok] objcopy debug-symbol tool: {version}"),
+        Err(message) => println!("  [warn] objcopy debug-symbol tool unavailable: {message}"),
     }
     match command_first_line("llvm-cov", &["--version"]) {
         Ok(version) => println!("  [ok] LLVM coverage reporter: {version}"),
@@ -4327,7 +4550,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o directory] [--mode debug|profile|release] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -4337,10 +4560,10 @@ mod tests {
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         NativeInstrumentation, android_abi_from_runtime, android_activity_java_source,
         android_build_options, android_manifest_xml, android_publish_options, build_options,
-        debug_options, demangle_profile_symbols, json_string, native_build_cache_path,
-        output_with_timeout, parse_adb_devices, profile_report_addresses,
-        select_android_run_target, test_options, validate_android_publish_manifest,
-        waydroid_status_is_running,
+        debug_options, demangle_profile_symbols, display_flux_symbol, json_string,
+        native_build_cache_path, output_with_timeout, parse_adb_devices, profile_report_addresses,
+        select_android_run_target, split_symbols_options, symbolize_options, test_options,
+        validate_android_publish_manifest, waydroid_status_is_running,
     };
 
     #[test]
@@ -4367,6 +4590,31 @@ mod tests {
         let demangled = demangle_profile_symbols(report);
         assert!(demangled.contains("sumRange (<stdin>:4 @ 12af)"));
         assert!(!demangled.contains("flux__fn_sumRange"));
+    }
+
+    #[test]
+    fn symbol_tools_parse_addresses_outputs_and_flux_names() {
+        let symbolize = symbolize_options(&[
+            "app".to_string(),
+            "0x401ABC".to_string(),
+            "deadbeef".to_string(),
+        ])
+        .expect("symbolize options should parse");
+        assert_eq!(symbolize.binary, std::path::Path::new("app"));
+        assert_eq!(symbolize.addresses, ["401abc", "deadbeef"]);
+        assert!(symbolize_options(&["app".to_string(), "xyz".to_string()]).is_err());
+        assert_eq!(display_flux_symbol("flux__fn_calculate"), "calculate");
+        assert_eq!(display_flux_symbol("main"), "main");
+
+        let split =
+            split_symbols_options(&["app".to_string(), "-o".to_string(), "symbols".to_string()])
+                .expect("symbols split options should parse");
+        assert_eq!(split.binary, std::path::Path::new("app"));
+        assert_eq!(
+            split.output_directory.as_deref(),
+            Some(std::path::Path::new("symbols"))
+        );
+        assert!(split_symbols_options(&["app".to_string(), "--bad".to_string()]).is_err());
     }
 
     #[test]

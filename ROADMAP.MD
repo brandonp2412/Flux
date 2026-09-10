@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 418
+- Completed baseline units: 420
 - Reported overall progress: **57%**
 - Current net scope growth after the baseline: 23 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -936,7 +936,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] `flux format`: user-facing canonical formatting and `--check` mode use the existing formatter implementation.
 - [x] `flux analyze`: user-facing static analysis is an explicit alias over the same project-aware compiler diagnostics as `flux check`, including `--json` for tooling/CI.
 - [x] `flux devices`: the CLI reports Linux desktop display readiness, connected ADB Android devices with their real transport states, and a running local Waydroid container as a runnable Android target; external device probes are bounded so an unresponsive transport cannot stall the command forever.
-- [x] `flux doctor`: doctor reports Linux host/Clang/GTK/display readiness plus Android SDK, NDK, build-tools including D8, `javac` for compiler-generated Android runtime glue, ADB, and optional Waydroid readiness; Neovim dogfood availability remains reported separately.
+- [x] `flux doctor`: doctor reports Linux host/Clang/GTK/display readiness plus Android SDK, NDK, build-tools including D8, `javac` for compiler-generated Android runtime glue, ADB, optional Waydroid readiness, GDB/gprof, native crash symbolization/debug-symbol tools, and LLVM coverage tools; Neovim dogfood availability remains reported separately.
 - [x] `flux clean`: target-aware cleanup removes the default native build artifact plus the runner's last-known development-status artifact and is safely idempotent when nothing exists.
 - [x] Bootstrap `flux package`: manifest-backed packages build into a deterministic host-labelled bundle directory containing the package-named native executable plus the exact `flux.toml`; release is the default, build modes are supported, existing outputs are never overwritten, and raw source files are rejected rather than silently treated as distributable packages. Archive formats, dependency vendoring, platform metadata, signing, and store packaging remain in the distribution/platform tracks.
 - [x] Debug/profile/release modes through `flux build --mode ...` and `flux run --mode ...` (with `fluxc` compatibility); builds default to `release`, while the development runner defaults to `debug` for fast rebuilds and native debug information.
@@ -956,8 +956,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Linux packaging guidance for the current GTK4 backend is documented in `docs/linux-packaging.md`, covering release bundles, runtime dependencies, conventional filesystem/desktop integration, icons, archives/distro packages, reproducibility expectations, and the boundary between current compiler automation and downstream packaging.
   - [x] Bootstrap host bundle from `flux package` provides the first runnable Linux distribution shape without claiming dependency-free/self-contained GTK packaging.
 - [ ] Web production deployment.
-- [ ] Debug symbol separation/upload.
-- [ ] Crash symbolization.
+- [x] Debug symbol separation/upload for current native Linux artifacts: `flux symbols split <binary> [-o directory]` leaves the input untouched and emits a stripped executable plus detached GNU `.debug` file with a debug link, providing an upload/retention-ready artifact for external crash services. The workflow is covered by a real Flux debug-binary E2E rather than only command construction.
+- [x] Crash symbolization for current native Linux artifacts: `flux symbolize <binary-or-debug-file> <address>...` resolves native instruction addresses through preserved debug metadata back to demangled Flux function names and original `.flux` source locations, and is E2E-verified against both a live debug binary and its detached symbol file.
 - [ ] Optional obfuscation where compatible with diagnostics/debugging.
 - [x] Version/build-number management for current distribution targets: `[package].version` is validated package metadata, is preserved in Linux bundles, becomes Android `versionName`, and `[android].version_code` is validated against Play's accepted integer range and becomes Android `versionCode`; future platform-specific mappings belong to their target packaging milestones.
 
