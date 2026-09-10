@@ -7196,7 +7196,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         ],
         Duration::from_secs(5),
     );
-    wait_for_run_status(&status_path, "restarted", 1, Duration::from_secs(5));
+    wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -7212,12 +7212,27 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     )
     .expect("repaired dependency should be writable");
     wait_for_log(&log, &["version-three"], Duration::from_secs(5));
-    wait_for_run_status(&status_path, "restarted", 2, Duration::from_secs(5));
+    wait_for_run_generation(&status_path, 2, Duration::from_secs(5));
 
     let _ = runner.kill();
     let _ = runner.wait();
     let _ = fs::remove_file(status_path);
     let _ = fs::remove_dir_all(&root);
+}
+
+fn wait_for_run_generation(path: &std::path::Path, generation: usize, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if text.contains(&format!("\"generation\":{generation}")) {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for run generation {generation}; status was:\n{text}"
+        );
+        thread::sleep(Duration::from_millis(40));
+    }
 }
 
 fn wait_for_run_status(path: &std::path::Path, state: &str, generation: usize, timeout: Duration) {
@@ -8703,6 +8718,10 @@ view Styled {
         text: "Styled"
         background_color: "#2563EB"
         border_color: "#1E3A8AFF"
+        border_top_color: "#EF4444FF"
+        border_bottom_color: "#22C55EFF"
+        border_start_color: "#F59E0BFF"
+        border_end_color: "#06B6D4FF"
         border_width: 2
         border_bottom_width: 5
         border_style: "dashed"
@@ -8719,6 +8738,10 @@ app Styled
     assert!(generated.contains("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")"));
     assert!(generated.contains("background-color: #2563EB;"));
     assert!(generated.contains("border-color: #1E3A8AFF;"));
+    assert!(generated.contains("border-top-color: #EF4444FF;"));
+    assert!(generated.contains("border-bottom-color: #22C55EFF;"));
+    assert!(generated.contains("border-left-color: #F59E0BFF;"));
+    assert!(generated.contains("border-right-color: #06B6D4FF;"));
     assert!(generated.contains("border-width: 2px;"));
     assert!(generated.contains("border-bottom-width: 5px;"));
     assert!(generated.contains("border-style: dashed;"));
@@ -8746,6 +8769,25 @@ app Styled
         error
             .message
             .contains("background_color must use '#RRGGBB'")
+    );
+
+    let bad_edge_color = r#"
+view Styled {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Bad"
+        border_top_color: "red"
+        border_top_width: 1
+}
+app Styled
+"#;
+    check_source(bad_edge_color).expect("edge colors typecheck before native syntax validation");
+    let error = compile_to_c(bad_edge_color).expect_err("non-hex edge color must fail");
+    assert!(
+        error
+            .message
+            .contains("border_top_color must use '#RRGGBB'")
     );
 
     let bad_padding = r#"
@@ -10229,7 +10271,7 @@ view Settings {
     state enabled: bool = false
     state selected: i64 = 0
     grid columns: 1fr
-    grid rows: auto auto auto auto auto
+    grid rows: auto auto auto auto auto auto
     grid gap: 12
     grid padding: 18
     grid scroll: true
@@ -10247,10 +10289,21 @@ view Settings {
         background_color: "#112233"
         border_color: "#445566FF"
         border_width: 2
-        border_style: "solid"
+        border_top_color: "#AA0000FF"
+        border_end_color: "#00AA00FF"
+        border_start_color: "#AAAA00FF"
+        border_top_width: 1
+        border_end_width: 3
+        border_bottom_width: 4
+        border_start_width: 5
+        border_style: "dashed"
         radius: 8
         radius_top_left: 16
         radius_bottom_right: 2
+        shadow_color: "#11223380"
+        shadow_blur: 7
+        shadow_offset_x: -2
+        shadow_offset_y: 3
         tooltip: "Search"
         accessibility_label: "Search query"
         accessibility_description: "Enter text to search"
@@ -10291,6 +10344,8 @@ view Settings {
         scale_y_percent: 80
         transform_origin_x_percent: 0
         transform_origin_y_percent: 100
+    TextInput cache_only at 6,1
+        text: "cache me"
 }
 app Settings
 "##,
@@ -10305,13 +10360,18 @@ app Settings
     assert!(generated.contains("android/widget/EditText"));
     assert!(generated.contains("android/widget/CheckBox"));
     assert!(generated.contains("android/widget/RadioButton"));
-    assert!(generated.contains("initialText"));
+    assert!(generated.contains("FluxActivity$FluxEditText"));
+    assert!(generated.contains("restoreTextInput"));
     assert!(generated.contains("wireTextInput"));
+    assert!(generated.contains("(jboolean)false, (jboolean)false"));
     assert!(generated.contains("setMaxLength"));
     assert!(generated.contains("setInputType"));
     assert!(generated.contains("requestFocus"));
     assert!(generated.contains("setOnCheckedChangeListener"));
     assert!(generated.contains("grid_spec_weight"));
+    assert!(generated.contains("setClipChildren"));
+    assert!(generated.contains("setClipToPadding"));
+    assert!(generated.contains("JNI_FALSE"));
     assert!(generated.contains("setMargins"));
     assert!(generated.contains("INT64_C(18) * flux__ui_display_scale"));
     assert!(generated.contains("INT64_C(6) * flux__ui_display_scale"));
@@ -10324,6 +10384,17 @@ app Settings
     assert!(generated.contains("content_root"));
     assert!(generated.contains("#112233"));
     assert!(generated.contains("#445566FF"));
+    assert!(generated.contains("#AA0000FF"));
+    assert!(generated.contains("#00AA00FF"));
+    assert!(generated.contains("#AAAA00FF"));
+    assert!(generated.contains("#11223380"));
+    assert!(generated.contains("\"dashed\""));
+    assert!(generated.contains("INT64_C(1) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(3) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(4) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(5) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(7) * flux__ui_display_scale"));
+    assert!(generated.contains("INT64_C(-2) * flux__ui_display_scale"));
     assert!(generated.contains("set_child_padding"));
     assert!(generated.contains("setGravity"));
     assert!(generated.contains("styleText"));

@@ -1260,8 +1260,17 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transition_delay_ms" => {
                 return Some(Type::I64);
             }
-            "align_x" | "align_y" | "background_color" | "border_color" | "border_style"
-            | "shadow_color" | "transition_easing" => {
+            "align_x"
+            | "align_y"
+            | "background_color"
+            | "border_color"
+            | "border_top_color"
+            | "border_bottom_color"
+            | "border_start_color"
+            | "border_end_color"
+            | "border_style"
+            | "shadow_color"
+            | "transition_easing" => {
                 return Some(Type::Str);
             }
             "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
@@ -1409,6 +1418,10 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "padding_end",
     "background_color",
     "border_color",
+    "border_top_color",
+    "border_bottom_color",
+    "border_start_color",
+    "border_end_color",
     "border_width",
     "border_top_width",
     "border_bottom_width",

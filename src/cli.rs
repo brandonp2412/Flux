@@ -358,6 +358,7 @@ fn run() -> Result<(), CliError> {
 struct AndroidBuildResult {
     artifact: PathBuf,
     application_id: String,
+    activity_name: String,
     kind: AndroidArtifactKind,
     abi: AndroidAbi,
 }
@@ -467,6 +468,11 @@ fn build_android_command(
     Ok(AndroidBuildResult {
         artifact: output,
         application_id: manifest.android.application_id,
+        activity_name: if android_has_generated_activity(&generated) {
+            "app.flux.runtime.FluxActivity".to_string()
+        } else {
+            "android.app.NativeActivity".to_string()
+        },
         kind: options.kind,
         abi: options.abi,
     })
@@ -572,26 +578,20 @@ fn run_android_apk_adb(build: &AndroidBuildResult, serial: &str) -> Result<(), C
             String::from_utf8_lossy(&install.stderr)
         )));
     }
+    let component = format!("{}/{}", build.application_id, build.activity_name);
     let launch = Command::new(&adb)
-        .args([
-            "-s",
-            serial,
-            "shell",
-            "am",
-            "start",
-            "-a",
-            "android.intent.action.MAIN",
-            "-c",
-            "android.intent.category.LAUNCHER",
-            "-p",
-            &build.application_id,
-        ])
+        .args(["-s", serial, "shell", "am", "start", "-W", "-n"])
+        .arg(&component)
         .output()
         .map_err(|error| format!("failed to launch Android application through adb: {error}"))?;
-    if !launch.status.success() {
+    let launch_stdout = String::from_utf8_lossy(&launch.stdout);
+    let launch_stderr = String::from_utf8_lossy(&launch.stderr);
+    if !launch.status.success()
+        || launch_stdout.contains("Error:")
+        || launch_stderr.contains("Error:")
+    {
         return Err(CliError::Message(format!(
-            "adb launch failed for {serial}:\n{}",
-            String::from_utf8_lossy(&launch.stderr)
+            "adb launch failed for {serial} ({component}):\n{launch_stdout}{launch_stderr}"
         )));
     }
     println!(
@@ -1854,11 +1854,18 @@ fn android_activity_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.RectF;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -1887,6 +1894,9 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     private final Map<Integer, String> textValues = new HashMap<>();
+    private final Map<Integer, Integer> selectionStarts = new HashMap<>();
+    private final Map<Integer, Integer> selectionEnds = new HashMap<>();
+    private boolean restoringInput;
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -1984,33 +1994,246 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         return false;
     }
 
-    public String initialText(int viewId, String fallback) {
+    public static final class FluxEditText extends EditText {
+        public FluxEditText(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onSelectionChanged(int start, int end) {
+            super.onSelectionChanged(start, end);
+            Context context = getContext();
+            if (context instanceof FluxActivity) {
+                ((FluxActivity)context).rememberSelection(getId(), start, end);
+            }
+        }
+    }
+
+    private void rememberSelection(int viewId, int start, int end) {
+        if (restoringInput || viewId == View.NO_ID) return;
+        selectionStarts.put(viewId, start);
+        selectionEnds.put(viewId, end);
+    }
+
+    public void restoreTextInput(EditText view, int viewId, String fallback) {
         String saved = textValues.get(viewId);
-        return saved == null ? fallback : saved;
+        String value = saved == null ? fallback : saved;
+        restoringInput = true;
+        try {
+            view.setId(viewId);
+            view.setText(value);
+            int length = view.getText().length();
+            int start = Math.max(0, Math.min(length, selectionStarts.getOrDefault(viewId, length)));
+            int end = Math.max(start, Math.min(length, selectionEnds.getOrDefault(viewId, start)));
+            view.setSelection(start, end);
+        } finally {
+            restoringInput = false;
+        }
     }
 
     public void setMaxLength(EditText view, int maxLength) {
         view.setFilters(new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
     }
 
-    private int parseFluxColor(String value) {
+    private static int parseFluxColor(String value) {
         if (value.length() == 9 && value.charAt(0) == '#') {
             value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
         }
         return Color.parseColor(value);
     }
 
-    public void styleView(View view, String background, String border, int borderWidth, float topLeft, float topRight, float bottomRight, float bottomLeft) {
-        if (background == null && (border == null || borderWidth <= 0)
-                && topLeft <= 0 && topRight <= 0 && bottomRight <= 0 && bottomLeft <= 0) return;
-        GradientDrawable drawable = new GradientDrawable();
-        if (background != null) drawable.setColor(parseFluxColor(background));
-        if (border != null && borderWidth > 0) drawable.setStroke(borderWidth, parseFluxColor(border));
-        if (topLeft > 0 || topRight > 0 || bottomRight > 0 || bottomLeft > 0) {
-            drawable.setCornerRadii(new float[] {
-                topLeft, topLeft, topRight, topRight,
-                bottomRight, bottomRight, bottomLeft, bottomLeft
-            });
+    private static final class FluxStyleDrawable extends Drawable {
+        private final Integer background;
+        private final Integer borderTop;
+        private final Integer borderEnd;
+        private final Integer borderBottom;
+        private final Integer borderStart;
+        private final int borderTopWidth;
+        private final int borderEndWidth;
+        private final int borderBottomWidth;
+        private final int borderStartWidth;
+        private final float[] radii;
+        private final String borderStyle;
+        private final Integer shadowColor;
+        private final float shadowBlur;
+        private final float shadowOffsetX;
+        private final float shadowOffsetY;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int alpha = 255;
+        private ColorFilter colorFilter;
+
+        FluxStyleDrawable(
+                String background,
+                String borderTop,
+                String borderEnd,
+                String borderBottom,
+                String borderStart,
+                int borderTopWidth,
+                int borderEndWidth,
+                int borderBottomWidth,
+                int borderStartWidth,
+                float topLeft,
+                float topRight,
+                float bottomRight,
+                float bottomLeft,
+                String borderStyle,
+                String shadowColor,
+                float shadowBlur,
+                float shadowOffsetX,
+                float shadowOffsetY) {
+            this.background = background == null ? null : parseFluxColor(background);
+            this.borderTop = borderTop == null ? null : parseFluxColor(borderTop);
+            this.borderEnd = borderEnd == null ? null : parseFluxColor(borderEnd);
+            this.borderBottom = borderBottom == null ? null : parseFluxColor(borderBottom);
+            this.borderStart = borderStart == null ? null : parseFluxColor(borderStart);
+            this.borderTopWidth = Math.max(0, borderTopWidth);
+            this.borderEndWidth = Math.max(0, borderEndWidth);
+            this.borderBottomWidth = Math.max(0, borderBottomWidth);
+            this.borderStartWidth = Math.max(0, borderStartWidth);
+            this.radii = new float[] {
+                Math.max(0.0f, topLeft), Math.max(0.0f, topLeft),
+                Math.max(0.0f, topRight), Math.max(0.0f, topRight),
+                Math.max(0.0f, bottomRight), Math.max(0.0f, bottomRight),
+                Math.max(0.0f, bottomLeft), Math.max(0.0f, bottomLeft)
+            };
+            this.borderStyle = borderStyle == null ? "solid" : borderStyle;
+            this.shadowColor = shadowColor == null ? null : parseFluxColor(shadowColor);
+            this.shadowBlur = Math.max(0.0f, shadowBlur);
+            this.shadowOffsetX = shadowOffsetX;
+            this.shadowOffsetY = shadowOffsetY;
+        }
+
+        private void preparePaint(int color, Paint.Style style) {
+            paint.reset();
+            paint.setAntiAlias(true);
+            paint.setStyle(style);
+            paint.setColor(color);
+            paint.setAlpha(alpha);
+            paint.setColorFilter(colorFilter);
+        }
+
+        private void prepareBorderPaint(int color, float width) {
+            preparePaint(color, Paint.Style.STROKE);
+            paint.setStrokeWidth(width);
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            if ("dashed".equals(borderStyle)) {
+                paint.setPathEffect(new DashPathEffect(new float[] {
+                    Math.max(width * 3.0f, 1.0f), Math.max(width * 2.0f, 1.0f)
+                }, 0.0f));
+            } else if ("dotted".equals(borderStyle)) {
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setPathEffect(new DashPathEffect(new float[] {
+                    Math.max(width * 0.1f, 0.1f), Math.max(width * 2.0f, 1.0f)
+                }, 0.0f));
+            }
+        }
+
+        private void drawHorizontalBorder(Canvas canvas, RectF rect, boolean top, int color, int width) {
+            if (width <= 0 || "none".equals(borderStyle)) return;
+            if ("double".equals(borderStyle) && width >= 3) {
+                float line = Math.max(1.0f, width / 3.0f);
+                prepareBorderPaint(color, line);
+                float first = top ? rect.top + line / 2.0f : rect.bottom - line / 2.0f;
+                float second = top ? rect.top + width - line / 2.0f : rect.bottom - width + line / 2.0f;
+                canvas.drawLine(rect.left, first, rect.right, first, paint);
+                canvas.drawLine(rect.left, second, rect.right, second, paint);
+                return;
+            }
+            prepareBorderPaint(color, width);
+            float y = top ? rect.top + width / 2.0f : rect.bottom - width / 2.0f;
+            canvas.drawLine(rect.left, y, rect.right, y, paint);
+        }
+
+        private void drawVerticalBorder(Canvas canvas, RectF rect, boolean start, int color, int width) {
+            if (width <= 0 || "none".equals(borderStyle)) return;
+            if ("double".equals(borderStyle) && width >= 3) {
+                float line = Math.max(1.0f, width / 3.0f);
+                prepareBorderPaint(color, line);
+                float first = start ? rect.left + line / 2.0f : rect.right - line / 2.0f;
+                float second = start ? rect.left + width - line / 2.0f : rect.right - width + line / 2.0f;
+                canvas.drawLine(first, rect.top, first, rect.bottom, paint);
+                canvas.drawLine(second, rect.top, second, rect.bottom, paint);
+                return;
+            }
+            prepareBorderPaint(color, width);
+            float x = start ? rect.left + width / 2.0f : rect.right - width / 2.0f;
+            canvas.drawLine(x, rect.top, x, rect.bottom, paint);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            RectF rect = new RectF(getBounds());
+            if (rect.isEmpty()) return;
+            Path shape = new Path();
+            shape.addRoundRect(rect, radii, Path.Direction.CW);
+            if (shadowColor != null && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f)) {
+                preparePaint(background == null ? Color.argb(1, 0, 0, 0) : background, Paint.Style.FILL);
+                paint.setShadowLayer(shadowBlur, shadowOffsetX, shadowOffsetY, shadowColor);
+                canvas.drawPath(shape, paint);
+                paint.clearShadowLayer();
+            }
+            if (background != null) {
+                preparePaint(background, Paint.Style.FILL);
+                canvas.drawPath(shape, paint);
+            }
+            int save = canvas.save();
+            canvas.clipPath(shape);
+            if (borderTop != null) drawHorizontalBorder(canvas, rect, true, borderTop, borderTopWidth);
+            if (borderEnd != null) drawVerticalBorder(canvas, rect, false, borderEnd, borderEndWidth);
+            if (borderBottom != null) drawHorizontalBorder(canvas, rect, false, borderBottom, borderBottomWidth);
+            if (borderStart != null) drawVerticalBorder(canvas, rect, true, borderStart, borderStartWidth);
+            canvas.restoreToCount(save);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            this.alpha = Math.max(0, Math.min(255, alpha));
+            invalidateSelf();
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter colorFilter) {
+            this.colorFilter = colorFilter;
+            invalidateSelf();
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+    }
+
+    public void styleView(
+            View view,
+            String background,
+            String borderTop,
+            String borderEnd,
+            String borderBottom,
+            String borderStart,
+            int borderTopWidth,
+            int borderEndWidth,
+            int borderBottomWidth,
+            int borderStartWidth,
+            float topLeft,
+            float topRight,
+            float bottomRight,
+            float bottomLeft,
+            String borderStyle,
+            String shadowColor,
+            float shadowBlur,
+            float shadowOffsetX,
+            float shadowOffsetY) {
+        if (background == null
+                && borderTop == null && borderEnd == null && borderBottom == null && borderStart == null
+                && topLeft <= 0 && topRight <= 0 && bottomRight <= 0 && bottomLeft <= 0
+                && shadowColor == null) return;
+        FluxStyleDrawable drawable = new FluxStyleDrawable(
+                background, borderTop, borderEnd, borderBottom, borderStart,
+                borderTopWidth, borderEndWidth, borderBottomWidth, borderStartWidth,
+                topLeft, topRight, bottomRight, bottomLeft, borderStyle,
+                shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY);
+        if (shadowColor != null && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f)) {
+            view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         }
         view.setBackground(drawable);
     }
@@ -2108,7 +2331,9 @@ public final class FluxActivity extends Activity implements View.OnClickListener
                 textValues.put(viewId, text);
                 if (onChange) nativeOnTextChanged(viewId, text);
             }
-            @Override public void afterTextChanged(Editable s) {}
+            @Override public void afterTextChanged(Editable s) {
+                rememberSelection(viewId, view.getSelectionStart(), view.getSelectionEnd());
+            }
         });
         if (onSubmit) {
             view.setSingleLine(true);
@@ -2166,16 +2391,36 @@ fn compile_android_activity_dex(
             .arg(&java_source),
         "javac compiler-generated Android activity",
     )?;
-    let activity_class = classes_dir.join("app/flux/runtime/FluxActivity.class");
-    run_checked(
-        Command::new(&d8)
-            .arg("--min-api")
-            .arg(manifest.android.min_sdk.to_string())
-            .arg("--output")
-            .arg(dex_output)
-            .arg(&activity_class),
-        "d8 compiler-generated Android activity",
-    )?;
+    let runtime_classes = classes_dir.join("app/flux/runtime");
+    let mut generated_classes = fs::read_dir(&runtime_classes)
+        .map_err(|error| {
+            format!(
+                "failed to read compiler-generated Android classes '{}': {error}",
+                runtime_classes.display()
+            )
+        })?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "class")
+        })
+        .collect::<Vec<_>>();
+    generated_classes.sort();
+    let activity_class = runtime_classes.join("FluxActivity.class");
+    if !generated_classes.iter().any(|path| path == &activity_class) {
+        return Err(CliError::Message(format!(
+            "javac did not produce the compiler-generated Android activity class '{}'",
+            activity_class.display()
+        )));
+    }
+    let mut d8_command = Command::new(&d8);
+    d8_command
+        .arg("--min-api")
+        .arg(manifest.android.min_sdk.to_string())
+        .arg("--output")
+        .arg(dex_output);
+    d8_command.args(&generated_classes);
+    run_checked(&mut d8_command, "d8 compiler-generated Android activity")?;
     Ok(())
 }
 
@@ -2959,7 +3204,21 @@ mod tests {
             activity
                 .contains("private static native void nativeOnSubmit(int viewId, String text);")
         );
-        assert!(activity.contains("public String initialText(int viewId, String fallback)"));
+        assert!(activity.contains("public static final class FluxEditText extends EditText"));
+        assert!(
+            activity.contains(
+                "public void restoreTextInput(EditText view, int viewId, String fallback)"
+            )
+        );
+        assert!(activity.contains("selectionStarts"));
+        assert!(activity.contains("rememberSelection"));
+        assert!(activity.contains("private static final class FluxStyleDrawable extends Drawable"));
+        assert!(activity.contains("new DashPathEffect"));
+        assert!(activity.contains("drawHorizontalBorder"));
+        assert!(activity.contains("drawVerticalBorder"));
+        assert!(activity.contains("public void styleView("));
+        assert!(activity.contains("String borderTop"));
+        assert!(activity.contains("String shadowColor"));
         assert!(activity.contains("public void setTooltip(View view, String text)"));
         assert!(
             activity.contains(

@@ -1311,10 +1311,12 @@ fn emit_android_native_application(
     out.push_str("    jmethodID set_columns = (*env)->GetMethodID(env, grid_class, \"setColumnCount\", \"(I)V\");\n");
     out.push_str("    jmethodID set_rows = (*env)->GetMethodID(env, grid_class, \"setRowCount\", \"(I)V\");\n");
     out.push_str("    jmethodID set_padding = (*env)->GetMethodID(env, grid_class, \"setPadding\", \"(IIII)V\");\n");
+    out.push_str("    jmethodID set_clip_children = (*env)->GetMethodID(env, grid_class, \"setClipChildren\", \"(Z)V\");\n");
+    out.push_str("    jmethodID set_clip_to_padding = (*env)->GetMethodID(env, grid_class, \"setClipToPadding\", \"(Z)V\");\n");
     out.push_str("    jmethodID add_view = (*env)->GetMethodID(env, grid_class, \"addView\", \"(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V\");\n");
     out.push_str("    jmethodID grid_spec = (*env)->GetStaticMethodID(env, grid_class, \"spec\", \"(II)Landroid/widget/GridLayout$Spec;\");\n");
     out.push_str("    jmethodID grid_spec_weight = (*env)->GetStaticMethodID(env, grid_class, \"spec\", \"(IIF)Landroid/widget/GridLayout$Spec;\");\n");
-    out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || add_view == NULL || grid_spec == NULL || grid_spec_weight == NULL) return;\n");
+    out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || set_clip_children == NULL || set_clip_to_padding == NULL || add_view == NULL || grid_spec == NULL || grid_spec_weight == NULL) return;\n");
     out.push_str("    jobject grid = (*env)->NewObject(env, grid_class, grid_ctor, activity);\n");
     out.push_str("    if (grid == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
     out.push_str(&format!(
@@ -1329,6 +1331,8 @@ fn emit_android_native_application(
     out.push_str(&format!(
         "    jint grid_padding = (jint)(INT64_C({padding}) * flux__ui_display_scale);\n    (*env)->CallVoidMethod(env, grid, set_padding, grid_padding, grid_padding, grid_padding, grid_padding);\n"
     ));
+    out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_children, JNI_FALSE);\n");
+    out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_to_padding, JNI_FALSE);\n");
     out.push_str("    jclass params_class = (*env)->FindClass(env, \"android/widget/GridLayout$LayoutParams\");\n");
     out.push_str("    if (params_class == NULL) return;\n");
     out.push_str("    jmethodID params_ctor = (*env)->GetMethodID(env, params_class, \"<init>\", \"()V\");\n");
@@ -1349,7 +1353,7 @@ fn emit_android_native_application(
         let class_name = match element.kind.as_str() {
             "Text" => "android/widget/TextView",
             "Button" => "android/widget/Button",
-            "TextInput" => "android/widget/EditText",
+            "TextInput" => "app/flux/runtime/FluxActivity$FluxEditText",
             "Image" => "android/widget/ImageView",
             "Toggle" => "android/widget/CheckBox",
             "Radio" => "android/widget/RadioButton",
@@ -1444,14 +1448,12 @@ fn emit_android_native_application(
                     "    jclass initial_activity_class = (*env)->GetObjectClass(env, activity);\n",
                 );
                 out.push_str("    if (initial_activity_class == NULL) return;\n");
-                out.push_str("    jmethodID initial_text = (*env)->GetMethodID(env, initial_activity_class, \"initialText\", \"(ILjava/lang/String;)Ljava/lang/String;\");\n");
-                out.push_str("    if (initial_text == NULL) return;\n");
+                out.push_str("    jmethodID restore_text_input = (*env)->GetMethodID(env, initial_activity_class, \"restoreTextInput\", \"(Landroid/widget/EditText;ILjava/lang/String;)V\");\n");
+                out.push_str("    if (restore_text_input == NULL) return;\n");
                 out.push_str(&format!(
-                    "    jstring restored_text = (jstring)(*env)->CallObjectMethod(env, activity, initial_text, (jint){element_id}, child_text);\n"
+                    "    (*env)->CallVoidMethod(env, activity, restore_text_input, child, (jint){element_id}, child_text);\n"
                 ));
-                out.push_str("    if (restored_text == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
-                out.push_str("    (*env)->CallVoidMethod(env, child, set_text, restored_text);\n");
-                out.push_str("    (*env)->DeleteLocalRef(env, restored_text);\n");
+                out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, initial_activity_class);\n");
             } else {
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
@@ -1487,42 +1489,46 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(INT64_C({min_height}) * flux__ui_display_scale));\n"
             ));
         }
-        let background_color = view_property(element, "background_color")
-            .map(|property| {
-                let Some(value) = static_expr_str(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android background_color must be a compile-time string",
-                    ));
-                };
-                if parse_hex_rgba(&value).is_none() {
-                    return Err(diag(
-                        property.value.span,
-                        "background_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
-                    ));
-                }
-                Ok(value)
-            })
-            .transpose()?;
-        let border_color = view_property(element, "border_color")
-            .map(|property| {
-                let Some(value) = static_expr_str(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android border_color must be a compile-time string",
-                    ));
-                };
-                if parse_hex_rgba(&value).is_none() {
-                    return Err(diag(
-                        property.value.span,
-                        "border_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
-                    ));
-                }
-                Ok(value)
-            })
-            .transpose()?;
+        let static_color = |property_name: &str| -> Result<Option<String>, Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok(None);
+            };
+            let Some(value) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    &format!("bootstrap Android {property_name} must be a compile-time string"),
+                ));
+            };
+            if parse_hex_rgba(&value).is_none() {
+                return Err(diag(
+                    property.value.span,
+                    &format!(
+                        "{property_name} must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax"
+                    ),
+                ));
+            }
+            Ok(Some(value))
+        };
+        let background_color = static_color("background_color")?;
+        let border_color = static_color("border_color")?;
+        let border_top_color = static_color("border_top_color")?;
+        let border_bottom_color = static_color("border_bottom_color")?;
+        let border_start_color = static_color("border_start_color")?;
+        let border_end_color = static_color("border_end_color")?;
         let border_width =
             static_non_negative_style_i64(element, "border_width", signatures)?.unwrap_or(0);
+        let border_top_width =
+            static_non_negative_style_i64(element, "border_top_width", signatures)?
+                .unwrap_or(border_width);
+        let border_bottom_width =
+            static_non_negative_style_i64(element, "border_bottom_width", signatures)?
+                .unwrap_or(border_width);
+        let border_start_width =
+            static_non_negative_style_i64(element, "border_start_width", signatures)?
+                .unwrap_or(border_width);
+        let border_end_width =
+            static_non_negative_style_i64(element, "border_end_width", signatures)?
+                .unwrap_or(border_width);
         let radius = static_non_negative_style_i64(element, "radius", signatures)?.unwrap_or(0);
         let radius_top_left =
             static_non_negative_style_i64(element, "radius_top_left", signatures)?
@@ -1536,60 +1542,121 @@ fn emit_android_native_application(
         let radius_bottom_right =
             static_non_negative_style_i64(element, "radius_bottom_right", signatures)?
                 .unwrap_or(radius);
-        if let Some(property) = view_property(element, "border_style") {
+        let border_style = if let Some(property) = view_property(element, "border_style") {
             let Some(style) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
                     property.value.span,
                     "bootstrap Android border_style must be a compile-time string",
                 ));
             };
-            if !matches!(style.as_str(), "none" | "solid") {
+            if !matches!(
+                style.as_str(),
+                "none" | "solid" | "dashed" | "dotted" | "double"
+            ) {
                 return Err(diag(
                     property.value.span,
-                    "bootstrap Android border_style currently supports 'none' and 'solid'",
+                    "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
                 ));
             }
+            style
+        } else if border_top_width > 0
+            || border_bottom_width > 0
+            || border_start_width > 0
+            || border_end_width > 0
+        {
+            "solid".to_string()
+        } else {
+            "none".to_string()
+        };
+        let resolve_border_color = |width: i64, side_color: &Option<String>| {
+            if width <= 0 || border_style == "none" {
+                None
+            } else {
+                side_color
+                    .clone()
+                    .or_else(|| border_color.clone())
+                    .or_else(|| Some("#000000FF".to_string()))
+            }
+        };
+        let border_top_color = resolve_border_color(border_top_width, &border_top_color);
+        let border_bottom_color = resolve_border_color(border_bottom_width, &border_bottom_color);
+        let border_start_color = resolve_border_color(border_start_width, &border_start_color);
+        let border_end_color = resolve_border_color(border_end_width, &border_end_color);
+        let shadow_color = static_color("shadow_color")?;
+        let shadow_blur = static_style_i64(element, "shadow_blur", signatures)?.unwrap_or(0);
+        let shadow_offset_x =
+            static_style_i64(element, "shadow_offset_x", signatures)?.unwrap_or(0);
+        let shadow_offset_y =
+            static_style_i64(element, "shadow_offset_y", signatures)?.unwrap_or(0);
+        if shadow_blur < 0 {
+            let span = view_property(element, "shadow_blur")
+                .expect("shadow blur exists when negative")
+                .value
+                .span;
+            return Err(diag(span, "shadow_blur must be non-negative"));
         }
+        let has_shadow = shadow_color.is_some()
+            || shadow_blur != 0
+            || shadow_offset_x != 0
+            || shadow_offset_y != 0;
+        let shadow_color = if has_shadow {
+            shadow_color.or_else(|| Some("#00000080".to_string()))
+        } else {
+            None
+        };
         if background_color.is_some()
-            || border_color.is_some()
-            || border_width > 0
+            || border_top_color.is_some()
+            || border_bottom_color.is_some()
+            || border_start_color.is_some()
+            || border_end_color.is_some()
             || radius_top_left > 0
             || radius_top_right > 0
             || radius_bottom_left > 0
             || radius_bottom_right > 0
+            || has_shadow
         {
-            if let Some(value) = background_color.as_ref() {
-                out.push_str(&format!(
-                    "    jstring child_background = flux__android_utf8_string(env, {});\n",
-                    c_string(value)
-                ));
-                out.push_str("    if (child_background == NULL) return;\n");
-            } else {
-                out.push_str("    jstring child_background = NULL;\n");
-            }
-            if let Some(value) = border_color.as_ref() {
-                out.push_str(&format!(
-                    "    jstring child_border = flux__android_utf8_string(env, {});\n",
-                    c_string(value)
-                ));
-                out.push_str("    if (child_border == NULL) return;\n");
-            } else {
-                out.push_str("    jstring child_border = NULL;\n");
-            }
+            let emit_optional_jstring = |out: &mut String, name: &str, value: &Option<String>| {
+                if let Some(value) = value.as_ref() {
+                    out.push_str(&format!(
+                        "    jstring {name} = flux__android_utf8_string(env, {});\n",
+                        c_string(value)
+                    ));
+                    out.push_str(&format!("    if ({name} == NULL) return;\n"));
+                } else {
+                    out.push_str(&format!("    jstring {name} = NULL;\n"));
+                }
+            };
+            emit_optional_jstring(out, "child_background", &background_color);
+            emit_optional_jstring(out, "child_border_top", &border_top_color);
+            emit_optional_jstring(out, "child_border_end", &border_end_color);
+            emit_optional_jstring(out, "child_border_bottom", &border_bottom_color);
+            emit_optional_jstring(out, "child_border_start", &border_start_color);
+            let border_style_value = Some(border_style.clone());
+            emit_optional_jstring(out, "child_border_style", &border_style_value);
+            emit_optional_jstring(out, "child_shadow", &shadow_color);
             out.push_str(
                 "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
             out.push_str("    if (style_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;IFFFF)V\");\n");
+            out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFFFFLjava/lang/String;Ljava/lang/String;FFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border, (jint)(INT64_C({border_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_left}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_display_scale));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)(INT64_C({border_top_width}) * flux__ui_display_scale), (jint)(INT64_C({border_end_width}) * flux__ui_display_scale), (jint)(INT64_C({border_bottom_width}) * flux__ui_display_scale), (jint)(INT64_C({border_start_width}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_left}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_top_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_display_scale), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_display_scale), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_display_scale), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_display_scale), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_display_scale));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
-            out.push_str("    if (child_background != NULL) (*env)->DeleteLocalRef(env, child_background);\n");
-            out.push_str(
-                "    if (child_border != NULL) (*env)->DeleteLocalRef(env, child_border);\n",
-            );
+            for name in [
+                "child_background",
+                "child_border_top",
+                "child_border_end",
+                "child_border_bottom",
+                "child_border_start",
+                "child_border_style",
+                "child_shadow",
+            ] {
+                out.push_str(&format!(
+                    "    if ({name} != NULL) (*env)->DeleteLocalRef(env, {name});\n"
+                ));
+            }
         }
         let padding = static_non_negative_style_i64(element, "padding", signatures)?.unwrap_or(0);
         let padding_top =
@@ -1996,25 +2063,18 @@ fn emit_android_native_application(
             }
             let on_change = view_property(element, "on_change").is_some();
             let on_submit = view_property(element, "on_submit").is_some();
-            if on_change || on_submit {
-                out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
-                out.push_str("    if (set_id == NULL) return;\n");
-                out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
-                ));
-                out.push_str(
-                    "    jclass wire_activity_class = (*env)->GetObjectClass(env, activity);\n",
-                );
-                out.push_str("    if (wire_activity_class == NULL) return;\n");
-                out.push_str("    jmethodID wire_input = (*env)->GetMethodID(env, wire_activity_class, \"wireTextInput\", \"(Landroid/widget/EditText;ZZ)V\");\n");
-                out.push_str("    if (wire_input == NULL) return;\n");
-                out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, wire_input, child, (jboolean){}, (jboolean){});\n",
-                    if on_change { "true" } else { "false" },
-                    if on_submit { "true" } else { "false" }
-                ));
-                out.push_str("    (*env)->DeleteLocalRef(env, wire_activity_class);\n");
-            }
+            out.push_str(
+                "    jclass wire_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (wire_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID wire_input = (*env)->GetMethodID(env, wire_activity_class, \"wireTextInput\", \"(Landroid/widget/EditText;ZZ)V\");\n");
+            out.push_str("    if (wire_input == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, wire_input, child, (jboolean){}, (jboolean){});\n",
+                if on_change { "true" } else { "false" },
+                if on_submit { "true" } else { "false" }
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, wire_activity_class);\n");
             if let Some(property) = view_property(element, "autofocus") {
                 let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
                     return Err(diag(
@@ -3994,6 +4054,10 @@ fn emit_element_style(
     for (property_name, css_name) in [
         ("background_color", "background-color"),
         ("border_color", "border-color"),
+        ("border_top_color", "border-top-color"),
+        ("border_bottom_color", "border-bottom-color"),
+        ("border_start_color", "border-left-color"),
+        ("border_end_color", "border-right-color"),
     ] {
         let Some(property) = view_property(element, property_name) else {
             continue;
