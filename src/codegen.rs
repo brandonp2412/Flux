@@ -139,6 +139,12 @@ pub fn emit_c_for_target_with_source_paths(
             "process.* APIs require a desktop/server target",
         ));
     }
+    if runtime_usage.contains("flux__clipboard_set_text(") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "clipboard.* APIs require an application target",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -336,12 +342,13 @@ fn emit_runtime_prelude(
     out.push('\n');
 
     let uses_locale = runtime_usage.contains("flux__locale_");
+    let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
-    let uses_android_set_clipboard_text =
-        uses_android && runtime_usage.contains("flux__android_set_clipboard_text(");
+    let uses_android_set_clipboard_text = uses_android
+        && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
     let uses_android_show_keyboard =
         uses_android && runtime_usage.contains("flux__android_show_keyboard(");
     let uses_android_hide_keyboard =
@@ -854,6 +861,15 @@ fn emit_runtime_prelude(
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
+    if uses_clipboard_set_text && uses_gtk {
+        out.push_str("static void flux__clipboard_set_text(const char *text) {\n");
+        out.push_str("    if (text == NULL) return;\n");
+        out.push_str("    GdkDisplay *display = gdk_display_get_default();\n");
+        out.push_str("    if (display == NULL) return;\n");
+        out.push_str("    GdkClipboard *clipboard = gdk_display_get_clipboard(display);\n");
+        out.push_str("    if (clipboard != NULL) gdk_clipboard_set_text(clipboard, text);\n");
+        out.push_str("}\n");
+    }
     if uses_android_set_clipboard_text {
         out.push_str("static void flux__android_set_clipboard_text(const char *text) {\n");
         out.push_str("    if (text == NULL || flux__android_activity == NULL) return;\n");
@@ -908,6 +924,9 @@ fn emit_runtime_prelude(
         );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
+    }
+    if uses_clipboard_set_text && uses_android {
+        out.push_str("static inline void flux__clipboard_set_text(const char *text) { flux__android_set_clipboard_text(text); }\n");
     }
     if uses_android_open_url {
         out.push_str("static void flux__android_open_url(const char *url) {\n");
@@ -12659,6 +12678,17 @@ fn emit_qualified_call(
                 ));
             }
         }
+    }
+    if namespace == "clipboard" {
+        if !named_args.is_empty() || args.len() != 1 || name != "setText" {
+            return Err(diag(span, "invalid clipboard call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        return Ok((
+            format!("flux__clipboard_set_text({})", value.code),
+            Vec::new(),
+            None,
+        ));
     }
     if namespace == "android" {
         if !named_args.is_empty() {

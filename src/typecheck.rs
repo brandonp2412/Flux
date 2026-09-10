@@ -5327,6 +5327,33 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "clipboard" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("clipboard.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "setText" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("clipboard.setText expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &actual, "clipboard.setText text")?;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("clipboard module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

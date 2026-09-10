@@ -12426,6 +12426,81 @@ app Screen(onSaveState: badSave, onRestoreState: badRestore)
 }
 
 #[test]
+fn portable_clipboard_text_write_lowers_to_native_application_backends() {
+    let source = r#"
+fn started() -> void {
+    clipboard.setText("copied from Flux")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable clipboard write should typecheck");
+    let linux = compile_to_c(source).expect("portable clipboard write should lower on Linux");
+    assert!(linux.contains("static void flux__clipboard_set_text(const char *text)"));
+    assert!(linux.contains("gdk_display_get_clipboard(display)"));
+    assert!(linux.contains("gdk_clipboard_set_text(clipboard, text)"));
+    assert!(!linux.contains("flux__android_set_clipboard_text"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable clipboard app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable clipboard write should lower on Android");
+    assert!(android.contains("static void flux__android_set_clipboard_text(const char *text)"));
+    assert!(android.contains("android/content/ClipData"));
+    assert!(android.contains("static inline void flux__clipboard_set_text(const char *text)"));
+    assert!(android.contains("flux__android_set_clipboard_text(text)"));
+    assert!(!android.contains("gdk_display_get_clipboard"));
+
+    let unused = r#"
+fn unused() -> void {
+    clipboard.setText("unused")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable clipboard code should tree-shake");
+    assert!(!tree_shaken.contains("flux__clipboard_set_text"));
+    assert!(!tree_shaken.contains("gdk_display_get_clipboard"));
+
+    let headless = r#"
+fn main() -> i64 {
+    clipboard.setText("invalid")
+    return 0
+}
+"#;
+    check_source(headless).expect("clipboard API should retain target-independent static typing");
+    let error = compile_to_c(headless).expect_err("clipboard requires an application backend");
+    assert!(
+        error
+            .message
+            .contains("clipboard.* APIs require an application target")
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    clipboard.setText(42)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("clipboard text must be statically typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("clipboard.setText text") && error.message.contains("expected str")
+    }));
+}
+
+#[test]
 fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     let root = std::env::temp_dir().join(format!("flux-android-codegen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

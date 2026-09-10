@@ -1255,6 +1255,16 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "clipboard" {
+        push_completion_item(
+            items,
+            seen,
+            "setText",
+            3,
+            "fn clipboard.setText(text: str) -> void",
+        );
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2434,6 +2444,16 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 _ => {}
+            }
+        }
+        if namespace == "clipboard" {
+            if member == "setText" {
+                return Some(signature_help_for_builtin(
+                    "clipboard.setText",
+                    &["text: str"],
+                    "void",
+                    active_parameter,
+                ));
             }
         }
         if namespace == "android" {
@@ -5355,7 +5375,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    clipboard.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5473,6 +5493,22 @@ mod tests {
         assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
         assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
         assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
+
+        let clipboard_line = source
+            .lines()
+            .position(|line| line.trim() == "clipboard.")
+            .expect("clipboard completion line should exist");
+        let clipboard_source = source.lines().nth(clipboard_line).unwrap();
+        let clipboard_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(clipboard_line),
+            Some(clipboard_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(clipboard_items.contains("fn clipboard.setText(text: str) -> void"));
 
         let android_line = source
             .lines()
@@ -6298,9 +6334,26 @@ mod tests {
     #[test]
     fn signature_help_supports_android_clipboard() {
         let uri = "file:///tmp/android-clipboard-signature.flux";
-        let source =
-            "fn main() -> i64 {\n    android.setClipboardText(\"copied\")\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    clipboard.setText(\"portable\")\n    android.setClipboardText(\"copied\")\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let portable_needle = "clipboard.setText(";
+        let portable_line_index = source
+            .lines()
+            .position(|line| line.contains(portable_needle))
+            .expect("portable clipboard call line should exist");
+        let portable_line = source.lines().nth(portable_line_index).unwrap();
+        let portable_cursor = portable_line.find(portable_needle).unwrap() + portable_needle.len();
+        let portable_help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            portable_line_index,
+            portable_cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("portable clipboard call should have signature help")
+        .to_json();
+        assert!(portable_help.contains("fn clipboard.setText(text: str) -> void"));
         let needle = "android.setClipboardText(";
         let line_index = source
             .lines()

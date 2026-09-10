@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 449
 - Reported overall progress: **61%**
-- Current net scope growth after the baseline: 30 checkbox items
+- Current net scope growth after the baseline: 31 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -742,6 +742,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Wayland-first support with appropriate fallback where practical.
   - [x] Bootstrap GUI was built and launched end-to-end on a real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
 - [ ] Menus/tray/clipboard/file dialogs.
+  - [x] Portable application clipboard writes through typed `clipboard.setText(text)`: Linux lowers directly to the native GDK clipboard on the current GTK application backend, Android reuses the compiler-owned direct `ClipboardManager`/`ClipData` JNI boundary, LSP completion/signature help expose the shared API, unreachable use tree-shakes completely, and headless use is rejected rather than silently depending on GUI state. A native Linux debug build verified the GDK lowering; clipboard reads remain sequenced behind owned string semantics.
 - [ ] Multi-window.
 - [x] Packaging formats/integration guidance for the current Linux target: `flux package` produces either the existing host-labelled directory bundle or a directly distributable `--format tar.gz` archive with normalized ordering/timestamps/ownership metadata; same-host identical archives are byte-reproducibility tested, extracted archives execute successfully, and distro-specific deb/rpm/Arch/AppImage/Flatpak integration remains documented as an explicit downstream layer rather than hidden compiler behavior.
 
