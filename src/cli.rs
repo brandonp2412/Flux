@@ -2358,7 +2358,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         }
     }
 
-    public void wireTextInput(EditText view, boolean onChange, boolean onSubmit) {
+    public void wireTextInput(EditText view, boolean onChange, boolean onSubmit, boolean multiline, boolean submitOnEnter) {
         final int viewId = view.getId();
         view.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -2380,8 +2380,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
                 }
             }
         });
-        if (onSubmit) {
-            view.setSingleLine(true);
+        if (onSubmit && submitOnEnter) {
             view.setImeOptions(EditorInfo.IME_ACTION_DONE);
             view.setOnEditorActionListener((editor, actionId, event) -> {
                 boolean enter = event != null
@@ -2393,6 +2392,8 @@ public final class FluxActivity extends Activity implements View.OnClickListener
                 }
                 return false;
             });
+        } else if (multiline) {
+            view.setImeOptions(EditorInfo.IME_FLAG_NO_ENTER_ACTION);
         }
     }
 }
@@ -3283,8 +3284,9 @@ mod tests {
             )
         );
         assert!(activity.contains(
-            "public void wireTextInput(EditText view, boolean onChange, boolean onSubmit)"
+            "public void wireTextInput(EditText view, boolean onChange, boolean onSubmit, boolean multiline, boolean submitOnEnter)"
         ));
+        assert!(activity.contains("EditorInfo.IME_FLAG_NO_ENTER_ACTION"));
         assert!(activity.contains("nativeBuildUi();"));
 
         let vibrating = android_manifest_xml(

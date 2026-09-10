@@ -9329,6 +9329,42 @@ app Form
             .message
             .contains("TextInput.keyboard_type must be one of")
     );
+
+    let no_enter_submit = r#"
+fn submit(value: str) -> void {
+    print(value)
+}
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        submitOnEnter: false
+        onSubmit: submit
+}
+app Form
+"#;
+    check_source(no_enter_submit).expect("submitOnEnter should be a typed TextInput bool property");
+    let generated = compile_to_c(no_enter_submit)
+        .expect("single-line TextInput may opt out of Enter submission on Linux");
+    assert!(!generated.contains("g_signal_connect(flux__ui_query, \"activate\""));
+
+    let linux_multiline = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        multiline: true
+}
+app Form
+"#;
+    check_source(linux_multiline).expect("multiline should typecheck before target lowering");
+    let error = compile_to_c(linux_multiline)
+        .expect_err("Linux bootstrap must reject unsupported multiline input explicitly");
+    assert!(
+        error
+            .message
+            .contains("TextInput.multiline is not yet supported")
+    );
 }
 
 #[test]
@@ -10484,6 +10520,8 @@ view Settings {
     TextInput cache_only at 6,1
         text: "cache me"
         keyboard_type: "email"
+        multiline: true
+        submit_on_enter: false
 }
 app Settings
 "##,
@@ -10501,10 +10539,17 @@ app Settings
     assert!(generated.contains("FluxActivity$FluxEditText"));
     assert!(generated.contains("restoreTextInput"));
     assert!(generated.contains("wireTextInput"));
-    assert!(generated.contains("(jboolean)false, (jboolean)false"));
+    assert!(generated.contains("(Landroid/widget/EditText;ZZZZ)V"));
+    assert!(
+        generated.contains("(jboolean)false, (jboolean)false, (jboolean)true, (jboolean)false")
+    );
+    assert!(generated.contains("setSingleLine"));
+    assert!(generated.contains("(jboolean)false"));
+    assert!(generated.contains("(jint)131105"));
     assert!(generated.contains("setMaxLength"));
     assert!(generated.contains("setInputType"));
-    assert!(generated.contains("(jint)33"));
+    assert!(generated.contains("(jint)129"));
+    assert!(generated.contains("(jint)131105"));
     assert!(generated.contains("requestFocus"));
     assert!(generated.contains("setOnCheckedChangeListener"));
     assert!(generated.contains("grid_spec_weight"));

@@ -69,6 +69,8 @@ view Screen {
         onPress: pressed
     TextInput query at 5,1
         placeholder: "Type in native Android"
+        multiline: true
+        submitOnEnter: true
         maxLength: 48
         padding: 10
         backgroundColor: "#F8FAFC"

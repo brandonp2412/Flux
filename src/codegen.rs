@@ -2316,6 +2316,24 @@ fn emit_android_native_application(
             }
         }
         if element.kind == "TextInput" {
+            let multiline = match view_property(element, "multiline") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.multiline must be a compile-time bool value",
+                    )
+                })?,
+                None => false,
+            };
+            let submit_on_enter = match view_property(element, "submit_on_enter") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.submitOnEnter must be a compile-time bool value",
+                    )
+                })?,
+                None => !multiline,
+            };
             if let Some(property) = view_property(element, "placeholder") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str("    jmethodID set_hint = (*env)->GetMethodID(env, child_class, \"setHint\", \"(Ljava/lang/CharSequence;)V\");\n");
@@ -2338,8 +2356,26 @@ fn emit_android_native_application(
                 android_input_type = Some(match keyboard_type.as_str() {
                     "text" => 1,
                     "email" => 33,
+                    "number" if multiline => {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.multiline is not supported with keyboardType 'number'",
+                        ));
+                    }
                     "number" => 2,
+                    "decimal" if multiline => {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.multiline is not supported with keyboardType 'decimal'",
+                        ));
+                    }
                     "decimal" => 8194,
+                    "phone" if multiline => {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.multiline is not supported with keyboardType 'phone'",
+                        ));
+                    }
                     "phone" => 3,
                     "url" => 17,
                     _ => {
@@ -2358,9 +2394,24 @@ fn emit_android_native_application(
                     ));
                 };
                 if password {
+                    if multiline {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.password and TextInput.multiline cannot both be true",
+                        ));
+                    }
                     android_input_type = Some(129);
                 }
             }
+            if multiline {
+                android_input_type = Some(android_input_type.unwrap_or(1) | 131072);
+            }
+            out.push_str("    jmethodID set_single_line = (*env)->GetMethodID(env, child_class, \"setSingleLine\", \"(Z)V\");\n");
+            out.push_str("    if (set_single_line == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_single_line, (jboolean){});\n",
+                if multiline { "false" } else { "true" }
+            ));
             if let Some(input_type) = android_input_type {
                 out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
                 out.push_str("    if (set_input_type == NULL) return;\n");
@@ -2396,12 +2447,14 @@ fn emit_android_native_application(
                 "    jclass wire_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
             out.push_str("    if (wire_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID wire_input = (*env)->GetMethodID(env, wire_activity_class, \"wireTextInput\", \"(Landroid/widget/EditText;ZZ)V\");\n");
+            out.push_str("    jmethodID wire_input = (*env)->GetMethodID(env, wire_activity_class, \"wireTextInput\", \"(Landroid/widget/EditText;ZZZZ)V\");\n");
             out.push_str("    if (wire_input == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, wire_input, child, (jboolean){}, (jboolean){});\n",
+                "    (*env)->CallVoidMethod(env, activity, wire_input, child, (jboolean){}, (jboolean){}, (jboolean){}, (jboolean){});\n",
                 if on_change { "true" } else { "false" },
-                if on_submit { "true" } else { "false" }
+                if on_submit { "true" } else { "false" },
+                if multiline { "true" } else { "false" },
+                if submit_on_enter { "true" } else { "false" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, wire_activity_class);\n");
             if let Some(property) = view_property(element, "autofocus") {
@@ -3502,6 +3555,33 @@ fn emit_linux_gtk_application(
                 }
             }
             "TextInput" => {
+                let multiline = match view_property(element, "multiline") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.multiline must be a compile-time bool value",
+                        )
+                    })?,
+                    None => false,
+                };
+                if multiline {
+                    let span = view_property(element, "multiline")
+                        .map(|property| property.value.span)
+                        .unwrap_or(element.span);
+                    return Err(diag(
+                        span,
+                        "TextInput.multiline is not yet supported by the Linux GTK bootstrap backend",
+                    ));
+                }
+                let submit_on_enter = match view_property(element, "submit_on_enter") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
+                        )
+                    })?,
+                    None => true,
+                };
                 let text = match view_property(element, "text") {
                     None => c_string(""),
                     Some(property) => ui_expr_c(&property.value, view, signatures)?,
@@ -3588,7 +3668,7 @@ fn emit_linux_gtk_application(
                         element.name
                     ));
                 }
-                if view_property(element, "on_submit").is_some() {
+                if view_property(element, "on_submit").is_some() && submit_on_enter {
                     out.push_str(&format!(
                         "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
                         element.name
