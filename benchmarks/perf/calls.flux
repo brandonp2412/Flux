@@ -1,14 +1,16 @@
-fn adjust(total: i64, value: i64) -> i64 {
-    if total > 1000000:
-        return total / 2 + value
+fn classify(value: i64) -> i64 {
+    if value < 25000000:
+        return 1
+    elif value < 75000000:
+        return 2
     else:
-        return total + value
+        return 3
 }
 
 fn main() -> i64 {
     var total: i64 = 0
     for value in 0..100000000:
-        total = adjust(total, value)
+        total = total + classify(value)
     print(total)
     return 0
 }

@@ -1191,6 +1191,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "focusFirst",
+            3,
+            "fn android.focusFirst() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "focusLast",
+            3,
+            "fn android.focusLast() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "clearFocus",
             3,
             "fn android.clearFocus() -> void",
@@ -2117,7 +2131,8 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "clearFocus" => {
+                "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "focusFirst"
+                | "focusLast" | "clearFocus" => {
                     return Some(signature_help_for_builtin(
                         &format!("android.{member}"),
                         &[],
@@ -5044,6 +5059,8 @@ mod tests {
         assert!(android_items.contains("fn android.hideKeyboard() -> void"));
         assert!(android_items.contains("fn android.focusNext() -> void"));
         assert!(android_items.contains("fn android.focusPrevious() -> void"));
+        assert!(android_items.contains("fn android.focusFirst() -> void"));
+        assert!(android_items.contains("fn android.focusLast() -> void"));
         assert!(android_items.contains("fn android.clearFocus() -> void"));
         assert!(android_items.contains("fn android.selectionStart() -> i64"));
         assert!(android_items.contains("fn android.selectionEnd() -> i64"));
@@ -5577,7 +5594,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_focus_and_selection() {
         let uri = "file:///tmp/android-focus-signatures.flux";
-        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.focusFirst()\n    android.focusLast()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.focusNext(", "fn android.focusNext() -> void"),
@@ -5585,6 +5602,8 @@ mod tests {
                 "android.focusPrevious(",
                 "fn android.focusPrevious() -> void",
             ),
+            ("android.focusFirst(", "fn android.focusFirst() -> void"),
+            ("android.focusLast(", "fn android.focusLast() -> void"),
             ("android.clearFocus(", "fn android.clearFocus() -> void"),
             (
                 "android.selectionStart(",

@@ -1274,15 +1274,6 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "onLowMemory"
                     | "onSaveState"
                     | "onRestoreState"
-                    | "on_start"
-                    | "on_resume"
-                    | "on_pause"
-                    | "on_stop"
-                    | "on_exit"
-                    | "on_configuration_changed"
-                    | "on_low_memory"
-                    | "on_save_state"
-                    | "on_restore_state"
             ) {
                 return Err(diag(
                     line.number,

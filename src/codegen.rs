@@ -315,10 +315,17 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_focus_next(");
     let uses_android_focus_previous =
         uses_android && runtime_usage.contains("flux__android_focus_previous(");
+    let uses_android_focus_first =
+        uses_android && runtime_usage.contains("flux__android_focus_first(");
+    let uses_android_focus_last =
+        uses_android && runtime_usage.contains("flux__android_focus_last(");
+    let uses_android_focus_edges = uses_android_focus_first || uses_android_focus_last;
     let uses_android_clear_focus =
         uses_android && runtime_usage.contains("flux__android_clear_focus(");
-    let uses_android_focus_navigation =
-        uses_android_focus_next || uses_android_focus_previous || uses_android_clear_focus;
+    let uses_android_focus_navigation = uses_android_focus_next
+        || uses_android_focus_previous
+        || uses_android_focus_edges
+        || uses_android_clear_focus;
     let uses_android_selection_start =
         uses_android && runtime_usage.contains("flux__android_selection_start(");
     let uses_android_selection_end =
@@ -554,7 +561,7 @@ fn emit_runtime_prelude(
         out.push_str("    if ((*env)->ExceptionCheck(env) || target == NULL) goto done;\n");
         out.push_str("    target_class = (*env)->GetObjectClass(env, target);\n");
         out.push_str("    if (target_class == NULL) goto done;\n");
-        out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, target_class, \"requestFocus\", \"()Z\");\n");
+        out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, target_class, \"requestFocusFromTouch\", \"()Z\");\n");
         out.push_str("    if (request_focus != NULL) (*env)->CallBooleanMethod(env, target, request_focus);\n");
         out.push_str("done:\n");
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
@@ -575,6 +582,67 @@ fn emit_runtime_prelude(
         }
         if uses_android_clear_focus {
             out.push_str("static inline void flux__android_clear_focus(void) { flux__android_change_focus(0); }\n");
+        }
+        if uses_android_focus_edges {
+            out.push_str("static void flux__android_focus_edge(int direction) {\n");
+            out.push_str("    if (flux__android_activity == NULL) return;\n");
+            out.push_str("    bool detach = false;\n");
+            out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+            out.push_str("    if (env == NULL) return;\n");
+            out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+            out.push_str("    jclass activity_class = NULL; jclass view_group_class = NULL; jclass focus_finder_class = NULL; jclass target_class = NULL;\n");
+            out.push_str(
+                "    jobject root = NULL; jobject finder = NULL; jobject target = NULL;\n",
+            );
+            out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (activity_class == NULL) goto done;\n");
+            out.push_str("    jmethodID find_view = (*env)->GetMethodID(env, activity_class, \"findViewById\", \"(I)Landroid/view/View;\");\n");
+            out.push_str("    if (find_view == NULL) goto done;\n");
+            out.push_str(
+                "    root = (*env)->CallObjectMethod(env, activity, find_view, (jint)16908290);\n",
+            );
+            out.push_str("    if ((*env)->ExceptionCheck(env) || root == NULL) goto done;\n");
+            out.push_str(
+                "    view_group_class = (*env)->FindClass(env, \"android/view/ViewGroup\");\n",
+            );
+            out.push_str("    if (view_group_class == NULL || !(*env)->IsInstanceOf(env, root, view_group_class)) goto done;\n");
+            out.push_str(
+                "    focus_finder_class = (*env)->FindClass(env, \"android/view/FocusFinder\");\n",
+            );
+            out.push_str("    if (focus_finder_class == NULL) goto done;\n");
+            out.push_str("    jmethodID get_instance = (*env)->GetStaticMethodID(env, focus_finder_class, \"getInstance\", \"()Landroid/view/FocusFinder;\");\n");
+            out.push_str("    if (get_instance == NULL) goto done;\n");
+            out.push_str("    finder = (*env)->CallStaticObjectMethod(env, focus_finder_class, get_instance);\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env) || finder == NULL) goto done;\n");
+            out.push_str("    jmethodID find_next = (*env)->GetMethodID(env, focus_finder_class, \"findNextFocus\", \"(Landroid/view/ViewGroup;Landroid/view/View;I)Landroid/view/View;\");\n");
+            out.push_str("    if (find_next == NULL) goto done;\n");
+            out.push_str("    target = (*env)->CallObjectMethod(env, finder, find_next, root, NULL, (jint)direction);\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env) || target == NULL) goto done;\n");
+            out.push_str("    target_class = (*env)->GetObjectClass(env, target);\n");
+            out.push_str("    if (target_class == NULL) goto done;\n");
+            out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, target_class, \"requestFocusFromTouch\", \"()Z\");\n");
+            out.push_str("    if (request_focus != NULL) (*env)->CallBooleanMethod(env, target, request_focus);\n");
+            out.push_str("done:\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+            out.push_str(
+                "    if (target_class != NULL) (*env)->DeleteLocalRef(env, target_class);\n",
+            );
+            out.push_str("    if (target != NULL) (*env)->DeleteLocalRef(env, target);\n");
+            out.push_str("    if (finder != NULL) (*env)->DeleteLocalRef(env, finder);\n");
+            out.push_str("    if (focus_finder_class != NULL) (*env)->DeleteLocalRef(env, focus_finder_class);\n");
+            out.push_str("    if (view_group_class != NULL) (*env)->DeleteLocalRef(env, view_group_class);\n");
+            out.push_str("    if (root != NULL) (*env)->DeleteLocalRef(env, root);\n");
+            out.push_str(
+                "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+            );
+            out.push_str("    flux__android_release_env(detach);\n");
+            out.push_str("}\n");
+            if uses_android_focus_first {
+                out.push_str("static inline void flux__android_focus_first(void) { flux__android_focus_edge(2); }\n");
+            }
+            if uses_android_focus_last {
+                out.push_str("static inline void flux__android_focus_last(void) { flux__android_focus_edge(1); }\n");
+            }
         }
     }
     if uses_android_text_selection {
@@ -11002,7 +11070,7 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("flux__android_{runtime_name}()"), Vec::new(), None));
             }
-            "focusNext" | "focusPrevious" | "clearFocus" => {
+            "focusNext" | "focusPrevious" | "focusFirst" | "focusLast" | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,
@@ -11012,6 +11080,8 @@ fn emit_qualified_call(
                 let runtime_name = match name {
                     "focusNext" => "focus_next",
                     "focusPrevious" => "focus_previous",
+                    "focusFirst" => "focus_first",
+                    "focusLast" => "focus_last",
                     "clearFocus" => "clear_focus",
                     _ => unreachable!(),
                 };

@@ -1040,22 +1040,15 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                 | "onStop"
                 | "onExit"
                 | "onConfigurationChanged"
-                | "onLowMemory"
-                | "on_start"
-                | "on_resume"
-                | "on_pause"
-                | "on_stop"
-                | "on_exit"
-                | "on_configuration_changed"
-                | "on_low_memory" => Some(Type::Function {
+                | "onLowMemory" => Some(Type::Function {
                     params: Vec::new(),
                     returns: Vec::new(),
                 }),
-                "onSaveState" | "on_save_state" => Some(Type::Function {
+                "onSaveState" => Some(Type::Function {
                     params: Vec::new(),
                     returns: vec![Type::Str],
                 }),
-                "onRestoreState" | "on_restore_state" => Some(Type::Function {
+                "onRestoreState" => Some(Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
                 }),
@@ -4732,7 +4725,8 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
-            "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "clearFocus" => {
+            "showKeyboard" | "hideKeyboard" | "focusNext" | "focusPrevious" | "focusFirst"
+            | "focusLast" | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,

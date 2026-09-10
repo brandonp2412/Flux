@@ -33,12 +33,20 @@ fn textChanged(value: str) -> void {
     print(value)
 }
 
+fn focusFirst() -> void {
+    android.focusFirst()
+}
+
+fn focusLast() -> void {
+    android.focusLast()
+}
+
 view Screen {
     state expanded: bool = false
     state choice: i64 = 0
     derived actionLabel: str = "Toggle details"
     grid columns: 1fr
-    grid rows: auto auto auto auto auto auto auto auto
+    grid rows: auto auto auto auto auto auto auto auto auto auto
     grid gap: 12
     grid padding: 20
     Text title at 1,1
@@ -85,6 +93,12 @@ view Screen {
         label: "Second choice"
         selected: choice == 1
         onSelect: choice => 1
+    Button focusStart at 9,1
+        text: "Focus first control"
+        onPress: focusFirst
+    Button focusEnd at 10,1
+        text: "Focus last control"
+        onPress: focusLast
 }
 
-app Screen(onStart: started, on_configurationChanged: configurationChanged, on_lowMemory: lowMemory, on_saveState: saveState, on_restoreState: restoreState)
+app Screen(onStart: started, onConfigurationChanged: configurationChanged, onLowMemory: lowMemory, onSaveState: saveState, onRestoreState: restoreState)

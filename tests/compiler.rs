@@ -9818,7 +9818,7 @@ view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting)
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting)
 "#;
     check_source(source)
         .expect("lifecycle callbacks should typecheck as named fn() -> void values");
@@ -9840,36 +9840,36 @@ view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: bad)
+app Screen(onStart: bad)
 "#;
     let errors = check_source_all(wrong).expect_err("wrong lifecycle signature should fail");
     assert!(errors.iter().any(|error| {
-        error.message.contains("application on_start callback")
+        error.message.contains("application onStart callback")
             && error.message.contains("expected fn() -> void")
     }));
 
     let wrong_state = r#"
-fn bad_save() -> void {
+fn badSave() -> void {
 }
-fn bad_restore() -> str {
+fn badRestore() -> str {
     return "bad"
 }
 view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_save_state: bad_save, on_restore_state: bad_restore)
+app Screen(onSaveState: badSave, onRestoreState: badRestore)
 "#;
     let errors = check_source_all(wrong_state)
         .expect_err("saved-state lifecycle callbacks require exact signatures");
     assert!(errors.iter().any(|error| {
-        error.message.contains("application on_save_state callback")
+        error.message.contains("application onSaveState callback")
             && error.message.contains("expected fn() -> str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("application on_restore_state callback")
+            .contains("application onRestoreState callback")
             && error.message.contains("expected fn(str) -> void")
     }));
 }
@@ -9895,6 +9895,8 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.hideKeyboard()
     android.focusNext()
     android.focusPrevious()
+    android.focusFirst()
+    android.focusLast()
     android.clearFocus()
     print(android.selectionStart())
     print(android.selectionEnd())
@@ -9922,23 +9924,23 @@ fn stopped() -> void {
 fn exiting() -> void {
     print("exiting")
 }
-fn configuration_changed() -> void {
+fn configurationChanged() -> void {
     print("configuration changed")
 }
-fn low_memory() -> void {
+fn lowMemory() -> void {
     print("low memory")
 }
-fn save_state() -> str {
+fn saveState() -> str {
     return "saved"
 }
-fn restore_state(value: str) -> void {
+fn restoreState(value: str) -> void {
     print(value)
 }
 view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: stopped, on_exit: exiting, on_configuration_changed: configuration_changed, on_low_memory: low_memory, on_save_state: save_state, on_restore_state: restore_state)
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting, onConfigurationChanged: configurationChanged, onLowMemory: lowMemory, onSaveState: saveState, onRestoreState: restoreState)
 "#,
     )
     .expect("Android codegen source should be writable");
@@ -9960,8 +9962,8 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains(
         "activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state"
     ));
-    assert!(generated.contains("flux__fn_save_state();"));
-    assert!(generated.contains("flux__fn_restore_state(restored_state);"));
+    assert!(generated.contains("flux__fn_saveState();"));
+    assert!(generated.contains("flux__fn_restoreState(restored_state);"));
     assert!(generated.contains("activity->callbacks->onDestroy = flux__android_on_destroy"));
     assert!(generated.contains("flux__fn_started();"));
     assert!(generated.contains("flux__fn_resumed();"));
@@ -9984,9 +9986,13 @@ app Screen(on_start: started, on_resume: resumed, on_pause: paused, on_stop: sto
     assert!(generated.contains("static inline void flux__android_hide_keyboard(void)"));
     assert!(generated.contains("static inline void flux__android_focus_next(void)"));
     assert!(generated.contains("static inline void flux__android_focus_previous(void)"));
-    assert!(generated.contains("static inline void flux__android_clear_focus(void)"));
+    assert!(generated.contains("static inline void flux__android_focus_first(void)"));
+    assert!(generated.contains("static inline void flux__android_focus_last(void)"));
+    assert!(generated.contains("static void flux__android_focus_edge(int direction)"));
     assert!(generated.contains("\"focusSearch\", \"(I)Landroid/view/View;\""));
-    assert!(generated.contains("\"requestFocus\", \"()Z\""));
+    assert!(generated.contains("\"android/view/FocusFinder\""));
+    assert!(generated.contains("\"findNextFocus\""));
+    assert!(generated.contains("\"requestFocusFromTouch\", \"()Z\""));
     assert!(generated.contains("\"clearFocus\", \"()V\""));
     assert!(generated.contains("static inline int64_t flux__android_selection_start(void)"));
     assert!(generated.contains("static inline int64_t flux__android_selection_end(void)"));
@@ -10071,6 +10077,8 @@ fn main() -> i64 {
     android.hideKeyboard()
     android.focusNext()
     android.focusPrevious()
+    android.focusFirst()
+    android.focusLast()
     android.clearFocus()
     android.selectionStart()
     android.selectionEnd()
@@ -10100,8 +10108,12 @@ app Screen
     assert!(!tree_generated.contains("flux__android_hide_keyboard"));
     assert!(!tree_generated.contains("flux__android_focus_next"));
     assert!(!tree_generated.contains("flux__android_focus_previous"));
+    assert!(!tree_generated.contains("flux__android_focus_first"));
+    assert!(!tree_generated.contains("flux__android_focus_last"));
+    assert!(!tree_generated.contains("flux__android_focus_edge"));
     assert!(!tree_generated.contains("flux__android_clear_focus"));
     assert!(!tree_generated.contains("focusSearch"));
+    assert!(!tree_generated.contains("android/view/FocusFinder"));
     assert!(!tree_generated.contains("flux__android_selection_start"));
     assert!(!tree_generated.contains("flux__android_selection_end"));
     assert!(!tree_generated.contains("flux__android_set_caret"));
@@ -10129,6 +10141,8 @@ fn main() -> i64 {
     android.hideKeyboard(false)
     android.focusNext(1)
     android.focusPrevious(false)
+    android.focusFirst(1)
+    android.focusLast(false)
     android.clearFocus("bad")
     android.selectionStart(1)
     android.selectionEnd(false)
@@ -10174,6 +10188,8 @@ fn main() -> i64 {
     for name in [
         "focusNext",
         "focusPrevious",
+        "focusFirst",
+        "focusLast",
         "clearFocus",
         "selectionStart",
         "selectionEnd",
