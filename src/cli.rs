@@ -71,10 +71,17 @@ impl NativeInstrumentation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct NativeTargetOptions {
+    triple: Option<String>,
+    sysroot: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 struct BuildOptions {
     output: Option<PathBuf>,
     mode: BuildMode,
+    native_target: NativeTargetOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +107,7 @@ struct PackageOptions {
     output: Option<PathBuf>,
     mode: BuildMode,
     format: PackageFormat,
+    native_target: NativeTargetOptions,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -367,7 +375,13 @@ fn run() -> Result<(), CliError> {
                 })?;
                 default_binary_path(&entry)
             };
-            build_native(&generated, &output, options.mode)?;
+            build_native_configured(
+                &generated,
+                &output,
+                options.mode,
+                NativeInstrumentation::None,
+                &options.native_target,
+            )?;
             println!("built ({}): {}", options.mode.name(), output.display());
             Ok(())
         }
@@ -395,6 +409,12 @@ fn run() -> Result<(), CliError> {
             if options.output.is_some() {
                 return Err(CliError::Message(
                     "run does not accept '-o'; development binaries are managed automatically"
+                        .to_string(),
+                ));
+            }
+            if options.native_target != NativeTargetOptions::default() {
+                return Err(CliError::Message(
+                    "run executes on the development host and does not accept '--target' or '--sysroot'; use 'build' for cross-target artifacts"
                         .to_string(),
                 ));
             }
@@ -948,7 +968,11 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         .path
         .parent()
         .expect("canonical manifest has a parent");
-    let artifact_name = package_artifact_name(&manifest.name, manifest.version.as_deref())?;
+    let artifact_name = package_artifact_name(
+        &manifest.name,
+        manifest.version.as_deref(),
+        options.native_target.triple.as_deref(),
+    )?;
     let default_output = match options.format {
         PackageFormat::Directory => package_root.join("dist").join(&artifact_name),
         PackageFormat::TarGz => package_root
@@ -974,7 +998,13 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
 
     match options.format {
         PackageFormat::Directory => {
-            build_package_directory(&manifest, &generated, &output, options.mode)?;
+            build_package_directory(
+                &manifest,
+                &generated,
+                &output,
+                options.mode,
+                &options.native_target,
+            )?;
         }
         PackageFormat::TarGz => {
             command_first_line("tar", &["--version"]).map_err(|message| {
@@ -996,7 +1026,13 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 fs::create_dir_all(&staging_root).map_err(|error| {
                     format!("failed to create package staging directory: {error}")
                 })?;
-                build_package_directory(&manifest, &generated, &staged_bundle, options.mode)?;
+                build_package_directory(
+                    &manifest,
+                    &generated,
+                    &staged_bundle,
+                    options.mode,
+                    &options.native_target,
+                )?;
                 run_checked(
                     Command::new("tar")
                         .args([
@@ -1031,11 +1067,18 @@ fn build_package_directory(
     generated: &str,
     output: &Path,
     mode: BuildMode,
+    native_target: &NativeTargetOptions,
 ) -> Result<(), CliError> {
     fs::create_dir_all(output)
         .map_err(|error| format!("failed to create package '{}': {error}", output.display()))?;
     let binary = output.join(&manifest.name);
-    if let Err(error) = build_native(generated, &binary, mode) {
+    if let Err(error) = build_native_configured(
+        generated,
+        &binary,
+        mode,
+        NativeInstrumentation::None,
+        native_target,
+    ) {
         let _ = fs::remove_dir_all(output);
         return Err(CliError::Message(error));
     }
@@ -1056,7 +1099,11 @@ fn package_staging_dir() -> PathBuf {
     env::temp_dir().join(format!("flux-package-{}-{nonce}", std::process::id()))
 }
 
-fn package_artifact_name(name: &str, version: Option<&str>) -> Result<String, CliError> {
+fn package_artifact_name(
+    name: &str,
+    version: Option<&str>,
+    target_triple: Option<&str>,
+) -> Result<String, CliError> {
     if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
         return Err(CliError::Message(
             "package name must be a safe filesystem name without path separators".to_string(),
@@ -1073,11 +1120,10 @@ fn package_artifact_name(name: &str, version: Option<&str>) -> Result<String, Cl
             "package version must be safe for a package artifact name".to_string(),
         ));
     }
-    Ok(format!(
-        "{name}-{version}-{}-{}",
-        env::consts::OS,
-        env::consts::ARCH
-    ))
+    let platform = target_triple
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-{}", env::consts::OS, env::consts::ARCH));
+    Ok(format!("{name}-{version}-{platform}"))
 }
 
 fn create_project(target: &Path) -> Result<(), CliError> {
@@ -3065,6 +3111,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
     let mut mode_seen = false;
     let mut format = PackageFormat::Directory;
     let mut format_seen = false;
+    let mut native_target = NativeTargetOptions::default();
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3100,9 +3147,29 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                 format_seen = true;
                 index += 2;
             }
+            "--target" => {
+                if native_target.triple.is_some() {
+                    return Err("native target may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--target' requires a Clang target triple".to_string());
+                };
+                native_target.triple = Some(parse_native_target_triple(value)?);
+                index += 2;
+            }
+            "--sysroot" => {
+                if native_target.sysroot.is_some() {
+                    return Err("native sysroot may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--sysroot' requires a directory".to_string());
+                };
+                native_target.sysroot = Some(PathBuf::from(value));
+                index += 2;
+            }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', or '--format <directory|tar.gz>'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz>', '--target <triple>', or '--sysroot <directory>'"
                 ));
             }
         }
@@ -3111,13 +3178,29 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
         output,
         mode,
         format,
+        native_target,
     })
+}
+
+fn parse_native_target_triple(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || !value.contains('-')
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "invalid native target '{value}'; expected a Clang target triple such as x86_64-unknown-linux-gnu"
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
     let mut output = None;
     let mut mode = default_mode;
     let mut mode_seen = false;
+    let mut native_target = NativeTargetOptions::default();
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3142,14 +3225,38 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
                 mode_seen = true;
                 index += 2;
             }
+            "--target" => {
+                if native_target.triple.is_some() {
+                    return Err("native target may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--target' requires a Clang target triple".to_string());
+                };
+                native_target.triple = Some(parse_native_target_triple(value)?);
+                index += 2;
+            }
+            "--sysroot" => {
+                if native_target.sysroot.is_some() {
+                    return Err("native sysroot may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--sysroot' requires a directory".to_string());
+                };
+                native_target.sysroot = Some(PathBuf::from(value));
+                index += 2;
+            }
             flag => {
                 return Err(format!(
-                    "unknown build option '{flag}'; expected '-o <path>' or '--mode <debug|profile|release>'"
+                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', or '--sysroot <directory>'"
                 ));
             }
         }
     }
-    Ok(BuildOptions { output, mode })
+    Ok(BuildOptions {
+        output,
+        mode,
+        native_target,
+    })
 }
 
 #[derive(Debug)]
@@ -4568,7 +4675,13 @@ fn default_binary_path(source: &Path) -> PathBuf {
 }
 
 fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), String> {
-    build_native_instrumented(c_source, output, mode, NativeInstrumentation::None)
+    build_native_configured(
+        c_source,
+        output,
+        mode,
+        NativeInstrumentation::None,
+        &NativeTargetOptions::default(),
+    )
 }
 
 fn build_native_instrumented(
@@ -4577,7 +4690,31 @@ fn build_native_instrumented(
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
 ) -> Result<(), String> {
-    let cache = native_build_cache_path(c_source, mode, instrumentation);
+    build_native_configured(
+        c_source,
+        output,
+        mode,
+        instrumentation,
+        &NativeTargetOptions::default(),
+    )
+}
+
+fn build_native_configured(
+    c_source: &str,
+    output: &Path,
+    mode: BuildMode,
+    instrumentation: NativeInstrumentation,
+    native_target: &NativeTargetOptions,
+) -> Result<(), String> {
+    if let Some(sysroot) = native_target.sysroot.as_deref()
+        && !sysroot.is_dir()
+    {
+        return Err(format!(
+            "native sysroot '{}' is not a directory",
+            sysroot.display()
+        ));
+    }
+    let cache = native_build_cache_path_configured(c_source, mode, instrumentation, native_target);
     if cache.is_file() {
         fs::copy(&cache, output).map_err(|error| {
             format!(
@@ -4593,6 +4730,12 @@ fn build_native_instrumented(
     command
         .args(["-std=c17", "-fwrapv"])
         .args(mode.clang_args());
+    if let Some(target) = native_target.triple.as_deref() {
+        command.arg(format!("--target={target}"));
+    }
+    if let Some(sysroot) = native_target.sysroot.as_deref() {
+        command.arg(format!("--sysroot={}", sysroot.display()));
+    }
     match instrumentation {
         NativeInstrumentation::None => {}
         NativeInstrumentation::Gprof => {
@@ -4648,19 +4791,28 @@ fn build_native_instrumented(
     Ok(())
 }
 
-fn native_build_cache_path(
+fn native_build_cache_path_configured(
     c_source: &str,
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
+    native_target: &NativeTargetOptions,
 ) -> PathBuf {
+    let target = native_target.triple.as_deref().unwrap_or("");
+    let sysroot = native_target
+        .sysroot
+        .as_deref()
+        .map(|path| path.to_string_lossy())
+        .unwrap_or_default();
     let mut hash = 0xcbf29ce484222325u64;
     for bytes in [
-        b"flux-native-cache-v2".as_slice(),
+        b"flux-native-cache-v3".as_slice(),
         env!("CARGO_PKG_VERSION").as_bytes(),
         mode.name().as_bytes(),
         instrumentation.cache_tag().as_bytes(),
         env::consts::OS.as_bytes(),
         env::consts::ARCH.as_bytes(),
+        target.as_bytes(),
+        sysroot.as_bytes(),
         c_source.as_bytes(),
     ] {
         for byte in bytes {
@@ -4706,7 +4858,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
 }
 
@@ -4714,13 +4866,13 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
-        NativeInstrumentation, PackageFormat, android_abi_from_runtime,
+        NativeInstrumentation, NativeTargetOptions, PackageFormat, android_abi_from_runtime,
         android_activity_java_source, android_build_options, android_manifest_xml,
         android_publish_options, build_options, debug_options, demangle_profile_symbols,
-        display_flux_symbol, json_string, native_build_cache_path, output_with_timeout,
-        package_options, parse_adb_devices, profile_report_addresses, select_android_run_target,
-        split_symbols_options, symbolize_options, test_options, validate_android_publish_manifest,
-        waydroid_status_is_running,
+        display_flux_symbol, json_string, native_build_cache_path_configured, output_with_timeout,
+        package_artifact_name, package_options, parse_adb_devices, profile_report_addresses,
+        select_android_run_target, split_symbols_options, symbolize_options, test_options,
+        validate_android_publish_manifest, waydroid_status_is_running,
     };
 
     #[test]
@@ -4775,11 +4927,12 @@ mod tests {
     }
 
     #[test]
-    fn package_options_support_directory_and_archive_formats() {
+    fn package_options_support_directory_archive_and_native_target_options() {
         let defaults = package_options(&[]).expect("default package options should parse");
         assert_eq!(defaults.mode, BuildMode::Release);
         assert_eq!(defaults.format, PackageFormat::Directory);
         assert!(defaults.output.is_none());
+        assert_eq!(defaults.native_target, NativeTargetOptions::default());
 
         let archive = package_options(&[
             "--format".to_string(),
@@ -4788,6 +4941,10 @@ mod tests {
             "profile".to_string(),
             "-o".to_string(),
             "app.tar.gz".to_string(),
+            "--target".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "--sysroot".to_string(),
+            "/opt/aarch64-sysroot".to_string(),
         ])
         .expect("archive package options should parse");
         assert_eq!(archive.mode, BuildMode::Profile);
@@ -4796,22 +4953,63 @@ mod tests {
             archive.output.as_deref(),
             Some(std::path::Path::new("app.tar.gz"))
         );
+        assert_eq!(
+            archive.native_target.triple.as_deref(),
+            Some("aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            archive.native_target.sysroot.as_deref(),
+            Some(std::path::Path::new("/opt/aarch64-sysroot"))
+        );
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
+        assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
     }
 
     #[test]
-    fn native_build_cache_separates_profile_instrumentation() {
-        let plain = native_build_cache_path(
-            "int main(void) { return 0; }",
+    fn native_build_cache_separates_instrumentation_and_target_configuration() {
+        let source = "int main(void) { return 0; }";
+        let plain = native_build_cache_path_configured(
+            source,
             BuildMode::Profile,
             NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
         );
-        let instrumented = native_build_cache_path(
-            "int main(void) { return 0; }",
+        let instrumented = native_build_cache_path_configured(
+            source,
             BuildMode::Profile,
             NativeInstrumentation::Gprof,
+            &NativeTargetOptions::default(),
+        );
+        let targeted = native_build_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions {
+                triple: Some("aarch64-unknown-linux-gnu".to_string()),
+                sysroot: None,
+            },
+        );
+        let sysrooted = native_build_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions {
+                triple: None,
+                sysroot: Some(std::path::PathBuf::from("/opt/sysroot")),
+            },
         );
         assert_ne!(plain, instrumented);
+        assert_ne!(plain, targeted);
+        assert_ne!(plain, sysrooted);
+    }
+
+    #[test]
+    fn package_artifact_names_include_explicit_native_target() {
+        assert_eq!(
+            package_artifact_name("demo", Some("1.2.3"), Some("aarch64-unknown-linux-gnu"))
+                .unwrap_or_else(|_| panic!("target-labelled package name should be valid")),
+            "demo-1.2.3-aarch64-unknown-linux-gnu"
+        );
     }
 
     #[test]
@@ -4887,20 +5085,40 @@ mod tests {
     }
 
     #[test]
-    fn build_options_accept_mode_and_output_in_either_order() {
+    fn build_options_accept_mode_output_and_native_target_in_any_order() {
         let args = vec![
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
             "--mode".to_string(),
             "profile".to_string(),
+            "--sysroot".to_string(),
+            "/sdk/sysroot".to_string(),
             "-o".to_string(),
             "app".to_string(),
         ];
         let options = build_options(&args, BuildMode::Release).expect("options should parse");
         assert_eq!(options.mode, BuildMode::Profile);
         assert_eq!(options.output.as_deref(), Some(std::path::Path::new("app")));
+        assert_eq!(
+            options.native_target.triple.as_deref(),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            options.native_target.sysroot.as_deref(),
+            Some(std::path::Path::new("/sdk/sysroot"))
+        );
 
         let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
+        assert_eq!(default.native_target, NativeTargetOptions::default());
+        assert!(
+            build_options(
+                &["--target".to_string(), "linux".to_string()],
+                BuildMode::Release
+            )
+            .is_err()
+        );
     }
 
     #[test]

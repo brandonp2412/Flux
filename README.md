@@ -38,6 +38,7 @@ flux run my-flux-app
 
 ```sh
 flux build examples/hello.flux -o hello
+flux build examples/hello.flux --target aarch64-unknown-linux-gnu --sysroot /opt/aarch64-sysroot -o hello-aarch64
 flux test examples/package
 flux check examples/hello.flux
 flux format examples/hello.flux
@@ -65,7 +66,7 @@ flux publish android my-app --json
 
 </div>
 
-The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
+The classic compiler example and highlighted source are in [`examples/hello.flux`](examples/hello.flux). The native GUI dogfood path is documented in [`docs/manual-e2e.md`](docs/manual-e2e.md), source debugging in [`docs/debugging.md`](docs/debugging.md), CPU profiling in [`docs/profiling.md`](docs/profiling.md), generic native cross compilation in [`docs/cross-compilation.md`](docs/cross-compilation.md), Linux distribution guidance in [`docs/linux-packaging.md`](docs/linux-packaging.md), and Google Play upload-bundle publishing in [`docs/android-release.md`](docs/android-release.md).
 
 ## Development
 

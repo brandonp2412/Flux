@@ -10,7 +10,7 @@ From a manifest-backed package:
 flux package .
 ```
 
-Release mode is the default. The output directory is versioned and host-labelled, for example `dist/my-app-1.2.3-linux-x86_64/`, and contains the native executable plus the exact `flux.toml` used for the build. Use `-o` for a deterministic staging path:
+Release mode is the default. The output directory is versioned and host-labelled, for example `dist/my-app-1.2.3-linux-x86_64/`, and contains the native executable plus the exact `flux.toml` used for the build. When `--target <triple>` is supplied, the default artifact name uses that explicit target triple instead of the host label. Use `-o` for a deterministic staging path:
 
 ```sh
 flux package . -o dist/stage
@@ -47,7 +47,7 @@ For distro packages, declare GTK4 through the distro's dependency metadata inste
 
 ## Reproducibility and symbols
 
-Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility, as are current `.tar.gz` package archives. Reproducible release infrastructure should pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Cross-machine/toolchain reproducibility remains separate roadmap work. For detached native debug information and crash address resolution, see [`debugging.md`](debugging.md).
+Current same-host/same-toolchain debug, profile, and release builds are regression-tested for byte reproducibility, as are current `.tar.gz` package archives. Generic native builds and packages can select an explicit Clang target/sysroot; see [`cross-compilation.md`](cross-compilation.md). Reproducible release infrastructure should pin the Flux compiler revision and native toolchain, isolate or pin environment inputs, and retain the exact `flux.toml` shipped in the bundle. Cross-machine/toolchain reproducibility remains separate roadmap work. For detached native debug information and crash address resolution, see [`debugging.md`](debugging.md).
 
 ## Current boundary
 

@@ -8444,6 +8444,55 @@ fn native_build_cache_reuses_identical_codegen_across_output_paths() {
 }
 
 #[test]
+fn native_build_accepts_explicit_host_target_and_sysroot() {
+    let root = std::env::temp_dir().join(format!("flux-native-target-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native target fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn main() -> i64 {\n    print(7)\n    return 0\n}\n",
+    )
+    .expect("native target source should be writable");
+    let output = root.join("app");
+    let clang = Command::new("clang")
+        .arg("-dumpmachine")
+        .output()
+        .expect("clang target discovery should run");
+    assert!(clang.status.success(), "clang -dumpmachine should succeed");
+    let target = String::from_utf8_lossy(&clang.stdout).trim().to_string();
+    assert!(
+        !target.is_empty(),
+        "clang should report a native target triple"
+    );
+
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .arg("--target")
+        .arg(&target)
+        .arg("--sysroot")
+        .arg("/")
+        .env("FLUX_CACHE_DIR", root.join("cache"))
+        .output()
+        .expect("explicit native target build should run");
+    assert!(
+        built.status.success(),
+        "explicit native target build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let ran = Command::new(&output)
+        .output()
+        .expect("same-target artifact should execute on the host");
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn flux_package_builds_a_manifest_backed_linux_bundle() {
     let root = std::env::temp_dir().join(format!("flux-package-cli-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
