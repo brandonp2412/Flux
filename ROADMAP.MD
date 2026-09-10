@@ -11,9 +11,9 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 390
-- Reported overall progress: **53%**
-- Current net scope growth after the baseline: 17 checkbox items
+- Completed baseline units: 396
+- Reported overall progress: **54%**
+- Current net scope growth after the baseline: 18 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -508,6 +508,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere.
     - [x] Bootstrap semantic typography roles: `Text.variant` accepts `body`, `caption`, `heading`, `title`, and `display`; omitted variants use a polished body role, both native backends apply scalable role size/weight/line-height defaults, and explicit `size`, `bold`, or `lineHeightPercent` values override the role without requiring a theme framework/runtime.
   - [ ] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions.
+    - [x] Explicit Flux styling wins over compiler-owned/native role styling: Android clears any platform Button tint before installing an explicit Flux background/border/radius/shadow drawable, preventing `Button.primary` emphasis from recoloring an application-specified surface; Linux application-priority element CSS already preserves the same explicit-style precedence.
   - [ ] Layout defaults provide readable line lengths, comfortable touch targets, consistent rhythm, and sensible density on phone/tablet/desktop sizes without requiring design expertise.
     - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, Linux equivalents receive a desktop-appropriate 40px minimum, and Android buttons use readable sentence-case labels by default while retaining native pressed/focus/accessibility behavior. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.
   - [ ] Automatic high-quality light/dark themes and accessible contrast, with platform/system preferences respected by default.
@@ -538,8 +539,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 
 Flux hot reload should feel closer to React development than Flutter's manual reload workflow.
 
-- [ ] `flux run` watches the project automatically in development mode.
-  - [x] Bootstrap `fluxc run` builds and launches a native development binary, then continuously watches the real project/import graph plus `flux.toml` where applicable.
+- [x] `flux run` watches the project automatically in development mode.
+  - [x] Bootstrap `flux run`/`fluxc run` builds and launches a native development binary, then continuously watches the real project/import graph plus `flux.toml` where applicable; dependency-save rebuild/restart and broken-edit recovery are covered by an end-to-end CLI test.
 - [ ] Saving a source file automatically triggers incremental recompilation.
   - [x] Bootstrap runner automatically recompiles on save through the reusable project-analysis cache: unchanged whole graphs are reused, and changed graphs reuse parsed ASTs for unaffected modules. Whole-program type checking/codegen still rerun after a semantic change, so true incremental recompilation remains pending.
 - [x] No hot-reload hotkey is required for the normal workflow: the bootstrap runner reacts to saves automatically.
@@ -559,9 +560,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 # Milestone 12 — Input and interaction
 
-- [ ] Pointer/mouse input.
+- [x] Pointer/mouse input for the bootstrap native UI: common tap plus hover/leave events cover ordinary pointer activation and presence without exposing event/controller objects; richer coordinates/buttons/drag semantics remain in the dedicated gesture/drag follow-up work.
   - [x] Common typed `onTap: fn() -> void` works on every built-in native element without exposing pointer/controller objects; Linux lowers it to a native `GtkGestureClick` release callback and supports the ordinary functional state-transition form.
-- [ ] Touch input.
+- [x] Touch input for the bootstrap native UI: portable tap and native long-press recognition are wired on current application backends; multi-touch/drag/scale/velocity semantics remain in the dedicated gesture work.
   - [x] The same `onTap` contract lowers on Android to a compiler-wired native `View.OnTouchListener` and dispatches `ACTION_UP` directly back into compiled Flux callbacks/state transitions, with no application-authored Java/Kotlin/JNI bridge.
   - [x] Common `onLongPress: fn() -> void` lowers to Android's native `View.OnLongClickListener`, consumes the recognized long press after direct Flux dispatch, and supports typed functional state transitions without exposing `MotionEvent` or listener objects.
 - [ ] Keyboard input.
@@ -620,7 +621,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap application-level `theme: "system" | "light" | "dark"` metadata is compile-time validated and lowers to the native GTK theme preference when explicitly light/dark; `system` leaves the platform preference untouched. Theme tokens, runtime theme switching, and per-view overrides remain future work.
 - [ ] Design tokens/variables.
 - [x] System theme integration for the current native backends: Linux `theme: "system"` preserves the GTK/system preference, while Android resolves the current `Configuration.UI_MODE_NIGHT_*` mode before Activity creation and reapplies it on `uiMode` configuration changes; explicit `light`/`dark` select the matching native `DeviceDefault` theme without bundling a framework theme runtime.
-- [ ] Device/window/orientation queries.
+- [x] Device/window/orientation queries for the current native application backends; richer monitor/work-area/device-class queries remain follow-up extensions rather than blocking the core environment surface.
   - [x] Bootstrap root-view environment exposes read-only typed `windowWidth: i64`, `windowHeight: i64`, `windowIsLandscape: bool`, `windowIsPortrait: bool`, and `displayScale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Android converts `DisplayMetrics` pixels through the exact floating-point density before exposing logical width/height, keeps the integer `displayScale` compatibility binding separate, and uses the exact density for native dp-style layout/styling so non-integer-density devices do not inflate spacing, radii, fixed tracks, or translations. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and richer device-class semantics remain pending.
 - [ ] Adaptive components where platform differences are valuable.
   - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
@@ -805,7 +806,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Screen-reader bridges.
 - [ ] Text scaling.
 - [ ] High contrast.
-- [ ] Reduced motion.
+- [x] Reduced motion for the currently supported transition backend: generated native transition styling follows GTK's live system reduced-motion setting and suppresses duration/delay without requiring application code.
 - [ ] Keyboard-only navigation.
 - [ ] Locale detection.
 - [ ] Translation resources.
@@ -845,7 +846,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Deterministic test clocks/timers.
 - [ ] Dependency/interface fakes based on functions/interfaces rather than mocking class hierarchies.
 - [ ] Coverage.
-- [ ] Benchmarks.
+- [x] Benchmarks: the checked-in Flux/Rust/C native performance harness covers compute, collections, interface dispatch, and dynamic calls/control flow with output equivalence, runtime/code-size reporting, a checked-Rust threshold, and a push/PR CI performance gate.
 - [ ] Compiler self-tests across supported targets.
 
 # Milestone 23 — LSP and editor experience

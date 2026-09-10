@@ -2441,6 +2441,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         if (shadowColor != null && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f)) {
             view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         }
+        view.setBackgroundTintList(null);
         view.setBackground(drawable);
     }
 
@@ -3594,6 +3595,7 @@ mod tests {
         assert!(activity.contains("public void styleView("));
         assert!(activity.contains("String borderTop"));
         assert!(activity.contains("String shadowColor"));
+        assert!(activity.contains("view.setBackgroundTintList(null);"));
         assert!(activity.contains("public void styleButton(Button view, boolean primary)"));
         assert!(activity.contains("view.setAllCaps(false);"));
         assert!(activity.contains("-android.R.attr.state_enabled"));
