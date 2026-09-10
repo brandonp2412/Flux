@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 413
+- Completed baseline units: 418
 - Reported overall progress: **56%**
 - Current net scope growth after the baseline: 20 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -72,7 +72,7 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [ ] Rust-class memory-safety goals without requiring Rust-level annotation density in normal application code.
 - [ ] Rust-class native performance is a non-negotiable release-build target: generated programs should remain in the C/C++/Rust performance class without a mandatory VM, garbage collector, interpreter, or framework runtime tax.
 - [ ] Zero-cost abstractions by default: high-level language/library/UI constructs must compile away when their semantics require no runtime work, and redundant bounds/safety/dynamic-dispatch checks should be eliminated when statically proven unnecessary.
-- [ ] Native AOT output for application and server targets.
+- [x] Native AOT output for application and server/headless targets: current Linux application and headless `fn main` builds compile through optimized native Clang output with no VM/interpreter, while Android applications produce ABI-specific native shared libraries packaged into APK/AAB artifacts. Future backend replacement remains tracked under the typed-IR/native-backend milestone rather than reopening the AOT product contract.
 - [ ] Portable source should lower to real platform implementations rather than a browser/VM/widget-emulation wrapper.
 - [ ] **No user-written platform bridges:** Flux source must be able to call platform capabilities directly. The compiler/toolchain owns any ABI/JNI/JVM/Objective-C/Win32 glue required by the target; application developers should not write Flutter-style method channels, serialization shims, plugin registries, or hand-maintained bridge code merely to reach an OS API.
 - [ ] **Native-first platform lowering:** use direct native/NDK/C/OS APIs where the platform exposes them, and generate the thinnest target-required interop when it does not. Generated glue is an implementation detail and must remain optimizable/tree-shakeable rather than becoming a mandatory framework runtime.
@@ -452,7 +452,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
   - [x] Bootstrap `app` metadata accepts named typed `onStart`, `onResume`, `onPause`, `onStop`, and `onExit` `fn() -> void` callbacks. Linux maps start/stop/exit to native application activation/shutdown and resume/pause to native window active-state changes; Android maps the same callbacks directly onto `ANativeActivityCallbacks`, with no application/controller object exposed to Flux source.
   - [ ] Suspension/restoration, saved-state/configuration lifecycle, multiple-window lifecycle, and capability-rich lifecycle context.
-- [ ] Background/foreground transitions.
+- [x] Background/foreground transitions for current application targets: typed `onResume` / `onPause` lifecycle callbacks map to GTK window active-state changes on Linux and native Activity resume/pause callbacks on Android, preserving the function/capability model without controller objects.
 - [ ] Multiple windows where the target supports them.
 - [ ] Platform capability discovery.
   - [x] Android bootstrap exposes `android.sdkInt() -> i64` as a direct NDK-backed runtime capability query, allowing ordinary typed Flux control flow to gate target-specific behavior by the device API level without JNI/reflection or a platform object. Broader feature/capability discovery remains pending.
@@ -846,7 +846,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Platform end-to-end tests.
 - [ ] Deterministic test clocks/timers.
 - [ ] Dependency/interface fakes based on functions/interfaces rather than mocking class hierarchies.
-- [ ] Coverage.
+- [x] Source-level coverage through `flux test --coverage`: opt-in LLVM instrumentation is merged across executed tests and mapped back to original `.flux` source lines rather than generated C/stdin locations; ordinary test binaries remain uninstrumented and `flux doctor` reports the required coverage tools.
 - [x] Benchmarks: the checked-in Flux/Rust/C native performance harness covers compute, collections, interface dispatch, and dynamic calls/control flow with output equivalence, runtime/code-size reporting, a checked-Rust threshold, and a push/PR CI performance gate.
 - [ ] Compiler self-tests across supported targets.
 
@@ -950,13 +950,13 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] iOS signing/App Store workflow.
 - [ ] Windows packaging/store workflow.
 - [ ] macOS signing/notarization/store workflow.
-- [ ] Linux packaging guidance.
-  - [x] Bootstrap host bundle from `flux package` provides the first runnable Linux distribution shape without claiming dependency-free/self-contained GTK packaging; formal filesystem integration, desktop metadata/icons, dependency policy, archives/installers, and distro formats remain pending.
+- [x] Linux packaging guidance for the current GTK4 backend is documented in `docs/linux-packaging.md`, covering release bundles, runtime dependencies, conventional filesystem/desktop integration, icons, archives/distro packages, reproducibility expectations, and the boundary between current compiler automation and downstream packaging.
+  - [x] Bootstrap host bundle from `flux package` provides the first runnable Linux distribution shape without claiming dependency-free/self-contained GTK packaging.
 - [ ] Web production deployment.
 - [ ] Debug symbol separation/upload.
 - [ ] Crash symbolization.
 - [ ] Optional obfuscation where compatible with diagnostics/debugging.
-- [ ] Version/build-number management.
+- [x] Version/build-number management for current distribution targets: `[package].version` is validated package metadata, is preserved in Linux bundles, becomes Android `versionName`, and `[android].version_code` is validated against Play's accepted integer range and becomes Android `versionCode`; future platform-specific mappings belong to their target packaging milestones.
 
 # Milestone 28 — Server/headless application target
 
