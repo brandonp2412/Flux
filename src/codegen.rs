@@ -1677,6 +1677,12 @@ fn emit_android_native_application(
     ));
     out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_children, JNI_FALSE);\n");
     out.push_str("    (*env)->CallVoidMethod(env, grid, set_clip_to_padding, JNI_FALSE);\n");
+    out.push_str("    jclass root_style_activity_class = (*env)->GetObjectClass(env, activity);\n");
+    out.push_str("    if (root_style_activity_class == NULL) return;\n");
+    out.push_str("    jmethodID style_root = (*env)->GetMethodID(env, root_style_activity_class, \"styleRoot\", \"(Landroid/view/View;)V\");\n");
+    out.push_str("    if (style_root == NULL) return;\n");
+    out.push_str("    (*env)->CallVoidMethod(env, activity, style_root, grid);\n");
+    out.push_str("    (*env)->DeleteLocalRef(env, root_style_activity_class);\n");
     out.push_str("    jclass params_class = (*env)->FindClass(env, \"android/widget/GridLayout$LayoutParams\");\n");
     out.push_str("    if (params_class == NULL) return;\n");
     out.push_str("    jmethodID params_ctor = (*env)->GetMethodID(env, params_class, \"<init>\", \"()V\");\n");
@@ -1832,6 +1838,26 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
         }
+        if element.kind == "TextInput" {
+            out.push_str(
+                "    jclass input_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (input_style_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_input = (*env)->GetMethodID(env, input_style_activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;)V\");\n");
+            out.push_str("    if (style_input == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, style_input, child);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, input_style_activity_class);\n");
+        }
+        if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+            out.push_str(
+                "    jclass check_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (check_style_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_checkable = (*env)->GetMethodID(env, check_style_activity_class, \"styleCheckable\", \"(Landroid/widget/CompoundButton;)V\");\n");
+            out.push_str("    if (style_checkable == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, style_checkable, child);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, check_style_activity_class);\n");
+        }
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jmethodID set_visibility = (*env)->GetMethodID(env, child_class, \"setVisibility\", \"(I)V\");\n");
@@ -1889,11 +1915,11 @@ fn emit_android_native_application(
                     &format!("bootstrap Android {property_name} must be a compile-time string"),
                 ));
             };
-            if parse_hex_rgba(&value).is_none() {
+            if !valid_ui_color(&value) {
                 return Err(diag(
                     property.value.span,
                     &format!(
-                        "{property_name} must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax"
+                        "{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
                     ),
                 ));
             }
@@ -1965,7 +1991,7 @@ fn emit_android_native_application(
                 side_color
                     .clone()
                     .or_else(|| border_color.clone())
-                    .or_else(|| Some("#000000FF".to_string()))
+                    .or_else(|| Some("outline".to_string()))
             }
         };
         let border_top_color = resolve_border_color(border_top_width, &border_top_color);
@@ -1990,7 +2016,7 @@ fn emit_android_native_application(
             || shadow_offset_x != 0
             || shadow_offset_y != 0;
         let shadow_color = if has_shadow {
-            shadow_color.or_else(|| Some("#00000080".to_string()))
+            shadow_color.or_else(|| Some("shadow".to_string()))
         } else {
             None
         };
@@ -2176,10 +2202,10 @@ fn emit_android_native_application(
                             "bootstrap Android Text.color must be a compile-time string",
                         ));
                     };
-                    if parse_hex_rgba(&value).is_none() {
+                    if !valid_ui_color(&value) {
                         return Err(diag(
                             property.value.span,
-                            "Text.color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
+                            "Text.color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                         ));
                     }
                     Ok(value)
@@ -3425,6 +3451,10 @@ fn emit_linux_gtk_application(
         }
     }
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n    flux__ui_display_scale = gtk_widget_get_scale_factor(window);\n");
+    out.push_str("    GtkCssProvider *flux__theme_provider = gtk_css_provider_new();\n");
+    out.push_str("    gtk_css_provider_load_from_data(flux__theme_provider, \"@define-color flux_surface @theme_bg_color; @define-color flux_surface_raised @theme_base_color; @define-color flux_text @theme_fg_color; @define-color flux_text_muted alpha(@theme_fg_color, 0.62); @define-color flux_accent @theme_selected_bg_color; @define-color flux_on_accent @theme_selected_fg_color; @define-color flux_outline alpha(@theme_fg_color, 0.20); @define-color flux_danger #dc2626; @define-color flux_success #16a34a; @define-color flux_warning #d97706; @define-color flux_shadow alpha(black, 0.24); .flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; }\", -1);\n");
+    out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
+    out.push_str("    g_object_unref(flux__theme_provider);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
     out.push_str(&format!(
@@ -3444,7 +3474,7 @@ fn emit_linux_gtk_application(
             if resizable { "TRUE" } else { "FALSE" }
         ));
     }
-    out.push_str("    GtkWidget *grid = gtk_grid_new();\n");
+    out.push_str("    GtkWidget *grid = gtk_grid_new();\n    gtk_widget_add_css_class(grid, \"flux-root\");\n");
     let gap = view.grid.gap.unwrap_or(12);
     out.push_str(&format!(
         "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"
@@ -3471,6 +3501,9 @@ fn emit_linux_gtk_application(
                     Some(property) => ui_expr_c(&property.value, view, signatures)?,
                 };
                 out.push_str(&format!("    {variable} = gtk_label_new({text});\n",));
+                out.push_str(&format!(
+                    "    gtk_widget_add_css_class({variable}, \"flux-text\");\n"
+                ));
                 out.push_str(&format!(
                     "    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n"
                 ));
@@ -3641,18 +3674,19 @@ fn emit_linux_gtk_application(
                                 "bootstrap Linux Text.color must be a compile-time str value",
                             ));
                         };
-                        let Some((red, green, blue, alpha)) = parse_hex_rgba(&value) else {
+                        if let Some((red, green, blue, alpha)) = parse_hex_rgba(&value) {
+                            out.push_str(&format!(
+                                "    pango_attr_list_insert({attrs}, pango_attr_foreground_new({red}, {green}, {blue}));\n"
+                            ));
+                            if let Some(alpha) = alpha {
+                                out.push_str(&format!(
+                                    "    pango_attr_list_insert({attrs}, pango_attr_foreground_alpha_new({alpha}));\n"
+                                ));
+                            }
+                        } else if !is_semantic_ui_color(&value) {
                             return Err(diag(
                                 property.value.span,
-                                "Text.color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
-                            ));
-                        };
-                        out.push_str(&format!(
-                            "    pango_attr_list_insert({attrs}, pango_attr_foreground_new({red}, {green}, {blue}));\n"
-                        ));
-                        if let Some(alpha) = alpha {
-                            out.push_str(&format!(
-                                "    pango_attr_list_insert({attrs}, pango_attr_foreground_alpha_new({alpha}));\n"
+                                "Text.color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                             ));
                         }
                     }
@@ -3785,6 +3819,9 @@ fn emit_linux_gtk_application(
                     }
                     out.push_str(&format!("    {variable} = gtk_text_view_new();\n"));
                     out.push_str(&format!(
+                        "    gtk_widget_add_css_class({variable}, \"flux-input\");\n"
+                    ));
+                    out.push_str(&format!(
                         "    GtkTextBuffer *{multiline_buffer} = gtk_text_view_get_buffer(GTK_TEXT_VIEW({variable}));\n"
                     ));
                     out.push_str(&format!(
@@ -3795,6 +3832,9 @@ fn emit_linux_gtk_application(
                     ));
                 } else {
                     out.push_str(&format!("    {variable} = gtk_entry_new();\n"));
+                    out.push_str(&format!(
+                        "    gtk_widget_add_css_class({variable}, \"flux-input\");\n"
+                    ));
                     out.push_str(&format!(
                         "    gtk_editable_set_text(GTK_EDITABLE({variable}), {text});\n"
                     ));
@@ -3980,6 +4020,9 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    {variable} = gtk_check_button_new_with_label({label});\n",
                 ));
+                out.push_str(&format!(
+                    "    gtk_widget_add_css_class({variable}, \"flux-check\");\n"
+                ));
                 if let Some(group) = view
                     .elements
                     .iter()
@@ -4017,6 +4060,9 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    {variable} = gtk_check_button_new_with_label({label});\n",
                 ));
+                out.push_str(&format!(
+                    "    gtk_widget_add_css_class({variable}, \"flux-check\");\n"
+                ));
                 if let Some(property) = view_property(element, "checked") {
                     let checked = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
@@ -4043,6 +4089,9 @@ fn emit_linux_gtk_application(
                 };
                 out.push_str(&format!(
                     "    {variable} = gtk_button_new_with_label({text});\n",
+                ));
+                out.push_str(&format!(
+                    "    gtk_widget_add_css_class({variable}, \"flux-button\");\n"
                 ));
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;
@@ -4806,6 +4855,45 @@ fn gtk_shortcut_trigger(value: &str) -> Option<String> {
     Some(trigger)
 }
 
+const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
+    "surface",
+    "surfaceRaised",
+    "text",
+    "textMuted",
+    "accent",
+    "onAccent",
+    "outline",
+    "danger",
+    "success",
+    "warning",
+    "shadow",
+];
+
+fn is_semantic_ui_color(value: &str) -> bool {
+    SEMANTIC_UI_COLOR_TOKENS.contains(&value)
+}
+
+fn valid_ui_color(value: &str) -> bool {
+    parse_hex_rgba(value).is_some() || is_semantic_ui_color(value)
+}
+
+fn gtk_ui_color_css(value: &str) -> Option<&str> {
+    match value {
+        "surface" => Some("@flux_surface"),
+        "surfaceRaised" => Some("@flux_surface_raised"),
+        "text" => Some("@flux_text"),
+        "textMuted" => Some("@flux_text_muted"),
+        "accent" => Some("@flux_accent"),
+        "onAccent" => Some("@flux_on_accent"),
+        "outline" => Some("@flux_outline"),
+        "danger" => Some("@flux_danger"),
+        "success" => Some("@flux_success"),
+        "warning" => Some("@flux_warning"),
+        "shadow" => Some("@flux_shadow"),
+        _ => None,
+    }
+}
+
 fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
     let hex = value.strip_prefix('#')?;
     if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -5174,14 +5262,18 @@ fn emit_element_style(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let mut declarations = Vec::new();
-    for (property_name, css_name) in [
+    let mut color_properties = vec![
         ("background_color", "background-color"),
         ("border_color", "border-color"),
         ("border_top_color", "border-top-color"),
         ("border_bottom_color", "border-bottom-color"),
         ("border_start_color", "border-left-color"),
         ("border_end_color", "border-right-color"),
-    ] {
+    ];
+    if element.kind == "Text" {
+        color_properties.push(("color", "color"));
+    }
+    for (property_name, css_name) in color_properties {
         let Some(property) = view_property(element, property_name) else {
             continue;
         };
@@ -5191,13 +5283,16 @@ fn emit_element_style(
                 &format!("{property_name} must be a compile-time string"),
             ));
         };
-        if parse_hex_rgba(&value).is_none() {
+        if !valid_ui_color(&value) {
             return Err(diag(
                 property.value.span,
-                &format!("{property_name} must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax"),
+                &format!(
+                    "{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+                ),
             ));
         }
-        declarations.push(format!("{css_name}: {value};"));
+        let css_value = gtk_ui_color_css(&value).unwrap_or(value.as_str());
+        declarations.push(format!("{css_name}: {css_value};"));
     }
     let padding = static_non_negative_style_i64(element, "padding", signatures)?;
     for (property_name, css_name) in [
@@ -5274,10 +5369,10 @@ fn emit_element_style(
                     "shadow_color must be a compile-time string",
                 ));
             };
-            if parse_hex_rgba(&value).is_none() {
+            if !valid_ui_color(&value) {
                 return Err(diag(
                     property.value.span,
-                    "shadow_color must use '#RRGGBB' or '#RRGGBBAA' hexadecimal syntax",
+                    "shadow_color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                 ));
             }
             Ok(value)
@@ -5296,7 +5391,8 @@ fn emit_element_style(
     if shadow_color.is_some() || shadow_blur != 0 || shadow_offset_x != 0 || shadow_offset_y != 0 {
         declarations.push(format!(
             "box-shadow: {shadow_offset_x}px {shadow_offset_y}px {shadow_blur}px {};",
-            shadow_color.unwrap_or_else(|| "#00000080".to_string())
+            gtk_ui_color_css(shadow_color.as_deref().unwrap_or("shadow"))
+                .unwrap_or_else(|| shadow_color.as_deref().unwrap_or("#00000080"))
         ));
     }
     let has_transform = element_has_transform(element);

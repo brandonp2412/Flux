@@ -8926,6 +8926,54 @@ app Clipped
 }
 
 #[test]
+fn semantic_ui_colors_lower_through_native_theme_tokens() {
+    let source = r#"
+view Palette {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Flux"
+        color: "textMuted"
+    Button action at 2,1
+        text: "Continue"
+        backgroundColor: "accent"
+        borderColor: "outline"
+        borderWidth: 1
+        shadowColor: "shadow"
+        shadowBlur: 8
+}
+app Palette(theme: "system")
+"#;
+    check_source(source).expect("semantic Flux color tokens should typecheck as UI strings");
+
+    let linux = compile_to_c(source).expect("semantic Flux colors should lower on Linux");
+    assert!(linux.contains("@define-color flux_surface @theme_bg_color"));
+    assert!(linux.contains("@define-color flux_accent @theme_selected_bg_color"));
+    assert!(linux.contains("color: @flux_text_muted;"));
+    assert!(linux.contains("background-color: @flux_accent;"));
+    assert!(linux.contains("border-color: @flux_outline;"));
+    assert!(linux.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
+    assert!(linux.contains("gtk_widget_add_css_class(grid, \"flux-root\")"));
+    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_action, \"flux-button\")"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("semantic color fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("semantic Flux colors should lower on Android");
+    assert!(android.contains("\"styleRoot\""));
+    assert!(android.contains("\"styleButton\""));
+    assert!(android.contains("\"accent\""));
+    assert!(android.contains("\"outline\""));
+    assert!(android.contains("\"textMuted\""));
+    assert!(android.contains("\"shadow\""));
+}
+
+#[test]
 fn native_elements_support_native_shadows() {
     let source = r##"
 view Shadowed {
@@ -8955,7 +9003,7 @@ view Shadowed {
 app Shadowed
 "#;
     let generated = compile_to_c(defaults).expect("shadow color should have a safe default");
-    assert!(generated.contains("box-shadow: 0px 0px 8px #00000080;"));
+    assert!(generated.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
 
     let invalid = r#"
 view Shadowed {

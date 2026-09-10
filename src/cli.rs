@@ -2004,7 +2004,6 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextUtils;
 import android.text.TextWatcher;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -2241,14 +2240,36 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         }
     }
 
-    private static int parseFluxColor(String value) {
-        if (value.length() == 9 && value.charAt(0) == '#') {
-            value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
-        }
-        return Color.parseColor(value);
+    private boolean isFluxDarkTheme() {
+        if (fluxThemeMode == 2) return true;
+        if (fluxThemeMode == 1) return false;
+        int nightMode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return nightMode == Configuration.UI_MODE_NIGHT_YES;
     }
 
-    private static final class FluxStyleDrawable extends Drawable {
+    private int parseFluxColor(String value) {
+        boolean dark = isFluxDarkTheme();
+        switch (value) {
+            case "surface": return dark ? 0xFF0F172A : 0xFFF8FAFC;
+            case "surfaceRaised": return dark ? 0xFF1E293B : 0xFFFFFFFF;
+            case "text": return dark ? 0xFFF8FAFC : 0xFF0F172A;
+            case "textMuted": return dark ? 0xFF94A3B8 : 0xFF64748B;
+            case "accent": return dark ? 0xFF818CF8 : 0xFF4F46E5;
+            case "onAccent": return dark ? 0xFF0F172A : 0xFFFFFFFF;
+            case "outline": return dark ? 0xFF475569 : 0xFFCBD5E1;
+            case "danger": return dark ? 0xFFF87171 : 0xFFDC2626;
+            case "success": return dark ? 0xFF4ADE80 : 0xFF16A34A;
+            case "warning": return dark ? 0xFFFBBF24 : 0xFFD97706;
+            case "shadow": return dark ? 0x66000000 : 0x33000000;
+            default:
+                if (value.length() == 9 && value.charAt(0) == '#') {
+                    value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
+                }
+                return Color.parseColor(value);
+        }
+    }
+
+    private final class FluxStyleDrawable extends Drawable {
         private final Integer background;
         private final Integer borderTop;
         private final Integer borderEnd;
@@ -2445,32 +2466,56 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         view.setBackground(drawable);
     }
 
-    private int resolveThemeColor(int attribute, int fallback) {
-        TypedValue value = new TypedValue();
-        if (!getTheme().resolveAttribute(attribute, value, true)) return fallback;
-        if (value.resourceId != 0) {
-            try {
-                return getResources().getColor(value.resourceId);
-            } catch (RuntimeException ignored) {
-            }
-        }
-        return value.data;
+
+    private static int withAlpha(int color, int alpha) {
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+    }
+
+    public void styleRoot(View view) {
+        view.setBackgroundColor(parseFluxColor("surface"));
     }
 
     public void styleButton(Button view, boolean primary) {
         view.setAllCaps(false);
-        if (!primary) return;
-        int accent = resolveThemeColor(android.R.attr.colorAccent, 0xFF2563EB);
-        int disabledAccent = Color.argb(96, Color.red(accent), Color.green(accent), Color.blue(accent));
+        int background = parseFluxColor(primary ? "accent" : "surfaceRaised");
+        int label = parseFluxColor(primary ? "onAccent" : "text");
         int[][] states = new int[][] {
             new int[] { -android.R.attr.state_enabled },
+            new int[] { android.R.attr.state_pressed },
             new int[] {}
         };
-        view.setBackgroundTintList(new ColorStateList(states, new int[] { disabledAccent, accent }));
-        int brightness = 299 * Color.red(accent) + 587 * Color.green(accent) + 114 * Color.blue(accent);
-        int label = brightness >= 150000 ? Color.BLACK : Color.WHITE;
-        int disabledLabel = Color.argb(160, Color.red(label), Color.green(label), Color.blue(label));
-        view.setTextColor(new ColorStateList(states, new int[] { disabledLabel, label }));
+        int pressed = isFluxDarkTheme()
+                ? Color.rgb(Math.min(255, Color.red(background) + 16), Math.min(255, Color.green(background) + 16), Math.min(255, Color.blue(background) + 16))
+                : Color.rgb(Math.max(0, Color.red(background) - 16), Math.max(0, Color.green(background) - 16), Math.max(0, Color.blue(background) - 16));
+        view.setBackgroundTintList(new ColorStateList(states, new int[] { withAlpha(background, 96), pressed, background }));
+        view.setTextColor(new ColorStateList(states, new int[] { withAlpha(label, 144), label, label }));
+        view.setStateListAnimator(null);
+        view.setElevation(0.0f);
+    }
+
+    public void styleTextInput(EditText view) {
+        int accent = parseFluxColor("accent");
+        int outline = parseFluxColor("outline");
+        int[][] states = new int[][] {
+            new int[] { -android.R.attr.state_enabled },
+            new int[] { android.R.attr.state_focused },
+            new int[] {}
+        };
+        view.setBackgroundTintList(new ColorStateList(states, new int[] { withAlpha(outline, 96), accent, outline }));
+        view.setTextColor(parseFluxColor("text"));
+        view.setHintTextColor(parseFluxColor("textMuted"));
+    }
+
+    public void styleCheckable(CompoundButton view) {
+        int accent = parseFluxColor("accent");
+        int outline = parseFluxColor("outline");
+        int[][] states = new int[][] {
+            new int[] { -android.R.attr.state_enabled },
+            new int[] { android.R.attr.state_checked },
+            new int[] {}
+        };
+        view.setButtonTintList(new ColorStateList(states, new int[] { withAlpha(outline, 96), accent, outline }));
+        view.setTextColor(parseFluxColor("text"));
     }
 
     public void styleText(TextView view, String color, float size, boolean bold, boolean italic, boolean underline, boolean strike) {
@@ -3588,7 +3633,7 @@ mod tests {
         assert!(activity.contains("composingStarts"));
         assert!(activity.contains("BaseInputConnection.getComposingSpanStart"));
         assert!(activity.contains("setComposingRegion"));
-        assert!(activity.contains("private static final class FluxStyleDrawable extends Drawable"));
+        assert!(activity.contains("private final class FluxStyleDrawable extends Drawable"));
         assert!(activity.contains("new DashPathEffect"));
         assert!(activity.contains("drawHorizontalBorder"));
         assert!(activity.contains("drawVerticalBorder"));
@@ -3596,11 +3641,18 @@ mod tests {
         assert!(activity.contains("String borderTop"));
         assert!(activity.contains("String shadowColor"));
         assert!(activity.contains("view.setBackgroundTintList(null);"));
+        assert!(activity.contains("public void styleRoot(View view)"));
+        assert!(activity.contains("case \"surface\":"));
+        assert!(activity.contains("case \"accent\":"));
+        assert!(activity.contains("case \"textMuted\":"));
         assert!(activity.contains("public void styleButton(Button view, boolean primary)"));
         assert!(activity.contains("view.setAllCaps(false);"));
         assert!(activity.contains("-android.R.attr.state_enabled"));
-        assert!(activity.contains("disabledAccent"));
-        assert!(activity.contains("disabledLabel"));
+        assert!(activity.contains("android.R.attr.state_pressed"));
+        assert!(activity.contains("public void styleTextInput(EditText view)"));
+        assert!(activity.contains("android.R.attr.state_focused"));
+        assert!(activity.contains("public void styleCheckable(CompoundButton view)"));
+        assert!(activity.contains("android.R.attr.state_checked"));
         assert!(activity.contains("public void setTooltip(View view, String text)"));
         assert!(
             activity.contains(
