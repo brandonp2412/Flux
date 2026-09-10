@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 433
-- Reported overall progress: **58%**
+- Completed baseline units: 434
+- Reported overall progress: **59%**
 - Current net scope growth after the baseline: 24 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -812,7 +812,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Native text scaling for current application backends: Flux `Text.size` and semantic typography roles stay in scalable platform font units instead of raw pixels. Linux emits Pango point sizes so GTK's system font DPI/settings remain authoritative, while Android's generated `TextView.setTextSize(float)` path keeps scaled-pixel (`sp`) semantics and follows the user's font-size preference; unoverridden native controls continue to inherit platform/theme sizing.
 - [x] Native high-contrast adaptation for current application backends: Linux binds generated theme CSS to GTK's live interface-contrast preference and adds stronger native outlines/theme foreground/background treatment when increased contrast is requested; Android API 34+ reads `UiModeManager` contrast, refreshes when it changes, and uses higher-contrast semantic palette values while preserving explicit application color overrides.
 - [x] Reduced motion for the currently supported transition backend: generated native transition styling follows GTK's live system reduced-motion setting and suppresses duration/delay without requiring application code.
-- [ ] Keyboard-only navigation.
+- [x] Keyboard-only navigation for the current native UI backends: native buttons/inputs/toggles/radios retain platform keyboard traversal by default, common typed `focusable: bool` explicitly includes/excludes any built-in element and may be state-derived, and `onKey` implies focusability only when no explicit override is present. Linux lowers directly to GTK focusability/key controllers and Android to native `View` focusability plus `OnKeyListener`, with no framework focus manager or platform object exposed to Flux source.
 - [x] Locale detection for current native targets: portable `locale.language()` and `locale.region()` return borrowed language/region strings without platform-specific source imports; Linux follows `LC_ALL` → `LC_MESSAGES` → `LANG` and normalizes the POSIX `C` locale to `und`/no region, while Android reads `java.util.Locale.getDefault()` through compiler-owned JNI. Both paths are statically typed, exposed through LSP completion/signature help, and tree-shaken when unreachable.
 - [ ] Translation resources.
 - [ ] Plural/select rules.

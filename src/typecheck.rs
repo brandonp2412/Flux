@@ -1243,7 +1243,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     let property = internal_property.as_str();
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
-            "visible" | "clip" | "accessibility_hidden" => return Some(Type::Bool),
+            "visible" | "clip" | "focusable" | "accessibility_hidden" => {
+                return Some(Type::Bool);
+            }
             "tooltip" | "accessibility_label" | "accessibility_description" => {
                 return Some(Type::Str);
             }
@@ -1487,6 +1489,7 @@ fn view_element_kind_is_builtin(kind: &str) -> bool {
 const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "visible",
     "clip",
+    "focusable",
     "tooltip",
     "accessibility_label",
     "accessibility_description",

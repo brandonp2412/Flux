@@ -11154,6 +11154,70 @@ app BadKey
 }
 
 #[test]
+fn native_elements_support_explicit_keyboard_focusability() {
+    let source = r#"
+fn key_notice(key: str) -> void {
+    print(key)
+}
+
+view KeyCard {
+    state keyboardEnabled: bool = false
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Keyboard target"
+        focusable: keyboardEnabled
+        onKey: key_notice
+    Button action at 2,1
+        text: "Mouse only"
+        focusable: false
+}
+app KeyCard
+"#;
+
+    check_source(source).expect("common focusable state should typecheck on native elements");
+    let linux = compile_to_c(source).expect("focusable should lower to GTK4");
+    assert!(
+        linux.contains("gtk_widget_set_focusable(flux__ui_title, flux__ui_state_keyboardEnabled)")
+    );
+    assert!(linux.contains("gtk_widget_set_focusable(flux__ui_action, false)"));
+    assert!(!linux.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
+
+    let program = fluxc::parser::parse(source).expect("focusable Android app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("focusable Android app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("focusable should lower to Android Views");
+    assert!(android.contains("\"setFocusable\", \"(Z)V\""));
+    assert!(android.contains("\"setFocusableInTouchMode\", \"(Z)V\""));
+    assert!(android.contains("(jboolean)(flux__ui_state_keyboardEnabled)"));
+    assert!(android.contains("refresh_focusable"));
+    assert!(!android.contains("set_focusable, (jboolean)true"));
+
+    let invalid = r#"
+view BadFocus {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        focusable: "yes"
+}
+app BadFocus
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("focusable must remain a typed bool property");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("property 'Text.focusable'"))
+    );
+}
+
+#[test]
 fn native_elements_support_hover_leave_callbacks_and_state_transitions() {
     let source = r#"
 fn leave_notice() -> void {

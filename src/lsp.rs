@@ -5222,6 +5222,7 @@ mod tests {
         );
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("accessibilityOrder: i64"));
+        assert!(element.contains("focusable: bool"));
         assert!(element.contains("onHover: fn() -> void"));
         assert!(element.contains("alignX: str"));
         assert!(element.contains("marginStart: i64"));

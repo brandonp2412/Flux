@@ -2360,6 +2360,20 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, accessibility_hidden_activity_class);\n");
         }
+        if let Some(property) = view_property(element, "focusable") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("    jmethodID set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+            out.push_str("    jmethodID set_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+            out.push_str(
+                "    if (set_focusable == NULL || set_focusable_in_touch_mode == NULL) return;\n",
+            );
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_focusable, (jboolean)({value}));\n"
+            ));
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_focusable_in_touch_mode, (jboolean)({value}));\n"
+            ));
+        }
         if element.kind == "Text" {
             let (default_size, default_bold, default_line_height_percent) =
                 text_semantic_typography(element, signatures)?;
@@ -2859,17 +2873,23 @@ fn emit_android_native_application(
         }
         if view_property(element, "on_key").is_some() {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
-            out.push_str("    jmethodID set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
-            out.push_str("    jmethodID set_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
             out.push_str("    jmethodID set_key_listener = (*env)->GetMethodID(env, child_class, \"setOnKeyListener\", \"(Landroid/view/View$OnKeyListener;)V\");\n");
-            out.push_str("    if (set_id == NULL || set_focusable == NULL || set_focusable_in_touch_mode == NULL || set_key_listener == NULL) return;\n");
+            if view_property(element, "focusable").is_none() {
+                out.push_str("    jmethodID set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+                out.push_str("    jmethodID set_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+                out.push_str("    if (set_id == NULL || set_focusable == NULL || set_focusable_in_touch_mode == NULL || set_key_listener == NULL) return;\n");
+            } else {
+                out.push_str("    if (set_id == NULL || set_key_listener == NULL) return;\n");
+            }
             out.push_str(&format!(
                 "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
             ));
-            out.push_str(
-                "    (*env)->CallVoidMethod(env, child, set_focusable, (jboolean)true);\n",
-            );
-            out.push_str("    (*env)->CallVoidMethod(env, child, set_focusable_in_touch_mode, (jboolean)true);\n");
+            if view_property(element, "focusable").is_none() {
+                out.push_str(
+                    "    (*env)->CallVoidMethod(env, child, set_focusable, (jboolean)true);\n",
+                );
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_focusable_in_touch_mode, (jboolean)true);\n");
+            }
             out.push_str("    (*env)->CallVoidMethod(env, child, set_key_listener, activity);\n");
         }
         out.push_str("    jobject params = (*env)->NewObject(env, params_class, params_ctor);\n");
@@ -4445,6 +4465,12 @@ fn emit_linux_gtk_application(
                 "    gtk_accessible_update_state(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_STATE_HIDDEN, {hidden}, -1);\n"
             ));
         }
+        if let Some(property) = view_property(element, "focusable") {
+            let focusable = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_widget_set_focusable({variable}, {focusable});\n"
+            ));
+        }
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
@@ -4506,8 +4532,13 @@ fn emit_linux_gtk_application(
         }
         if view_property(element, "on_key").is_some() {
             let controller = format!("flux__key_{}", element.name);
+            if view_property(element, "focusable").is_none() {
+                out.push_str(&format!(
+                    "    gtk_widget_set_focusable({variable}, TRUE);\n"
+                ));
+            }
             out.push_str(&format!(
-                "    gtk_widget_set_focusable({variable}, TRUE);\n    GtkEventController *{controller} = gtk_event_controller_key_new();\n    gtk_event_controller_set_propagation_phase({controller}, GTK_PHASE_CAPTURE);\n    g_signal_connect({controller}, \"key-pressed\", G_CALLBACK(flux__ui_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {controller});\n",
+                "    GtkEventController *{controller} = gtk_event_controller_key_new();\n    gtk_event_controller_set_propagation_phase({controller}, GTK_PHASE_CAPTURE);\n    g_signal_connect({controller}, \"key-pressed\", G_CALLBACK(flux__ui_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {controller});\n",
                 element.name
             ));
         }
@@ -4897,6 +4928,7 @@ fn android_ui_element_needs_refresh(
     let common = [
         "visible",
         "enabled",
+        "focusable",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -5220,6 +5252,19 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_accessibility_hidden = (*env)->GetMethodID(env, activity_class, \"setAccessibilityHidden\", \"(Landroid/view/View;Z)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_accessibility_hidden != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility_hidden, child, (jboolean)({value}));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "focusable", &runtime_names)
+            && let Some(property) = view_property(element, "focusable")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("                jmethodID refresh_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+            out.push_str("                jmethodID refresh_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_focusable != NULL) (*env)->CallVoidMethod(env, child, refresh_focusable, (jboolean)({value}));\n"
+            ));
+            out.push_str(&format!(
+                "                if (refresh_focusable_in_touch_mode != NULL) (*env)->CallVoidMethod(env, child, refresh_focusable_in_touch_mode, (jboolean)({value}));\n"
             ));
         }
 
@@ -5605,6 +5650,12 @@ fn emit_ui_refresh(
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_STATE_HIDDEN, {value}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "focusable") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_widget_set_focusable({widget}, {value});\n"
             ));
         }
         emit_dynamic_transform_refresh(out, element, view, signatures)?;
