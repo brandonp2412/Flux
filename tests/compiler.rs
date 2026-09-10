@@ -1219,6 +1219,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn functional_cascades_reuse_pipeline_typing_and_evaluate_the_target_once() {
+    let source = r#"
+fn seed() -> i64 {
+    return 2
+}
+
+fn scale(value: i64, factor: i64) -> i64 {
+    return value * factor
+}
+
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    let result: i64 = seed() .. scale 3 .. increment
+    print(result)
+    return result
+}
+"#;
+
+    check_source(source).expect("functional cascade syntax should typecheck like a pipeline");
+    let generated = compile_to_c(source).expect("functional cascades should lower natively");
+    assert!(generated.contains("flux__fn_increment(flux__fn_scale(flux__fn_seed(), INT64_C(3)))"));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("cascade syntax should format canonically");
+    assert!(formatted.contains("let result: i64 = seed() | scale 3 | increment"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("canonical functional cascade output should reparse");
+    assert_eq!(formatted_again, formatted);
+
+    let invalid = r#"
+fn scale(value: bool) -> bool {
+    return value
+}
+
+fn main() -> i64 {
+    let value: i64 = 1 .. scale
+    return value
+}
+"#;
+    let error = check_source(invalid).expect_err("cascade stages must retain pipeline type safety");
+    assert!(
+        error
+            .message
+            .contains("argument 1 ('value') to 'scale': expected bool, got i64")
+    );
+}
+
+#[test]
 fn process_environment_capabilities_are_typed_native_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {

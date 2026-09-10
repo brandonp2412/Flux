@@ -4423,6 +4423,39 @@ fn expression_column(haystack: &str, needle: &str, base_column: usize) -> usize 
 }
 
 fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {
+    let cascade_parts = split_top_level_cascades(input);
+    if cascade_parts.len() > 1 {
+        let (first, first_offset) = cascade_parts[0];
+        let (first, first_column) = trim_with_column(first, column + first_offset);
+        if first.is_empty() {
+            return Err(diag(line, "cascade requires a target before '..'"));
+        }
+        let mut expr = parse_expression_at(first, line, first_column)?;
+        for (stage, offset) in cascade_parts.into_iter().skip(1) {
+            let (stage, stage_column) = trim_with_column(stage, column + offset);
+            if stage.is_empty() {
+                return Err(diag(line, "cascade requires a function after '..'"));
+            }
+            let (name, name_span, args) = parse_pipe_stage(stage, line, stage_column, "cascade")?;
+            let end = args
+                .last()
+                .map(|arg| arg.span.column + arg.span.length)
+                .unwrap_or(name_span.column + name_span.length);
+            let start = expr.span.column;
+            expr = Expr {
+                line,
+                span: SourceSpan::new(line, start, end.saturating_sub(start)),
+                kind: ExprKind::Pipe {
+                    input: Box::new(expr),
+                    name,
+                    name_span,
+                    args,
+                },
+            };
+        }
+        return Ok(expr);
+    }
+
     let pipe_parts = split_top_level_shell_pipes(input);
     if pipe_parts.len() > 1 {
         let (first, first_offset) = pipe_parts[0];
@@ -4436,7 +4469,7 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
             if stage.is_empty() {
                 return Err(diag(line, "pipeline requires a function after '|'"));
             }
-            let (name, name_span, args) = parse_pipe_stage(stage, line, stage_column)?;
+            let (name, name_span, args) = parse_pipe_stage(stage, line, stage_column, "pipeline")?;
             let end = args
                 .last()
                 .map(|arg| arg.span.column + arg.span.length)
@@ -4531,6 +4564,7 @@ fn parse_pipe_stage(
     input: &str,
     line: usize,
     column: usize,
+    construct: &str,
 ) -> Result<(String, SourceSpan, Vec<Expr>), Diagnostic> {
     if let Some(shell) = parse_shell_call_at(input, line, column, true)? {
         let ExprKind::ShellCall {
@@ -4557,9 +4591,64 @@ fn parse_pipe_stage(
         _ => Err(Diagnostic::new(
             DiagnosticStage::Parse,
             regular.span,
-            "pipeline stages must be function calls or function names",
+            format!("{construct} stages must be function calls or function names"),
         )),
     }
+}
+
+fn split_top_level_cascades(input: &str) -> Vec<(&str, usize)> {
+    let mut parts = Vec::new();
+    let bytes = input.as_bytes();
+    let mut start = 0usize;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if byte == b'\\' && in_string {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = !in_string;
+            index += 1;
+            continue;
+        }
+        if !in_string {
+            match byte {
+                b'(' => paren += 1,
+                b')' => paren = paren.saturating_sub(1),
+                b'{' => brace += 1,
+                b'}' => brace = brace.saturating_sub(1),
+                b'[' => bracket += 1,
+                b']' => bracket = bracket.saturating_sub(1),
+                b'.' if paren == 0 && brace == 0 && bracket == 0 => {
+                    let is_double_dot = bytes.get(index + 1) == Some(&b'.');
+                    let prev_dot = index > 0 && bytes[index - 1] == b'.';
+                    let third_dot = bytes.get(index + 2) == Some(&b'.');
+                    let range_equal = bytes.get(index + 2) == Some(&b'=');
+                    if is_double_dot && !prev_dot && !third_dot && !range_equal {
+                        parts.push((&input[start..index], start));
+                        start = index + 2;
+                        index += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    parts.push((&input[start..], start));
+    parts
 }
 
 fn split_top_level_shell_pipes(input: &str) -> Vec<(&str, usize)> {
