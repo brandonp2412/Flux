@@ -11,14 +11,17 @@ static inline int64_t checkedAdd(int64_t left, int64_t right) {
     return result;
 }
 
-static int64_t adjust(int64_t value) {
-    return checkedAdd(value, 3);
+static int64_t adjust(int64_t total, int64_t value) {
+    if (total > 1000000) {
+        return checkedAdd(total / 2, value);
+    }
+    return checkedAdd(total, value);
 }
 
 int main(void) {
     int64_t total = 0;
     for (int64_t value = 0; value < 100000000; ++value) {
-        total = checkedAdd(total, adjust(value));
+        total = adjust(total, value);
     }
     printf("%" PRId64 "\n", total);
     return 0;
