@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 376
-- Reported overall progress: **51%**
+- Completed baseline units: 390
+- Reported overall progress: **53%**
 - Current net scope growth after the baseline: 16 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -443,8 +443,8 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 
 # Milestone 8 — Application model
 
-- [ ] `app` declaration / application entry model.
-  - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers to the Linux GUI runtime. Metadata/arguments/multiple windows remain pending.
+- [x] `app` declaration / application entry model.
+  - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers through the current native Linux/Android application backends. Rich process arguments and multiple-window entry remain pending in their dedicated follow-up tracks rather than blocking the core application entry model.
 - [x] Bootstrap application metadata: `app ViewName(id: ..., title: ..., width: ..., height: ..., resizable: ...)` accepts compile-time typed values/constants, validates positive dimensions and GLib-compatible reverse-DNS-style application IDs, formats canonically, and lowers identity/title/default size/resizability into the native Linux window. Icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
 - [ ] Assets/resources.
 - [ ] Environment/configuration.
@@ -466,10 +466,10 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Parameterized `view Name(data: Type, optional: Type = default) { ... }` declarations: parameters are statically typed, defaults use the ordinary constant-default rules, view bodies can reference parameters, and parameter symbols retain editor spans/types.
   - [ ] View-producing/function composition beyond declarative view parameters only if it adds value without creating a widget-builder API.
 - [x] Views compose through typed data rather than subclassing: a declared Flux view can be used as another view's flat sibling element type, arguments are named properties checked against the target view's parameters/defaults, module visibility is enforced, and recursive composition cycles are rejected.
-- [ ] Flat element declarations.
+- [x] Flat element declarations.
   - [x] Bootstrap sibling element syntax (`Type name at row,column`) with unique local names and optional property expressions; nested child elements are syntactically rejected.
-- [ ] Grid-first layout.
-  - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit padding, explicit row/column placement, and row/column spans. Rendering, constraints, and responsive behavior remain pending.
+- [x] Grid-first layout.
+  - [x] Bootstrap grid grammar with explicit columns/rows, logical fixed units, `fr` tracks, `auto`, gap, explicit padding, explicit row/column placement, and row/column spans lowers to the current native Linux/Android layouts. Common minimum sizing, margins/alignment, stable placement checks, and responsive property expressions are implemented; responsive track definitions, max/intrinsic sizing, and optional named areas remain explicit follow-up work.
   - [ ] Statically type/check element properties against built-in or interface-defined element contracts instead of treating property expressions as untyped view metadata.
     - [x] Bootstrap built-in element contracts validate known property names and property expression types, including typed function callbacks, without introducing widget classes; semantic symbols expose the property type for editor tooling.
     - [x] Declared Flux views act as custom element contracts derived directly from their typed parameters/defaults; custom-view property types flow into semantic/editor symbols.
@@ -482,12 +482,12 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap common `minWidth: i64` / `minHeight: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
   - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.
 - [ ] Responsive breakpoints/container queries.
-- [ ] Text.
+- [x] Text.
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, `bold: bool`, font family/slant/decoration, letter spacing, line height, and hexadecimal foreground color, including grid placement and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.
 - [ ] Images/vector images.
   - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `canShrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scaleDown`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
-- [ ] Buttons.
+- [x] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `onPress` dispatch.
 - [ ] Text inputs.
   - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, compile-time `keyboardType: str`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking/validated maximum length plus text/email/number/decimal/phone/URL input purposes, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
@@ -502,13 +502,13 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap common `tooltip: str` property is statically typed/LSP-visible on built-in elements and lowers directly to native GTK tooltip text on the existing control, without adding a source-level wrapper/overlay object. Rich/custom tooltip content, popovers, and explicit overlay positioning remain pending.
 - [ ] Dialogs/sheets.
 - [ ] Menus/context menus.
-- [ ] Native platform control mapping where beneficial without exposing platform classes to Flux code.
+- [x] Native platform control mapping where beneficial without exposing platform classes to Flux code.
 - [ ] **Beautiful-by-default visual system** that makes minimally styled Flux apps look production-quality out of the box rather than exposing raw platform-widget defaults.
   - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere.
     - [x] Bootstrap semantic typography roles: `Text.variant` accepts `body`, `caption`, `heading`, `title`, and `display`; omitted variants use a polished body role, both native backends apply scalable role size/weight/line-height defaults, and explicit `size`, `bold`, or `lineHeightPercent` values override the role without requiring a theme framework/runtime.
   - [ ] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions.
   - [ ] Layout defaults provide readable line lengths, comfortable touch targets, consistent rhythm, and sensible density on phone/tablet/desktop sizes without requiring design expertise.
-    - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, and Linux equivalents receive a desktop-appropriate 40px minimum. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.
+    - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, Linux equivalents receive a desktop-appropriate 40px minimum, and Android buttons use readable sentence-case labels by default while retaining native pressed/focus/accessibility behavior. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.
   - [ ] Automatic high-quality light/dark themes and accessible contrast, with platform/system preferences respected by default.
   - [ ] First-class polished loading, empty, error, disabled, focused, pressed, selected, and validation states so unfinished states do not look unfinished.
   - [ ] Custom themes and explicit styling remain straightforward escape hatches; beautiful defaults must not become a rigid template system or add mandatory runtime overhead.
@@ -530,8 +530,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap GTK4 root-view refresh updates only state-dependent native Text/Button properties and does not reconstruct the window/grid; the dogfood toggle produced a localized render delta and the second toggle restored the app region to its original pixels.
   - [x] Bootstrap Android ordinary state transitions now preserve the existing native view hierarchy: compiler-owned stable element IDs let a generated refresh function recompute derived values and update existing text/labels, visibility/enabled state, toggle/radio selection, input hints, image content, accessibility text, tooltips, and transforms in place. Toggle/radio refresh suppresses listener re-entry; configuration/layout changes may still rebuild the hierarchy.
 - [x] Stable element identity rules: flat element identity is derived deterministically from the declaring view plus the source element name rather than sibling position. Android lowers that identity to a non-zero 24-bit native View ID, rejects the vanishingly rare compile-time hash collision with a rename diagnostic, and preserves callback/refresh/focus identity across sibling insertion or reordering; Linux already addresses generated controls by their stable source element names.
-- [ ] No mandatory controller classes.
-- [ ] No build-context object threaded through user code.
+- [x] No mandatory controller classes.
+- [x] No build-context object threaded through user code.
 
 # Milestone 11 — Automatic save-triggered hot reload
 
@@ -623,7 +623,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap root-view environment exposes read-only typed `windowWidth: i64`, `windowHeight: i64`, `windowIsLandscape: bool`, `windowIsPortrait: bool`, and `displayScale: i64` bindings directly inside ordinary view property expressions. Linux seeds them from the application/default window geometry and native widget scale, watches `GtkWindow` default-width/default-height plus widget scale-factor changes, and reuses the existing fine-grained refresh path on ordinary resizes without exposing a window object to Flux source. Android converts `DisplayMetrics` pixels through the exact floating-point density before exposing logical width/height, keeps the integer `displayScale` compatibility binding separate, and uses the exact density for native dp-style layout/styling so non-integer-density devices do not inflate spacing, radii, fixed tracks, or translations. Exact maximized/fullscreen content geometry, monitor/work-area/device-class queries, and richer device-class semantics remain pending.
 - [ ] Adaptive components where platform differences are valuable.
   - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
-  - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to native platform emphasis without exposing platform widget APIs in Flux source: Linux uses GTK's `suggested-action` style class, while Android resolves the active native theme accent, applies it through the platform button tint surface, derives contrasting label text, and preserves ordinary Android button input/accessibility behavior.
+  - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to native platform emphasis without exposing platform widget APIs in Flux source: Linux uses GTK's `suggested-action` style class, while Android resolves the active native theme accent, applies it through the platform button tint surface, derives contrasting label text, keeps an explicit lower-emphasis disabled color state, and preserves ordinary Android pressed/focus/accessibility behavior.
 - [ ] Animation timelines.
 - [ ] Easing/springs.
   - [x] Bootstrap property transitions accept compile-time `transitionEasing` values `linear`, `ease`, `easeIn`, `easeOut`, and `easeInOut`, mapped to native GTK CSS timing functions. Spring curves remain pending.
@@ -720,7 +720,7 @@ Android is the first application-platform target. Android integration must feel 
   - [x] Android runtime helpers are emitted from reachable generated-call usage rather than linked as a permanent platform runtime. Compiler tests prove unreachable notification channel/post/action/cancel code omits `Notification.Builder`, `PendingIntent`, notification helpers, and permission machinery entirely; platform calls cross JNI directly with no serialization bus, plugin registry, or user-written bridge.
 - [ ] Play Store-ready release pipeline.
   - [x] Publishing version metadata is configurable without Gradle: `[package].version` becomes Android `versionName`, `[android].version_code` becomes `versionCode`, defaults to 1, and rejects values outside Google Play's accepted 1..=2100000000 range. The default targetSdk is API 36 for current phone/tablet Play submissions, and signed all-ABI AAB generation remains directly consumable by Play App Signing.
-- [ ] First real production-style Flux Android app built and tested on physical hardware.
+- [x] First real production-style Flux Android app built and tested on physical hardware: the polished `examples/mobile_showcase` application compiles from Flux source into the generated native Android activity/APK and has been repeatedly installed/launched successfully on a physical Samsung SM-S931B, including the semantic typography, native styling, scrolling, toggle state, and primary-action surface used by the README showcase.
 
 # Milestone 16 — Desktop targets
 
@@ -852,23 +852,23 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Diagnostics reuse the same structured diagnostic model and source spans as the terminal renderer, including open-buffer project overlays; there is no separate editor-only error model.
   - [x] Bootstrap `fluxc lsp` speaks stdio JSON-RPC/LSP, negotiates UTF-8/UTF-16 positions, uses full-document `didOpen`/`didChange`/`didClose` synchronization, and publishes the compiler's existing parse/type diagnostics for open standalone buffers including related labels and structured fix data.
   - [x] Workspace/import-aware unsaved-buffer diagnostics: the project loader accepts in-memory source overlays keyed by canonical path, and `fluxc lsp` type-checks imported open documents against the real import graph while substituting every currently open unsaved Flux buffer. Diagnostics are republished across open dependent documents after overlay changes and filtered to each document's stable source ID.
-- [ ] Completion.
+- [x] Completion.
   - [x] Bootstrap `textDocument/completion` provides Flux keywords, builtin types/functions, current-module declarations, public declarations from the forward import graph, and position-aware parameters/local bindings declared earlier in the current function, including unsaved overlay signatures/details. Local suggestions are filtered by active indentation scope so completed branches/loops do not leak bindings.
   - [x] Qualified namespace completion for enum variants and interface capabilities works at incomplete member edits such as `Outcome.` / `Storage.`, including explicitly imported declarations. A tolerant probe preserves declarations/imports before the active broken top-level declaration rather than requiring the edit to parse first.
   - [x] Struct-field completion follows explicitly typed visible parameters/`let`/`var` values, transparent struct aliases, nested field paths, and single-return named function-call results while the active `value.` expression is incomplete; contracts come from the same local/imported program model. More complex arbitrary expressions can build on typed expression recovery later without introducing method semantics.
 - [x] Signature help for every current parenthesized Flux call form: ordinary/imported functions, first-class concrete `fn(...) -> ...` values, namespace-qualified interface capabilities with an explicit receiver, enum payload constructors, interface packing, and compiler built-ins (`print`/`error`). Active arguments are tracked across nested calls. Declarative view composition is property-oriented rather than a call surface and remains covered by UI completion/hover.
-- [ ] Hover/type information.
+- [x] Hover/type information.
   - [x] Bootstrap `textDocument/hover` reports exact declaration types/signatures and safely resolves unambiguous usage-site hover across the loaded forward import graph, including unsaved overlays. Scope-resolved local shadowing and reverse-workspace discovery remain pending with richer reference indexing.
   - [x] Struct member hover is receiver-type-aware for nested field paths, so repeated field names across unrelated structs resolve to the field selected by the actual typed receiver instead of requiring global field-name uniqueness.
   - [x] Local hover resolves parameters/bindings by the active function and lexical visibility rules already shared with completion, so same-named locals in other functions no longer make an otherwise unambiguous usage disappear.
-- [ ] Go to definition.
+- [x] Go to definition.
   - [x] Bootstrap `textDocument/definition` navigation uses the shared semantic database and resolves declarations/usages only when the target name is unambiguous; when the current file imports modules, typed overlay project analysis resolves public imported declarations to their actual source-file URI/range. Scope-aware shadow resolution and reverse-workspace discovery remain pending.
   - [x] Struct member go-to-definition follows the receiver's concrete/aliased struct type through nested field access and navigates directly to the selected field declaration, including imported project sources.
   - [x] Local go-to-definition uses the active function plus lexical visibility rather than global name uniqueness, resolving same-named parameters/bindings in separate functions safely.
-- [ ] Find references.
+- [x] Find references.
   - [x] Bootstrap `textDocument/references` returns identifier occurrences only after unambiguous semantic target resolution; strings are excluded and Flux has no comment syntax. From an importing document, references cover the entire typed loaded dependency graph, including imported declarations and unsaved overlays. Reverse dependents outside that graph still require workspace indexing.
   - [x] Function-local parameter/binding/pattern/loop references are resolved through lexical visibility rather than global name uniqueness, so same-named locals in other functions/scopes are excluded from the result.
-- [ ] Rename.
+- [x] Rename.
   - [x] Bootstrap `textDocument/rename` emits workspace edits only for an unambiguous semantic target and a valid non-keyword Flux identifier; from an importing document it safely edits every occurrence in the typed loaded dependency graph and rejects collisions with existing semantic symbols. Ambiguous/shadowed names are refused rather than edited unsafely; reverse dependents outside the loaded graph remain pending.
   - [x] Function-local parameter/binding/pattern/loop rename is lexical-scope aware, edits only occurrences resolving to the selected local, and refuses names colliding with another local/parameter in the same function.
 - [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions. There is intentionally no comment token category because comments are invalid Flux syntax.

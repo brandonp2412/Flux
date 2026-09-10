@@ -2457,12 +2457,19 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     public void styleButton(Button view, boolean primary) {
+        view.setAllCaps(false);
         if (!primary) return;
         int accent = resolveThemeColor(android.R.attr.colorAccent, 0xFF2563EB);
-        view.setBackgroundTintList(ColorStateList.valueOf(accent));
+        int disabledAccent = Color.argb(96, Color.red(accent), Color.green(accent), Color.blue(accent));
+        int[][] states = new int[][] {
+            new int[] { -android.R.attr.state_enabled },
+            new int[] {}
+        };
+        view.setBackgroundTintList(new ColorStateList(states, new int[] { disabledAccent, accent }));
         int brightness = 299 * Color.red(accent) + 587 * Color.green(accent) + 114 * Color.blue(accent);
-        view.setTextColor(brightness >= 150000 ? Color.BLACK : Color.WHITE);
-        view.setAllCaps(false);
+        int label = brightness >= 150000 ? Color.BLACK : Color.WHITE;
+        int disabledLabel = Color.argb(160, Color.red(label), Color.green(label), Color.blue(label));
+        view.setTextColor(new ColorStateList(states, new int[] { disabledLabel, label }));
     }
 
     public void styleText(TextView view, String color, float size, boolean bold, boolean italic, boolean underline, boolean strike) {
@@ -3587,6 +3594,11 @@ mod tests {
         assert!(activity.contains("public void styleView("));
         assert!(activity.contains("String borderTop"));
         assert!(activity.contains("String shadowColor"));
+        assert!(activity.contains("public void styleButton(Button view, boolean primary)"));
+        assert!(activity.contains("view.setAllCaps(false);"));
+        assert!(activity.contains("-android.R.attr.state_enabled"));
+        assert!(activity.contains("disabledAccent"));
+        assert!(activity.contains("disabledLabel"));
         assert!(activity.contains("public void setTooltip(View view, String text)"));
         assert!(
             activity.contains(

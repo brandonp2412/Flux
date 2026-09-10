@@ -10474,6 +10474,7 @@ app Screen
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("styleButton"));
     assert!(generated.contains("(Landroid/widget/Button;Z)V"));
+    assert!(generated.contains("style_button, child, JNI_FALSE"));
     assert!(generated.contains("style_button, child, JNI_TRUE"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
     assert!(generated.contains("static bool flux__ui_state_expanded = false;"));
