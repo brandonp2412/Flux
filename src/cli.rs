@@ -3974,15 +3974,23 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         view.setElevation(0.0f);
     }
 
-    public void styleTextInput(EditText view) {
+    public void styleTextInput(EditText view, String validationState) {
         int accent = parseFluxColor("accent");
         int outline = parseFluxColor("outline");
+        int semantic = outline;
+        boolean hasValidation = true;
+        if ("error".equals(validationState)) semantic = parseFluxColor("danger");
+        else if ("success".equals(validationState)) semantic = parseFluxColor("success");
+        else if ("warning".equals(validationState)) semantic = parseFluxColor("warning");
+        else hasValidation = false;
+        int focused = hasValidation ? semantic : accent;
+        int resting = hasValidation ? semantic : outline;
         int[][] states = new int[][] {
             new int[] { -android.R.attr.state_enabled },
             new int[] { android.R.attr.state_focused },
             new int[] {}
         };
-        view.setBackgroundTintList(new ColorStateList(states, new int[] { withAlpha(outline, 96), accent, outline }));
+        view.setBackgroundTintList(new ColorStateList(states, new int[] { withAlpha(resting, 96), focused, resting }));
         view.setTextColor(parseFluxColor("text"));
         view.setHintTextColor(parseFluxColor("textMuted"));
     }
@@ -5673,7 +5681,13 @@ mod tests {
         assert!(activity.contains("view.setAllCaps(false);"));
         assert!(activity.contains("-android.R.attr.state_enabled"));
         assert!(activity.contains("android.R.attr.state_pressed"));
-        assert!(activity.contains("public void styleTextInput(EditText view)"));
+        assert!(
+            activity.contains("public void styleTextInput(EditText view, String validationState)")
+        );
+        assert!(activity.contains("\"error\".equals(validationState)"));
+        assert!(activity.contains("parseFluxColor(\"danger\")"));
+        assert!(activity.contains("parseFluxColor(\"success\")"));
+        assert!(activity.contains("parseFluxColor(\"warning\")"));
         assert!(activity.contains("android.R.attr.state_focused"));
         assert!(activity.contains("if (size > 0) view.setTextSize(size);"));
         assert!(

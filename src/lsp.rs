@@ -1764,6 +1764,17 @@ fn add_builtin_ui_context_completions(
                     );
                 }
             }
+            if kind == "TextInput" && property.trim() == "validationState" {
+                for state in crate::typecheck::TEXT_INPUT_VALIDATION_STATES {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{state}\""),
+                        12,
+                        "semantic TextInput validation state",
+                    );
+                }
+            }
         }
         let existing = view_properties_before_cursor(&lines, element_line, line_index);
         for property in crate::typecheck::view_property_names(kind) {
@@ -5685,6 +5696,8 @@ mod tests {
         assert!(properties.contains("TextInput.multiline: bool"));
         assert!(properties.contains("\"label\":\"submitOnEnter\""));
         assert!(properties.contains("TextInput.submitOnEnter: bool"));
+        assert!(properties.contains("\"label\":\"validationState\""));
+        assert!(properties.contains("TextInput.validationState: str"));
     }
 
     #[test]
@@ -5724,6 +5737,24 @@ mod tests {
         }
         assert!(items.iter().any(|item| {
             item.get("detail").and_then(JsonValue::as_str) == Some("semantic Flux UI color")
+        }));
+    }
+
+    #[test]
+    fn completion_suggests_text_input_validation_states() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    TextInput email at 1,1\n        validationState: \n}\n";
+        let uri = "file:///tmp/text-input-validation-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(4));
+        for state in crate::typecheck::TEXT_INPUT_VALIDATION_STATES {
+            let expected = format!("\"{state}\"");
+            assert!(items.iter().any(|item| {
+                item.get("label").and_then(JsonValue::as_str) == Some(expected.as_str())
+            }));
+        }
+        assert!(items.iter().any(|item| {
+            item.get("detail").and_then(JsonValue::as_str)
+                == Some("semantic TextInput validation state")
         }));
     }
 

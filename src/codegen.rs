@@ -2005,13 +2005,34 @@ fn emit_android_native_application(
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
         }
         if element.kind == "TextInput" {
+            let validation_state = match view_property(element, "validation_state") {
+                Some(property) => {
+                    let Some(state) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Android TextInput.validationState must be a compile-time string value",
+                        ));
+                    };
+                    if !typecheck::TEXT_INPUT_VALIDATION_STATES.contains(&state.as_str()) {
+                        return Err(diag(
+                            property.value.span,
+                            &format!("unsupported TextInput.validationState '{state}'"),
+                        ));
+                    }
+                    state
+                }
+                None => "normal".to_string(),
+            };
             out.push_str(
                 "    jclass input_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
             out.push_str("    if (input_style_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID style_input = (*env)->GetMethodID(env, input_style_activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;)V\");\n");
+            out.push_str("    jmethodID style_input = (*env)->GetMethodID(env, input_style_activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;Ljava/lang/String;)V\");\n");
             out.push_str("    if (style_input == NULL) return;\n");
-            out.push_str("    (*env)->CallVoidMethod(env, activity, style_input, child);\n");
+            out.push_str(&format!(
+                "    jstring child_validation_state = (*env)->NewStringUTF(env, {});\n    (*env)->CallVoidMethod(env, activity, style_input, child, child_validation_state);\n    if (child_validation_state != NULL) (*env)->DeleteLocalRef(env, child_validation_state);\n",
+                c_string(&validation_state)
+            ));
             out.push_str("    (*env)->DeleteLocalRef(env, input_style_activity_class);\n");
         }
         if matches!(element.kind.as_str(), "Toggle" | "Radio") {
@@ -3807,7 +3828,7 @@ fn emit_linux_gtk_application(
             .unwrap_or_else(|| fallback.to_string());
         theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
     }
-    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
+    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-input-error { border-color: @flux_danger; box-shadow: 0 0 0 1px @flux_danger; } .flux-input-success { border-color: @flux_success; box-shadow: 0 0 0 1px @flux_success; } .flux-input-warning { border-color: @flux_warning; box-shadow: 0 0 0 1px @flux_warning; } .flux-check { padding: 4px; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
     out.push_str(&format!(
         "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
         c_string(&theme_css)
@@ -4183,6 +4204,24 @@ fn emit_linux_gtk_application(
                 }
             }
             "TextInput" => {
+                let validation_state = match view_property(element, "validation_state") {
+                    Some(property) => {
+                        let Some(state) = static_expr_str(&property.value, signatures) else {
+                            return Err(diag(
+                                property.value.span,
+                                "bootstrap Linux TextInput.validationState must be a compile-time string value",
+                            ));
+                        };
+                        if !typecheck::TEXT_INPUT_VALIDATION_STATES.contains(&state.as_str()) {
+                            return Err(diag(
+                                property.value.span,
+                                &format!("unsupported TextInput.validationState '{state}'"),
+                            ));
+                        }
+                        state
+                    }
+                    None => "normal".to_string(),
+                };
                 let multiline = match view_property(element, "multiline") {
                     Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
                         diag(
@@ -4240,6 +4279,11 @@ fn emit_linux_gtk_application(
                             "    gtk_entry_set_placeholder_text(GTK_ENTRY({variable}), {placeholder});\n"
                         ));
                     }
+                }
+                if validation_state != "normal" {
+                    out.push_str(&format!(
+                        "    gtk_widget_add_css_class({variable}, \"flux-input-{validation_state}\");\n"
+                    ));
                 }
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;

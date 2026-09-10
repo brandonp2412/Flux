@@ -10535,6 +10535,56 @@ app Palette(theme: "system")
 }
 
 #[test]
+fn text_input_validation_state_uses_semantic_native_feedback() {
+    let source = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        placeholder: "Email"
+        validationState: "error"
+}
+app Form
+"#;
+    check_source(source).expect("semantic TextInput validation state should typecheck");
+
+    let linux = compile_to_c(source).expect("TextInput validation state should lower on Linux");
+    assert!(linux.contains(".flux-input-error { border-color: @flux_danger;"));
+    assert!(linux.contains(".flux-input-success { border-color: @flux_success;"));
+    assert!(linux.contains(".flux-input-warning { border-color: @flux_warning;"));
+    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_email, \"flux-input-error\")"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("validation-state fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("TextInput validation state should lower on Android");
+    assert!(android.contains("styleTextInput"));
+    assert!(android.contains("Landroid/widget/EditText;Ljava/lang/String;)V"));
+    assert!(android.contains("NewStringUTF(env, \"error\")"));
+
+    let invalid = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        validationState: "busy"
+}
+app Form
+"#;
+    let error = check_source(invalid).expect_err("unknown validation state must fail statically");
+    assert!(
+        error
+            .message
+            .contains("unsupported TextInput.validationState 'busy'")
+    );
+}
+
+#[test]
 fn semantic_ui_dimension_tokens_lower_without_runtime_theme_objects() {
     let source = r#"
 view Tokens {

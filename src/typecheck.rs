@@ -1349,9 +1349,10 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 returns: Vec::new(),
             })
         }
-        ("TextInput", "text") | ("TextInput", "placeholder") | ("TextInput", "keyboard_type") => {
-            Some(Type::Str)
-        }
+        ("TextInput", "text")
+        | ("TextInput", "placeholder")
+        | ("TextInput", "keyboard_type")
+        | ("TextInput", "validation_state") => Some(Type::Str),
         ("TextInput", "enabled")
         | ("TextInput", "autofocus")
         | ("TextInput", "password")
@@ -1437,6 +1438,8 @@ pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
 pub const ACCESSIBILITY_ROLES: &[&str] = &[
     "label", "heading", "button", "textBox", "checkbox", "radio", "image", "switch",
 ];
+
+pub const TEXT_INPUT_VALIDATION_STATES: &[&str] = &["normal", "error", "success", "warning"];
 
 pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "surface",
@@ -1594,6 +1597,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "submit_on_enter",
             "max_length",
             "keyboard_type",
+            "validation_state",
             "on_change",
             "on_submit",
         ],
@@ -1841,6 +1845,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         Err(_) => diagnostics.push(diag(
                             property.value.span,
                             "accessibilityRole must be a compile-time string value",
+                        )),
+                    }
+                }
+                if element.kind == "TextInput" && internal_property == "validation_state" {
+                    match evaluate_default_expr(&property.value, signatures) {
+                        Ok(ConstantValue::Str(state))
+                            if TEXT_INPUT_VALIDATION_STATES.contains(&state.as_str()) => {}
+                        Ok(ConstantValue::Str(state)) => diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!("unsupported TextInput.validationState '{state}'"),
+                            )
+                            .with_note(format!(
+                                "supported validation states: {}",
+                                TEXT_INPUT_VALIDATION_STATES.join(", ")
+                            )),
+                        ),
+                        Ok(_) => {}
+                        Err(_) => diagnostics.push(diag(
+                            property.value.span,
+                            "TextInput.validationState must be a compile-time string value",
                         )),
                     }
                 }
