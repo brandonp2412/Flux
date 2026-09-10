@@ -10041,6 +10041,72 @@ app Screen(theme: "sepia")
 }
 
 #[test]
+fn custom_application_theme_palette_validates_and_lowers() {
+    let source = r##"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        color: "accent"
+}
+app Screen(theme: "system", surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")
+"##;
+    check_source(source).expect("custom semantic palette colors should typecheck");
+
+    let linux = compile_to_c(source).expect("custom palette should lower to native GTK CSS");
+    assert!(linux.contains("@define-color flux_surface #FAFAFA;"));
+    assert!(linux.contains("@define-color flux_accent #123456;"));
+    assert!(linux.contains("@define-color flux_shadow #11223380;"));
+    assert!(linux.contains("color: @flux_accent;"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("custom palette fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("custom palette should lower on Android");
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeThemeColor"));
+    assert!(android.contains("strcmp(value, \"surface\") == 0"));
+    assert!(android.contains("strcmp(value, \"accent\") == 0"));
+    assert!(android.contains("\"#FAFAFA\""));
+    assert!(android.contains("\"#123456\""));
+    assert!(android.contains("\"#11223380\""));
+
+    let semantic_override = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(accentColor: "accent")
+"#;
+    let errors = check_source_all(semantic_override)
+        .expect_err("custom palette values must resolve to concrete colors");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application accentColor must use '#RRGGBB' or '#RRGGBBAA'")
+    }));
+
+    let wrong_type = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(accentColor: 7)
+"#;
+    let errors = check_source_all(wrong_type).expect_err("custom palette values must be strings");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application accentColor must be str")
+    }));
+}
+
+#[test]
 fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
     let source = r#"
 fn started() -> void {

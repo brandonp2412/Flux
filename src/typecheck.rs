@@ -1082,14 +1082,21 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
             }
             match evaluate_default_expr(&field.value, &signatures) {
                 Ok(value) => match field.name.as_str() {
-                    "title" | "id" | "theme" if value.ty() != Type::Str => diagnostics.push(diag(
-                        field.value.span,
-                        &format!(
-                            "application {} must be str, got {}",
-                            field.name,
-                            value.ty().name()
-                        ),
-                    )),
+                    "title" | "id" | "theme" | "surfaceColor" | "surfaceRaisedColor"
+                    | "textColor" | "textMutedColor" | "accentColor" | "onAccentColor"
+                    | "outlineColor" | "dangerColor" | "successColor" | "warningColor"
+                    | "shadowColor"
+                        if value.ty() != Type::Str =>
+                    {
+                        diagnostics.push(diag(
+                            field.value.span,
+                            &format!(
+                                "application {} must be str, got {}",
+                                field.name,
+                                value.ty().name()
+                            ),
+                        ))
+                    }
                     "id" => {
                         if let ConstantValue::Str(value) = value
                             && !valid_application_id(&value)
@@ -1107,6 +1114,21 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                             diagnostics.push(diag(
                                 field.value.span,
                                 "application theme must be one of 'system', 'light', or 'dark'",
+                            ));
+                        }
+                    }
+                    "surfaceColor" | "surfaceRaisedColor" | "textColor" | "textMutedColor"
+                    | "accentColor" | "onAccentColor" | "outlineColor" | "dangerColor"
+                    | "successColor" | "warningColor" | "shadowColor" => {
+                        if let ConstantValue::Str(value) = value
+                            && !valid_hex_ui_color(&value)
+                        {
+                            diagnostics.push(diag(
+                                field.value.span,
+                                &format!(
+                                    "application {} must use '#RRGGBB' or '#RRGGBBAA'",
+                                    field.name
+                                ),
                             ));
                         }
                     }
@@ -1401,6 +1423,17 @@ pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "warning",
     "shadow",
 ];
+
+pub fn valid_hex_ui_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn valid_ui_color(value: &str) -> bool {
+    valid_hex_ui_color(value) || SEMANTIC_UI_COLOR_TOKENS.contains(&value)
+}
 
 fn view_element_kind_is_builtin(kind: &str) -> bool {
     BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind)

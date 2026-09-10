@@ -2037,6 +2037,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private int suppressTapViewId = View.NO_ID;
     private int fluxThemeMode;
     private native int nativeThemeMode();
+    private native String nativeThemeColor(String token);
     private native void nativeCreate(String restoredState);
     private native void nativeBuildUi();
     private native void nativeStart();
@@ -2248,6 +2249,8 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     }
 
     private int parseFluxColor(String value) {
+        String custom = nativeThemeColor(value);
+        if (custom != null) value = custom;
         boolean dark = isFluxDarkTheme();
         switch (value) {
             case "surface": return dark ? 0xFF0F172A : 0xFFF8FAFC;
@@ -3581,6 +3584,8 @@ mod tests {
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
         assert!(activity.contains("private native int nativeThemeMode();"));
+        assert!(activity.contains("private native String nativeThemeColor(String token);"));
+        assert!(activity.contains("String custom = nativeThemeColor(value);"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));
         assert!(activity.contains("private native String nativeSaveState();"));

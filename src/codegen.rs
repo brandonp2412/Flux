@@ -3037,6 +3037,19 @@ fn emit_android_native_application(
     out.push_str(&format!(
         "JNIEXPORT jint JNICALL Java_app_flux_runtime_FluxActivity_nativeThemeMode(JNIEnv *env, jobject activity) {{\n    (void)env;\n    (void)activity;\n    return (jint){theme_mode};\n}}\n\n"
     ));
+    out.push_str("JNIEXPORT jstring JNICALL Java_app_flux_runtime_FluxActivity_nativeThemeColor(JNIEnv *env, jobject activity, jstring token) {\n    (void)activity;\n    if (token == NULL) return NULL;\n    const char *value = (*env)->GetStringUTFChars(env, token, NULL);\n    if (value == NULL) return NULL;\n    jstring result = NULL;\n");
+    for (token, _) in APPLICATION_THEME_COLOR_FIELDS {
+        if let Some(color) = application_theme_color(application, token, signatures) {
+            out.push_str(&format!(
+                "    if (strcmp(value, {}) == 0) result = (*env)->NewStringUTF(env, {});\n",
+                c_string(token),
+                c_string(&color)
+            ));
+        }
+    }
+    out.push_str(
+        "    (*env)->ReleaseStringUTFChars(env, token, value);\n    return result;\n}\n\n",
+    );
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeCreate(JNIEnv *env, jobject activity, jstring restored_state) {\n");
     out.push_str("    JavaVM *vm = NULL;\n    if ((*env)->GetJavaVM(env, &vm) != JNI_OK || vm == NULL) return;\n");
@@ -3452,7 +3465,29 @@ fn emit_linux_gtk_application(
     }
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n    flux__ui_display_scale = gtk_widget_get_scale_factor(window);\n");
     out.push_str("    GtkCssProvider *flux__theme_provider = gtk_css_provider_new();\n");
-    out.push_str("    gtk_css_provider_load_from_data(flux__theme_provider, \"@define-color flux_surface @theme_bg_color; @define-color flux_surface_raised @theme_base_color; @define-color flux_text @theme_fg_color; @define-color flux_text_muted alpha(@theme_fg_color, 0.62); @define-color flux_accent @theme_selected_bg_color; @define-color flux_on_accent @theme_selected_fg_color; @define-color flux_outline alpha(@theme_fg_color, 0.20); @define-color flux_danger #dc2626; @define-color flux_success #16a34a; @define-color flux_warning #d97706; @define-color flux_shadow alpha(black, 0.24); .flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; }\", -1);\n");
+    let mut theme_css = String::new();
+    for (token, css_name, fallback) in [
+        ("surface", "surface", "@theme_bg_color"),
+        ("surfaceRaised", "surface_raised", "@theme_base_color"),
+        ("text", "text", "@theme_fg_color"),
+        ("textMuted", "text_muted", "alpha(@theme_fg_color, 0.62)"),
+        ("accent", "accent", "@theme_selected_bg_color"),
+        ("onAccent", "on_accent", "@theme_selected_fg_color"),
+        ("outline", "outline", "alpha(@theme_fg_color, 0.20)"),
+        ("danger", "danger", "#dc2626"),
+        ("success", "success", "#16a34a"),
+        ("warning", "warning", "#d97706"),
+        ("shadow", "shadow", "alpha(black, 0.24)"),
+    ] {
+        let value = application_theme_color(application, token, signatures)
+            .unwrap_or_else(|| fallback.to_string());
+        theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
+    }
+    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-check { padding: 4px; }");
+    out.push_str(&format!(
+        "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
+        c_string(&theme_css)
+    ));
     out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
     out.push_str("    g_object_unref(flux__theme_provider);\n");
     let title = application_metadata_string(application, "title", signatures)
@@ -4326,6 +4361,31 @@ fn application_metadata_string(
     }
 }
 
+const APPLICATION_THEME_COLOR_FIELDS: &[(&str, &str)] = &[
+    ("surface", "surface_color"),
+    ("surfaceRaised", "surface_raised_color"),
+    ("text", "text_color"),
+    ("textMuted", "text_muted_color"),
+    ("accent", "accent_color"),
+    ("onAccent", "on_accent_color"),
+    ("outline", "outline_color"),
+    ("danger", "danger_color"),
+    ("success", "success_color"),
+    ("warning", "warning_color"),
+    ("shadow", "shadow_color"),
+];
+
+fn application_theme_color(
+    application: &crate::ast::ApplicationDef,
+    token: &str,
+    signatures: &Signatures,
+) -> Option<String> {
+    let (_, metadata_name) = APPLICATION_THEME_COLOR_FIELDS
+        .iter()
+        .find(|(candidate, _)| *candidate == token)?;
+    application_metadata_string(application, metadata_name, signatures)
+}
+
 fn application_metadata_bool(
     application: &crate::ast::ApplicationDef,
     name: &str,
@@ -4860,7 +4920,7 @@ fn is_semantic_ui_color(value: &str) -> bool {
 }
 
 fn valid_ui_color(value: &str) -> bool {
-    parse_hex_rgba(value).is_some() || is_semantic_ui_color(value)
+    crate::typecheck::valid_ui_color(value)
 }
 
 fn gtk_ui_color_css(value: &str) -> Option<&str> {

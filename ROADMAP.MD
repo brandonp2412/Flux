@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 396
+- Completed baseline units: 397
 - Reported overall progress: **54%**
 - Current net scope growth after the baseline: 19 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -514,7 +514,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
     - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, Linux equivalents receive a desktop-appropriate 40px minimum, and Android buttons use readable sentence-case labels by default while retaining native pressed/focus/accessibility behavior. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.
   - [x] Automatic high-quality light/dark themes and accessible contrast, with platform/system preferences respected by default: Android semantic surface/text/accent palettes switch from the active `uiMode` (or explicit app theme) and cover root/control pressed/disabled/focused/checked states, while Linux semantic tokens resolve through active GTK theme colors; verified key Android text/background pairs meet at least 4.5:1 contrast without application-authored theme code.
   - [ ] First-class polished loading, empty, error, disabled, focused, pressed, selected, and validation states so unfinished states do not look unfinished.
-  - [ ] Custom themes and explicit styling remain straightforward escape hatches; beautiful defaults must not become a rigid template system or add mandatory runtime overhead.
+  - [x] Custom themes and explicit styling remain straightforward escape hatches without adding a theme-object framework: application metadata can override any semantic palette entry with concrete `#RRGGBB` / `#RRGGBBAA` values (`surfaceColor`, `surfaceRaisedColor`, `textColor`, `textMutedColor`, `accentColor`, `onAccentColor`, `outlineColor`, `dangerColor`, `successColor`, `warningColor`, `shadowColor`). Existing element-level color/border/radius/padding/etc. styling remains higher priority, while Linux emits the custom palette directly into GTK CSS definitions and Android resolves the same generated palette through its compiler-owned native bridge.
   - [ ] README/gallery screenshots must be reproducible captures from real compiled Flux applications running on the documented native target or emulator (including Waydroid for Android), never synthetic UI mockups presented as application output.
 
 # Milestone 10 — Functional UI state and rendering
