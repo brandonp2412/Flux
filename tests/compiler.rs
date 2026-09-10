@@ -765,7 +765,8 @@ fn main() -> i64 {
 "#;
 
     check_source(source).expect("function/interface fakes should typecheck without mock objects");
-    let generated = compile_to_c(source).expect("test fakes should lower through ordinary native code");
+    let generated =
+        compile_to_c(source).expect("test fakes should lower through ordinary native code");
     assert!(generated.contains("flux__fn_fakeNow"));
     assert!(generated.contains("flux__fn_fakeLoad"));
     assert!(generated.contains("flux__fn_settingValue"));
