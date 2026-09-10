@@ -1887,7 +1887,7 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnTouchListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -1913,6 +1913,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private native String nativeSaveState();
     private native void nativeDestroy();
     private static native void nativeOnClick(int viewId);
+    private static native void nativeOnTap(int viewId);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
     private static native void nativeOnHover(int viewId, boolean hovered);
@@ -1980,6 +1981,12 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     @Override
     public void onClick(View view) {
         nativeOnClick(view.getId());
+    }
+
+    @Override
+    public boolean onTouch(View view, MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_UP) nativeOnTap(view.getId());
+        return false;
     }
 
     @Override
@@ -3227,6 +3234,7 @@ mod tests {
         assert!(!generated_ui.contains("android.app.lib_name"));
         let activity = android_activity_java_source();
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
+        assert!(activity.contains("View.OnHoverListener, View.OnTouchListener"));
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
@@ -3236,6 +3244,8 @@ mod tests {
         assert!(activity.contains("nativeConfigurationChanged();"));
         assert!(activity.contains("nativeDestroy();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
+        assert!(activity.contains("private static native void nativeOnTap(int viewId);"));
+        assert!(activity.contains("MotionEvent.ACTION_UP) nativeOnTap(view.getId())"));
         assert!(
             activity.contains(
                 "private static native void nativeOnChecked(int viewId, boolean checked);"

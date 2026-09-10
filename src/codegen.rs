@@ -2537,6 +2537,15 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->CallVoidMethod(env, child, set_click, activity);\n");
         }
+        if view_property(element, "on_tap").is_some() {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_touch_listener = (*env)->GetMethodID(env, child_class, \"setOnTouchListener\", \"(Landroid/view/View$OnTouchListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_touch_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_touch_listener, activity);\n");
+        }
         if view_property(element, "on_focus").is_some()
             || view_property(element, "on_blur").is_some()
         {
@@ -2748,6 +2757,17 @@ fn emit_android_native_application(
     out.push_str("    (*env)->DeleteLocalRef(env, params_class);\n    (*env)->DeleteLocalRef(env, grid);\n    (*env)->DeleteLocalRef(env, grid_class);\n");
     out.push_str("}\n");
     emit_android_ui_refresh(out, view, signatures)?;
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTap(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for (element_index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_tap") else {
+            continue;
+        };
+        let element_id = element_index + 1;
+        let body = android_ui_zero_arg_event_body(action, view, signatures)?;
+        out.push_str(&format!("        case {element_id}: {body} break;\n"));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnClick(JNIEnv *env, jclass activity_class, jint view_id) {\n    (void)activity_class;\n    switch (view_id) {\n");
     for (element_index, element) in view.elements.iter().enumerate() {
@@ -3177,6 +3197,13 @@ fn emit_linux_gtk_application(
         }
     }
     for element in &view.elements {
+        if let Some(action) = view_property(element, "on_tap") {
+            let body = ui_zero_arg_event_body(action, view, signatures)?;
+            out.push_str(&format!(
+                "static void flux__ui_tap_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)gesture; (void)n_press; (void)x; (void)y; (void)data; {body} }}\n",
+                element.name,
+            ));
+        }
         for (property_name, callback_name) in [("on_hover", "hover"), ("on_leave", "leave")] {
             let Some(action) = view_property(element, property_name) else {
                 continue;
@@ -3894,6 +3921,19 @@ fn emit_linux_gtk_application(
             let clip = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    gtk_widget_set_overflow({variable}, ({clip}) ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);\n"
+            ));
+        }
+        if view_property(element, "on_tap").is_some() {
+            let controller = format!("flux__tap_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_click_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"released\", G_CALLBACK(flux__ui_tap_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
         if view_property(element, "on_hover").is_some()

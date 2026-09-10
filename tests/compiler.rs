@@ -9429,6 +9429,10 @@ fn leave_notice() -> void {
     print("left")
 }
 
+fn tapped() -> void {
+    print("tapped")
+}
+
 view HoverCard {
     grid columns: 1fr
     grid rows: auto auto
@@ -9438,6 +9442,7 @@ view HoverCard {
         tooltip: "Hover me"
         accessibility_label: "Hover state title"
         visible: hovered
+        onTap: tapped
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -9452,6 +9457,11 @@ app HoverCard
     check_source(source).expect("hover/leave callbacks and transitions should typecheck");
     let generated = compile_to_c(source).expect("hover/leave events should lower natively");
     assert!(generated.contains("GtkEventControllerMotion *controller"));
+    assert!(generated.contains("GtkGestureClick *gesture"));
+    assert!(generated.contains("flux__fn_tapped(); flux__ui_refresh();"));
+    assert!(generated.contains("gtk_gesture_click_new()"));
+    assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_tap_title)"));
+    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_title)"));
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh();"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh();"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
@@ -10501,6 +10511,7 @@ view Settings {
         tooltip: "Search"
         accessibility_label: "Search query"
         accessibility_description: "Enter text to search"
+        onTap: enabled => true
         on_change: changed
         on_submit: submitted
     Toggle enabled_toggle at 2,1
@@ -10617,6 +10628,9 @@ app Settings
     assert!(generated.contains("/ 100.0f"));
     assert!(generated.contains("Search query"));
     assert!(generated.contains("Enter text to search"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
+    assert!(generated.contains("setOnTouchListener"));
+    assert!(generated.contains("case 1: flux__ui_state_enabled = true; if (flux__android_activity != NULL) Java_app_flux_runtime_FluxActivity_nativeRefreshUi(env, flux__android_activity->clazz); break;"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnChecked"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTextChanged"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnSubmit"));
@@ -10763,6 +10777,7 @@ view App {
     Button action at 1,2
         text: "Press"
         enabled: true
+        onTap: handle_press
         on_press: handle_press
     Chart chart at 2,1
         label: "Activity"
@@ -10779,8 +10794,8 @@ fn main() -> i64 { 0 }
     let callback = database
         .symbols()
         .iter()
-        .find(|symbol| symbol.name == "on_press")
-        .expect("callback property should be indexed");
+        .find(|symbol| symbol.name == "onTap")
+        .expect("common tap callback property should be indexed");
     assert_eq!(
         callback.ty,
         Some(fluxc::ast::Type::Function {

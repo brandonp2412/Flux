@@ -536,7 +536,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 # Milestone 12 — Input and interaction
 
 - [ ] Pointer/mouse input.
+  - [x] Common typed `onTap: fn() -> void` works on every built-in native element without exposing pointer/controller objects; Linux lowers it to a native `GtkGestureClick` release callback and supports the ordinary functional state-transition form.
 - [ ] Touch input.
+  - [x] The same `onTap` contract lowers on Android to a compiler-wired native `View.OnTouchListener` and dispatches `ACTION_UP` directly back into compiled Flux callbacks/state transitions, with no application-authored Java/Kotlin/JNI bridge.
 - [ ] Keyboard input.
   - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Portable key events and explicit keyboard handling remain pending.
 - [ ] Focus model.
@@ -544,6 +546,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Hover.
   - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
+  - [x] Portable single-tap recognition is available through `onTap`; richer double-tap, long-press, drag, scale, and velocity semantics remain pending.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `onPress` logic.
@@ -651,7 +654,7 @@ Android is the first application-platform target. Android integration must feel 
     - [x] Android common border parity now includes independent top/end/bottom/start widths and colors, common-color/width fallback, per-corner radii, and `none`/`solid`/`dashed`/`dotted`/`double` styles through one compiler-owned native drawable. The same per-edge color properties also lower to native GTK CSS on Linux.
     - [x] Android native shadows now honor compile-time `shadowColor`, non-negative `shadowBlur`, and signed X/Y offsets in the compiler-owned native drawable without changing Flux layout sizing; root native grids disable child/padding clipping so visual effects are not intentionally cropped at the container boundary.
     - [x] Native `Image` lowers to `ImageView` with typed `source`, `fit`, `alt`, and `canShrink` behavior; state/derived image sources refresh through the compiler-owned in-place refresh path. Nox E2E validation built and launched the resulting x86_64 APK in Waydroid.
-    - [x] Android parity now covers native translate/rotate/scale transforms with configurable transform origin, per-corner radii, richer Text layout (`fontFamily`, letter spacing, line-height percentage, alignment, wrapping strategy, ellipsize, max lines), and direct focus/blur/hover/leave callbacks through generated listener glue.
+    - [x] Android parity now covers native translate/rotate/scale transforms with configurable transform origin, per-corner radii, richer Text layout (`fontFamily`, letter spacing, line-height percentage, alignment, wrapping strategy, ellipsize, max lines), and direct tap/focus/blur/hover/leave callbacks through generated listener glue.
     - [x] Ordinary Android functional transitions use generated in-place native refresh rather than full `setContentView` reconstruction: every flat element receives a stable compiler-owned ID, refresh looks up the existing native control and reapplies refreshable dynamic properties, and programmatic Toggle/Radio selection is listener-suppressed so refresh cannot recursively dispatch Flux events.
     - [ ] Finish higher-level composition controls, dynamic styling, and production-grade focus/selection/text-composition/input edge cases.
 - [ ] Accessibility/semantics bridge.
