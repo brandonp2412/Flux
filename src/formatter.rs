@@ -704,7 +704,7 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     lines.insert(
                         arm.line,
                         format!(
-                            "{arm_pad}{}::{}({patterns}){guard}:",
+                            "{arm_pad}{}.{}({patterns}){guard}:",
                             arm.enum_name, arm.variant
                         ),
                     );
@@ -766,7 +766,7 @@ fn format_match_expr_arms(
         lines.insert(
             arm.line,
             format!(
-                "{pad}{}::{}({patterns}){guard}: {}",
+                "{pad}{}.{}({patterns}){guard}: {}",
                 arm.enum_name,
                 arm.variant,
                 format_expr(&arm.value, 0)
@@ -996,7 +996,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                     .iter()
                     .map(|arg| format!("{}: {}", arg.name, format_expr(&arg.value, 0))),
             );
-            format!("{namespace}::{name}({})", rendered.join(", "))
+            format!("{namespace}.{name}({})", rendered.join(", "))
         }
         ExprKind::StructLiteral {
             name, base, fields, ..

@@ -4198,7 +4198,7 @@ pub fn type_of_expr(
                 _ => Err(diag(
                     expr.span,
                     &format!(
-                        "qualified call '{namespace}::{name}' returns {} values; use a destructuring binding",
+                        "qualified call '{namespace}.{name}' returns {} values; use a destructuring binding",
                         returns.len()
                     ),
                 )),
@@ -4665,7 +4665,7 @@ fn check_qualified_call(
         if !named_args.is_empty() {
             return Err(diag(
                 span,
-                &format!("android::{name} accepts positional arguments only"),
+                &format!("android.{name} accepts positional arguments only"),
             ));
         }
         match name.as_str() {
@@ -4673,7 +4673,7 @@ fn check_qualified_call(
                 if !args.is_empty() {
                     return Err(diag(
                         span,
-                        &format!("android::sdk_int expects 0 arguments, got {}", args.len()),
+                        &format!("android.sdk_int expects 0 arguments, got {}", args.len()),
                     ));
                 }
                 return Ok(vec![Type::I64]);
@@ -4682,7 +4682,7 @@ fn check_qualified_call(
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("android::vibrate expects 1 argument, got {}", args.len()),
+                        &format!("android.vibrate expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
@@ -4690,7 +4690,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &actual,
-                    "android::vibrate duration_ms",
+                    "android.vibrate duration_ms",
                 )?;
                 return Ok(Vec::new());
             }
@@ -4698,22 +4698,22 @@ fn check_qualified_call(
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("android::open_url expects 1 argument, got {}", args.len()),
+                        &format!("android.open_url expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "android::open_url url")?;
+                require_type(args[0].span, &Type::Str, &actual, "android.open_url url")?;
                 return Ok(Vec::new());
             }
             "share" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("android::share expects 1 argument, got {}", args.len()),
+                        &format!("android.share expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "android::share text")?;
+                require_type(args[0].span, &Type::Str, &actual, "android.share text")?;
                 return Ok(Vec::new());
             }
             "create_notification_channel" => {
@@ -4721,7 +4721,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::create_notification_channel expects 3 arguments, got {}",
+                            "android.create_notification_channel expects 3 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4732,7 +4732,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &actual,
-                        &format!("android::create_notification_channel {label}"),
+                        &format!("android.create_notification_channel {label}"),
                     )?;
                 }
                 return Ok(Vec::new());
@@ -4742,7 +4742,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::permission_granted expects 1 argument, got {}",
+                            "android.permission_granted expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4752,7 +4752,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &actual,
-                    "android::permission_granted permission",
+                    "android.permission_granted permission",
                 )?;
                 return Ok(vec![Type::Bool]);
             }
@@ -4761,7 +4761,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::request_permission expects 1 argument, got {}",
+                            "android.request_permission expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4771,7 +4771,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &actual,
-                    "android::request_permission permission",
+                    "android.request_permission permission",
                 )?;
                 return Ok(Vec::new());
             }
@@ -4780,7 +4780,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::notification_permission_granted expects 0 arguments, got {}",
+                            "android.notification_permission_granted expects 0 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4792,7 +4792,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::request_notification_permission expects 0 arguments, got {}",
+                            "android.request_notification_permission expects 0 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4803,7 +4803,7 @@ fn check_qualified_call(
                 if args.len() != 4 {
                     return Err(diag(
                         span,
-                        &format!("android::notify expects 4 arguments, got {}", args.len()),
+                        &format!("android.notify expects 4 arguments, got {}", args.len()),
                     ));
                 }
                 let channel = type_of_expr(&args[0], env, signatures)?;
@@ -4811,19 +4811,19 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &channel,
-                    "android::notify channel_id",
+                    "android.notify channel_id",
                 )?;
                 let notification_id = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &notification_id,
-                    "android::notify notification_id",
+                    "android.notify notification_id",
                 )?;
                 let title = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::Str, &title, "android::notify title")?;
+                require_type(args[2].span, &Type::Str, &title, "android.notify title")?;
                 let body = type_of_expr(&args[3], env, signatures)?;
-                require_type(args[3].span, &Type::Str, &body, "android::notify body")?;
+                require_type(args[3].span, &Type::Str, &body, "android.notify body")?;
                 return Ok(Vec::new());
             }
             "notify_url_action" => {
@@ -4831,7 +4831,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::notify_url_action expects 6 arguments, got {}",
+                            "android.notify_url_action expects 6 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -4841,14 +4841,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &channel,
-                    "android::notify_url_action channel_id",
+                    "android.notify_url_action channel_id",
                 )?;
                 let notification_id = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &notification_id,
-                    "android::notify_url_action notification_id",
+                    "android.notify_url_action notification_id",
                 )?;
                 for (index, label) in [(2, "title"), (3, "body"), (4, "action_label"), (5, "url")] {
                     let actual = type_of_expr(&args[index], env, signatures)?;
@@ -4856,7 +4856,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &actual,
-                        &format!("android::notify_url_action {label}"),
+                        &format!("android.notify_url_action {label}"),
                     )?;
                 }
                 return Ok(Vec::new());
@@ -4866,7 +4866,7 @@ fn check_qualified_call(
                     return Err(diag(
                         span,
                         &format!(
-                            "android::cancel_notification expects 1 argument, got {}",
+                            "android.cancel_notification expects 1 argument, got {}",
                             args.len()
                         ),
                     ));
@@ -4876,7 +4876,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &notification_id,
-                    "android::cancel_notification notification_id",
+                    "android.cancel_notification notification_id",
                 )?;
                 return Ok(Vec::new());
             }
@@ -4900,7 +4900,7 @@ fn check_qualified_call(
         if !named_args.is_empty() {
             return Err(diag(
                 span,
-                &format!("enum variant '{namespace}::{name}' does not accept named payloads"),
+                &format!("enum variant '{namespace}.{name}' does not accept named payloads"),
             ));
         }
         let Some(variant_definition) = definition.variant(name) else {
@@ -4914,7 +4914,7 @@ fn check_qualified_call(
             return Err(diag(
                 span,
                 &format!(
-                    "variant '{namespace}::{name}' expects {} payload value{}, got {}",
+                    "variant '{namespace}.{name}' expects {} payload value{}, got {}",
                     variant_definition.payloads.len(),
                     if variant_definition.payloads.len() == 1 {
                         ""
@@ -4935,7 +4935,7 @@ fn check_qualified_call(
                 arg.span,
                 expected,
                 &actual,
-                &format!("payload {} of '{}::{name}'", index + 1, namespace),
+                &format!("payload {} of '{}.{name}'", index + 1, namespace),
             )?;
         }
         return Ok(vec![Type::Named(namespace.to_string())]);
@@ -4966,7 +4966,7 @@ fn check_qualified_call(
         return Err(diag(
             span,
             &format!(
-                "static interface call '{namespace}::{name}' requires a concrete receiver as its first argument"
+                "static interface call '{namespace}.{name}' requires a concrete receiver as its first argument"
             ),
         ));
     };
@@ -4975,14 +4975,14 @@ fn check_qualified_call(
         return Err(diag(
             receiver.span,
             &format!(
-                "static interface call '{namespace}::{name}' requires a concrete struct or enum receiver"
+                "static interface call '{namespace}.{name}' requires a concrete struct or enum receiver"
             ),
         ));
     };
     if target_name == namespace && signatures.interface(target_name).is_some() {
         return check_declared_call(
             span,
-            &format!("{namespace}::{name}"),
+            &format!("{namespace}.{name}"),
             member,
             &args[1..],
             named_args,
@@ -5006,7 +5006,7 @@ fn check_qualified_call(
     }
     check_declared_call(
         span,
-        &format!("{namespace}::{name}"),
+        &format!("{namespace}.{name}"),
         member,
         &args[1..],
         named_args,
