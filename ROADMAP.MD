@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 375
 - Reported overall progress: **51%**
-- Current net scope growth after the baseline: 14 checkbox items
+- Current net scope growth after the baseline: 15 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -507,6 +507,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [ ] Platform-aware semantic design tokens for typography, spacing, color, elevation, radii, motion, and control sizing, with coherent defaults rather than requiring users to choose pixel values everywhere.
   - [ ] Native controls share one intentional visual language across a screen while preserving platform behavior, accessibility, focus, text scaling, and input conventions.
   - [ ] Layout defaults provide readable line lengths, comfortable touch targets, consistent rhythm, and sensible density on phone/tablet/desktop sizes without requiring design expertise.
+    - [x] First coherent default-layout slice: omitting `grid gap` now means a 12-logical-unit rhythm on both native backends, Android auto-sized Button/TextInput/Toggle/Radio controls receive a 48dp minimum hit height, and Linux equivalents receive a desktop-appropriate 40px minimum. Explicit `grid gap`, fixed row sizing, and `minHeight` remain authoritative escape hatches.
   - [ ] Automatic high-quality light/dark themes and accessible contrast, with platform/system preferences respected by default.
   - [ ] First-class polished loading, empty, error, disabled, focused, pressed, selected, and validation states so unfinished states do not look unfinished.
   - [ ] Custom themes and explicit styling remain straightforward escape hatches; beautiful defaults must not become a rigid template system or add mandatory runtime overhead.

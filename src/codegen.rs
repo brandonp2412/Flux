@@ -1806,7 +1806,24 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_density));\n"
             ));
         }
-        if let Some(min_height) = static_minimum_size(element, "min_height", signatures)? {
+        let row_start_for_defaults = element.row.saturating_sub(1) as usize;
+        let row_end_for_defaults = row_start_for_defaults + element.row_span as usize;
+        let rows_are_explicitly_fixed = view
+            .grid
+            .rows
+            .get(row_start_for_defaults..row_end_for_defaults)
+            .is_some_and(|rows| {
+                rows.iter()
+                    .all(|track| matches!(track, crate::ast::GridTrack::Units(_)))
+            });
+        let min_height = static_minimum_size(element, "min_height", signatures)?.or_else(|| {
+            (matches!(
+                element.kind.as_str(),
+                "Button" | "TextInput" | "Toggle" | "Radio"
+            ) && !rows_are_explicitly_fixed)
+                .then_some(48)
+        });
+        if let Some(min_height) = min_height {
             out.push_str("    jmethodID set_min_height = (*env)->GetMethodID(env, child_class, \"setMinimumHeight\", \"(I)V\");\n");
             out.push_str("    if (set_min_height == NULL) return;\n");
             out.push_str(&format!(
@@ -2650,7 +2667,7 @@ fn emit_android_native_application(
         out.push_str("    if (row_spec == NULL || column_spec == NULL) return;\n");
         out.push_str("    (*env)->SetObjectField(env, params, row_spec_field, row_spec);\n");
         out.push_str("    (*env)->SetObjectField(env, params, column_spec_field, column_spec);\n");
-        let gap = view.grid.gap.unwrap_or(0);
+        let gap = view.grid.gap.unwrap_or(12);
         let margin = view_property(element, "margin")
             .map(|property| element_margin_value(property, "margin", signatures))
             .transpose()?
@@ -3351,11 +3368,10 @@ fn emit_linux_gtk_application(
         ));
     }
     out.push_str("    GtkWidget *grid = gtk_grid_new();\n");
-    if let Some(gap) = view.grid.gap {
-        out.push_str(&format!(
-            "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"
-        ));
-    }
+    let gap = view.grid.gap.unwrap_or(12);
+    out.push_str(&format!(
+        "    gtk_grid_set_column_spacing(GTK_GRID(grid), {gap});\n    gtk_grid_set_row_spacing(GTK_GRID(grid), {gap});\n"
+    ));
     let padding = view.grid.padding.unwrap_or(20);
     out.push_str(&format!(
         "    gtk_widget_set_margin_top(grid, {padding});\n    gtk_widget_set_margin_bottom(grid, {padding});\n    gtk_widget_set_margin_start(grid, {padding});\n    gtk_widget_set_margin_end(grid, {padding});\n"
@@ -5446,7 +5462,14 @@ fn emit_grid_sizing(
         _ => None,
     });
     let min_width = static_minimum_size(element, "min_width", signatures)?;
-    let min_height = static_minimum_size(element, "min_height", signatures)?;
+    let min_height = static_minimum_size(element, "min_height", signatures)?.or_else(|| {
+        (fixed_height.is_none()
+            && matches!(
+                element.kind.as_str(),
+                "Button" | "TextInput" | "Toggle" | "Radio"
+            ))
+        .then_some(40)
+    });
     let width = match (fixed_width, min_width) {
         (Some(fixed), Some(minimum)) => Some(fixed.max(minimum)),
         (fixed, minimum) => fixed.or(minimum),

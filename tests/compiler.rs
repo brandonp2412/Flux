@@ -8391,7 +8391,6 @@ fn clicked() -> void {
 view HelloApp {
     grid columns: 1fr
     grid rows: auto auto
-    grid gap: 12
     Text title at 1,1
         text: "Hello, Flux!"
     Button action at 2,1
@@ -8409,8 +8408,11 @@ app HelloApp
     assert!(generated.contains("#include <gtk/gtk.h>"));
     assert!(generated.contains("gtk_application_window_new"));
     assert!(generated.contains("gtk_grid_attach"));
+    assert!(generated.contains("gtk_grid_set_column_spacing(GTK_GRID(grid), 12)"));
+    assert!(generated.contains("gtk_grid_set_row_spacing(GTK_GRID(grid), 12)"));
     assert!(generated.contains("gtk_label_new(\"Hello, Flux!\")"));
     assert!(generated.contains("gtk_button_new_with_label(\"Click me\")"));
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_action, -1, 40)"));
     assert!(generated.contains("G_CALLBACK(flux__ui_click_action)"));
     assert!(generated.contains("flux__fn_clicked();"));
     assert!(generated.contains("int main(int argc, char **argv)"));
@@ -10380,6 +10382,8 @@ app Screen
     assert!(generated.contains("android/widget/GridLayout"));
     assert!(generated.contains("android/widget/TextView"));
     assert!(generated.contains("android/widget/Button"));
+    assert!(generated.contains("INT64_C(48) * flux__ui_density"));
+    assert!(generated.contains("INT64_C(6) * flux__ui_density"));
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
     assert!(generated.contains("static bool flux__ui_state_expanded = false;"));
