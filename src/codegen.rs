@@ -4895,7 +4895,7 @@ fn emit_linux_gtk_application(
     let application_id = application_metadata_string(application, "id", signatures)
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
     out.push_str(&format!(
-        "int main(int argc, char **argv) {{\n    GtkApplication *application = gtk_application_new({}, G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
+        "int main(int argc, char **argv) {{\n    const char *flux__gdk_backend = g_getenv(\"GDK_BACKEND\");\n    if (flux__gdk_backend == NULL || flux__gdk_backend[0] == '\\0') {{\n        gdk_set_allowed_backends(\"wayland,x11,*\");\n    }}\n    GtkApplication *application = gtk_application_new({}, G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
         c_string(&application_id)
     ));
     if on_stop.is_some() || on_exit.is_some() {

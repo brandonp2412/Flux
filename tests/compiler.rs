@@ -12322,6 +12322,8 @@ app Screen(id: "app.example.screen", resizable: false)
         generated
             .contains("gtk_application_new(\"app.example.screen\", G_APPLICATION_DEFAULT_FLAGS)")
     );
+    assert!(generated.contains("const char *flux__gdk_backend = g_getenv(\"GDK_BACKEND\")"));
+    assert!(generated.contains("gdk_set_allowed_backends(\"wayland,x11,*\")"));
     assert!(generated.contains("gtk_window_set_resizable(GTK_WINDOW(window), FALSE)"));
 
     let invalid_id = r#"

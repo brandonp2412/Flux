@@ -11,9 +11,9 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 450
+- Completed baseline units: 451
 - Reported overall progress: **61%**
-- Current net scope growth after the baseline: 31 checkbox items
+- Current net scope growth after the baseline: 32 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -739,8 +739,9 @@ Android is the first application-platform target. Android integration must feel 
 
 - [ ] Native Linux window/render/input backend.
   - [x] Bootstrap GTK4 backend opens a real native Linux window, lowers Flux flat grid/Text/Button to native controls, and dispatches native button clicks into Flux callbacks.
-- [ ] Wayland-first support with appropriate fallback where practical.
+- [x] Wayland-first support with appropriate fallback where practical.
   - [x] Bootstrap GUI was built and launched end-to-end on a real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
+  - [x] Linux GUI startup now prefers GDK's Wayland backend before X11/other available backends when the user has not selected a backend explicitly, while preserving `GDK_BACKEND` as the authoritative opt-in override for debugging, compatibility, and non-Wayland sessions.
 - [ ] Menus/tray/clipboard/file dialogs.
   - [x] Portable application clipboard writes through typed `clipboard.setText(text)`: Linux lowers directly to the native GDK clipboard on the current GTK application backend, Android reuses the compiler-owned direct `ClipboardManager`/`ClipData` JNI boundary, LSP completion/signature help expose the shared API, unreachable use tree-shakes completely, and headless use is rejected rather than silently depending on GUI state. A native Linux debug build verified the GDK lowering; clipboard reads remain sequenced behind owned string semantics.
 - [ ] Multi-window.
