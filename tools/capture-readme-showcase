@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLUX="$ROOT/tools/flux"
 PACKAGE="$ROOT/examples/mobile_showcase"
-APK="$ROOT/target/readme-showcase.apk"
 OUTPUT="$ROOT/assets/readme/flux-mobile-showcase.png"
 DEVICE="${FLUX_SCREENSHOT_DEVICE:-}"
 
@@ -16,6 +15,9 @@ if [[ -z "$DEVICE" ]]; then
   exit 1
 fi
 
+TMPDIR="$(mktemp -d "$ROOT/target/readme-showcase.XXXXXX")"
+APK="$TMPDIR/showcase.apk"
+CAPTURE="$TMPDIR/showcase.png"
 ORIGINAL_SIZE="$(adb -s "$DEVICE" shell wm size | tr -d '\r' | sed -n 's/^Override size: //p')"
 ORIGINAL_DENSITY="$(adb -s "$DEVICE" shell wm density | tr -d '\r' | sed -n 's/^Override density: //p')"
 ORIGINAL_ROTATION="$(adb -s "$DEVICE" shell wm user-rotation | tr -d '\r')"
@@ -37,7 +39,12 @@ restore_display() {
     adb -s "$DEVICE" shell wm user-rotation free >/dev/null
   fi
 }
-trap restore_display EXIT
+
+cleanup() {
+  restore_display
+  rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
 
 "$FLUX" build android "$PACKAGE" -o "$APK" --mode release --abi x86_64 --format apk
 adb -s "$DEVICE" install -r "$APK" >/dev/null
@@ -47,12 +54,11 @@ adb -s "$DEVICE" shell wm user-rotation lock 0 >/dev/null
 adb -s "$DEVICE" shell am force-stop app.flux.showcase
 adb -s "$DEVICE" shell am start -W -n app.flux.showcase/app.flux.runtime.FluxActivity >/dev/null
 sleep 1
-adb -s "$DEVICE" exec-out screencap -p > "$OUTPUT.tmp"
+adb -s "$DEVICE" exec-out screencap -p > "$CAPTURE"
 
-if ! file "$OUTPUT.tmp" | grep -q 'PNG image data, 1080 x 1920'; then
-  rm -f "$OUTPUT.tmp"
+if ! file "$CAPTURE" | grep -q 'PNG image data, 1080 x 1920'; then
   printf '%s\n' "Capture did not produce the required 1080x1920 PNG." >&2
   exit 1
 fi
-mv "$OUTPUT.tmp" "$OUTPUT"
+mv "$CAPTURE" "$OUTPUT"
 printf '%s\n' "captured real Flux Waydroid screenshot: $OUTPUT"

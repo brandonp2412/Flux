@@ -1,5 +1,5 @@
 [package]
-name = "Luma"
+name = "Horse Tinder"
 version = "0.1.0"
 entry = "src/main.flux"
 

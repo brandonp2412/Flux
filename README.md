@@ -26,9 +26,9 @@ flux run my-flux-app
 
 <div align="center">
 
-<img src="assets/readme/flux-mobile-showcase.png" alt="Luma wellness app compiled with Flux and running on Waydroid" width="360">
+<img src="assets/readme/flux-mobile-showcase.png" alt="Horse Tinder dating app for horses compiled with Flux and running on Waydroid" width="360">
 
-<sub>Real Android screenshot from the checked-in <code>examples/mobile_showcase</code> Flux app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
+<sub>Real Android screenshot of the checked-in Horse Tinder <code>examples/mobile_showcase</code> app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
 
 </div>
 
