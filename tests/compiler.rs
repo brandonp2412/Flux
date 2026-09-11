@@ -12986,6 +12986,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.vibrate(25)
     android.openUrl("https://example.com")
     android.openAppSettings()
+    android.openNotificationSettings()
     android.share("hello from Flux")
     android.setClipboardText("copied from Flux")
     android.showKeyboard()
@@ -13078,6 +13079,10 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("android.intent.action.VIEW"));
     assert!(generated.contains("static void flux__android_open_app_settings(void)"));
     assert!(generated.contains("android.settings.APPLICATION_DETAILS_SETTINGS"));
+    assert!(generated.contains("static void flux__android_open_notification_settings(void)"));
+    assert!(generated.contains("android.settings.APP_NOTIFICATION_SETTINGS"));
+    assert!(generated.contains("android.provider.extra.APP_PACKAGE"));
+    assert!(generated.contains("android_get_device_api_level() < 26"));
     assert!(generated.contains("\"getPackageName\", \"()Ljava/lang/String;\""));
     assert!(generated.contains("\"fromParts\""));
     assert!(generated.contains("static void flux__android_share(const char *text)"));
@@ -13191,6 +13196,7 @@ fn main() -> i64 {
         android_tree_root.join("src/main.flux"),
         r#"fn unused_android() -> void {
     android.openAppSettings()
+    android.openNotificationSettings()
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
@@ -13225,7 +13231,9 @@ app Screen
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android tree-shaking fixture should lower");
     assert!(!tree_generated.contains("flux__android_open_app_settings"));
+    assert!(!tree_generated.contains("flux__android_open_notification_settings"));
     assert!(!tree_generated.contains("android.settings.APPLICATION_DETAILS_SETTINGS"));
+    assert!(!tree_generated.contains("android.settings.APP_NOTIFICATION_SETTINGS"));
     assert!(!tree_generated.contains("flux__android_show_keyboard"));
     assert!(!tree_generated.contains("flux__android_hide_keyboard"));
     assert!(!tree_generated.contains("flux__android_focus_next"));
@@ -13261,6 +13269,7 @@ fn main() -> i64 {
     android.vibrate("long")
     android.openUrl(42)
     android.openAppSettings(1)
+    android.openNotificationSettings(false)
     android.share(42)
     android.showKeyboard(1)
     android.hideKeyboard(false)
@@ -13301,6 +13310,11 @@ fn main() -> i64 {
         error
             .message
             .contains("android.openAppSettings expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.openNotificationSettings expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")

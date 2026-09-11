@@ -1315,6 +1315,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "openNotificationSettings",
+            3,
+            "fn android.openNotificationSettings() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "share",
             3,
             "fn android.share(text: str) -> void",
@@ -2534,9 +2541,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "openAppSettings" => {
+                "openAppSettings" | "openNotificationSettings" => {
                     return Some(signature_help_for_builtin(
-                        "android.openAppSettings",
+                        &format!("android.{member}"),
                         &[],
                         "void",
                         active_parameter,
@@ -5615,6 +5622,8 @@ mod tests {
         assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
         assert!(android_items.contains("\"label\":\"openAppSettings\""));
         assert!(android_items.contains("fn android.openAppSettings() -> void"));
+        assert!(android_items.contains("\"label\":\"openNotificationSettings\""));
+        assert!(android_items.contains("fn android.openNotificationSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
@@ -6428,6 +6437,35 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_android_notification_settings() {
+        let uri = "file:///tmp/android-notification-settings-signature.flux";
+        let source = r#"fn main() -> i64 {
+    android.openNotificationSettings()
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let needle = "android.openNotificationSettings(";
+        let line_index = source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("notification settings call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("notification settings call should have signature help")
+        .to_json();
+        assert!(help.contains("fn android.openNotificationSettings() -> void"));
     }
 
     #[test]
