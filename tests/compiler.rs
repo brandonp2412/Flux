@@ -7827,6 +7827,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn eliminates_dead_immutable_bindings_without_dropping_rhs_effects() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn main() -> i64 {
+    let source: i64 = 7
+    let deadCopy: i64 = source
+    if false:
+        print(deadCopy)
+    let deadConstant: i64 = 10 + 20
+    if false:
+        print(deadConstant)
+    let observed: i64 = observe(4)
+    if false:
+        print(observed)
+    let dynamic: i64 = time.unixMillis()
+    let checked: i64 = dynamic + 1
+    if false:
+        print(checked)
+    return source
+}
+"#;
+
+    check_source(source).expect("dead immutable bindings should typecheck");
+    let generated = compile_to_c(source).expect("dead immutable bindings should optimize safely");
+    assert!(!generated.contains("flux__local_deadCopy"));
+    assert!(!generated.contains("flux__local_deadConstant"));
+    assert!(generated.contains("flux__local_observed = flux__fn_observe(INT64_C(4))"));
+    assert!(generated.contains("flux_add_i64(flux__local_dynamic, INT64_C(1))"));
+
+    let moved_source = r#"
+fn main() -> i64 {
+    let source: i64[] = [1, 2]
+    let moved: i64[] = source
+    if false:
+        print(moved.length)
+    return 0
+}
+"#;
+    check_source(moved_source).expect("dead non-copy moves should remain semantically valid");
+    let moved_generated =
+        compile_to_c(moved_source).expect("dead non-copy moves should preserve ownership lowering");
+    assert!(moved_generated.contains("flux__local_moved = flux__local_source"));
+}
+
+#[test]
 fn rejects_invalid_compile_time_constants() {
     let cycle = r#"
 const A: i64 = B

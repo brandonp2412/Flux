@@ -10019,6 +10019,24 @@ fn emit_function(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let dead_let_binding_spans = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .filter_map(|node| match &node.kind {
+            crate::ir::ControlFlowNodeKind::Binding {
+                name,
+                mutable: false,
+                ..
+            } if cfg
+                .live_after(node.id)
+                .is_some_and(|state| !state.contains(name)) =>
+            {
+                Some(source_span_key(node.span))
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     let dead_definition_names = cfg
         .nodes()
         .iter()
@@ -10055,6 +10073,7 @@ fn emit_function(
             reachable_spans: &reachable_spans,
             dead_assignment_spans: &dead_assignment_spans,
             dead_var_initializer_spans: &dead_var_initializer_spans,
+            dead_let_binding_spans: &dead_let_binding_spans,
             dead_definition_names: &dead_definition_names,
         },
     )?;
@@ -10069,6 +10088,7 @@ struct BlockEmitContext<'a> {
     reachable_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_assignment_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_var_initializer_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
 }
 
@@ -10097,6 +10117,15 @@ fn emit_block(
             && context
                 .dead_assignment_spans
                 .contains(&source_span_key(stmt.span))
+            && dead_store_rhs_is_discardable(expr, signatures)
+        {
+            continue;
+        }
+        if let StmtKind::Let { ty, expr, .. } = &stmt.kind
+            && context
+                .dead_let_binding_spans
+                .contains(&source_span_key(stmt.span))
+            && signatures.is_copy_type(ty)
             && dead_store_rhs_is_discardable(expr, signatures)
         {
             continue;
