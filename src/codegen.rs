@@ -2420,9 +2420,7 @@ fn emit_runtime_prelude(
         out.push_str("}\n");
     }
     if uses_android_has_system_feature {
-        out.push_str(
-            "static bool flux__android_has_system_feature(const char *feature_name) {\n",
-        );
+        out.push_str("static bool flux__android_has_system_feature(const char *feature_name) {\n");
         out.push_str(
             "    if (feature_name == NULL || feature_name[0] == '\\0' || flux__android_activity == NULL) return false;\n",
         );
@@ -2438,7 +2436,9 @@ fn emit_runtime_prelude(
         out.push_str("    jmethodID get_package_manager = (*env)->GetMethodID(env, activity_class, \"getPackageManager\", \"()Landroid/content/pm/PackageManager;\");\n");
         out.push_str("    if (get_package_manager == NULL) goto done;\n");
         out.push_str("    package_manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_package_manager);\n");
-        out.push_str("    if ((*env)->ExceptionCheck(env) || package_manager == NULL) goto done;\n");
+        out.push_str(
+            "    if ((*env)->ExceptionCheck(env) || package_manager == NULL) goto done;\n",
+        );
         out.push_str("    package_manager_class = (*env)->GetObjectClass(env, package_manager);\n");
         out.push_str("    if (package_manager_class == NULL) goto done;\n");
         out.push_str("    jmethodID has_feature = (*env)->GetMethodID(env, package_manager_class, \"hasSystemFeature\", \"(Ljava/lang/String;)Z\");\n");
@@ -2451,8 +2451,12 @@ fn emit_runtime_prelude(
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
         out.push_str("    if (feature != NULL) (*env)->DeleteLocalRef(env, feature);\n");
         out.push_str("    if (package_manager_class != NULL) (*env)->DeleteLocalRef(env, package_manager_class);\n");
-        out.push_str("    if (package_manager != NULL) (*env)->DeleteLocalRef(env, package_manager);\n");
-        out.push_str("    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n");
+        out.push_str(
+            "    if (package_manager != NULL) (*env)->DeleteLocalRef(env, package_manager);\n",
+        );
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("    return available;\n");
         out.push_str("}\n");
@@ -3510,6 +3514,68 @@ fn emit_runtime_prelude(
     const char *connection = keep_alive ? "keep-alive" : "close";
     char header[2048];
     int header_length = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %zu\r\nContent-Type: %s\r\nConnection: %s\r\n\r\n", method, target, host, body_length, content_type, connection);
+    if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP request headers are too large";
+    size_t header_offset = 0;
+    while (header_offset < (size_t)header_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request headers";
+        header_offset += (size_t)sent;
+    }
+    size_t body_offset = 0;
+    while (body_offset < body_length) {
+        size_t remaining = body_length - body_offset;
+        size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining;
+        ssize_t sent;
+        do { sent = send((int)socket_handle, body + body_offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request body";
+        body_offset += (size_t)sent;
+    }
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_send_text_request_with_headers(") {
+        out.push_str(r#"static inline const char *flux__net_http_send_text_request_with_headers(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, const char *body, const char *headers, bool keep_alive) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    if (method[0] == '\0') return "HTTP method must not be empty";
+    for (const unsigned char *part = (const unsigned char *)method; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP method";
+    if (target[0] == '\0') return "HTTP request target must not be empty";
+    for (const unsigned char *part = (const unsigned char *)target; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP request target";
+    if (host[0] == '\0') return "HTTP host must not be empty";
+    if (strchr(host, '\r') != NULL || strchr(host, '\n') != NULL) return "HTTP host must not contain CR or LF";
+    if (strchr(content_type, '\r') != NULL || strchr(content_type, '\n') != NULL) return "HTTP content type must not contain CR or LF";
+    const char *line = headers;
+    while (*line != '\0') {
+        const char *line_end = strstr(line, "\r\n");
+        const char *end = line_end == NULL ? line + strlen(line) : line_end;
+        if (end == line) return "HTTP custom header line must not be empty";
+        const char *colon = memchr(line, ':', (size_t)(end - line));
+        if (colon == NULL || colon == line) return "malformed HTTP custom header field";
+        for (const unsigned char *part = (const unsigned char *)line; part < (const unsigned char *)colon; part += 1) {
+            bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+            if (!token) return "invalid HTTP custom header name";
+        }
+        size_t name_length = (size_t)(colon - line);
+        if ((name_length == 4 && strncasecmp(line, "Host", 4) == 0)
+            || (name_length == 14 && strncasecmp(line, "Content-Length", 14) == 0)
+            || (name_length == 12 && strncasecmp(line, "Content-Type", 12) == 0)
+            || (name_length == 10 && strncasecmp(line, "Connection", 10) == 0)
+            || (name_length == 17 && strncasecmp(line, "Transfer-Encoding", 17) == 0)) return "HTTP custom headers cannot override framing headers";
+        for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)end; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return "invalid HTTP custom header value";
+        if (line_end == NULL) break;
+        line = line_end + 2;
+        if (*line == '\0') return "HTTP custom headers must not end with CRLF";
+    }
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_STREAM) return "HTTP request requires a TCP socket";
+    size_t body_length = strlen(body);
+    const char *connection = keep_alive ? "keep-alive" : "close";
+    const char *header_separator = headers[0] == '\0' ? "" : "\r\n";
+    char header[8192];
+    int header_length = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %zu\r\nContent-Type: %s\r\n%s%sConnection: %s\r\n\r\n", method, target, host, body_length, content_type, headers, header_separator, connection);
     if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP request headers are too large";
     size_t header_offset = 0;
     while (header_offset < (size_t)header_length) {
@@ -16018,6 +16084,38 @@ fn emit_qualified_call(
                         host.code,
                         content_type.code,
                         body.code,
+                        keep_alive
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "sendTextRequestWithHeaders" => {
+                if !(7..=8).contains(&args.len()) {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let method = emit_expr(&args[1], env, signatures)?;
+                let target = emit_expr(&args[2], env, signatures)?;
+                let host = emit_expr(&args[3], env, signatures)?;
+                let content_type = emit_expr(&args[4], env, signatures)?;
+                let body = emit_expr(&args[5], env, signatures)?;
+                let headers = emit_expr(&args[6], env, signatures)?;
+                let keep_alive = if args.len() == 8 {
+                    emit_expr(&args[7], env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
+                return Ok((
+                    format!(
+                        "flux__net_http_send_text_request_with_headers({}, {}, {}, {}, {}, {}, {}, {})",
+                        socket_handle.code,
+                        method.code,
+                        target.code,
+                        host.code,
+                        content_type.code,
+                        body.code,
+                        headers.code,
                         keep_alive
                     ),
                     vec![Type::Error],

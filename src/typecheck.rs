@@ -6354,6 +6354,50 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "sendTextRequestWithHeaders" => {
+                if !(7..=8).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.sendTextRequestWithHeaders expects 7 or 8 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.sendTextRequestWithHeaders socket",
+                )?;
+                for (index, label) in [
+                    (1usize, "method"),
+                    (2usize, "target"),
+                    (3usize, "host"),
+                    (4usize, "contentType"),
+                    (5usize, "body"),
+                    (6usize, "headers"),
+                ] {
+                    let value = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &value,
+                        &format!("http.sendTextRequestWithHeaders {label}"),
+                    )?;
+                }
+                if args.len() == 8 {
+                    let keep_alive = type_of_expr(&args[7], env, signatures)?;
+                    require_type(
+                        args[7].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.sendTextRequestWithHeaders keepAlive",
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
             "sendTextResponse" => {
                 if !(4..=5).contains(&args.len()) {
                     return Err(diag(

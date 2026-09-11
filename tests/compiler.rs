@@ -2166,6 +2166,82 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_text_request_custom_headers_are_validated_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    print(http.sendTextRequestWithHeaders(1, "GET", "/", "example.test", "text/plain", "", "Accept: application/json\r\nX-Trace: abc", true))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP custom-header request should typecheck");
+    let generated = compile_to_c(source).expect("HTTP custom-header request should lower");
+    assert!(generated.contains("flux__net_http_send_text_request_with_headers("));
+    assert!(generated.contains("HTTP custom headers cannot override framing headers"));
+
+    let invalid_type = check_source(
+        "fn main() -> i64 {\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", false))\n    return 0\n}\n",
+    )
+    .expect_err("custom headers must be text");
+    assert!(
+        invalid_type
+            .message
+            .contains("http.sendTextRequestWithHeaders headers")
+    );
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP custom-header listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root =
+        std::env::temp_dir().join(format!("flux-http-custom-request-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP custom-header fixture should be writable");
+    let source_path = root.join("request.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn main() -> i64 {{\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Host: forbidden.test\"))\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextRequestWithHeaders(socket, \"POST\", \"/custom\", \"127.0.0.1:{port}\", \"text/plain\", \"hello\", \"Accept: application/json\\r\\nX-Trace: abc-123\", true))\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP custom-header Flux source should be writable");
+    let binary = root.join("request");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP custom-header Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP custom-header fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP custom-header Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "HTTP custom headers cannot override framing headers\nnil\nnil\nnil\n"
+    );
+
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP custom-header connection should accept");
+    let mut request = String::new();
+    stream
+        .read_to_string(&mut request)
+        .expect("HTTP custom-header request should be readable");
+    assert_eq!(
+        request,
+        format!(
+            "POST /custom HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 5\r\nContent-Type: text/plain\r\nAccept: application/json\r\nX-Trace: abc-123\r\nConnection: keep-alive\r\n\r\nhello"
+        )
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_url_parsing_is_typed_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn parsed(scheme: str, host: str, port: i64, target: str) -> void {
@@ -17821,9 +17897,9 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("static bool flux__android_has_system_feature"));
     assert!(generated.contains("\"getPackageManager\""));
     assert!(generated.contains("\"hasSystemFeature\", \"(Ljava/lang/String;)Z\""));
-    assert!(generated.contains(
-        "flux__android_has_system_feature(\"android.hardware.camera.any\")"
-    ));
+    assert!(
+        generated.contains("flux__android_has_system_feature(\"android.hardware.camera.any\")")
+    );
     assert!(generated.contains("static JNIEnv *flux__android_get_env(bool *detach)"));
     assert!(generated.contains("AttachCurrentThread"));
     assert!(generated.contains("DetachCurrentThread"));

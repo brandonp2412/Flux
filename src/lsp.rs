@@ -1299,6 +1299,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "sendTextRequestWithHeaders",
+            3,
+            "fn http.sendTextRequestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "sendTextResponse",
             3,
             "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
@@ -2825,6 +2832,23 @@ fn signature_help_for_document_cached(
                             "host: str",
                             "contentType: str",
                             "body: str",
+                            "keepAlive: bool = false",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "sendTextRequestWithHeaders" => {
+                    return Some(signature_help_for_builtin(
+                        "http.sendTextRequestWithHeaders",
+                        &[
+                            "socket: i64",
+                            "method: str",
+                            "target: str",
+                            "host: str",
+                            "contentType: str",
+                            "body: str",
+                            "headers: str",
                             "keepAlive: bool = false",
                         ],
                         "error",
@@ -6270,11 +6294,9 @@ mod tests {
         let element = hover_for_document(uri, source, &documents, 3, 5, PositionEncoding::Utf8)
             .expect("built-in element hover should survive incomplete source")
             .to_json();
-        assert!(
-            element.contains(
-                "element Text { text: str, richText: str, variant: str, selectable: bool, size: i64"
-            )
-        );
+        assert!(element.contains(
+            "element Text { text: str, richText: str, variant: str, selectable: bool, size: i64"
+        ));
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("accessibilityOrder: i64"));
         assert!(element.contains("focusScope: i64"));
@@ -7384,7 +7406,7 @@ mod tests {
     #[test]
     fn signature_help_supports_http_client_capabilities() {
         let uri = "file:///tmp/http-signatures.flux";
-        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
+        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Accept: application/json\"))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -7394,6 +7416,10 @@ mod tests {
             (
                 "http.sendTextRequest(",
                 "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
+            ),
+            (
+                "http.sendTextRequestWithHeaders(",
+                "fn http.sendTextRequestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponse(",
