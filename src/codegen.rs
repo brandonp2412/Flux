@@ -2487,6 +2487,31 @@ fn emit_android_native_application(
                 if primary { "JNI_TRUE" } else { "JNI_FALSE" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
+            if let Some(property) = view_property(element, "shortcut") {
+                let Some(value) = static_expr_str(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "Button.shortcut must be a compile-time string",
+                    ));
+                };
+                let Some(shortcut) = android_shortcut_trigger(&value) else {
+                    return Err(diag(
+                        property.value.span,
+                        "Button.shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                    ));
+                };
+                out.push_str(
+                    "    jclass shortcut_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (shortcut_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID register_shortcut = (*env)->GetMethodID(env, shortcut_activity_class, \"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+                out.push_str("    if (register_shortcut == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jstring child_shortcut = (*env)->NewStringUTF(env, {});\n    if (child_shortcut == NULL) return;\n    (*env)->CallVoidMethod(env, activity, register_shortcut, child, child_shortcut);\n    (*env)->DeleteLocalRef(env, child_shortcut);\n",
+                    c_string(&shortcut)
+                ));
+                out.push_str("    (*env)->DeleteLocalRef(env, shortcut_activity_class);\n");
+            }
         }
         if element.kind == "TextInput" {
             let validation_state = match view_property(element, "validation_state") {
@@ -6204,7 +6229,7 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
     }
 }
 
-fn gtk_shortcut_trigger(value: &str) -> Option<String> {
+fn parse_ui_shortcut(value: &str) -> Option<(bool, bool, bool, String)> {
     let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
     let (key, modifiers) = parts.split_last()?;
     if key.is_empty() || modifiers.is_empty() {
@@ -6222,13 +6247,26 @@ fn gtk_shortcut_trigger(value: &str) -> Option<String> {
         }
     }
     let key = match *key {
+        "Enter" | "Space" | "Tab" | "Escape" | "Delete" | "Up" | "Down" | "Left" | "Right" => {
+            key.to_string()
+        }
+        key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+            key.to_ascii_uppercase()
+        }
+        _ => return None,
+    };
+    Some((control, shift, alt, key))
+}
+
+fn gtk_shortcut_trigger(value: &str) -> Option<String> {
+    let (control, shift, alt, key) = parse_ui_shortcut(value)?;
+    let key = match key.as_str() {
         "Enter" => "Return".to_string(),
         "Space" => "space".to_string(),
-        "Tab" | "Escape" | "Delete" | "Up" | "Down" | "Left" | "Right" => key.to_string(),
         key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
             key.to_ascii_lowercase()
         }
-        _ => return None,
+        key => key.to_string(),
     };
     let mut trigger = String::new();
     if control {
@@ -6239,6 +6277,22 @@ fn gtk_shortcut_trigger(value: &str) -> Option<String> {
     }
     if alt {
         trigger.push_str("<Alt>");
+    }
+    trigger.push_str(&key);
+    Some(trigger)
+}
+
+fn android_shortcut_trigger(value: &str) -> Option<String> {
+    let (control, shift, alt, key) = parse_ui_shortcut(value)?;
+    let mut trigger = String::new();
+    if control {
+        trigger.push_str("Ctrl+");
+    }
+    if shift {
+        trigger.push_str("Shift+");
+    }
+    if alt {
+        trigger.push_str("Alt+");
     }
     trigger.push_str(&key);
     Some(trigger)

@@ -3872,6 +3872,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingStarts = new HashMap<>();
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
+    private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
@@ -4085,6 +4086,53 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     public boolean onKey(View view, int keyCode, KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_DOWN) nativeOnKey(view.getId(), fluxKeyName(keyCode, event));
         return false;
+    }
+
+    public void registerShortcut(View view, String shortcut) {
+        if (view != null && shortcut != null) shortcutViewIds.put(shortcut, view.getId());
+    }
+
+    private static String fluxShortcutName(KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return null;
+        String key;
+        switch (event.getKeyCode()) {
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER: key = "Enter"; break;
+            case KeyEvent.KEYCODE_SPACE: key = "Space"; break;
+            case KeyEvent.KEYCODE_TAB: key = "Tab"; break;
+            case KeyEvent.KEYCODE_ESCAPE: key = "Escape"; break;
+            case KeyEvent.KEYCODE_FORWARD_DEL: key = "Delete"; break;
+            case KeyEvent.KEYCODE_DPAD_UP: key = "Up"; break;
+            case KeyEvent.KEYCODE_DPAD_DOWN: key = "Down"; break;
+            case KeyEvent.KEYCODE_DPAD_LEFT: key = "Left"; break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: key = "Right"; break;
+            default:
+                int keyCode = event.getKeyCode();
+                if (keyCode >= KeyEvent.KEYCODE_A && keyCode <= KeyEvent.KEYCODE_Z) {
+                    key = Character.toString((char)('A' + keyCode - KeyEvent.KEYCODE_A));
+                } else if (keyCode >= KeyEvent.KEYCODE_0 && keyCode <= KeyEvent.KEYCODE_9) {
+                    key = Character.toString((char)('0' + keyCode - KeyEvent.KEYCODE_0));
+                } else {
+                    return null;
+                }
+        }
+        StringBuilder shortcut = new StringBuilder();
+        if (event.isCtrlPressed()) shortcut.append("Ctrl+");
+        if (event.isShiftPressed()) shortcut.append("Shift+");
+        if (event.isAltPressed()) shortcut.append("Alt+");
+        if (shortcut.length() == 0) return null;
+        return shortcut.append(key).toString();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        String shortcut = fluxShortcutName(event);
+        Integer viewId = shortcut == null ? null : shortcutViewIds.get(shortcut);
+        if (viewId != null) {
+            nativeOnClick(viewId);
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     public static final class FluxEditText extends EditText {
@@ -6240,6 +6288,14 @@ mod tests {
         assert!(activity.contains("ViewConfiguration.getDoubleTapTimeout()"));
         assert!(activity.contains("nativeOnDoubleTap(viewId);"));
         assert!(activity.contains("nativeOnLongPress(view.getId());"));
+        assert!(
+            activity
+                .contains("private final Map<String, Integer> shortcutViewIds = new HashMap<>();")
+        );
+        assert!(activity.contains("public void registerShortcut(View view, String shortcut)"));
+        assert!(activity.contains("public boolean dispatchKeyEvent(KeyEvent event)"));
+        assert!(activity.contains("if (event.isCtrlPressed()) shortcut.append(\"Ctrl+\");"));
+        assert!(activity.contains("nativeOnClick(viewId);"));
         assert!(
             activity.contains(
                 "private static native void nativeOnChecked(int viewId, boolean checked);"

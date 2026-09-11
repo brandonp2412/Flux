@@ -591,10 +591,10 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Drag, scale, and velocity semantics remain pending.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
-  - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `onPress` logic.
+  - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions, while Android registers the same canonical shortcut on the generated Activity and dispatches matching non-repeating native `KeyEvent` key-downs through the button's existing typed `onPress` action. Both backends reject unsupported modifier/key forms rather than silently diverging.
   - [ ] Broader shortcut scopes, non-button actions, conflict diagnostics across composed views/windows, and platform-specific shortcut presentation.
 - [ ] Context menus.
-- [ ] Clipboard.
+- [ ] Clipboard; portable `clipboard.setText(text)` is implemented on Linux/Android, while reads remain blocked on owned-string semantics rather than returning unsafe borrowed GUI storage.
 - [ ] IME/text-composition support.
 
 # Milestone 13 — Navigation

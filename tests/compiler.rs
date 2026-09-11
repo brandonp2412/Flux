@@ -12843,6 +12843,22 @@ app Shortcuts
     assert!(generated.contains("gtk_callback_action_new(flux__ui_shortcut_action, NULL, NULL)"));
     assert!(generated.contains("flux__ui_click_action(widget, NULL); return TRUE;"));
 
+    let program = fluxc::parser::parse(source).expect("shortcut app should parse for Android");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("shortcut app should typecheck for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("button shortcut should lower to Android");
+    assert!(android.contains("\"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;)V\""));
+    assert!(android.contains("NewStringUTF(env, \"Ctrl+Shift+Enter\")"));
+    assert!(
+        android.contains("CallVoidMethod(env, activity, register_shortcut, child, child_shortcut)")
+    );
+
     let missing_action = r#"
 view Shortcuts {
     grid columns: 1fr
@@ -12875,6 +12891,19 @@ app Shortcuts
     check_source(invalid).expect("invalid shortcut syntax is a backend portability check");
     let error = compile_to_c(invalid).expect_err("unsupported shortcut syntax must fail");
     assert!(error.message.contains("modifiers Ctrl/Shift/Alt"));
+
+    let program =
+        fluxc::parser::parse(invalid).expect("invalid shortcut fixture should still parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("backend should own shortcut portability validation");
+    let android_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("unsupported shortcut syntax must also fail for Android");
+    assert!(android_error.message.contains("modifiers Ctrl/Shift/Alt"));
 }
 
 #[test]
