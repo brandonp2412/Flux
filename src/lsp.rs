@@ -1243,6 +1243,16 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "url" {
+        push_completion_item(
+            items,
+            seen,
+            "parseHttp",
+            3,
+            "fn url.parseHttp(url: str, callback: fn(str, str, i64, str) -> void) -> error",
+        );
+        return true;
+    }
     if namespace == "http" {
         push_completion_item(
             items,
@@ -2716,6 +2726,16 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 _ => {}
+            }
+        }
+        if namespace == "url" {
+            if member == "parseHttp" {
+                return Some(signature_help_for_builtin(
+                    "url.parseHttp",
+                    &["url: str", "callback: fn(str, str, i64, str) -> void"],
+                    "error",
+                    active_parameter,
+                ));
             }
         }
         if namespace == "http" {
@@ -7340,9 +7360,13 @@ mod tests {
     #[test]
     fn signature_help_supports_http_client_capabilities() {
         let uri = "file:///tmp/http-signatures.flux";
-        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
+        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
+            (
+                "url.parseHttp(",
+                "fn url.parseHttp(url: str, callback: fn(str, str, i64, str) -> void) -> error",
+            ),
             (
                 "http.sendTextRequest(",
                 "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error",

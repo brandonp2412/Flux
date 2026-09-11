@@ -2155,6 +2155,77 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_url_parsing_is_typed_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn parsed(scheme: str, host: str, port: i64, target: str) -> void {
+    print(scheme)
+    print(host)
+    print(port)
+    print(target)
+}
+fn main() -> i64 {
+    print(url.parseHttp("https://example.test:8443/a?b=1#ignored", parsed))
+    print(url.parseHttp("http://[::1]?x=1", parsed))
+    print(url.parseHttp("ftp://example.test/file", parsed))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP URL parsing should typecheck");
+    let generated = compile_to_c(source).expect("HTTP URL parsing should lower natively");
+    assert!(generated.contains("flux__url_parse_http("));
+    assert!(generated.contains("#include <strings.h>"));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn parsed(_scheme: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test\", parsed))\n    return 0\n}\n",
+    )
+    .expect_err("URL parser callback shape must be exact");
+    assert!(invalid_callback.message.contains("url.parseHttp callback"));
+
+    let unused = r#"
+fn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {
+}
+fn hidden() -> void {
+    print(url.parseHttp("https://example.test/", parsed))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead URL parser should tree-shake");
+    assert!(!unused_generated.contains("flux__url_parse_http("));
+    assert!(!unused_generated.contains("#include <strings.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-http-url-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URL fixture should be writable");
+    let source_path = root.join("url.flux");
+    fs::write(&source_path, source).expect("URL Flux source should be writable");
+    let binary = root.join("url");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URL Flux binary should build");
+    assert!(
+        built.status.success(),
+        "URL fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URL Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "https\nexample.test\n8443\n/a?b=1\nnil\nhttp\n::1\n80\n/?x=1\nnil\nURL scheme must be http or https\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {

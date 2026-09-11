@@ -977,9 +977,14 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__fs_remove_directories(") {
         out.push_str("#include <dirent.h>\n");
     }
+    if runtime_usage.contains("flux__url_") {
+        out.push_str("#include <strings.h>\n");
+    }
     if runtime_usage.contains("flux__net_") {
         out.push_str("#include <limits.h>\n");
-        out.push_str("#include <strings.h>\n");
+        if !runtime_usage.contains("flux__url_") {
+            out.push_str("#include <strings.h>\n");
+        }
         out.push_str("#include <fcntl.h>\n");
         out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
@@ -2864,6 +2869,86 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_exit(") {
         out.push_str("static inline void flux__process_exit(int64_t code) { if (code < 0 || code > 255) { fputs(\"Flux runtime error: process.exit code must be between 0 and 255\\n\", stderr); abort(); } exit((int)code); }\n");
+    }
+
+    if runtime_usage.contains("flux__url_parse_http(") {
+        out.push_str(r#"static inline const char *flux__url_parse_http(const char *value, void (*callback)(const char *, const char *, int64_t, const char *)) {
+    size_t length = strlen(value);
+    if (length == 0) return "URL must not be empty";
+    if (length > 65536) return "URL exceeds 65536 bytes";
+    char buffer[65537];
+    memcpy(buffer, value, length + 1);
+    char *scheme_end = strstr(buffer, "://");
+    if (scheme_end == NULL || scheme_end == buffer) return "URL must include http:// or https://";
+    size_t scheme_length = (size_t)(scheme_end - buffer);
+    bool is_http = scheme_length == 4 && strncasecmp(buffer, "http", 4) == 0;
+    bool is_https = scheme_length == 5 && strncasecmp(buffer, "https", 5) == 0;
+    if (!is_http && !is_https) return "URL scheme must be http or https";
+    char *authority = scheme_end + 3;
+    if (*authority == '\0') return "URL host must not be empty";
+    char *path_start = strpbrk(authority, "/?#");
+    char *authority_end = path_start != NULL ? path_start : buffer + length;
+    char *fragment = path_start != NULL ? strchr(path_start, '#') : NULL;
+    char *target_end = fragment != NULL ? fragment : buffer + length;
+    char target[65537];
+    if (path_start == NULL || *path_start == '#') {
+        target[0] = '/';
+        target[1] = '\0';
+    } else if (*path_start == '?') {
+        size_t query_length = (size_t)(target_end - path_start);
+        if (query_length + 1 > 65535) return "URL request target exceeds 65536 bytes";
+        target[0] = '/';
+        memcpy(target + 1, path_start, query_length);
+        target[query_length + 1] = '\0';
+    } else {
+        size_t target_length = (size_t)(target_end - path_start);
+        if (target_length > 65536) return "URL request target exceeds 65536 bytes";
+        memcpy(target, path_start, target_length);
+        target[target_length] = '\0';
+    }
+    *authority_end = '\0';
+    if (strchr(authority, '@') != NULL) return "URL userinfo is not supported";
+    char *host = authority;
+    char *port_text = NULL;
+    if (*authority == '[') {
+        char *closing = strchr(authority + 1, ']');
+        if (closing == NULL) return "URL IPv6 host is missing closing bracket";
+        host = authority + 1;
+        *closing = '\0';
+        if (closing[1] == ':') port_text = closing + 2;
+        else if (closing[1] != '\0') return "invalid URL authority after IPv6 host";
+    } else {
+        char *first_colon = strchr(authority, ':');
+        char *last_colon = strrchr(authority, ':');
+        if (first_colon != NULL && first_colon != last_colon) return "IPv6 URL hosts must use brackets";
+        if (last_colon != NULL) {
+            *last_colon = '\0';
+            port_text = last_colon + 1;
+        }
+    }
+    if (*host == '\0') return "URL host must not be empty";
+    for (const unsigned char *part = (const unsigned char *)host; *part != '\0'; part += 1) {
+        if (*part <= 0x20 || *part == 0x7f) return "URL host contains invalid whitespace or control characters";
+    }
+    int64_t port = is_https ? 443 : 80;
+    if (port_text != NULL) {
+        if (*port_text == '\0') return "URL port must not be empty";
+        int64_t parsed = 0;
+        for (const unsigned char *part = (const unsigned char *)port_text; *part != '\0'; part += 1) {
+            if (*part < '0' || *part > '9') return "URL port must be numeric";
+            parsed = parsed * 10 + (int64_t)(*part - '0');
+            if (parsed > 65535) return "URL port must be between 1 and 65535";
+        }
+        if (parsed < 1) return "URL port must be between 1 and 65535";
+        port = parsed;
+    }
+    for (const unsigned char *part = (const unsigned char *)target; *part != '\0'; part += 1) {
+        if (*part <= 0x20 || *part == 0x7f) return "URL request target contains invalid whitespace or control characters";
+    }
+    callback(is_https ? "https" : "http", host, port, target);
+    return NULL;
+}
+"#);
     }
 
     if runtime_usage.contains("flux__net_") {
@@ -15444,6 +15529,18 @@ fn emit_qualified_call(
             }
             _ => return Err(diag(span, "unknown HTTP call reached code generation")),
         }
+    }
+    if namespace == "url" {
+        if !named_args.is_empty() || args.len() != 2 || name != "parseHttp" {
+            return Err(diag(span, "invalid URL call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        let callback = emit_expr(&args[1], env, signatures)?;
+        return Ok((
+            format!("flux__url_parse_http({}, {})", value.code, callback.code),
+            vec![Type::Error],
+            None,
+        ));
     }
     if namespace == "locale" {
         if !named_args.is_empty() || !args.is_empty() {

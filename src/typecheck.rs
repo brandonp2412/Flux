@@ -6391,6 +6391,39 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "url" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("url.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "parseHttp" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("url.parseHttp expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let value = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &value, "url.parseHttp url")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str, Type::Str, Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[1].span, &expected, &callback, "url.parseHttp callback")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("url module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "locale" {
         if !named_args.is_empty() {
             return Err(diag(
