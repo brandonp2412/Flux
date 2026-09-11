@@ -3801,6 +3801,82 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("scatter/gather listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.sendTextParts(socket, ["hello", "", " ", "world"]))
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("scatter/gather text send should typecheck");
+    let generated = compile_to_c(&source).expect("scatter/gather text send should lower");
+    assert!(generated.contains("#include <sys/uio.h>"));
+    assert!(generated.contains("flux__net_send_text_parts("));
+    assert!(generated.contains("sendmsg("));
+    assert!(generated.contains("MSG_NOSIGNAL"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-scatter-gather-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("scatter/gather fixture should be writable");
+    let source_path = root.join("scatter.flux");
+    fs::write(&source_path, &source).expect("scatter/gather source should be writable");
+    let binary = root.join("scatter");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("scatter/gather binary should build");
+    assert!(
+        built.status.success(),
+        "scatter/gather build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Flux client should connect");
+        let mut request = [0u8; 11];
+        stream
+            .read_exact(&mut request)
+            .expect("Flux client should send every text fragment");
+        assert_eq!(&request, b"hello world");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("scatter/gather binary should run");
+    server.join().expect("scatter/gather server should finish");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\n");
+
+    let wrong_parts = check_source(
+        "fn main() -> i64 {\n    print(net.sendTextParts(1, [1, 2]))\n    return 0\n}\n",
+    )
+    .expect_err("scatter/gather parts must be strings");
+    assert!(wrong_parts.message.contains("net.sendTextParts parts"));
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    print(net.sendTextParts(socket, ["hidden", "payload"]))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead scatter/gather send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_parts("));
+    assert!(!unused_generated.contains("#include <sys/uio.h>"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_peer_text_io_is_typed_borrowed_tree_shaken_and_runnable() {
     let peer = UdpSocket::bind("127.0.0.1:0").expect("loopback UDP peer should bind");
     let peer_port = peer.local_addr().unwrap().port();

@@ -1033,6 +1033,9 @@ fn emit_runtime_prelude(
         out.push_str("#include <fcntl.h>\n");
         out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
+        if runtime_usage.contains("flux__net_send_text_parts(") {
+            out.push_str("#include <sys/uio.h>\n");
+        }
         out.push_str("#include <netdb.h>\n");
         out.push_str("#include <netinet/in.h>\n");
         if runtime_usage.contains("flux__net_set_no_delay(") {
@@ -4243,6 +4246,64 @@ fn emit_runtime_prelude(
         || uses_list_stride;
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    }
+    if runtime_usage.contains("flux__net_send_text_parts(") {
+        out.push_str(r#"static inline const char *flux__net_send_text_parts(int64_t socket_handle, struct flux__list parts) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_STREAM) return "sendTextParts requires a TCP socket";
+    if (parts.len == 0) return NULL;
+    ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    size_t index = 0;
+    size_t offset = 0;
+    while (index < parts.len) {
+        struct iovec vectors[64];
+        size_t vector_count = 0;
+        size_t cursor = index;
+        size_t cursor_offset = offset;
+        while (cursor < parts.len && vector_count < 64) {
+            const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
+            size_t length = strlen(text);
+            if (cursor_offset < length) {
+                vectors[vector_count].iov_base = (void *)(text + cursor_offset);
+                vectors[vector_count].iov_len = length - cursor_offset;
+                vector_count += 1;
+            }
+            cursor += 1;
+            cursor_offset = 0;
+        }
+        if (vector_count == 0) {
+            index = cursor;
+            offset = 0;
+            continue;
+        }
+        struct msghdr message;
+        memset(&message, 0, sizeof(message));
+        message.msg_iov = vectors;
+        message.msg_iovlen = vector_count;
+        ssize_t sent;
+        do { sent = sendmsg((int)socket_handle, &message, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send text parts";
+        size_t remaining = (size_t)sent;
+        while (index < parts.len) {
+            const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
+            size_t length = strlen(text);
+            size_t available = length - offset;
+            if (remaining < available) {
+                offset += remaining;
+                break;
+            }
+            remaining -= available;
+            index += 1;
+            offset = 0;
+            if (remaining == 0) break;
+        }
+    }
+    return NULL;
+}
+"#);
     }
     if uses_list_stride {
         out.push_str("static inline ptrdiff_t flux_list_stride(struct flux__list list, size_t elem_size) { return list.stride == 0 ? (ptrdiff_t)elem_size : list.stride; }\n");
@@ -18788,6 +18849,21 @@ fn emit_qualified_call(
                 let text = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__net_send_text({}, {})", socket_handle.code, text.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "sendTextParts" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let parts = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_parts({}, {})",
+                        socket_handle.code, parts.code
+                    ),
                     vec![Type::Error],
                     None,
                 ));

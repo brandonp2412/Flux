@@ -6601,6 +6601,29 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::Str, &text, "net.sendText text")?;
                 return Ok(vec![Type::Error]);
             }
+            "sendTextParts" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("net.sendTextParts expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.sendTextParts socket",
+                )?;
+                let parts = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::Str)),
+                    &parts,
+                    "net.sendTextParts parts",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "sendTextTo" => {
                 if args.len() != 4 {
                     return Err(diag(
