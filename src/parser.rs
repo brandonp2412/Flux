@@ -3882,13 +3882,33 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
     }
 
     if let Some(eq_offset) = find_assignment_operator(input) {
-        let (target, target_column) = trim_with_column(&input[..eq_offset], span.column);
+        let coalescing = eq_offset >= 2 && &input[eq_offset - 2..eq_offset] == "??";
+        let target_end = if coalescing { eq_offset - 2 } else { eq_offset };
+        let (target, target_column) = trim_with_column(&input[..target_end], span.column);
         let (expr_src, expr_column) =
             trim_with_column(&input[eq_offset + 1..], span.column + eq_offset + 1);
         if expr_src.is_empty() {
             return Err(diag(line, "assignment requires an expression"));
         }
-        let expr = parse_expression_at(expr_src, line, expr_column)?;
+        let rhs = parse_expression_at(expr_src, line, expr_column)?;
+        let expr = if coalescing {
+            validate_identifier(target, line)?;
+            Expr {
+                line,
+                span,
+                kind: ExprKind::Binary {
+                    left: Box::new(Expr {
+                        line,
+                        span: SourceSpan::new(line, target_column, target.len()),
+                        kind: ExprKind::Var(target.to_string()),
+                    }),
+                    op: BinOp::Coalesce,
+                    right: Box::new(rhs),
+                },
+            }
+        } else {
+            rhs
+        };
         if let Some(bindings) = parse_multi_value_destructure_pattern(target, line, target_column)?
         {
             return Ok(Stmt {
@@ -3936,6 +3956,7 @@ fn parse_simple_statement(input: &str, span: SourceSpan) -> Result<Stmt, Diagnos
                 name: target.to_string(),
                 name_span: SourceSpan::new(line, target_column, target.len()),
                 expr,
+                coalescing,
             },
         });
     }

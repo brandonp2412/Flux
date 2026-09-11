@@ -462,6 +462,7 @@ pub enum StmtKind {
         name: String,
         name_span: SourceSpan,
         expr: Expr,
+        coalescing: bool,
     },
     AssignMultiDestructure {
         bindings: Vec<PatternBinding>,

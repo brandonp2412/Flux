@@ -519,8 +519,26 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                     format!("{pad}var {name}: {} = {}", ty.name(), format_expr(expr, 0)),
                 );
             }
-            StmtKind::Assign { name, expr, .. } => {
-                lines.insert(stmt.line, format!("{pad}{name} = {}", format_expr(expr, 0)));
+            StmtKind::Assign {
+                name,
+                expr,
+                coalescing,
+                ..
+            } => {
+                if *coalescing
+                    && let ExprKind::Binary {
+                        op: BinOp::Coalesce,
+                        right,
+                        ..
+                    } = &expr.kind
+                {
+                    lines.insert(
+                        stmt.line,
+                        format!("{pad}{name} ??= {}", format_expr(right, 0)),
+                    );
+                } else {
+                    lines.insert(stmt.line, format!("{pad}{name} = {}", format_expr(expr, 0)));
+                }
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
                 let pattern = bindings

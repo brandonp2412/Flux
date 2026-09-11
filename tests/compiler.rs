@@ -21579,6 +21579,116 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_coalescing_assignment_is_lazy_mutable_and_native() {
+    let source = r#"
+fn fallback() -> i64 {
+    print(99)
+    return 9
+}
+
+fn main() -> i64 {
+    var missing: i64? = none
+    missing ??= fallback()
+    missing ??= fallback()
+    print(missing ?? -1)
+    var present: i64? = 7
+    present ??= fallback()
+    print(present ?? -1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("coalescing assignment should typecheck for mutable optionals");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("coalescing assignment should format canonically");
+    assert!(formatted.contains("missing ??= fallback()"));
+    assert!(formatted.contains("present ??= fallback()"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted coalescing assignment should reparse"),
+        formatted
+    );
+
+    let generated = compile_to_c(source).expect("coalescing assignment should lower natively");
+    assert!(generated.contains("flux__coalesce_value.has_value"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-coalescing-assignment-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary coalescing assignment directory should be writable");
+    let c_path = root.join("coalescing_assignment.c");
+    let exe_path = root.join("coalescing_assignment");
+    fs::write(&c_path, generated).expect("generated coalescing assignment C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile native coalescing assignment");
+    assert!(
+        compile.status.success(),
+        "coalescing assignment C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("coalescing assignment program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "99\n9\n7\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let immutable = r#"
+fn main() -> i64 {
+    let value: i64? = none
+    value ??= 3
+    return 0
+}
+"#;
+    let error =
+        check_source(immutable).expect_err("coalescing assignment requires mutable binding");
+    assert!(
+        error
+            .message
+            .contains("cannot assign to immutable binding 'value'")
+    );
+
+    let non_optional = r#"
+fn main() -> i64 {
+    var value: i64 = 1
+    value ??= 3
+    return value
+}
+"#;
+    let error =
+        check_source(non_optional).expect_err("coalescing assignment requires optional target");
+    assert!(
+        error
+            .message
+            .contains("left operand of '??' must be optional, got i64")
+    );
+
+    let wrong_fallback = r#"
+fn main() -> i64 {
+    var value: i64? = none
+    value ??= false
+    return 0
+}
+"#;
+    let error =
+        check_source(wrong_fallback).expect_err("coalescing assignment fallback must match");
+    assert!(
+        error
+            .message
+            .contains("fallback of '??' must be i64 or i64?, got bool")
+    );
+}
+
+#[test]
 fn rejects_error_comparison_with_string() {
     let source = r#"
 fn main() -> i64 {

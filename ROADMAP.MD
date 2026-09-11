@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 487
+- Completed baseline units: 488
 - Reported overall progress: **66%**
 - Current net scope growth after the baseline: 99 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -220,7 +220,7 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [ ] Null/optional-aware access analogous to Dart `?.`.
 - [ ] Optional-aware indexing analogous to Dart `?[]`.
 - [x] Coalescing analogous to Dart `??`: the optional left operand is evaluated exactly once, present values bypass the fallback, absent values lazily evaluate a type-compatible fallback, optional fallback chains preserve optionality, formatter/IR tooling preserve the operator, and native lowering remains allocation-free.
-- [ ] Coalescing assignment analogous to Dart `??=` where mutation is valid.
+- [x] Coalescing assignment analogous to Dart `??=` where mutation is valid: mutable optional locals accept `value ??= fallback`, preserve the canonical ergonomic spelling through formatting, reuse the allocation-free optional/coalescing lowering, evaluate the fallback lazily only when the current value is absent, and retain ordinary static assignment/mutability checks.
 - [ ] Safe optional unwrapping via patterns/flow analysis.
 - [ ] Avoid routine runtime null assertions; any force-unwrap equivalent must be explicit and discouraged.
 - [ ] Flow-sensitive promotion after optional/type checks.

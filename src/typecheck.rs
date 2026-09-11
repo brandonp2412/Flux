@@ -3139,6 +3139,7 @@ fn check_block_all(
                 name,
                 name_span,
                 expr,
+                ..
             } => {
                 let Some(expected) = env.get(name).cloned() else {
                     diagnostics.push(diag(*name_span, &format!("unknown binding '{name}'")));

@@ -1035,6 +1035,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 name,
                 name_span,
                 expr,
+                ..
             } => {
                 let assignment = self.linear_node(
                     ControlFlowNodeKind::Assignment { name: name.clone() },
