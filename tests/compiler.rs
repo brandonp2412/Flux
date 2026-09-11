@@ -10442,6 +10442,10 @@ fn subtractSelf(value: i64) -> i64 {
     return value - value
 }
 
+fn divideSelf(value: i64) -> i64 {
+    return value / value
+}
+
 fn divideByConstant(value: i64) -> i64 {
     return value / DIVISOR
 }
@@ -10450,14 +10454,30 @@ fn divideByNegativeConstant(value: i64) -> i64 {
     return value / -2
 }
 
+fn equalSelf(value: i64) -> bool {
+    return value == value
+}
+
+fn lessSelf(value: i64) -> bool {
+    return value < value
+}
+
+fn equalTextSelf(value: str) -> bool {
+    return value == value
+}
+
 fn main() -> i64 {
     print(identities(7))
     print(negateMultiplyLeft(8))
     print(negateMultiplyRight(9))
     print(negateDivide(10))
     print(subtractSelf(12))
+    print(divideSelf(13))
     print(divideByConstant(9))
     print(divideByNegativeConstant(-9))
+    print(equalSelf(4))
+    print(lessSelf(4))
+    print(equalTextSelf("flux"))
     return subtractFromZero(11)
 }
 "#;
@@ -10470,6 +10490,9 @@ fn main() -> i64 {
     assert!(!generated.contains("flux_div_i64("));
     assert!(!generated.contains("flux_sub_i64(flux__local_value, flux__local_value)"));
     assert!(generated.contains("return INT64_C(0);"));
+    assert!(generated.contains("return flux_div_self_i64(flux__local_value);"));
+    assert!(generated.contains("flux_div_self_i64(int64_t value) { if (value == 0)"));
+    assert!(!generated.contains("b == 0 || (a == INT64_MIN && b == -1)"));
     assert_eq!(
         generated
             .matches("return flux_neg_i64(flux__local_value);")
@@ -10478,6 +10501,12 @@ fn main() -> i64 {
     );
     assert!(generated.contains("return ((flux__local_value) / INT64_C(2));"));
     assert!(generated.contains("return ((flux__local_value) / INT64_C(-2));"));
+    assert!(generated.contains("static inline bool flux__fn_equalSelf"));
+    assert!(generated.contains("static inline bool flux__fn_lessSelf"));
+    assert!(generated.contains("static inline bool flux__fn_equalTextSelf"));
+    assert!(!generated.contains("flux__local_value == flux__local_value"));
+    assert!(!generated.contains("flux__local_value < flux__local_value"));
+    assert!(!generated.contains("strcmp(flux__local_value, flux__local_value)"));
 
     let annihilators = r#"
 fn observe(value: i64) -> i64 {
@@ -10537,13 +10566,17 @@ fn main() -> i64 {
     let ui = r#"
 view Counter {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     state count: i64 = 1
     Text status at 1,1
         text: "Active"
         visible: count - count == 0
-    Button action at 2,1
+    Text ratio at 2,1
+        text: "Safe"
+        visible: count / count == 1
+    Button action at 3,1
         text: "Keep"
+        visible: count >= count
         onPress: count => count * 1
 }
 app Counter
@@ -10552,6 +10585,8 @@ app Counter
         compile_to_c(ui).expect("UI identity arithmetic should use the same proven lowering");
     assert!(!ui_generated.contains("flux_sub_i64("));
     assert!(!ui_generated.contains("flux_mul_i64("));
+    assert!(ui_generated.contains("flux_div_self_i64(flux__ui_state_count)"));
+    assert!(!ui_generated.contains("flux__ui_state_count >= flux__ui_state_count"));
 }
 
 #[test]
@@ -14712,7 +14747,7 @@ app Status
 }
 
 #[test]
-fn app_i64_view_state_keeps_checked_dynamic_integer_division() {
+fn app_i64_view_state_keeps_required_self_division_zero_guard() {
     let source = r#"
 view Counter {
     grid columns: 1fr
@@ -14725,7 +14760,9 @@ app Counter
 "#;
     check_source(source).expect("dynamic i64 division state transition should typecheck");
     let generated = compile_to_c(source).expect("dynamic i64 division transition should lower");
-    assert!(generated.contains("flux_div_i64(flux__ui_state_count, flux__ui_state_count)"));
+    assert!(generated.contains("flux_div_self_i64(flux__ui_state_count)"));
+    assert!(generated.contains("if (value == 0)"));
+    assert!(!generated.contains("flux_div_i64(flux__ui_state_count, flux__ui_state_count)"));
 }
 
 #[test]

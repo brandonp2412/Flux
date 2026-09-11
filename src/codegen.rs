@@ -4111,6 +4111,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux_neg_i64(") {
         out.push_str("static inline int64_t flux_neg_i64(int64_t value) { if (value == INT64_MIN) { fputs(\"Flux runtime error: integer negation overflow\\n\", stderr); abort(); } return -value; }\n");
     }
+    if runtime_usage.contains("flux_div_self_i64(") {
+        out.push_str("static inline int64_t flux_div_self_i64(int64_t value) { if (value == 0) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); } return INT64_C(1); }\n");
+    }
     if runtime_usage.contains("flux_div_i64(") {
         out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
         out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
@@ -9600,6 +9603,9 @@ fn ui_expr_c(
                 matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
             let left_code = ui_expr_c(left, view, signatures)?;
             let right_code = ui_expr_c(right, view, signatures)?;
+            if let Some(code) = same_binding_comparison_c(*op, left, right) {
+                return Ok(code.to_string());
+            }
             if let Some(code) =
                 checked_i64_identity_c(*op, left, right, &left_code, &right_code, signatures)
             {
@@ -13197,6 +13203,7 @@ enum CheckedI64Reduction {
     ZeroAfterRight,
     NegateLeft,
     NegateRight,
+    SelfDivide,
     DivideByConstant(i64),
 }
 
@@ -13206,13 +13213,16 @@ fn checked_i64_reduction(
     right: &Expr,
     signatures: &Signatures,
 ) -> Option<CheckedI64Reduction> {
-    if matches!(op, BinOp::Sub)
-        && matches!(
-            (&left.kind, &right.kind),
-            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-        )
-    {
-        return Some(CheckedI64Reduction::Zero);
+    if matches!(
+        (&left.kind, &right.kind),
+        (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+    ) {
+        if matches!(op, BinOp::Sub) {
+            return Some(CheckedI64Reduction::Zero);
+        }
+        if matches!(op, BinOp::Div) {
+            return Some(CheckedI64Reduction::SelfDivide);
+        }
     }
 
     let left_constant = typecheck::constant_primitive_value(left, signatures);
@@ -13240,6 +13250,21 @@ fn checked_i64_reduction(
     }
 }
 
+fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'static str> {
+    if !matches!(
+        (&left.kind, &right.kind),
+        (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+    ) {
+        return None;
+    }
+
+    match op {
+        BinOp::Eq | BinOp::Le | BinOp::Ge => Some("true"),
+        BinOp::Ne | BinOp::Lt | BinOp::Gt => Some("false"),
+        _ => None,
+    }
+}
+
 fn checked_i64_identity_c(
     op: BinOp,
     left: &Expr,
@@ -13256,6 +13281,7 @@ fn checked_i64_identity_c(
         CheckedI64Reduction::ZeroAfterRight => Some(format!("((void)({right_code}), INT64_C(0))")),
         CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
         CheckedI64Reduction::NegateRight => Some(format!("flux_neg_i64({right_code})")),
+        CheckedI64Reduction::SelfDivide => Some(format!("flux_div_self_i64({left_code})")),
         CheckedI64Reduction::DivideByConstant(divisor) => {
             Some(format!("(({left_code}) / INT64_C({divisor}))"))
         }
@@ -13339,9 +13365,12 @@ fn dead_store_rhs_is_discardable(
                 Some(CheckedI64Reduction::Right | CheckedI64Reduction::ZeroAfterRight) => {
                     dead_store_rhs_is_discardable(right, env, signatures)
                 }
-                Some(CheckedI64Reduction::NegateLeft | CheckedI64Reduction::NegateRight) | None => {
-                    false
-                }
+                Some(
+                    CheckedI64Reduction::NegateLeft
+                    | CheckedI64Reduction::NegateRight
+                    | CheckedI64Reduction::SelfDivide,
+                )
+                | None => false,
             }
         }
         ExprKind::Binary { left, op, right }
@@ -16779,6 +16808,8 @@ fn emit_expr(
                         )
                     }
                 }
+            } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
+                code.to_string()
             } else if let Some(code) = checked_i64_identity_c(
                 *op,
                 left,
