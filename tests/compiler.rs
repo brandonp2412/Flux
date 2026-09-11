@@ -18428,6 +18428,70 @@ app ContextCard
         "flux__ui_state_selected = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 1);"
     ));
 
+    let multi_item = r#"
+fn menuSelected(index: i64) -> void {
+    print(index)
+}
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        contextMenuItems: ["Open", "Archive", "Delete"]
+        onContextMenuItemSelect: menuSelected
+}
+app ContextCard
+"#;
+    check_source(multi_item).expect("multi-item context menus should typecheck");
+    let linux = compile_to_c(multi_item).expect("multi-item context menus should lower to GTK");
+    assert!(linux.contains("gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)"));
+    assert!(linux.contains("gtk_button_new_with_label(\"Open\")"));
+    assert!(linux.contains("gtk_button_new_with_label(\"Archive\")"));
+    assert!(linux.contains("gtk_button_new_with_label(\"Delete\")"));
+    assert!(
+        linux.contains("GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), \"flux-menu-index\"))")
+    );
+    assert!(linux.contains("flux__fn_menuSelected((int64_t)item_index); flux__ui_refresh();"));
+
+    let program =
+        fluxc::parser::parse(multi_item).expect("multi-item context menu app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("multi-item context menu app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("multi-item context menus should lower to Android PopupMenu");
+    assert!(android.contains("setContextMenuItems"));
+    assert!(android.contains("NewObjectArray(env, 3, context_menu_string_class, NULL)"));
+    assert!(android.contains("NewStringUTF(env, \"Open\")"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenuItemSelect"));
+    assert!(android.contains("flux__fn_menuSelected((int64_t)item_index)"));
+
+    let invalid_items = r#"
+fn menuSelected(index: i64) -> void {
+    print(index)
+}
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        contextMenuItems: []
+        onContextMenuItemSelect: menuSelected
+}
+app ContextCard
+"#;
+    let errors = check_source_all(invalid_items)
+        .expect_err("context menu item lists must contain at least one label");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("contextMenuItems must contain at least one menu label")
+    }));
+
     let conflicting = r#"
 fn action() -> void {
     print("action")

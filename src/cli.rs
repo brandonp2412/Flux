@@ -3979,6 +3979,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Float> scaleStarts = new HashMap<>();
     private final Map<Integer, VelocityTracker> swipeTrackers = new HashMap<>();
     private final Map<Integer, String> contextMenuLabels = new HashMap<>();
+    private final Map<Integer, String[]> contextMenuItems = new HashMap<>();
     private final Map<Integer, String> dragTexts = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
@@ -4007,6 +4008,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnContextMenu(int viewId);
     private static native void nativeOnContextMenuSelect(int viewId);
+    private static native void nativeOnContextMenuItemSelect(int viewId, int itemIndex);
     private static native void nativeOnDrop(int viewId, String text);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
     private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);
@@ -4146,6 +4148,13 @@ __FLUX_PICKER_METHODS__
         else contextMenuLabels.put(viewId, label);
     }
 
+    public void setContextMenuItems(View view, String[] labels) {
+        if (view == null) return;
+        int viewId = view.getId();
+        if (labels == null || labels.length == 0) contextMenuItems.remove(viewId);
+        else contextMenuItems.put(viewId, labels.clone());
+    }
+
     public void setDragText(View view, String text) {
         if (view == null) return;
         int viewId = view.getId();
@@ -4166,8 +4175,19 @@ __FLUX_PICKER_METHODS__
         }
         nativeOnLongPress(viewId);
         nativeOnContextMenu(viewId);
+        String[] labels = contextMenuItems.get(viewId);
         String label = contextMenuLabels.get(viewId);
-        if (label != null) {
+        if (labels != null && labels.length > 0) {
+            android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
+            for (int index = 0; index < labels.length; index++) {
+                menu.getMenu().add(0, index, index, labels[index]);
+            }
+            menu.setOnMenuItemClickListener(item -> {
+                nativeOnContextMenuItemSelect(viewId, item.getItemId());
+                return true;
+            });
+            menu.show();
+        } else if (label != null) {
             android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
             menu.getMenu().add(label);
             menu.setOnMenuItemClickListener(item -> {
@@ -6878,15 +6898,25 @@ mod tests {
         assert!(
             activity.contains("private static native void nativeOnContextMenuSelect(int viewId);")
         );
+        assert!(activity.contains(
+            "private static native void nativeOnContextMenuItemSelect(int viewId, int itemIndex);"
+        ));
         assert!(
             activity.contains(
                 "private final Map<Integer, String> contextMenuLabels = new HashMap<>();"
             )
         );
         assert!(
+            activity.contains(
+                "private final Map<Integer, String[]> contextMenuItems = new HashMap<>();"
+            )
+        );
+        assert!(
             activity.contains("private final Map<Integer, String> dragTexts = new HashMap<>();")
         );
         assert!(activity.contains("setContextMenuLabel(View view, String label)"));
+        assert!(activity.contains("setContextMenuItems(View view, String[] labels)"));
+        assert!(activity.contains("nativeOnContextMenuItemSelect(viewId, item.getItemId());"));
         assert!(activity.contains("setDragText(View view, String text)"));
         assert!(activity.contains("new android.widget.PopupMenu(this, view)"));
         assert!(activity.contains("nativeOnContextMenuSelect(viewId);"));

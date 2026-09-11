@@ -6200,6 +6200,7 @@ fn emit_android_native_application(
         if view_property(element, "on_long_press").is_some()
             || view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
             || view_property(element, "drag_text").is_some()
         {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
@@ -6229,6 +6230,28 @@ fn emit_android_native_application(
                 out.push_str("    if (child_context_menu_label == NULL) return;\n");
                 out.push_str("    (*env)->CallVoidMethod(env, activity, set_context_menu_label, child, child_context_menu_label);\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, child_context_menu_label);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, context_menu_activity_class);\n");
+            }
+            if let Some(items) = static_context_menu_items(element, signatures)? {
+                out.push_str("    jclass context_menu_activity_class = (*env)->GetObjectClass(env, activity);\n");
+                out.push_str("    jclass context_menu_string_class = (*env)->FindClass(env, \"java/lang/String\");\n");
+                out.push_str("    if (context_menu_activity_class == NULL || context_menu_string_class == NULL) return;\n");
+                out.push_str("    jmethodID set_context_menu_items = (*env)->GetMethodID(env, context_menu_activity_class, \"setContextMenuItems\", \"(Landroid/view/View;[Ljava/lang/String;)V\");\n");
+                out.push_str("    if (set_context_menu_items == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jobjectArray child_context_menu_items = (*env)->NewObjectArray(env, {}, context_menu_string_class, NULL);\n",
+                    items.len()
+                ));
+                out.push_str("    if (child_context_menu_items == NULL) return;\n");
+                for (index, label) in items.iter().enumerate() {
+                    out.push_str(&format!(
+                        "    jstring child_context_menu_item_{index} = (*env)->NewStringUTF(env, {});\n    if (child_context_menu_item_{index} == NULL) return;\n    (*env)->SetObjectArrayElement(env, child_context_menu_items, {index}, child_context_menu_item_{index});\n    (*env)->DeleteLocalRef(env, child_context_menu_item_{index});\n",
+                        c_string(label)
+                    ));
+                }
+                out.push_str("    (*env)->CallVoidMethod(env, activity, set_context_menu_items, child, child_context_menu_items);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, child_context_menu_items);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, context_menu_string_class);\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, context_menu_activity_class);\n");
             }
             if let Some(drag_property) = view_property(element, "drag_text") {
@@ -6639,6 +6662,25 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         let body = android_ui_zero_arg_event_body(action, view, signatures)?;
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnContextMenuItemSelect(JNIEnv *env, jclass activity_class, jint view_id, jint item_index) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for element in &view.elements {
+        let Some(action) = view_property(element, "on_context_menu_item_select") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "native onContextMenuItemSelect requires a named fn(i64) -> void callback",
+            ));
+        };
+        let element_id = stable_android_element_id(&view.name, &element.name);
+        out.push_str(&format!(
+            "        case {element_id}: {}((int64_t)item_index); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, -1); break;\n",
+            function_c_name(function)
+        ));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
 
@@ -7342,17 +7384,43 @@ fn emit_linux_gtk_application(
                 element.name,
             ));
         }
+        if let Some(action) = view_property(element, "on_context_menu_item_select") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "native onContextMenuItemSelect requires a named fn(i64) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static void flux__ui_context_menu_item_select_{}(GtkButton *button, gpointer data) {{ int item_index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), \"flux-menu-index\")); {}((int64_t)item_index); flux__ui_refresh(); gtk_popover_popdown(GTK_POPOVER(data)); }}\n",
+                element.name,
+                function_c_name(function),
+            ));
+        }
         if view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
         {
             let request_body = if let Some(action) = view_property(element, "on_context_menu") {
                 ui_zero_arg_event_body(action, view, signatures)?
             } else {
                 String::new()
             };
-            let menu_body = if let Some(label_property) =
-                view_property(element, "context_menu_label")
-            {
+            let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
+                let mut body = "GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); GtkWidget *popover = gtk_popover_new(); GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_popover_set_child(GTK_POPOVER(popover), menu_box); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {(int)x, (int)y, 1, 1}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); ".to_string();
+                for (index, label) in items.iter().enumerate() {
+                    body.push_str(&format!(
+                        "GtkWidget *item_{index} = gtk_button_new_with_label({}); g_object_set_data(G_OBJECT(item_{index}), \"flux-menu-index\", GINT_TO_POINTER({index})); gtk_box_append(GTK_BOX(menu_box), item_{index}); g_signal_connect(item_{index}, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); ",
+                        c_string(label),
+                        element.name,
+                    ));
+                }
+                body.push_str(&format!(
+                    "g_signal_connect(popover, \"closed\", G_CALLBACK(flux__ui_context_menu_closed_{}), NULL); gtk_popover_popup(GTK_POPOVER(popover)); ",
+                    element.name,
+                ));
+                body
+            } else if let Some(label_property) = view_property(element, "context_menu_label") {
                 let Some(label) = static_expr_str(&label_property.value, signatures) else {
                     return Err(diag(
                         label_property.value.span,
@@ -7368,7 +7436,9 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            if view_property(element, "context_menu_label").is_some() {
+            if view_property(element, "context_menu_label").is_some()
+                || view_property(element, "context_menu_items").is_some()
+            {
                 out.push_str(&format!(
                     "static void flux__ui_context_menu_closed_{}(GtkPopover *popover, gpointer data) {{ (void)data; gtk_widget_unparent(GTK_WIDGET(popover)); }}\n",
                     element.name,
@@ -8554,6 +8624,7 @@ fn emit_linux_gtk_application(
         }
         if view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
         {
             let controller = format!("flux__context_menu_{}", element.name);
             out.push_str(&format!(
@@ -10069,6 +10140,44 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
         ConstantValue::Str(value) => Some(value),
         _ => None,
     }
+}
+
+fn static_context_menu_items(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> Result<Option<Vec<String>>, Diagnostic> {
+    let Some(property) = view_property(element, "context_menu_items") else {
+        return Ok(None);
+    };
+    let ExprKind::List(values) = &property.value.kind else {
+        return Err(diag(
+            property.value.span,
+            "contextMenuItems must be a compile-time list literal of string values",
+        ));
+    };
+    if values.is_empty() {
+        return Err(diag(
+            property.value.span,
+            "contextMenuItems must contain at least one menu label",
+        ));
+    }
+    let mut labels = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(label) = static_expr_str(value, signatures) else {
+            return Err(diag(
+                value.span,
+                "contextMenuItems must be a compile-time list of string values",
+            ));
+        };
+        if label.is_empty() {
+            return Err(diag(
+                value.span,
+                "contextMenuItems labels must not be empty",
+            ));
+        }
+        labels.push(label);
+    }
+    Ok(Some(labels))
 }
 
 fn gtk_shortcut_trigger(value: &str) -> Option<String> {

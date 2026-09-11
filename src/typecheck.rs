@@ -1272,6 +1272,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "accessibility_role" => {
                 return Some(Type::Str);
             }
+            "context_menu_items" => {
+                return Some(Type::List(Box::new(Type::Str)));
+            }
             "min_width"
             | "min_height"
             | "focus_scope"
@@ -1356,6 +1359,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             "on_key" | "on_drop" => {
                 return Some(Type::Function {
                     params: vec![Type::Str],
+                    returns: Vec::new(),
+                });
+            }
+            "on_context_menu_item_select" => {
+                return Some(Type::Function {
+                    params: vec![Type::I64],
                     returns: Vec::new(),
                 });
             }
@@ -1577,6 +1586,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "status",
     "tooltip",
     "context_menu_label",
+    "context_menu_items",
     "drag_text",
     "shortcut",
     "shortcut_scope",
@@ -1591,6 +1601,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_long_press",
     "on_context_menu",
     "on_context_menu_select",
+    "on_context_menu_item_select",
     "on_drop",
     "on_drag",
     "on_swipe",
@@ -1998,6 +2009,80 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 (None, None) => {}
             }
 
+            let context_menu_items = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "context_menu_items");
+            let context_menu_item_select = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "on_context_menu_item_select"
+            });
+            match (context_menu_items, context_menu_item_select) {
+                (Some(items), None) => diagnostics.push(
+                    diag(
+                        items.name_span,
+                        "contextMenuItems requires onContextMenuItemSelect on the same element",
+                    )
+                    .with_note("the callback receives the zero-based index of the selected native menu item"),
+                ),
+                (None, Some(select)) => diagnostics.push(
+                    diag(
+                        select.name_span,
+                        "onContextMenuItemSelect requires contextMenuItems on the same element",
+                    )
+                    .with_note("declare the native menu labels as a compile-time string list"),
+                ),
+                (Some(items), Some(_)) => match &items.value.kind {
+                    ExprKind::List(values) if values.is_empty() => diagnostics.push(diag(
+                        items.value.span,
+                        "contextMenuItems must contain at least one menu label",
+                    )),
+                    ExprKind::List(values) => {
+                        for value in values {
+                            match evaluate_default_expr(value, signatures) {
+                                Ok(ConstantValue::Str(label)) if !label.is_empty() => {}
+                                Ok(ConstantValue::Str(_)) => diagnostics.push(diag(
+                                    value.span,
+                                    "contextMenuItems labels must not be empty",
+                                )),
+                                Ok(_) | Err(_) => diagnostics.push(diag(
+                                    value.span,
+                                    "contextMenuItems must be a compile-time list of string values",
+                                )),
+                            }
+                        }
+                    }
+                    _ => diagnostics.push(diag(
+                        items.value.span,
+                        "contextMenuItems must be a compile-time list literal of string values",
+                    )),
+                },
+                (None, None) => {}
+            }
+            if context_menu_items.is_some() && context_menu_label.is_some() {
+                diagnostics.push(
+                    diag(
+                        context_menu_items.unwrap().name_span,
+                        "contextMenuItems cannot be combined with contextMenuLabel on the same element",
+                    )
+                    .with_label(
+                        context_menu_label.unwrap().name_span,
+                        "single-action context menu is declared here",
+                    ),
+                );
+            }
+            if let (Some(long_press), Some(items)) = (long_press, context_menu_items) {
+                diagnostics.push(
+                    diag(
+                        items.name_span,
+                        "contextMenuItems cannot be combined with onLongPress on the same element",
+                    )
+                    .with_label(long_press.name_span, "onLongPress is declared here")
+                    .with_note(
+                        "Android uses the native long-click gesture to present the context menu; choose one semantic action for that gesture",
+                    ),
+                );
+            }
+
             let drag_text = element
                 .properties
                 .iter()
@@ -2014,7 +2099,11 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         "dragText must be a compile-time string value",
                     )),
                 }
-                if let Some(conflict) = long_press.or(context_menu).or(context_menu_label) {
+                if let Some(conflict) = long_press
+                    .or(context_menu)
+                    .or(context_menu_label)
+                    .or(context_menu_items)
+                {
                     diagnostics.push(
                         diag(
                             drag_text.name_span,
