@@ -1639,6 +1639,104 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tcp_half_close_is_typed_native_tree_shaken_and_runnable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("loopback connection should be accepted");
+        let mut request = String::new();
+        stream
+            .read_to_string(&mut request)
+            .expect("server should observe the client write-side EOF");
+        assert_eq!(request, "ping");
+        stream
+            .write_all(b"pong")
+            .expect("server response should be writable after client half-close");
+    });
+
+    let source = format!(
+        r#"fn consume(_socket: i64, text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.sendText(socket, "ping"))
+    print(net.shutdownWrite(socket))
+    let (received, receiveError) = net.receiveText(socket, 64, consume)
+    print(received)
+    print(receiveError)
+    print(net.shutdownRead(socket))
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("TCP half-close calls should typecheck");
+    let generated = compile_to_c(&source).expect("TCP half-close should lower on Linux");
+    assert!(generated.contains("flux__net_shutdown_read("));
+    assert!(generated.contains("flux__net_shutdown_write("));
+    assert!(generated.contains("shutdown((int)socket_handle, how)"));
+    assert!(generated.contains("SHUT_RD"));
+    assert!(generated.contains("SHUT_WR"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-shutdown-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TCP shutdown fixture should be writable");
+    let source_path = root.join("shutdown.flux");
+    fs::write(&source_path, &source).expect("TCP shutdown source should be writable");
+    let binary = root.join("shutdown");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("TCP shutdown binary should build");
+    assert!(
+        built.status.success(),
+        "TCP shutdown build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("TCP shutdown binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\nnil\npong\n4\nnil\nnil\nnil\n"
+    );
+    server.join().expect("loopback server should complete");
+
+    let socket_error = check_source(
+        "fn main() -> i64 {\n    print(net.shutdownWrite(\"bad\"))\n    return 0\n}\n",
+    )
+    .expect_err("TCP shutdown socket must be an i64 handle");
+    assert!(
+        socket_error.message.contains("net.shutdownWrite socket")
+            && socket_error.message.contains("expected i64")
+    );
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    print(net.shutdownRead(socket))
+    print(net.shutdownWrite(socket))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead TCP shutdown support should tree-shake");
+    assert!(!unused_generated.contains("flux__net_shutdown_read("));
+    assert!(!unused_generated.contains("flux__net_shutdown_write("));
+    assert!(!unused_generated.contains("#include <sys/socket.h>"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_addresses_are_typed_borrowed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let port = listener.local_addr().unwrap().port();

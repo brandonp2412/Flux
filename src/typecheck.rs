@@ -6347,15 +6347,20 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "close" => {
+            "shutdownRead" | "shutdownWrite" | "close" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("net.close expects 1 argument, got {}", args.len()),
+                        &format!("net.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.close socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    &format!("net.{name} socket"),
+                )?;
                 return Ok(vec![Type::Error]);
             }
             _ => {
