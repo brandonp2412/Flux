@@ -5332,6 +5332,69 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_list_transforms_preserve_borrow_provenance() {
+    for transform in ["filter", "where"] {
+        let live = format!(
+            "fn keep(row: i64[]) -> bool {{\n    return row.first > 0\n}}\nfn main() -> i64 {{\n    let row: i64[] = [10, 20]\n    let rows: i64[][] = [row]\n    let selected: i64[][] = {transform}(rows, keep)\n    let destination: i64[] = row\n    print(selected[0][0])\n    print(destination[0])\n    return 0\n}}\n"
+        );
+        let errors = check_source_all(&live)
+            .expect_err("descriptor-preserving nested filters must retain embedded borrows");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("while borrowed view 'selected' is still live")
+        }));
+
+        let dead = format!(
+            "fn keep(row: i64[]) -> bool {{\n    return row.first > 0\n}}\nfn main() -> i64 {{\n    let row: i64[] = [10, 20]\n    let rows: i64[][] = [row]\n    let selected: i64[][] = {transform}(rows, keep)\n    print(selected[0][0])\n    let destination: i64[] = row\n    print(destination[0])\n    return 0\n}}\n"
+        );
+        check_source(&dead).expect("a dead nested filter result must release embedded borrows");
+        compile_to_c(&dead).expect("a move after a nested filter result's last use should lower");
+    }
+
+    let live_concat = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let otherRow: i64[] = [30, 40]
+    let left: i64[][] = [row]
+    let right: i64[][] = [otherRow]
+    let combined: i64[][] = concat(left, right)
+    let destination: i64[] = row
+    print(combined[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_concat)
+        .expect_err("nested concat must preserve borrow provenance from both inputs");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'combined' is still live")
+    }));
+
+    let live_flatten = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let grid: i64[][] = [row]
+    let batches: i64[][][] = [grid]
+    let flattened: i64[][] = flatten(batches)
+    let destination: i64[] = row
+    print(flattened[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_flatten)
+        .expect_err("nested flatten must preserve borrow provenance into copied descriptors");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'flattened' is still live")
+    }));
+}
+
+#[test]
 fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
     let source = r#"
 const NEVER: bool = 2 > 3
@@ -5980,6 +6043,20 @@ fn main() -> i64 {
             .message
             .contains("unused anonymous function parameter 'value'")
     );
+
+    let escaping_list = r#"
+type Expander = fn(i64) -> i64[]
+fn main() -> i64 {
+    let expand: Expander = fn(value: i64) { [value, value + 1] }
+    let values: i64[] = expand(3)
+    return values.first
+}
+"#;
+    let error = check_source(escaping_list)
+        .expect_err("stack-backed lists must not escape anonymous function bodies");
+    assert!(error
+        .message
+        .contains("list values cannot be returned from anonymous functions until collection ownership is implemented"));
 }
 
 #[test]

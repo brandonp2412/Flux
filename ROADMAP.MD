@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 475
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 76 checkbox items
+- Current net scope growth after the baseline: 77 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -355,6 +355,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Follow-up: value-producing enum/list `match` results preserve zero-copy list-view provenance through the selected arm, including nested list views reached through expression-scoped arm bindings, so a live match-selected view prevents moving its owner while a move after the view's last use remains valid.
   - [x] Follow-up: preserve embedded nested-list borrow provenance through list spreads and conditional collection elements; the borrow analysis traverses the dedicated IR wrappers, ignores statically unreachable collection branches, keeps an embedded inner-list owner borrowed while the constructed aggregate remains live, and releases that restriction after the aggregate's final reachable use.
   - [x] Follow-up: nested-list comprehensions preserve borrow provenance from scoped element bindings into the constructed aggregate; moving the source owner is rejected while a comprehension-projected inner view remains live and becomes valid immediately after the aggregate's last reachable use.
+  - [x] Follow-up: descriptor-preserving nested-list `filter`/`where`, `concat`, and nested-result `flatten` keep embedded list owners borrowed until the transformed aggregate's last reachable use; capture-free anonymous functions also reject list returns so stack-backed collection storage cannot escape a callback before owned collection transfer/lifetime semantics exist.
 - [ ] Prevent aliasing violations.
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.

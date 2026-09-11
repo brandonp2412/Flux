@@ -4218,6 +4218,19 @@ fn definition_value_borrows_from(
                 value_depends_on_borrow_source(graph, *argument, source, visiting)
             })
         }
+        ControlFlowValueKind::Call { callee, arguments }
+            if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+        {
+            let retained = if callee == "concat" {
+                arguments.iter().take(2)
+            } else {
+                arguments.iter().take(1)
+            };
+            retained
+                .into_iter()
+                .any(|argument| value_depends_on_borrow_source(graph, *argument, source, visiting))
+        }
         ControlFlowValueKind::Match { arms, .. } | ControlFlowValueKind::ListMatch { arms, .. } => {
             arms.iter()
                 .any(|arm| value_depends_on_borrow_source(graph, *arm, source, visiting))
@@ -4317,6 +4330,19 @@ fn value_depends_on_borrow_source(
             arguments.first().is_some_and(|argument| {
                 value_depends_on_borrow_source(graph, *argument, source, visiting)
             })
+        }
+        ControlFlowValueKind::Call { callee, arguments }
+            if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+        {
+            let retained = if callee == "concat" {
+                arguments.iter().take(2)
+            } else {
+                arguments.iter().take(1)
+            };
+            retained
+                .into_iter()
+                .any(|argument| value_depends_on_borrow_source(graph, *argument, source, visiting))
         }
         ControlFlowValueKind::Match { arms, .. } | ControlFlowValueKind::ListMatch { arms, .. } => {
             arms.iter()
@@ -4654,6 +4680,15 @@ pub fn type_of_expr(
             } else {
                 vec![actual]
             };
+            if returns
+                .iter()
+                .any(|ty| matches!(signatures.canonical_type(ty), Type::List(_)))
+            {
+                return Err(diag(
+                    body.span,
+                    "list values cannot be returned from anonymous functions until collection ownership is implemented",
+                ));
+            }
             Ok(Type::Function {
                 params: params
                     .iter()
