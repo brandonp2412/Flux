@@ -9598,6 +9598,33 @@ fn main() -> i64 {
     if false:
         print(observed)
     let dynamic: i64 = time.unixMillis()
+    let deadAddLeft: i64 = 0 + dynamic
+    if false:
+        print(deadAddLeft)
+    let deadAddRight: i64 = dynamic + 0
+    if false:
+        print(deadAddRight)
+    let deadSubtract: i64 = dynamic - 0
+    if false:
+        print(deadSubtract)
+    let deadZeroProduct: i64 = dynamic * 0
+    if false:
+        print(deadZeroProduct)
+    let deadMultiplyLeft: i64 = 1 * dynamic
+    if false:
+        print(deadMultiplyLeft)
+    let deadMultiplyRight: i64 = dynamic * 1
+    if false:
+        print(deadMultiplyRight)
+    let deadDivide: i64 = dynamic / 1
+    if false:
+        print(deadDivide)
+    let effectfulZeroProduct: i64 = observe(5) * 0
+    if false:
+        print(effectfulZeroProduct)
+    let trappingNegation: i64 = 0 - dynamic
+    if false:
+        print(trappingNegation)
     let checked: i64 = dynamic + 1
     if false:
         print(checked)
@@ -9609,7 +9636,18 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("dead immutable bindings should optimize safely");
     assert!(!generated.contains("flux__local_deadCopy"));
     assert!(!generated.contains("flux__local_deadConstant"));
+    assert!(!generated.contains("flux__local_deadAddLeft"));
+    assert!(!generated.contains("flux__local_deadAddRight"));
+    assert!(!generated.contains("flux__local_deadSubtract"));
+    assert!(!generated.contains("flux__local_deadZeroProduct"));
+    assert!(!generated.contains("flux__local_deadMultiplyLeft"));
+    assert!(!generated.contains("flux__local_deadMultiplyRight"));
+    assert!(!generated.contains("flux__local_deadDivide"));
     assert!(generated.contains("flux__local_observed = flux__fn_observe(INT64_C(4))"));
+    assert!(generated.contains(
+        "flux__local_effectfulZeroProduct = ((void)(flux__fn_observe(INT64_C(5))), INT64_C(0))"
+    ));
+    assert!(generated.contains("flux__local_trappingNegation = flux_neg_i64(flux__local_dynamic)"));
     assert!(generated.contains("flux_add_i64(flux__local_dynamic, INT64_C(1))"));
 
     let aggregates = r#"
@@ -9846,11 +9884,16 @@ fn negateDivide(value: i64) -> i64 {
     return value / -1
 }
 
+fn subtractFromZero(value: i64) -> i64 {
+    return 0 - value
+}
+
 fn main() -> i64 {
     print(identities(7))
     print(negateMultiplyLeft(8))
     print(negateMultiplyRight(9))
-    return negateDivide(10)
+    print(negateDivide(10))
+    return subtractFromZero(11)
 }
 "#;
 
@@ -9864,7 +9907,7 @@ fn main() -> i64 {
         generated
             .matches("return flux_neg_i64(flux__local_value);")
             .count(),
-        3
+        4
     );
 
     let annihilators = r#"

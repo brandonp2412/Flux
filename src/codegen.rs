@@ -11982,6 +11982,44 @@ struct BlockEmitContext<'a> {
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
 }
 
+#[derive(Clone, Copy)]
+enum CheckedI64Reduction {
+    Left,
+    Right,
+    ZeroAfterLeft,
+    ZeroAfterRight,
+    NegateLeft,
+    NegateRight,
+}
+
+fn checked_i64_reduction(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    signatures: &Signatures,
+) -> Option<CheckedI64Reduction> {
+    let left_constant = typecheck::constant_primitive_value(left, signatures);
+    let right_constant = typecheck::constant_primitive_value(right, signatures);
+    match (op, left_constant, right_constant) {
+        (BinOp::Add, Some(ConstantValue::I64(0)), _) => Some(CheckedI64Reduction::Right),
+        (BinOp::Add | BinOp::Sub, _, Some(ConstantValue::I64(0))) => {
+            Some(CheckedI64Reduction::Left)
+        }
+        (BinOp::Sub, Some(ConstantValue::I64(0)), _) => Some(CheckedI64Reduction::NegateRight),
+        (BinOp::Mul, Some(ConstantValue::I64(0)), _) => Some(CheckedI64Reduction::ZeroAfterRight),
+        (BinOp::Mul, _, Some(ConstantValue::I64(0))) => Some(CheckedI64Reduction::ZeroAfterLeft),
+        (BinOp::Mul, Some(ConstantValue::I64(1)), _) => Some(CheckedI64Reduction::Right),
+        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(1))) => {
+            Some(CheckedI64Reduction::Left)
+        }
+        (BinOp::Mul, Some(ConstantValue::I64(-1)), _) => Some(CheckedI64Reduction::NegateRight),
+        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(-1))) => {
+            Some(CheckedI64Reduction::NegateLeft)
+        }
+        _ => None,
+    }
+}
+
 fn checked_i64_identity_c(
     op: BinOp,
     left: &Expr,
@@ -11990,26 +12028,13 @@ fn checked_i64_identity_c(
     right_code: &str,
     signatures: &Signatures,
 ) -> Option<String> {
-    let left_constant = typecheck::constant_primitive_value(left, signatures);
-    let right_constant = typecheck::constant_primitive_value(right, signatures);
-    match (op, left_constant, right_constant) {
-        (BinOp::Add, Some(ConstantValue::I64(0)), _) => Some(right_code.to_string()),
-        (BinOp::Add | BinOp::Sub, _, Some(ConstantValue::I64(0))) => Some(left_code.to_string()),
-        (BinOp::Mul, Some(ConstantValue::I64(0)), _) => {
-            Some(format!("((void)({right_code}), INT64_C(0))"))
-        }
-        (BinOp::Mul, _, Some(ConstantValue::I64(0))) => {
-            Some(format!("((void)({left_code}), INT64_C(0))"))
-        }
-        (BinOp::Mul, Some(ConstantValue::I64(1)), _) => Some(right_code.to_string()),
-        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(1))) => Some(left_code.to_string()),
-        (BinOp::Mul, Some(ConstantValue::I64(-1)), _) => {
-            Some(format!("flux_neg_i64({right_code})"))
-        }
-        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(-1))) => {
-            Some(format!("flux_neg_i64({left_code})"))
-        }
-        _ => None,
+    match checked_i64_reduction(op, left, right, signatures)? {
+        CheckedI64Reduction::Left => Some(left_code.to_string()),
+        CheckedI64Reduction::Right => Some(right_code.to_string()),
+        CheckedI64Reduction::ZeroAfterLeft => Some(format!("((void)({left_code}), INT64_C(0))")),
+        CheckedI64Reduction::ZeroAfterRight => Some(format!("((void)({right_code}), INT64_C(0))")),
+        CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
+        CheckedI64Reduction::NegateRight => Some(format!("flux_neg_i64({right_code})")),
     }
 }
 
@@ -12077,6 +12102,21 @@ fn dead_store_rhs_is_discardable(
             op: UnaryOp::Not,
             expr,
         } => dead_store_rhs_is_discardable(expr, env, signatures),
+        ExprKind::Binary { left, op, right }
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
+        {
+            match checked_i64_reduction(*op, left, right, signatures) {
+                Some(CheckedI64Reduction::Left | CheckedI64Reduction::ZeroAfterLeft) => {
+                    dead_store_rhs_is_discardable(left, env, signatures)
+                }
+                Some(CheckedI64Reduction::Right | CheckedI64Reduction::ZeroAfterRight) => {
+                    dead_store_rhs_is_discardable(right, env, signatures)
+                }
+                Some(CheckedI64Reduction::NegateLeft | CheckedI64Reduction::NegateRight) | None => {
+                    false
+                }
+            }
+        }
         ExprKind::Binary { left, op, right }
             if matches!(
                 op,
