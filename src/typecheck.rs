@@ -1775,6 +1775,18 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 ));
                 continue;
             }
+            if !matches!(expected, Type::Bool | Type::I64 | Type::Str) {
+                diagnostics.push(
+                    diag(
+                        state.type_span,
+                        "bootstrap view state currently supports only copyable bool, i64, and borrowed str values",
+                    )
+                    .with_note(
+                        "owned aggregates, optionals, resources, and other state require explicit ownership/lifetime storage rules before they can persist in a native view",
+                    ),
+                );
+                continue;
+            }
             match evaluate_default_expr(&state.initial, signatures) {
                 Ok(value) => {
                     if let Err(diagnostic) = require_type(

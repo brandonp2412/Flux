@@ -17113,6 +17113,65 @@ app Screen
 }
 
 #[test]
+fn view_state_storage_contract_is_checked_before_native_codegen() {
+    let supported_alias = r#"
+type Flag = bool
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state active: Flag = false
+    Button action at 1,1
+        text: "Toggle"
+        on_press: active => !active
+}
+app Screen
+"#;
+    check_source(supported_alias).expect("primitive aliases should remain valid view state");
+    compile_to_c(supported_alias).expect("validated primitive state should lower natively");
+
+    let unsupported_optional = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state selected: i64? = none
+    Text title at 1,1
+        text: "Optional"
+}
+app Screen
+"#;
+    let errors = check_source_all(unsupported_optional)
+        .expect_err("optional state needs an ownership/storage contract before native lowering");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("view state currently supports only copyable bool, i64, and borrowed str")
+            && error
+                .notes
+                .iter()
+                .any(|note| note.contains("ownership/lifetime storage rules"))
+    }));
+
+    let unsupported_error = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state problem: error = nil
+    Text title at 1,1
+        text: "Error"
+}
+app Screen
+"#;
+    let errors = check_source_all(unsupported_error)
+        .expect_err("error handles must not silently gain persistent view-state storage");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("view state currently supports only copyable bool, i64, and borrowed str")
+    }));
+}
+
+#[test]
 fn rejects_invalid_view_state_transitions() {
     let unknown = r#"
 view Screen {
