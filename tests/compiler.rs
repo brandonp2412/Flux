@@ -4473,6 +4473,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_list_aggregates_preserve_borrow_provenance() {
+    let live_nested_literal = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let rows: i64[][] = [row]
+    let destination: i64[] = row
+    print(rows[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_nested_literal)
+        .expect_err("a nested list aggregate must keep embedded list storage borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'rows' is still live")
+    }));
+
+    let dead_nested_literal = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let rows: i64[][] = [row]
+    print(rows[0][0])
+    let destination: i64[] = row
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead_nested_literal)
+        .expect("a dead nested list aggregate must not block a later embedded-list move");
+}
+
+#[test]
 fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
     let source = r#"
 const NEVER: bool = 2 > 3
