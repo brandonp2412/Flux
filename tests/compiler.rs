@@ -1825,6 +1825,102 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_text_request_body_is_bounded_borrowed_and_runnable() {
+    let source = r#"
+fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {
+    print(socket >= 0)
+    print(method)
+    print(target)
+    print(version)
+}
+fn handleHeader(socket: i64, name: str, value: str) -> void {
+    print(socket >= 0)
+    print(name)
+    print(value)
+}
+fn handleBody(socket: i64, body: str) -> void {
+    print(socket >= 0)
+    print(body)
+}
+fn main() -> i64 {
+    let (received, receiveError) = http.receiveRequestWithTextBody(1, 4096, 1024, handleRequest, handleHeader, handleBody)
+    print(received)
+    print(receiveError)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP request text body should typecheck");
+    let generated = compile_to_c(source).expect("HTTP request text body should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_request_with_text_body("));
+    assert!(generated.contains("duplicate Content-Length is not supported"));
+    assert!(generated.contains("Transfer-Encoding request bodies are not supported"));
+    assert!(generated.contains("HTTP request body exceeds maxBodyBytes"));
+
+    let invalid_limit = check_source(
+        "fn request(socket: i64, method: str, target: str, version: str) -> void {\n    print(socket)\n    print(method)\n    print(target)\n    print(version)\n}\nfn header(socket: i64, name: str, value: str) -> void {\n    print(socket)\n    print(name)\n    print(value)\n}\nfn body(socket: i64, value: str) -> void {\n    print(socket)\n    print(value)\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveRequestWithTextBody(1, 4096, 65537, request, header, body)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("constant HTTP request body limit outside the valid range must fail");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.receiveRequestWithTextBody maxBodyBytes must be between 0 and 65536")
+    );
+
+    let unused = source.replace("fn main() -> i64 {\n    let (received, receiveError) = http.receiveRequestWithTextBody(1, 4096, 1024, handleRequest, handleHeader, handleBody)\n    print(received)\n    print(receiveError)\n    return 0\n}", "fn hidden() -> void {\n    let (received, receiveError) = http.receiveRequestWithTextBody(1, 4096, 1024, handleRequest, handleHeader, handleBody)\n    print(received)\n    print(receiveError)\n}\nfn main() -> i64 {\n    return 0\n}");
+    let unused_generated =
+        compile_to_c(&unused).expect("dead HTTP request-body helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_request_with_text_body("));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP body listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!("flux-http-body-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP body fixture should be writable");
+    let source_path = root.join("body.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {{\n    print(socket >= 0)\n    print(method)\n    print(target)\n    print(version)\n}}\nfn handleHeader(socket: i64, name: str, value: str) -> void {{\n    print(socket >= 0)\n    print(name)\n    print(value)\n}}\nfn handleBody(socket: i64, body: str) -> void {{\n    print(socket >= 0)\n    print(body)\n}}\nfn handleExtra(socket: i64, body: str) -> void {{\n    print(socket >= 0)\n    print(body)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveRequestWithTextBody(socket, 4096, 1024, handleRequest, handleHeader, handleBody)\n    print(received > 0)\n    print(receiveError)\n    let (extraReceived, extraError) = net.receiveText(socket, 5, handleExtra)\n    print(extraReceived == 5)\n    print(extraError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP body Flux source should be writable");
+    let binary = root.join("body");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP body Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP body fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP body Flux binary should start");
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP body connection should accept");
+    stream
+        .write_all(
+            b"POST /submit HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhelloEXTRA",
+        )
+        .expect("HTTP body request should be writable");
+    let output = child
+        .wait_with_output()
+        .expect("HTTP body Flux binary should finish");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\ntrue\nPOST\n/submit\nHTTP/1.1\ntrue\nHost\nexample.test\ntrue\nContent-Length\n5\ntrue\nhello\ntrue\nnil\ntrue\nEXTRA\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {

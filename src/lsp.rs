@@ -1261,6 +1261,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "receiveRequestWithTextBody",
+            3,
+            "fn http.receiveRequestWithTextBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "sendTextResponse",
             3,
             "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str) -> error",
@@ -2644,6 +2651,21 @@ fn signature_help_for_document_cached(
                             "maxBytes: i64",
                             "requestCallback: fn(i64, str, str, str) -> void",
                             "headerCallback: fn(i64, str, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveRequestWithTextBody" => {
+                    return Some(signature_help_for_builtin(
+                        "http.receiveRequestWithTextBody",
+                        &[
+                            "socket: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "requestCallback: fn(i64, str, str, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, str) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
