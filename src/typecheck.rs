@@ -6697,7 +6697,10 @@ fn check_qualified_call(
                 require_type(args[1].span, &expected, &callback, "url.parseHttp callback")?;
                 return Ok(vec![Type::Error]);
             }
-            "decodeComponent" | "encodeComponent" => {
+            "decodeComponent"
+            | "encodeComponent"
+            | "decodeFormComponent"
+            | "encodeFormComponent" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,

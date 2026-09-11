@@ -1265,6 +1265,20 @@ fn add_qualified_namespace_completions(
             3,
             "fn url.encodeComponent(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "decodeFormComponent",
+            3,
+            "fn url.decodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encodeFormComponent",
+            3,
+            "fn url.encodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "http" {
@@ -2783,7 +2797,10 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "decodeComponent" | "encodeComponent" => {
+                "decodeComponent"
+                | "encodeComponent"
+                | "decodeFormComponent"
+                | "encodeFormComponent" => {
                     return Some(signature_help_for_builtin(
                         &format!("url.{member}"),
                         &["value: str", "callback: fn(str) -> void"],
@@ -7527,7 +7544,7 @@ mod tests {
     #[test]
     fn signature_help_supports_url_component_coding() {
         let uri = "file:///tmp/url-component-signature.flux";
-        let source = "fn converted(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", converted))\n    print(url.encodeComponent(\"a b\", converted))\n    return 0\n}\n";
+        let source = "fn converted(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", converted))\n    print(url.encodeComponent(\"a b\", converted))\n    print(url.decodeFormComponent(\"a+b\", converted))\n    print(url.encodeFormComponent(\"a b\", converted))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -7537,6 +7554,14 @@ mod tests {
             (
                 "url.encodeComponent(",
                 "fn url.encodeComponent(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "url.decodeFormComponent(",
+                "fn url.decodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "url.encodeFormComponent(",
+                "fn url.encodeFormComponent(value: str, callback: fn(str) -> void) -> error",
             ),
         ] {
             let line_index = source

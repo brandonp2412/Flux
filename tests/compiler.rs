@@ -2455,6 +2455,79 @@ fn main() -> i64 {
 }
 
 #[test]
+fn url_form_component_coding_uses_plus_semantics_and_is_tree_shaken_and_runnable() {
+    let source = r#"
+fn converted(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(url.decodeFormComponent("hello+world%2Fok", converted))
+    print(url.encodeFormComponent("hello world/~*", converted))
+    print(url.decodeFormComponent("%00", converted))
+    return 0
+}
+"#;
+    check_source(source).expect("form URL component coding should typecheck");
+    let generated = compile_to_c(source).expect("form URL component coding should lower natively");
+    assert!(generated.contains("flux__url_decode_form_component("));
+    assert!(generated.contains("flux__url_encode_form_component("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn converted(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeFormComponent(\"a+b\", converted))\n    return 0\n}\n",
+    )
+    .expect_err("form URL component callback shape must be exact");
+    assert!(
+        invalid_callback
+            .message
+            .contains("url.decodeFormComponent callback")
+    );
+
+    let unused = r#"
+fn converted(_value: str) -> void {
+}
+fn hidden() -> void {
+    print(url.decodeFormComponent("a+b", converted))
+    print(url.encodeFormComponent("a b", converted))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead form URL coding should tree-shake");
+    assert!(!unused_generated.contains("flux__url_decode_form_component("));
+    assert!(!unused_generated.contains("flux__url_encode_form_component("));
+
+    let root = std::env::temp_dir().join(format!("flux-url-form-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("form URL fixture should be writable");
+    let source_path = root.join("form.flux");
+    fs::write(&source_path, source).expect("form URL Flux source should be writable");
+    let binary = root.join("form");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("form URL Flux binary should build");
+    assert!(
+        built.status.success(),
+        "form URL fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("form URL Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "hello world/ok\nnil\nhello+world%2F%7E*\nnil\nForm URL component cannot decode to NUL\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
