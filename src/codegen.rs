@@ -9833,7 +9833,9 @@ fn ui_expr_c(
             if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 return Ok(code.to_string());
             }
-            if let Some(code) = same_binding_boolean_identity_c(*op, left, right, &left_code) {
+            if let Some(code) =
+                boolean_identity_c(*op, left, right, &left_code, &right_code, signatures)
+            {
                 return Ok(code);
             }
             if let Some(code) =
@@ -13519,22 +13521,49 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
-fn same_binding_boolean_identity_c(
+fn boolean_identity_c(
     op: BinOp,
     left: &Expr,
     right: &Expr,
     left_code: &str,
+    right_code: &str,
+    signatures: &Signatures,
 ) -> Option<String> {
-    if !matches!(op, BinOp::And | BinOp::Or)
-        || !matches!(
-            (&left.kind, &right.kind),
-            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-        )
-    {
+    if !matches!(op, BinOp::And | BinOp::Or) {
         return None;
     }
 
-    Some(left_code.to_string())
+    if matches!(
+        (&left.kind, &right.kind),
+        (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+    ) {
+        return Some(left_code.to_string());
+    }
+
+    let left_constant = typecheck::constant_primitive_value(left, signatures);
+    let right_constant = typecheck::constant_primitive_value(right, signatures);
+    match (op, left_constant, right_constant) {
+        (BinOp::And, Some(ConstantValue::Bool(false)), _)
+        | (BinOp::Or, Some(ConstantValue::Bool(true)), _) => Some(
+            if matches!(op, BinOp::And) {
+                "false"
+            } else {
+                "true"
+            }
+            .to_string(),
+        ),
+        (BinOp::And, Some(ConstantValue::Bool(true)), _)
+        | (BinOp::Or, Some(ConstantValue::Bool(false)), _) => Some(right_code.to_string()),
+        (BinOp::And, _, Some(ConstantValue::Bool(true)))
+        | (BinOp::Or, _, Some(ConstantValue::Bool(false))) => Some(left_code.to_string()),
+        (BinOp::And, _, Some(ConstantValue::Bool(false))) => {
+            Some(format!("((void)({left_code}), false)"))
+        }
+        (BinOp::Or, _, Some(ConstantValue::Bool(true))) => {
+            Some(format!("((void)({left_code}), true)"))
+        }
+        _ => None,
+    }
 }
 
 fn checked_i64_identity_c(
@@ -17204,9 +17233,14 @@ fn emit_expr(
                 }
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 code.to_string()
-            } else if let Some(code) =
-                same_binding_boolean_identity_c(*op, left, right, &emitted_left.code)
-            {
+            } else if let Some(code) = boolean_identity_c(
+                *op,
+                left,
+                right,
+                &emitted_left.code,
+                &emitted_right.code,
+                signatures,
+            ) {
                 code
             } else if let Some(code) = checked_i64_identity_c(
                 *op,

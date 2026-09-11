@@ -10823,6 +10823,94 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_boolean_short_circuit_work_for_proven_constants() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn andTrue(value: bool) -> bool {
+    return value && true
+}
+
+fn orFalse(value: bool) -> bool {
+    return value || false
+}
+
+fn trueAnd(value: bool) -> bool {
+    return true && value
+}
+
+fn falseOr(value: bool) -> bool {
+    return false || value
+}
+
+fn andFalse(value: bool) -> bool {
+    return observe(value) && false
+}
+
+fn orTrue(value: bool) -> bool {
+    return observe(value) || true
+}
+
+fn skipAnd(value: bool) -> bool {
+    return false && observe(value)
+}
+
+fn skipOr(value: bool) -> bool {
+    return true || observe(value)
+}
+
+fn main() -> i64 {
+    print(andTrue(true))
+    print(orFalse(false))
+    print(trueAnd(true))
+    print(falseOr(false))
+    print(andFalse(true))
+    print(orTrue(false))
+    print(skipAnd(true))
+    print(skipOr(false))
+    return 0
+}
+"#;
+
+    check_source(source).expect("boolean identity reductions should typecheck");
+    let generated = compile_to_c(source).expect("boolean identities should lower natively");
+    assert_eq!(generated.matches("return flux__local_value;").count(), 5);
+    assert!(generated.contains("return ((void)(flux__fn_observe(flux__local_value)), false);"));
+    assert!(generated.contains("return ((void)(flux__fn_observe(flux__local_value)), true);"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2
+    );
+    assert!(generated.contains("static inline bool flux__fn_skipAnd"));
+    assert!(generated.contains("static inline bool flux__fn_skipOr"));
+    assert!(generated.contains("return false;"));
+    assert!(generated.contains("return true;"));
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = true
+    Text first at 1,1
+        text: "One"
+        visible: active && true
+    Text second at 2,1
+        text: "Two"
+        visible: active || false
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui).expect("UI boolean identities should share lowering");
+    assert!(!ui_generated.contains("flux__ui_state_active && true"));
+    assert!(!ui_generated.contains("flux__ui_state_active || false"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
