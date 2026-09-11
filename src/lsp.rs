@@ -1294,7 +1294,7 @@ fn add_qualified_namespace_completions(
             seen,
             "sendTextRequest",
             3,
-            "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error",
+            "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
@@ -2825,6 +2825,7 @@ fn signature_help_for_document_cached(
                             "host: str",
                             "contentType: str",
                             "body: str",
+                            "keepAlive: bool = false",
                         ],
                         "error",
                         active_parameter,
@@ -7392,7 +7393,7 @@ mod tests {
             ),
             (
                 "http.sendTextRequest(",
-                "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error",
+                "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponse(",

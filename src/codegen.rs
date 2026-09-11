@@ -3492,6 +3492,45 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_http_send_text_request(") {
         out.push_str("static inline const char *flux__net_http_send_text_request(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, const char *body) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; if (method[0] == '\\0') return \"HTTP method must not be empty\"; for (const unsigned char *part = (const unsigned char *)method; *part != '\\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return \"invalid HTTP method\"; if (target[0] == '\\0') return \"HTTP request target must not be empty\"; for (const unsigned char *part = (const unsigned char *)target; *part != '\\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return \"invalid HTTP request target\"; if (host[0] == '\\0') return \"HTTP host must not be empty\"; if (strchr(host, '\\r') != NULL || strchr(host, '\\n') != NULL) return \"HTTP host must not contain CR or LF\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL) return \"HTTP content type must not contain CR or LF\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"HTTP request requires a TCP socket\"; size_t body_length = strlen(body); char header[2048]; int header_length = snprintf(header, sizeof(header), \"%s %s HTTP/1.1\\r\\nHost: %s\\r\\nContent-Length: %zu\\r\\nContent-Type: %s\\r\\nConnection: close\\r\\n\\r\\n\", method, target, host, body_length, content_type); if (header_length < 0 || (size_t)header_length >= sizeof(header)) return \"HTTP request headers are too large\"; size_t header_offset = 0; while (header_offset < (size_t)header_length) { ssize_t sent; do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP request headers\"; header_offset += (size_t)sent; } size_t body_offset = 0; while (body_offset < body_length) { size_t remaining = body_length - body_offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, body + body_offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP request body\"; body_offset += (size_t)sent; } return NULL; }\n");
     }
+    if runtime_usage.contains("flux__net_http_send_text_request_v2(") {
+        out.push_str(r#"static inline const char *flux__net_http_send_text_request_v2(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, const char *body, bool keep_alive) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    if (method[0] == '\0') return "HTTP method must not be empty";
+    for (const unsigned char *part = (const unsigned char *)method; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP method";
+    if (target[0] == '\0') return "HTTP request target must not be empty";
+    for (const unsigned char *part = (const unsigned char *)target; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP request target";
+    if (host[0] == '\0') return "HTTP host must not be empty";
+    if (strchr(host, '\r') != NULL || strchr(host, '\n') != NULL) return "HTTP host must not contain CR or LF";
+    if (strchr(content_type, '\r') != NULL || strchr(content_type, '\n') != NULL) return "HTTP content type must not contain CR or LF";
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_STREAM) return "HTTP request requires a TCP socket";
+    size_t body_length = strlen(body);
+    const char *connection = keep_alive ? "keep-alive" : "close";
+    char header[2048];
+    int header_length = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %zu\r\nContent-Type: %s\r\nConnection: %s\r\n\r\n", method, target, host, body_length, content_type, connection);
+    if (header_length < 0 || (size_t)header_length >= sizeof(header)) return "HTTP request headers are too large";
+    size_t header_offset = 0;
+    while (header_offset < (size_t)header_length) {
+        ssize_t sent;
+        do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request headers";
+        header_offset += (size_t)sent;
+    }
+    size_t body_offset = 0;
+    while (body_offset < body_length) {
+        size_t remaining = body_length - body_offset;
+        size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining;
+        ssize_t sent;
+        do { sent = send((int)socket_handle, body + body_offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+        if (sent <= 0) return "failed to send HTTP request body";
+        body_offset += (size_t)sent;
+    }
+    return NULL;
+}
+"#);
+    }
     if runtime_usage.contains("flux__net_http_send_text_response(") {
         out.push_str("static inline const char *flux__net_http_send_text_response(int64_t socket_handle, int64_t status, const char *content_type, const char *body, bool keep_alive) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; if (status < 100 || status > 599) return \"HTTP status must be between 100 and 599\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL) return \"HTTP content type must not contain CR or LF\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"HTTP response requires a TCP socket\"; size_t body_length = strlen(body); const char *connection = keep_alive ? \"keep-alive\" : \"close\"; char header[512]; int header_length = snprintf(header, sizeof(header), \"HTTP/1.1 %lld \\r\\nContent-Length: %zu\\r\\nContent-Type: %s\\r\\nConnection: %s\\r\\n\\r\\n\", (long long)status, body_length, content_type, connection); if (header_length < 0 || (size_t)header_length >= sizeof(header)) return \"HTTP response headers are too large\"; size_t header_offset = 0; while (header_offset < (size_t)header_length) { ssize_t sent; do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP response headers\"; header_offset += (size_t)sent; } size_t body_offset = 0; while (body_offset < body_length) { size_t remaining = body_length - body_offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, body + body_offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP response body\"; body_offset += (size_t)sent; } return NULL; }\n");
     }
@@ -15816,7 +15855,7 @@ fn emit_qualified_call(
                 ));
             }
             "sendTextRequest" => {
-                if args.len() != 6 {
+                if !(6..=7).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
@@ -15825,15 +15864,21 @@ fn emit_qualified_call(
                 let host = emit_expr(&args[3], env, signatures)?;
                 let content_type = emit_expr(&args[4], env, signatures)?;
                 let body = emit_expr(&args[5], env, signatures)?;
+                let keep_alive = if args.len() == 7 {
+                    emit_expr(&args[6], env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
                 return Ok((
                     format!(
-                        "flux__net_http_send_text_request({}, {}, {}, {}, {}, {})",
+                        "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {})",
                         socket_handle.code,
                         method.code,
                         target.code,
                         host.code,
                         content_type.code,
-                        body.code
+                        body.code,
+                        keep_alive
                     ),
                     vec![Type::Error],
                     None,

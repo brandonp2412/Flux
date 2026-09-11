@@ -6305,11 +6305,11 @@ fn check_qualified_call(
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "sendTextRequest" => {
-                if args.len() != 6 {
+                if !(6..=7).contains(&args.len()) {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.sendTextRequest expects 6 arguments, got {}",
+                            "http.sendTextRequest expects 6 or 7 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -6334,6 +6334,15 @@ fn check_qualified_call(
                         &Type::Str,
                         &value,
                         &format!("http.sendTextRequest {label}"),
+                    )?;
+                }
+                if args.len() == 7 {
+                    let keep_alive = type_of_expr(&args[6], env, signatures)?;
+                    require_type(
+                        args[6].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.sendTextRequest keepAlive",
                     )?;
                 }
                 return Ok(vec![Type::Error]);

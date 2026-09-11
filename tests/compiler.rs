@@ -2081,10 +2081,11 @@ fn main() -> i64 {
 "#;
     check_source(source).expect("HTTP text request should typecheck");
     let generated = compile_to_c(source).expect("HTTP text request should lower on Linux");
-    assert!(generated.contains("flux__net_http_send_text_request("));
+    assert!(generated.contains("flux__net_http_send_text_request_v2("));
     assert!(generated.contains("Host: %s"));
     assert!(generated.contains("Content-Length: %zu"));
-    assert!(generated.contains("Connection: close"));
+    assert!(generated.contains("Connection: %s"));
+    assert!(generated.contains("keep_alive ? \"keep-alive\" : \"close\""));
     assert!(generated.contains("#include <sys/socket.h>"));
 
     let invalid_type = check_source(
@@ -2092,6 +2093,16 @@ fn main() -> i64 {
     )
     .expect_err("HTTP host must be text");
     assert!(invalid_type.message.contains("http.sendTextRequest host"));
+
+    let invalid_keep_alive = check_source(
+        "fn main() -> i64 {\n    print(http.sendTextRequest(1, \"POST\", \"/\", \"example.test\", \"text/plain\", \"nope\", \"yes\"))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP keepAlive must be boolean");
+    assert!(
+        invalid_keep_alive
+            .message
+            .contains("http.sendTextRequest keepAlive")
+    );
 
     let unused = r#"
 fn hidden() -> void {
@@ -2103,7 +2114,7 @@ fn main() -> i64 {
 "#;
     let unused_generated =
         compile_to_c(unused).expect("dead HTTP request helper should tree-shake");
-    assert!(!unused_generated.contains("flux__net_http_send_text_request("));
+    assert!(!unused_generated.contains("flux__net_http_send_text_request_v2("));
     assert!(!unused_generated.contains("#include <sys/socket.h>"));
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP loopback listener should bind");
@@ -2115,7 +2126,7 @@ fn main() -> i64 {
     fs::write(
         &source_path,
         format!(
-            "fn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextRequest(socket, \"POST\", \"/items?q=1\", \"127.0.0.1:{port}\", \"text/plain; charset=utf-8\", \"hello\"))\n    print(net.close(socket))\n    return 0\n}}\n"
+            "fn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextRequest(socket, \"POST\", \"/items?q=1\", \"127.0.0.1:{port}\", \"text/plain; charset=utf-8\", \"hello\", true))\n    print(net.close(socket))\n    return 0\n}}\n"
         ),
     )
     .expect("HTTP Flux source should be writable");
@@ -2148,7 +2159,7 @@ fn main() -> i64 {
     assert_eq!(
         request,
         format!(
-            "POST /items?q=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello"
+            "POST /items?q=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: keep-alive\r\n\r\nhello"
         )
     );
     let _ = fs::remove_dir_all(&root);
