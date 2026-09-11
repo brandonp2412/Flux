@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 495
+- Completed baseline units: 496
 - Reported overall progress: **67%**
 - Current net scope growth after the baseline: 115 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -862,7 +862,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Apple Swift/Objective-C bindings following the same no-user-written-bridge principle where platform ABI/runtime constraints allow it.
 - [ ] Windows native API bindings.
 - [ ] Linux native library bindings.
-- [ ] Callbacks from native code into Flux.
+- [x] Callbacks from native code into Flux for the stable allocation-free `Copy` C ABI: generated headers expose compatible C function-pointer typedefs, native callers can pass those callbacks into exported Flux functions, and compiled Flux invokes them directly with ordinary native calls. A C11 regression now compiles, links, and executes the full C → exported Flux → C callback path under package ABI v2; ownership-sensitive callback shapes remain conservatively rejected under the separate FFI ownership item below.
 - [ ] Safe ownership rules across FFI boundaries.
 - [ ] Platform implementation modules behind shared interfaces.
 - [ ] Package registry.

@@ -9544,6 +9544,98 @@ fn main() -> i64 {
 }
 
 #[test]
+fn native_c_can_invoke_flux_with_copy_callback() {
+    let root = std::env::temp_dir().join(format!("flux-c-callback-runtime-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary C callback runtime directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"callback_runtime\"\nentry = \"main.flux\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("callback runtime manifest should be writable");
+    fs::write(
+        root.join("main.flux"),
+        r#"pub type Mapper = fn(i64) -> i64
+
+pub fn invoke(callback: Mapper, value: i64) -> i64 {
+    return callback(value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+    )
+    .expect("callback runtime source should be writable");
+
+    let header = fluxc::project::compile_to_c_header(&root)
+        .expect("package callback ABI should emit a C header");
+    let generated =
+        fluxc::project::compile_to_c(&root).expect("package callback ABI should emit C source");
+    let module_component = "callback_runtime::main"
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let invoke_symbol = format!("flux__abi_{module_component}__fn_invoke");
+    assert!(header.contains(&format!(
+        "int64_t {invoke_symbol}(flux__alias_Mapper flux__local_callback, int64_t flux__local_value);"
+    )));
+
+    let header_path = root.join("package.h");
+    let generated_path = root.join("package.c");
+    let object_path = root.join("package.o");
+    let consumer_path = root.join("consumer.c");
+    let executable_path = root.join("consumer");
+    fs::write(&header_path, &header).expect("callback runtime header should be writable");
+    fs::write(&generated_path, generated).expect("callback runtime C output should be writable");
+    fs::write(
+        &consumer_path,
+        format!(
+            "#include \"package.h\"\nstatic int64_t plus_one(int64_t value) {{ return value + 1; }}\nint main(void) {{ return {invoke_symbol}(plus_one, 41) == 42 ? 0 : 1; }}\n"
+        ),
+    )
+    .expect("callback runtime C consumer should be writable");
+
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-Dmain=flux__embedded_main", "-c"])
+        .arg(&generated_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .expect("clang should compile generated callback runtime C");
+    assert!(
+        compile.status.success(),
+        "generated callback runtime C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let link = Command::new("clang")
+        .args(["-std=c11"])
+        .arg(&consumer_path)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .expect("clang should link the native callback consumer");
+    assert!(
+        link.status.success(),
+        "native callback consumer should link: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+
+    let run = Command::new(&executable_path)
+        .output()
+        .expect("native callback consumer should run");
+    assert!(
+        run.status.success(),
+        "C -> Flux -> C callback invocation should return the expected value"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn emits_c_header_for_public_copy_enum_abi() {
     let source = r#"
 pub struct Point {
