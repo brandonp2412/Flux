@@ -8,6 +8,10 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
 
+pub const NATIVE_ABI_POLICY_VERSION: u32 = 1;
+pub const C_ABI_VERSION_DIRECT_SOURCE: u32 = 1;
+pub const C_ABI_VERSION_PACKAGE: u32 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeTarget {
     Linux,
@@ -98,11 +102,12 @@ pub fn emit_c_header_with_module_names(
 
     let mut out = String::new();
     out.push_str("#pragma once\n\n");
-    out.push_str(if source_modules.is_empty() {
-        "#define FLUX_C_ABI_VERSION 1\n\n"
+    let c_abi_version = if source_modules.is_empty() {
+        C_ABI_VERSION_DIRECT_SOURCE
     } else {
-        "#define FLUX_C_ABI_VERSION 2\n\n"
-    });
+        C_ABI_VERSION_PACKAGE
+    };
+    out.push_str(&format!("#define FLUX_C_ABI_VERSION {c_abi_version}\n\n"));
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
     out.push_str(

@@ -10700,6 +10700,20 @@ fn ui_api_contract_has_a_stable_discoverable_version() {
 }
 
 #[test]
+fn native_abi_policy_has_a_stable_discoverable_version() {
+    assert_eq!(fluxc::NATIVE_ABI_POLICY_VERSION, 1);
+    assert_eq!(fluxc::C_ABI_VERSION_PACKAGE, 2);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["abi", "--version"])
+        .output()
+        .expect("flux abi --version should launch");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
     assert_eq!(fluxc::formatter::FORMATTER_VERSION, 1);
 

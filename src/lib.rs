@@ -11,6 +11,7 @@ pub mod semantic;
 pub mod terminal;
 pub mod typecheck;
 
+pub use codegen::{C_ABI_VERSION_PACKAGE, NATIVE_ABI_POLICY_VERSION};
 pub use diagnostic::{
     DIAGNOSTIC_JSON_SCHEMA_VERSION, Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage,
     SourceId, SourceSpan, diagnostics_envelope_to_json, diagnostics_to_json,

@@ -1,6 +1,6 @@
 # C interoperability
 
-Flux can emit a C header for the current stable C export ABI:
+Flux can emit a C header for the current stable C export ABI. The versioning and platform-boundary rules are defined in `docs/native-abi.md`:
 
 ```sh
 flux emit-c-header path/to/package -o flux_api.h
