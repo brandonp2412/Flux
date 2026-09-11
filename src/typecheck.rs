@@ -3933,6 +3933,9 @@ fn definition_value_borrows_from(
         ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
             value_depends_on_borrow_source(graph, *base, source, visiting)
         }
+        ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
         ControlFlowValueKind::Call { callee, arguments }
             if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
         {
@@ -3978,6 +3981,22 @@ fn value_depends_on_borrow_source(
                         })
                         .is_some()
                 })
+        }
+        ControlFlowValueKind::Slice { base, .. } => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
+        ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
+        ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
+        ControlFlowValueKind::Call { callee, arguments }
+            if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+        {
+            arguments.first().is_some_and(|argument| {
+                value_depends_on_borrow_source(graph, *argument, source, visiting)
+            })
         }
         _ => false,
     }

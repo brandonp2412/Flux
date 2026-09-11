@@ -3815,6 +3815,52 @@ fn main() -> i64 {
             .contains("while borrowed view 'middle' is still live")
     }));
 
+    for property in ["first", "last", "single"] {
+        let live_property = format!(
+            "fn main() -> i64 {{\n    let source: i64[][] = [[10, 20], [30, 40]]\n    let view: i64[] = source.{property}\n    let destination: i64[][] = source\n    print(view[0])\n    print(destination[0][0])\n    return 0\n}}\n"
+        );
+        let errors = check_source_all(&live_property)
+            .expect_err("a live nested-list property view must keep its owner borrowed");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("while borrowed view 'view' is still live")
+        }));
+    }
+
+    let dead_property = r#"
+fn main() -> i64 {
+    let source: i64[][] = [[10, 20], [30, 40]]
+    let view: i64[] = source.first
+    print(view[0])
+    let destination: i64[][] = source
+    print(destination[0][0])
+    return 0
+}
+"#;
+    check_source(dead_property)
+        .expect("a dead nested-list property borrow must not prevent a later owner move");
+    compile_to_c(dead_property)
+        .expect("a move after a nested-list property view's last use should lower natively");
+
+    let chained_view = r#"
+fn main() -> i64 {
+    let source: i64[][] = [[10, 20], [30, 40]]
+    let view: i64[] = source[0][1:]
+    let destination: i64[][] = source
+    print(view[0])
+    print(destination[0][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(chained_view)
+        .expect_err("a chained zero-copy view must retain the original owner borrow");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'view' is still live")
+    }));
+
     let dead_rest = r#"
 fn main() -> i64 {
     let source: i64[] = [10, 20, 30]
