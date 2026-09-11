@@ -713,6 +713,10 @@ pub enum ExprKind {
         value: Box<Expr>,
         spread_span: SourceSpan,
     },
+    ListOptional {
+        value: Box<Expr>,
+        question_span: SourceSpan,
+    },
     ListIf {
         condition: Box<Expr>,
         value: Box<Expr>,

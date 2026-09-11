@@ -56,6 +56,9 @@ pub enum ControlFlowValueKind {
     ListSpread {
         value: ControlFlowValueId,
     },
+    ListOptional {
+        value: ControlFlowValueId,
+    },
     ListIf {
         condition: ControlFlowValueId,
         value: ControlFlowValueId,
@@ -1711,6 +1714,11 @@ impl<'a> ControlFlowBuilder<'a> {
                 .map_or(ControlFlowValueKind::Opaque, |value| {
                     ControlFlowValueKind::ListSpread { value }
                 }),
+            ExprKind::ListOptional { value, .. } => self
+                .lower_scalar_expr(producer, value)
+                .map_or(ControlFlowValueKind::Opaque, |value| {
+                    ControlFlowValueKind::ListOptional { value }
+                }),
             ExprKind::ListIf {
                 condition,
                 value,
@@ -2500,6 +2508,15 @@ fn record_expr_types(
                 evaluations.push((expr.span, vec![*element]));
             }
         }
+        ExprKind::ListOptional { value, .. } => {
+            record_expr_types(value, env, signatures, evaluations);
+            if let Ok(ty) = typecheck::type_of_expr(value, env, signatures)
+                && let Type::Optional(inner) = signatures.canonical_type(&ty)
+                && !matches!(inner.as_ref(), Type::Void)
+            {
+                evaluations.push((expr.span, vec![*inner]));
+            }
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -2806,6 +2823,7 @@ fn collect_value_uses(
             }
             ControlFlowValueKind::InterfacePack { value: packed, .. }
             | ControlFlowValueKind::ListSpread { value: packed }
+            | ControlFlowValueKind::ListOptional { value: packed }
             | ControlFlowValueKind::Field { base: packed, .. } => {
                 push_value_use(&mut uses, value.id, *packed, ControlFlowValueUseKind::Eager);
             }

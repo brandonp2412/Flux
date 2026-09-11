@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 498
-- Reported overall progress: **67%**
+- Completed baseline units: 499
+- Reported overall progress: **68%**
 - Current net scope growth after the baseline: 115 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -265,7 +265,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 - [ ] Map literals.
 - [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
 - [ ] Optional-aware spread analogous to Dart `...?`.
-- [ ] Null/optional-aware collection elements analogous to modern Dart `?element`.
+- [x] Null/optional-aware collection elements use `?element` inside list literals: the expression must be a concrete Copy optional, is evaluated exactly once, appends its payload only when present, rejects bare `none`/non-optionals/type mismatches statically, formats canonically, participates in semantic/typed-IR traversal, and lowers through the existing overflow-checked stack-backed list builder with no allocation or runtime null assertion.
 - [x] List-only `if condition: value` / `if condition: first else: second` construction items with strict bool conditions, exact element typing, selected-branch evaluation, and the same overflow-checked stack-backed builder used by spreads.
 - [x] Python-style list comprehensions with optional boolean filters: `[expr for item in source if condition]`.
 - [ ] Pattern guards inside collection construction where useful.

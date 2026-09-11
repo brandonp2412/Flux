@@ -11807,7 +11807,7 @@ fn collect_interface_names_from_expr(
                 collect_interface_names_from_expr(item, signatures, reachable, pending);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_interface_names_from_expr(value, signatures, reachable, pending);
         }
         ExprKind::ListIf {
@@ -12010,7 +12010,7 @@ fn collect_enum_variant_refs_from_expr(
                 collect_enum_variant_refs_from_expr(item, signatures, variants);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_enum_variant_refs_from_expr(value, signatures, variants);
         }
         ExprKind::ListIf {
@@ -12466,7 +12466,7 @@ fn collect_value_type_names_from_expr(
                 collect_value_type_names_from_expr(item, signatures, known, reachable, pending);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
         }
         ExprKind::ListIf {
@@ -12798,7 +12798,7 @@ fn collect_interface_pack_facts_from_expr(
                 collect_interface_pack_facts_from_expr(item, env, signatures, facts);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_interface_pack_facts_from_expr(value, env, signatures, facts)
         }
         ExprKind::ListIf {
@@ -13239,13 +13239,15 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::ListSpread { value, .. } => collect_interface_dispatch_refs_from_expr(
-            value,
-            env,
-            signatures,
-            direct_functions,
-            dynamic_capabilities,
-        ),
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
+            collect_interface_dispatch_refs_from_expr(
+                value,
+                env,
+                signatures,
+                direct_functions,
+                dynamic_capabilities,
+            )
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -13516,7 +13518,7 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(item, known, references);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_named_function_refs_from_expr(value, known, references);
         }
         ExprKind::ListIf {
@@ -13801,7 +13803,7 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
                 collect_anonymous_functions_from_expr(item, functions);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_anonymous_functions_from_expr(value, functions)
         }
         ExprKind::ListIf {
@@ -17124,7 +17126,12 @@ fn list_literal_needs_builder(expr: &Expr) -> bool {
         &expr.kind,
         ExprKind::List(items)
             if items.iter().any(|item| {
-                matches!(item.kind, ExprKind::ListSpread { .. } | ExprKind::ListIf { .. })
+                matches!(
+                    item.kind,
+                    ExprKind::ListSpread { .. }
+                        | ExprKind::ListOptional { .. }
+                        | ExprKind::ListIf { .. }
+                )
             })
     )
 }
@@ -17132,6 +17139,7 @@ fn list_literal_needs_builder(expr: &Expr) -> bool {
 enum BufferedListItem {
     Scalar(String),
     Spread(String),
+    Optional(String),
     Conditional {
         condition: String,
         value: String,
@@ -17185,6 +17193,29 @@ fn emit_list_builder_binding(
                     "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
                 ));
                 buffered_items.push(BufferedListItem::Spread(source_name));
+            }
+            ExprKind::ListOptional { value, .. } => {
+                let optional = emit_expr(value, env, signatures)?;
+                let optional_ty = signatures.canonical_type(&optional.ty);
+                let Type::Optional(inner) = &optional_ty else {
+                    return Err(diag(
+                        value.span,
+                        "null-aware list element requires an optional value",
+                    ));
+                };
+                if matches!(inner.as_ref(), Type::Void) {
+                    return Err(diag(
+                        value.span,
+                        "null-aware list element cannot infer a value type from bare none",
+                    ));
+                }
+                let optional_name = format!("flux__list_build_optional_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {optional_name} = {};\n{pad}if ({optional_name}.has_value) {{ if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} ++{capacity_name}; }}\n",
+                    c_type(&optional_ty, signatures), optional.code
+                ));
+                buffered_items.push(BufferedListItem::Optional(optional_name));
             }
             ExprKind::ListIf {
                 condition,
@@ -17268,6 +17299,11 @@ fn emit_list_builder_binding(
             BufferedListItem::Spread(source_name) => {
                 out.push_str(&format!(
                     "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
+                ));
+            }
+            BufferedListItem::Optional(optional_name) => {
+                out.push_str(&format!(
+                    "{pad}if ({optional_name}.has_value) {buffer_name}[{count_name}++] = {optional_name}.value;\n"
                 ));
             }
             BufferedListItem::Conditional {
@@ -17565,7 +17601,9 @@ fn emit_expr(
             if items.iter().any(|item| {
                 matches!(
                     item.kind,
-                    ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+                    ExprKind::ListSpread { .. }
+                        | ExprKind::ListOptional { .. }
+                        | ExprKind::ListIf { .. }
                 )
             }) {
                 return Err(diag(
@@ -17595,6 +17633,12 @@ fn emit_expr(
             return Err(diag(
                 expr.span,
                 "list spread syntax is only valid inside a list literal",
+            ));
+        }
+        ExprKind::ListOptional { .. } => {
+            return Err(diag(
+                expr.span,
+                "null-aware list element syntax is only valid inside a list literal",
             ));
         }
         ExprKind::ListIf { .. } => {
@@ -20770,7 +20814,7 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(item, signatures, emitted, helpers);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_update_helpers_from_expr(value, signatures, emitted, helpers);
         }
         ExprKind::ListIf {
@@ -21124,7 +21168,9 @@ fn static_list_length(
             if items.iter().all(|item| {
                 !matches!(
                     item.kind,
-                    ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+                    ExprKind::ListSpread { .. }
+                        | ExprKind::ListOptional { .. }
+                        | ExprKind::ListIf { .. }
                 )
             }) =>
         {

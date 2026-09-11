@@ -3187,7 +3187,9 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(item, reads);
             }
         }
-        ExprKind::ListSpread { value, .. } => collect_expr_reads(value, reads),
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
+            collect_expr_reads(value, reads)
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -5017,6 +5019,23 @@ pub fn type_of_expr(
                         };
                         Ok(*element)
                     }
+                    ExprKind::ListOptional { value, .. } => {
+                        let optional_ty =
+                            signatures.canonical_type(&type_of_expr(value, env, signatures)?);
+                        let Type::Optional(inner) = optional_ty else {
+                            return Err(diag(
+                                value.span,
+                                "null-aware list element requires an optional value",
+                            ));
+                        };
+                        if matches!(*inner, Type::Void) {
+                            return Err(diag(
+                                value.span,
+                                "null-aware list element cannot infer a value type from bare none",
+                            ));
+                        }
+                        Ok(*inner)
+                    }
                     ExprKind::ListIf {
                         condition,
                         value,
@@ -5061,6 +5080,10 @@ pub fn type_of_expr(
         ExprKind::ListSpread { .. } => Err(diag(
             expr.span,
             "list spread syntax is only valid inside a list literal",
+        )),
+        ExprKind::ListOptional { .. } => Err(diag(
+            expr.span,
+            "null-aware list element syntax is only valid inside a list literal",
         )),
         ExprKind::ListIf { .. } => Err(diag(
             expr.span,
@@ -8763,6 +8786,7 @@ fn evaluate_default_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::ListSpread { .. }
+        | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }
@@ -8912,6 +8936,7 @@ fn evaluate_constant_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::ListSpread { .. }
+        | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
         | ExprKind::Index { .. }
         | ExprKind::Slice { .. }

@@ -23737,6 +23737,117 @@ fn main() -> i64 {
 }
 
 #[test]
+fn null_aware_list_elements_skip_absence_and_lower_natively() {
+    let source = r#"
+fn maybe(flag: bool) -> i64? {
+    print(90)
+    if flag:
+        return 7
+    return none
+}
+
+fn main() -> i64 {
+    let values: i64[] = [?maybe(true), 2, ?maybe(false)]
+    print(values.length)
+    print(values.first)
+    print(values.last)
+    return 0
+}
+"#;
+
+    check_source(source).expect("null-aware list elements should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("null-aware list elements should format canonically");
+    assert!(formatted.contains("let values: i64[] = [?maybe(true), 2, ?maybe(false)]"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted null-aware list source should reparse"),
+        formatted
+    );
+
+    let generated = compile_to_c(source).expect("null-aware list elements should lower natively");
+    assert!(generated.contains("flux__list_build_optional_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(".value"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-null-aware-list-elements-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary null-aware list directory should be writable");
+    let c_path = root.join("null_aware_list_elements.c");
+    let exe_path = root.join("null_aware_list_elements");
+    fs::write(&c_path, generated).expect("generated null-aware list C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile null-aware list elements");
+    assert!(
+        compile.status.success(),
+        "null-aware list C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("null-aware list program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "90\n90\n2\n7\n2\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    let values: i64[] = [?1, 2]
+    return values.length
+}
+"#;
+    let error = check_source(non_optional).expect_err("null-aware elements require optionals");
+    assert!(
+        error
+            .message
+            .contains("null-aware list element requires an optional value"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let bare_none = r#"
+fn main() -> i64 {
+    let values: i64[] = [?none, 2]
+    return values.length
+}
+"#;
+    let error = check_source(bare_none).expect_err("bare none cannot infer an element type");
+    assert!(
+        error
+            .message
+            .contains("null-aware list element cannot infer a value type from bare none"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let wrong_inner = r#"
+fn main() -> i64 {
+    let maybeCheck: bool? = true
+    let values: i64[] = [1, ?maybeCheck]
+    return values.length
+}
+"#;
+    let error =
+        check_source(wrong_inner).expect_err("optional payload must match list element type");
+    assert!(
+        error
+            .message
+            .contains("list element: expected i64, got bool"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn optional_presence_checks_against_none_are_safe_and_native() {
     let source = r#"
 fn maybe(flag: bool) -> i64? {

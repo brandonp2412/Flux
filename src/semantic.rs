@@ -448,7 +448,7 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(item, symbols, signatures);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_expr_pattern_symbols(value, symbols, signatures);
         }
         ExprKind::ListIf {

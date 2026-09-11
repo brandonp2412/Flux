@@ -1069,6 +1069,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .join(", ")
         ),
         ExprKind::ListSpread { value, .. } => format!("...{}", format_expr(value, 0)),
+        ExprKind::ListOptional { value, .. } => format!("?{}", format_expr(value, 0)),
         ExprKind::ListIf {
             condition,
             value,

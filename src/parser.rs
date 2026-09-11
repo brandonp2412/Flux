@@ -715,6 +715,13 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             *spread_span = spread_span.with_source(source_id);
             attach_expr_source(value, source_id);
         }
+        ExprKind::ListOptional {
+            value,
+            question_span,
+        } => {
+            *question_span = question_span.with_source(source_id);
+            attach_expr_source(value, source_id);
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -1012,6 +1019,13 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
         }
         ExprKind::ListSpread { value, spread_span } => {
             spread_span.column += offset;
+            shift_expr_columns(value, offset);
+        }
+        ExprKind::ListOptional {
+            value,
+            question_span,
+        } => {
+            question_span.column += offset;
             shift_expr_columns(value, offset);
         }
         ExprKind::ListIf {
@@ -6246,6 +6260,27 @@ impl ExprParser<'_> {
     fn parse_list_item(&mut self) -> Result<Expr, Diagnostic> {
         if matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Question)
+        ) {
+            let question_span = self.tokens[self.index].span;
+            self.index += 1;
+            let value = self.parse_conditional()?;
+            return Ok(Expr {
+                line: self.line,
+                span: SourceSpan::new(
+                    self.line,
+                    question_span.column,
+                    value.span.column + value.span.length - question_span.column,
+                ),
+                kind: ExprKind::ListOptional {
+                    value: Box::new(value),
+                    question_span,
+                },
+            });
+        }
+
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
             Some(TokenKind::If)
         ) {
             let if_span = self.tokens[self.index].span;
@@ -6362,7 +6397,7 @@ impl ExprParser<'_> {
         let first = self.parse_list_item()?;
         if !matches!(
             first.kind,
-            ExprKind::ListSpread { .. } | ExprKind::ListIf { .. }
+            ExprKind::ListSpread { .. } | ExprKind::ListOptional { .. } | ExprKind::ListIf { .. }
         ) && matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
             Some(TokenKind::For)
