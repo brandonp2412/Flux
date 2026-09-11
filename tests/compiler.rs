@@ -23114,6 +23114,92 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_presence_checks_flow_promote_stable_bindings() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+fn main() -> i64 {
+    let number: i64? = 3
+    if number != none:
+        print(number + 4)
+
+    let point: Point? = Point { x: 8 }
+    if point == none:
+        print(-1)
+    else:
+        print(point.x)
+
+    let reversed: i64? = 5
+    if none != reversed:
+        print(reversed * 2)
+
+    var mutable: i64? = 1
+    if mutable != none:
+        mutable = none
+    print(mutable == none)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("stable optional presence checks should promote inside the present branch");
+    let generated = compile_to_c(source).expect("flow-promoted optionals should lower natively");
+    assert!(generated.contains("flux__optional_promotion_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(".value;"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-flow-promotion-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary optional flow-promotion directory should be writable");
+    let c_path = root.join("optional_flow_promotion.c");
+    let exe_path = root.join("optional_flow_promotion");
+    fs::write(&c_path, generated).expect("generated optional flow-promotion C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional flow promotion");
+    assert!(
+        compile.status.success(),
+        "optional flow-promotion C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional flow-promotion program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n8\n10\ntrue\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let outside_branch = r#"
+fn main() -> i64 {
+    let value: i64? = 1
+    if value != none:
+        print(value + 1)
+    return value + 1
+}
+"#;
+    let error = check_source(outside_branch)
+        .expect_err("optional promotion must remain scoped to the proven-present branch");
+    assert!(
+        error
+            .message
+            .contains("left arithmetic operand: expected i64, got i64?"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn optional_copy_aggregates_are_typed_and_lowered_by_value() {
     let source = r#"
 struct Wrapper {

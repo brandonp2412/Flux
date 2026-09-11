@@ -13734,11 +13734,13 @@ fn emit_function(
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
+    let mut mutable = HashSet::new();
     emit_block(
         out,
         &function.body,
         1,
         &mut env,
+        &mut mutable,
         signatures,
         temp_counter,
         BlockEmitContext {
@@ -14080,16 +14082,109 @@ fn dead_store_rhs_is_discardable(
     }
 }
 
+fn optional_presence_promotion(
+    cond: &Expr,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    signatures: &Signatures,
+) -> Option<(String, Type, bool)> {
+    let ExprKind::Binary { left, op, right } = &cond.kind else {
+        return None;
+    };
+    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+        return None;
+    }
+    let name = match (&left.kind, &right.kind) {
+        (ExprKind::Var(name), ExprKind::None) | (ExprKind::None, ExprKind::Var(name)) => name,
+        _ => return None,
+    };
+    if mutable.contains(name) {
+        return None;
+    }
+    let Type::Optional(inner) = signatures.canonical_type(env.get(name)?) else {
+        return None;
+    };
+    if *inner == Type::Void {
+        return None;
+    }
+    Some((
+        name.clone(),
+        signatures.canonical_type(&inner),
+        matches!(op, BinOp::Ne),
+    ))
+}
+
+fn collect_mutable_struct_pattern_names(
+    fields: &[StructPatternField],
+    mutable: &mut HashSet<String>,
+) {
+    for field in fields {
+        if field.binding.name != "_" {
+            mutable.insert(field.binding.name.clone());
+        }
+        if let Some(nested) = &field.nested {
+            collect_mutable_struct_pattern_names(&nested.fields, mutable);
+        }
+    }
+}
+
+fn record_mutable_declaration(stmt: &Stmt, mutable: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Var { name, .. } => {
+            mutable.insert(name.clone());
+        }
+        StmtKind::LetDestructure {
+            bindings,
+            mutable: true,
+            ..
+        } => {
+            mutable.extend(bindings.iter().map(|binding| binding.name.clone()));
+        }
+        StmtKind::LetMultiDestructure {
+            bindings,
+            mutable: true,
+            ..
+        }
+        | StmtKind::LetListDestructure {
+            bindings,
+            mutable: true,
+            ..
+        } => {
+            mutable.extend(
+                bindings
+                    .iter()
+                    .filter(|binding| binding.name != "_")
+                    .map(|binding| binding.name.clone()),
+            );
+            if let StmtKind::LetListDestructure {
+                rest: Some(rest), ..
+            } = &stmt.kind
+                && rest.binding.name != "_"
+            {
+                mutable.insert(rest.binding.name.clone());
+            }
+        }
+        StmtKind::LetStructDestructure {
+            fields,
+            mutable: true,
+            ..
+        } => collect_mutable_struct_pattern_names(fields, mutable),
+        _ => {}
+    }
+}
+
 fn emit_block(
     out: &mut String,
     body: &[Stmt],
     depth: usize,
     env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
     signatures: &Signatures,
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
     for stmt in body {
+        record_mutable_declaration(stmt, mutable);
         if !context
             .reachable_spans
             .contains(&source_span_key(stmt.span))
@@ -14739,11 +14834,13 @@ fn emit_block(
                         ));
                         then_env.insert(binding.name.clone(), inner);
                     }
+                    let mut then_mutable = mutable.clone();
                     emit_block(
                         out,
                         body,
                         depth + 1,
                         &mut then_env,
+                        &mut then_mutable,
                         signatures,
                         temp_counter,
                         context,
@@ -14753,11 +14850,76 @@ fn emit_block(
                     } else {
                         out.push_str(&format!("{pad}}} else {{\n"));
                         let mut else_env = env.clone();
+                        let mut else_mutable = mutable.clone();
                         emit_block(
                             out,
                             else_body,
                             depth + 1,
                             &mut else_env,
+                            &mut else_mutable,
+                            signatures,
+                            temp_counter,
+                            context,
+                        )?;
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
+                } else if let Some((name, inner, present_in_then)) =
+                    optional_presence_promotion(cond, env, mutable, signatures)
+                {
+                    let optional_ty = Type::Optional(Box::new(inner.clone()));
+                    let temp = format!("flux__optional_promotion_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {temp} = {};\n",
+                        c_type(&optional_ty, signatures),
+                        local_c_name(&name)
+                    ));
+                    let condition = if present_in_then {
+                        format!("{temp}.has_value")
+                    } else {
+                        format!("!{temp}.has_value")
+                    };
+                    out.push_str(&format!("{pad}if ({condition}) {{\n"));
+                    let mut then_env = env.clone();
+                    if present_in_then {
+                        out.push_str(&format!(
+                            "{pad}    {} {} = {temp}.value;\n",
+                            c_type(&inner, signatures),
+                            local_c_name(&name)
+                        ));
+                        then_env.insert(name.clone(), inner.clone());
+                    }
+                    let mut then_mutable = mutable.clone();
+                    emit_block(
+                        out,
+                        body,
+                        depth + 1,
+                        &mut then_env,
+                        &mut then_mutable,
+                        signatures,
+                        temp_counter,
+                        context,
+                    )?;
+                    if else_body.is_empty() {
+                        out.push_str(&format!("{pad}}}\n"));
+                    } else {
+                        out.push_str(&format!("{pad}}} else {{\n"));
+                        let mut else_env = env.clone();
+                        if !present_in_then {
+                            out.push_str(&format!(
+                                "{pad}    {} {} = {temp}.value;\n",
+                                c_type(&inner, signatures),
+                                local_c_name(&name)
+                            ));
+                            else_env.insert(name.clone(), inner.clone());
+                        }
+                        let mut else_mutable = mutable.clone();
+                        emit_block(
+                            out,
+                            else_body,
+                            depth + 1,
+                            &mut else_env,
+                            &mut else_mutable,
                             signatures,
                             temp_counter,
                             context,
@@ -14769,11 +14931,13 @@ fn emit_block(
                 {
                     let selected = if condition { body } else { else_body };
                     let mut nested = env.clone();
+                    let mut nested_mutable = mutable.clone();
                     emit_block(
                         out,
                         selected,
                         depth,
                         &mut nested,
+                        &mut nested_mutable,
                         signatures,
                         temp_counter,
                         context,
@@ -14782,11 +14946,13 @@ fn emit_block(
                     let cond = emit_expr(cond, env, signatures)?;
                     out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
                     let mut then_env = env.clone();
+                    let mut then_mutable = mutable.clone();
                     emit_block(
                         out,
                         body,
                         depth + 1,
                         &mut then_env,
+                        &mut then_mutable,
                         signatures,
                         temp_counter,
                         context,
@@ -14796,11 +14962,13 @@ fn emit_block(
                     } else {
                         out.push_str(&format!("{pad}}} else {{\n"));
                         let mut else_env = env.clone();
+                        let mut else_mutable = mutable.clone();
                         emit_block(
                             out,
                             else_body,
                             depth + 1,
                             &mut else_env,
+                            &mut else_mutable,
                             signatures,
                             temp_counter,
                             context,
@@ -14819,11 +14987,13 @@ fn emit_block(
                 let cond = emit_expr(cond, env, signatures)?;
                 out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond.code)));
                 let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
                 emit_block(
                     out,
                     body,
                     depth + 1,
                     &mut nested,
+                    &mut nested_mutable,
                     signatures,
                     temp_counter,
                     context,
@@ -14879,11 +15049,13 @@ fn emit_block(
                 if name_is_live {
                     nested.insert(name.clone(), Type::I64);
                 }
+                let mut nested_mutable = mutable.clone();
                 emit_block(
                     out,
                     body,
                     depth + 1,
                     &mut nested,
+                    &mut nested_mutable,
                     signatures,
                     temp_counter,
                     context,
@@ -14938,11 +15110,13 @@ fn emit_block(
                 if item_is_live {
                     nested.insert(name.clone(), *element);
                 }
+                let mut nested_mutable = mutable.clone();
                 emit_block(
                     out,
                     body,
                     depth + 1,
                     &mut nested,
+                    &mut nested_mutable,
                     signatures,
                     temp_counter,
                     context,
@@ -15048,12 +15222,14 @@ fn emit_block(
                             let guard = emit_expr(guard, &nested, signatures)?;
                             pattern_conditions.push(c_condition(&guard.code));
                         }
+                        let mut nested_mutable = mutable.clone();
                         if pattern_conditions.is_empty() {
                             emit_block(
                                 out,
                                 &arm.body,
                                 depth + 3,
                                 &mut nested,
+                                &mut nested_mutable,
                                 signatures,
                                 temp_counter,
                                 context,
@@ -15069,6 +15245,7 @@ fn emit_block(
                                 &arm.body,
                                 depth + 4,
                                 &mut nested,
+                                &mut nested_mutable,
                                 signatures,
                                 temp_counter,
                                 context,
@@ -15122,11 +15299,13 @@ fn emit_block(
                                 dead_definitions: dead_arm_definitions,
                             },
                         )?;
+                        let mut nested_mutable = mutable.clone();
                         emit_block(
                             out,
                             &arm.body,
                             depth + 1,
                             &mut nested,
+                            &mut nested_mutable,
                             signatures,
                             temp_counter,
                             context,
@@ -15163,11 +15342,13 @@ fn emit_block(
                                 c_condition(&guard.code)
                             ));
                             out.push_str(&format!("{pad}        {matched} = true;\n"));
+                            let mut nested_mutable = mutable.clone();
                             emit_block(
                                 out,
                                 &arm.body,
                                 depth + 2,
                                 &mut nested,
+                                &mut nested_mutable,
                                 signatures,
                                 temp_counter,
                                 context,
@@ -15175,11 +15356,13 @@ fn emit_block(
                             out.push_str(&format!("{pad}    }}\n"));
                         } else {
                             out.push_str(&format!("{pad}    {matched} = true;\n"));
+                            let mut nested_mutable = mutable.clone();
                             emit_block(
                                 out,
                                 &arm.body,
                                 depth + 1,
                                 &mut nested,
+                                &mut nested_mutable,
                                 signatures,
                                 temp_counter,
                                 context,

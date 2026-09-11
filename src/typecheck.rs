@@ -3175,6 +3175,38 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
     }
 }
 
+fn optional_presence_promotion(
+    cond: &Expr,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    signatures: &Signatures,
+) -> Option<(String, Type, bool)> {
+    let ExprKind::Binary { left, op, right } = &cond.kind else {
+        return None;
+    };
+    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+        return None;
+    }
+    let name = match (&left.kind, &right.kind) {
+        (ExprKind::Var(name), ExprKind::None) | (ExprKind::None, ExprKind::Var(name)) => name,
+        _ => return None,
+    };
+    if mutable.contains(name) {
+        return None;
+    }
+    let Type::Optional(inner) = signatures.canonical_type(env.get(name)?) else {
+        return None;
+    };
+    if *inner == Type::Void {
+        return None;
+    }
+    Some((
+        name.clone(),
+        signatures.canonical_type(&inner),
+        matches!(op, BinOp::Ne),
+    ))
+}
+
 fn check_block_all(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
@@ -3816,6 +3848,10 @@ fn check_block_all(
                 else_body,
                 ..
             } => {
+                let promotion = binding
+                    .is_none()
+                    .then(|| optional_presence_promotion(cond, env, mutable, signatures))
+                    .flatten();
                 let mut then_env = env.clone();
                 if let Some(binding) = binding {
                     match type_of_expr(cond, env, signatures) {
@@ -3869,6 +3905,9 @@ fn check_block_all(
                         Err(diagnostic) => diagnostics.push(diagnostic),
                     }
                 }
+                if let Some((name, inner, true)) = &promotion {
+                    then_env.insert(name.clone(), inner.clone());
+                }
                 let mut then_mutable = mutable.clone();
                 check_block_all(
                     body,
@@ -3880,6 +3919,9 @@ fn check_block_all(
                     loop_depth,
                 );
                 let mut else_env = env.clone();
+                if let Some((name, inner, false)) = &promotion {
+                    else_env.insert(name.clone(), inner.clone());
+                }
                 let mut else_mutable = mutable.clone();
                 check_block_all(
                     else_body,
