@@ -12,7 +12,7 @@ use fluxc::ir::{
 };
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
-    compile_to_c, diagnostics_to_json,
+    compile_to_c, compile_to_c_header, diagnostics_to_json,
 };
 
 fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
@@ -6700,6 +6700,59 @@ fn main() -> i64 {
     assert!(!generated.contains("flux__interface_Operation"));
     assert!(!generated.contains("flux__type_Offset"));
     assert!(!generated.contains("flux__fn_unreachable"));
+}
+
+#[test]
+fn emits_c_header_for_public_scalar_abi_and_multi_returns() {
+    let source = r#"
+pub fn scale(value: i64, enabled: bool, label: str) -> (i64, error) {
+    if enabled:
+        return value * 2, nil
+    return value, error(label)
+}
+
+fn hidden(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    return hidden(0)
+}
+"#;
+
+    let header = compile_to_c_header(source).expect("public scalar ABI should emit a C header");
+    assert!(header.contains("#include <stdbool.h>"));
+    assert!(header.contains("#include <stdint.h>"));
+    assert!(header.contains("extern \"C\""));
+    assert!(header.contains("struct flux__ret_scale"));
+    assert!(header.contains("int64_t v0;"));
+    assert!(header.contains("const char * v1;"));
+    assert!(header.contains(
+        "struct flux__ret_scale flux__fn_scale(int64_t flux__local_value, bool flux__local_enabled, const char * flux__local_label);"
+    ));
+    assert!(!header.contains("flux__fn_hidden"));
+    assert!(!header.contains("main("));
+}
+
+#[test]
+fn rejects_c_header_exports_with_non_scalar_ffi_types() {
+    let source = r#"
+pub struct Point {
+    x: i64
+}
+
+pub fn shift(point: Point) -> Point {
+    return point
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = compile_to_c_header(source).expect_err("non-scalar FFI export should be rejected");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("unsupported FFI type 'Point'"));
 }
 
 #[test]

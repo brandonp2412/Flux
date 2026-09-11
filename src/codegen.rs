@@ -18,6 +18,79 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
     emit_c_with_source_paths(program, signatures, &HashMap::new())
 }
 
+pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
+    let public_functions = program
+        .functions
+        .iter()
+        .filter(|function| function.public && function.name != "main")
+        .collect::<Vec<_>>();
+
+    for function in &public_functions {
+        for param in &function.params {
+            if !ffi_header_type_supported(&param.ty, signatures) {
+                return Err(diag(
+                    param.type_span,
+                    &format!(
+                        "public function '{}' cannot be emitted in a C header yet because parameter '{}' has unsupported FFI type '{}'",
+                        function.name,
+                        param.name,
+                        param.ty.name()
+                    ),
+                ));
+            }
+        }
+        for (index, ty) in function.returns.iter().enumerate() {
+            if !ffi_header_type_supported(ty, signatures) {
+                return Err(diag(
+                    function
+                        .return_type_spans
+                        .get(index)
+                        .copied()
+                        .unwrap_or(function.return_span),
+                    &format!(
+                        "public function '{}' cannot be emitted in a C header yet because return value {} has unsupported FFI type '{}'",
+                        function.name,
+                        index + 1,
+                        ty.name()
+                    ),
+                ));
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("#pragma once\n\n");
+    out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
+    out.push_str("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
+    out.push_str("/* str and error values are borrowed const char * values owned by Flux/runtime storage. */\n\n");
+
+    for function in &public_functions {
+        if function.returns.len() > 1 {
+            let tag = multi_return_struct_name(&function.name);
+            out.push_str(&format!("struct {tag} {{\n"));
+            for (index, ty) in function.returns.iter().enumerate() {
+                out.push_str(&format!("    {} v{index};\n", c_type(ty, signatures)));
+            }
+            out.push_str("};\n\n");
+        }
+    }
+
+    for function in public_functions {
+        out.push_str(&function_prototype(function, signatures));
+        out.push_str(";\n");
+    }
+
+    out.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
+    Ok(out)
+}
+
+fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
+    matches!(
+        signatures.canonical_type(ty),
+        Type::I64 | Type::Bool | Type::Str | Type::Error
+    )
+}
+
 pub fn emit_c_with_source_paths(
     program: &Program,
     signatures: &Signatures,

@@ -26,6 +26,10 @@ impl ProjectAnalysis {
         self.emit_c_for_target(codegen::NativeTarget::Linux)
     }
 
+    pub fn emit_c_header(&self) -> Result<String, Diagnostic> {
+        codegen::emit_c_header(&self.program, &self.signatures)
+    }
+
     pub fn emit_c_for_target(&self, target: codegen::NativeTarget) -> Result<String, Diagnostic> {
         let source_paths = self
             .sources
@@ -372,6 +376,11 @@ pub fn check_with_overlays(
 pub fn compile_to_c(entry: &Path) -> Result<String, Diagnostic> {
     let analysis = analyze(entry).map_err(first_diagnostic)?;
     analysis.emit_c()
+}
+
+pub fn compile_to_c_header(entry: &Path) -> Result<String, Diagnostic> {
+    let analysis = analyze(entry).map_err(first_diagnostic)?;
+    analysis.emit_c_header()
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {

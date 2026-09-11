@@ -27,6 +27,12 @@ pub fn compile_to_c_with_source(source: &str, source_id: SourceId) -> Result<Str
     codegen::emit_c(database.program(), database.signatures())
 }
 
+pub fn compile_to_c_header(source: &str) -> Result<String, Diagnostic> {
+    let database =
+        semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN).map_err(first_diagnostic)?;
+    codegen::emit_c_header(database.program(), database.signatures())
+}
+
 pub fn check_source(source: &str) -> Result<(), Diagnostic> {
     check_source_all(source).map_err(first_diagnostic)
 }
