@@ -5743,7 +5743,27 @@ pub fn type_of_expr(
                     if left_ty == Type::Void || right_ty == Type::Void {
                         return Err(diag(expr.span, "void values cannot be compared"));
                     }
-                    if matches!(left_ty, Type::Named(_)) || matches!(right_ty, Type::Named(_)) {
+                    let left_canonical = signatures.canonical_type(&left_ty);
+                    let right_canonical = signatures.canonical_type(&right_ty);
+                    if matches!(left_canonical, Type::Optional(_))
+                        || matches!(right_canonical, Type::Optional(_))
+                    {
+                        let compares_none = matches!(
+                            (&left_canonical, &right_canonical),
+                            (Type::Optional(left), Type::Optional(right))
+                                if **left == Type::Void || **right == Type::Void
+                        );
+                        if compares_none {
+                            return Ok(Type::Bool);
+                        }
+                        return Err(diag(
+                            expr.span,
+                            "optional equality is only defined for presence checks against 'none'; unwrap with 'if let' or '??' before comparing values",
+                        ));
+                    }
+                    if matches!(left_canonical, Type::Named(_))
+                        || matches!(right_canonical, Type::Named(_))
+                    {
                         return Err(diag(
                             expr.span,
                             "whole-struct equality is not defined yet; compare fields explicitly",

@@ -223,7 +223,7 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 - [x] Coalescing assignment analogous to Dart `??=` where mutation is valid: mutable optional locals accept `value ??= fallback`, preserve the canonical ergonomic spelling through formatting, reuse the allocation-free optional/coalescing lowering, evaluate the fallback lazily only when the current value is absent, and retain ordinary static assignment/mutability checks.
 - [x] Safe optional unwrapping via binding patterns: `if let value = optionalValue:` and `elif let ...` evaluate a Copy optional exactly once, enter the branch only when present, infer and bind the concrete inner type only in that branch, support `_` ignores, reject bare `none`, non-optional values, and binding shadowing, preserve formatter/semantic/CFG facts, and lower directly through the optional tag without assertions or allocation. General flow-sensitive promotion remains tracked separately below.
 - [x] Avoid routine runtime null assertions; bootstrap Flux intentionally has no postfix force-unwrap/null-assertion syntax. Attempting `value!` produces a targeted diagnostic that directs developers to safe `if let` unwrapping or lazy `??` fallback instead, so ordinary optional handling cannot silently introduce a runtime null assertion.
-- [ ] Flow-sensitive promotion after optional/type checks.
+- [ ] Flow-sensitive promotion after optional/type checks. Optional Copy values now have allocation-free presence tests through `value == none` / `value != none` (including `none` on the left), and invalid optional-to-optional/inner equality is rejected instead of reaching illegal native struct comparison; branch-local type promotion itself remains pending.
 
 ## Indexing and collection conveniences
 

@@ -22700,6 +22700,99 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_presence_checks_against_none_are_safe_and_native() {
+    let source = r#"
+fn maybe(flag: bool) -> i64? {
+    print(90)
+    if flag:
+        return 7
+    return none
+}
+
+fn main() -> i64 {
+    let present: i64? = 3
+    let missing: i64? = none
+    print(present != none)
+    print(present == none)
+    print(none != missing)
+    print(none == missing)
+    print(maybe(true) != none)
+    print(maybe(false) == none)
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional presence checks should typecheck");
+    let generated = compile_to_c(source).expect("optional presence checks should lower natively");
+    assert!(generated.contains(".has_value"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-presence-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional presence directory should be writable");
+    let c_path = root.join("optional_presence.c");
+    let exe_path = root.join("optional_presence");
+    fs::write(&c_path, generated).expect("generated optional presence C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional presence checks");
+    assert!(
+        compile.status.success(),
+        "optional presence C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional presence program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\nfalse\nfalse\ntrue\n90\ntrue\n90\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let optional_to_optional = r#"
+fn main() -> i64 {
+    let left: i64? = 1
+    let right: i64? = 1
+    if left == right:
+        return 1
+    return 0
+}
+"#;
+    let error = check_source(optional_to_optional)
+        .expect_err("optional value equality should require explicit unwrapping");
+    assert!(
+        error
+            .message
+            .contains("optional equality is only defined for presence checks against 'none'")
+    );
+
+    let optional_to_inner = r#"
+fn main() -> i64 {
+    let value: i64? = 1
+    if value == 1:
+        return 1
+    return 0
+}
+"#;
+    let error = check_source(optional_to_inner)
+        .expect_err("optional-to-inner equality should require explicit unwrapping");
+    assert!(
+        error
+            .message
+            .contains("optional equality is only defined for presence checks against 'none'")
+    );
+}
+
+#[test]
 fn optional_copy_aggregates_are_typed_and_lowered_by_value() {
     let source = r#"
 struct Wrapper {

@@ -17543,6 +17543,30 @@ fn emit_expr(
                         )
                     }
                 }
+            } else if matches!(op, BinOp::Eq | BinOp::Ne)
+                && matches!(right.kind, ExprKind::None)
+                && matches!(
+                    signatures.canonical_type(&emitted_left.ty),
+                    Type::Optional(ref inner) if **inner != Type::Void
+                )
+            {
+                if matches!(op, BinOp::Eq) {
+                    format!("(!({}).has_value)", emitted_left.code)
+                } else {
+                    format!("(({}).has_value)", emitted_left.code)
+                }
+            } else if matches!(op, BinOp::Eq | BinOp::Ne)
+                && matches!(left.kind, ExprKind::None)
+                && matches!(
+                    signatures.canonical_type(&emitted_right.ty),
+                    Type::Optional(ref inner) if **inner != Type::Void
+                )
+            {
+                if matches!(op, BinOp::Eq) {
+                    format!("(!({}).has_value)", emitted_right.code)
+                } else {
+                    format!("(({}).has_value)", emitted_right.code)
+                }
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 code.to_string()
             } else if let Some(code) = boolean_identity_c(
