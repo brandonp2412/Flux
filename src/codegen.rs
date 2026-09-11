@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{
     BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
     PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField,
-    Type, UnaryOp,
+    Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
@@ -71,18 +71,15 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
 
     let mut out = String::new();
     out.push_str("#pragma once\n\n");
+    out.push_str("#define FLUX_C_ABI_VERSION 1\n\n");
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
 
-    for alias in program
-        .aliases
-        .iter()
-        .filter(|alias| public_scalar_aliases.contains(&alias.name))
-    {
+    for alias in ordered_public_scalar_aliases(program, &public_scalar_aliases) {
         out.push_str(&format!(
             "typedef {} flux__alias_{};\n",
-            c_type(&alias.target, signatures),
+            c_header_type(&alias.target, &public_scalar_aliases, signatures),
             alias.name
         ));
     }
@@ -132,6 +129,49 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
 
     out.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
     Ok(out)
+}
+
+fn ordered_public_scalar_aliases<'a>(
+    program: &'a Program,
+    public_scalar_aliases: &HashSet<String>,
+) -> Vec<&'a TypeAlias> {
+    let mut remaining = program
+        .aliases
+        .iter()
+        .filter(|alias| public_scalar_aliases.contains(&alias.name))
+        .collect::<Vec<_>>();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let mut emitted = HashSet::new();
+
+    while !remaining.is_empty() {
+        let mut progressed = false;
+        let mut index = 0;
+        while index < remaining.len() {
+            let alias = remaining[index];
+            let waits_for_public_alias = matches!(
+                &alias.target,
+                Type::Named(name)
+                    if public_scalar_aliases.contains(name) && !emitted.contains(name)
+            );
+            if waits_for_public_alias {
+                index += 1;
+                continue;
+            }
+            let alias = remaining.remove(index);
+            emitted.insert(alias.name.clone());
+            ordered.push(alias);
+            progressed = true;
+        }
+        if !progressed {
+            debug_assert!(
+                false,
+                "checked public scalar aliases cannot contain a cycle"
+            );
+            ordered.extend(remaining.drain(..));
+        }
+    }
+
+    ordered
 }
 
 fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {

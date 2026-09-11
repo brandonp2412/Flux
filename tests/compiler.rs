@@ -6867,12 +6867,13 @@ fn main() -> i64 {
 #[test]
 fn emits_c_header_for_public_scalar_abi_and_multi_returns() {
     let source = r#"
+pub type CountAlias = Count
 pub type Count = i64
-pub const DEFAULT_COUNT: Count = 3
+pub const DEFAULT_COUNT: CountAlias = 3
 pub const FEATURE_NAME: str = "flux ffi"
 const HIDDEN_COUNT: i64 = 9
 
-pub fn scale(value: Count, enabled: bool, label: str) -> (Count, error) {
+pub fn scale(value: CountAlias, enabled: bool, label: str) -> (CountAlias, error) {
     if enabled:
         return value * 2, nil
     return value, error(label)
@@ -6888,21 +6889,50 @@ fn main() -> i64 {
 "#;
 
     let header = compile_to_c_header(source).expect("public scalar ABI should emit a C header");
+    assert!(header.contains("#define FLUX_C_ABI_VERSION 1"));
     assert!(header.contains("#include <stdbool.h>"));
     assert!(header.contains("#include <stdint.h>"));
-    assert!(header.contains("typedef int64_t flux__alias_Count;"));
-    assert!(header.contains("#define flux__const_DEFAULT_COUNT ((flux__alias_Count)INT64_C(3))"));
+    let count_alias = header
+        .find("typedef int64_t flux__alias_Count;")
+        .expect("base alias should be emitted");
+    let chained_alias = header
+        .find("typedef flux__alias_Count flux__alias_CountAlias;")
+        .expect("forward chained alias should preserve its public name");
+    assert!(
+        count_alias < chained_alias,
+        "C typedef dependencies must be emitted before users"
+    );
+    assert!(
+        header.contains("#define flux__const_DEFAULT_COUNT ((flux__alias_CountAlias)INT64_C(3))")
+    );
     assert!(header.contains("#define flux__const_FEATURE_NAME ((const char *)\"flux ffi\")"));
     assert!(!header.contains("HIDDEN_COUNT"));
     assert!(header.contains("extern \"C\""));
     assert!(header.contains("struct flux__ret_scale"));
-    assert!(header.contains("flux__alias_Count v0;"));
+    assert!(header.contains("flux__alias_CountAlias v0;"));
     assert!(header.contains("const char * v1;"));
     assert!(header.contains(
-        "struct flux__ret_scale flux__fn_scale(flux__alias_Count flux__local_value, bool flux__local_enabled, const char * flux__local_label);"
+        "struct flux__ret_scale flux__fn_scale(flux__alias_CountAlias flux__local_value, bool flux__local_enabled, const char * flux__local_label);"
     ));
     assert!(!header.contains("flux__fn_hidden"));
     assert!(!header.contains("main("));
+
+    let root = std::env::temp_dir().join(format!("flux-c-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary C header directory should be writable");
+    let header_path = root.join("flux_api.h");
+    fs::write(&header_path, &header).expect("generated C header should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&header_path)
+        .output()
+        .expect("clang should validate the generated C header");
+    assert!(
+        output.status.success(),
+        "generated C header should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
