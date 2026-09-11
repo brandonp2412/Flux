@@ -294,9 +294,15 @@ fn run_server<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> io::Result<
                         .and_then(JsonValue::as_str);
                     let data = uri
                         .and_then(|uri| {
-                            documents
-                                .get(uri)
-                                .map(|source| semantic_tokens(uri, source, encoding))
+                            documents.get(uri).map(|source| {
+                                semantic_tokens_for_document_cached(
+                                    uri,
+                                    source,
+                                    &documents,
+                                    encoding,
+                                    Some(&mut analysis_cache),
+                                )
+                            })
                         })
                         .unwrap_or_default();
                     write_message(
@@ -3606,18 +3612,38 @@ fn inlay_hints_for_document(
         .collect()
 }
 
+#[cfg(test)]
 fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
-    let source_id = SourceId::from_name(uri);
-    let database = crate::parser::parse_all_with_source(source, source_id)
-        .ok()
-        .filter(|program| program.imports.is_empty())
-        .and_then(|program| {
-            crate::typecheck::check_all(&program)
-                .ok()
-                .map(|signatures| {
-                    crate::semantic::SemanticDatabase::from_analyzed(program, signatures)
-                })
-        });
+    let database = analyzed_document(uri, source);
+    semantic_tokens_with_database(uri, source, encoding, database.as_ref())
+}
+
+fn semantic_tokens_for_document_cached(
+    uri: &str,
+    source: &str,
+    documents: &HashMap<String, String>,
+    encoding: PositionEncoding,
+    cache: Option<&mut crate::project::ProjectAnalysisCache>,
+) -> Vec<JsonValue> {
+    let project_database =
+        analyzed_project_document_cached(uri, documents, cache).map(|(database, _)| database);
+    let standalone_database;
+    let database = if let Some(database) = project_database.as_ref() {
+        Some(database)
+    } else {
+        standalone_database = analyzed_document(uri, source);
+        standalone_database.as_ref()
+    };
+    semantic_tokens_with_database(uri, source, encoding, database)
+}
+
+fn semantic_tokens_with_database(
+    uri: &str,
+    source: &str,
+    encoding: PositionEncoding,
+    database: Option<&crate::semantic::SemanticDatabase>,
+) -> Vec<JsonValue> {
+    let source_id = source_id_for_uri(uri);
     let mut tokens = Vec::new();
     let mut in_multiline_string = false;
     for (line_index, line) in source.lines().enumerate() {
@@ -3626,7 +3652,7 @@ fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<J
             line,
             line_index,
             source_id,
-            database.as_ref(),
+            database,
             encoding,
             &mut in_multiline_string,
         );
@@ -8073,7 +8099,8 @@ mod tests {
             "pub struct Item {\n    value: i64\n}\npub fn sibling(item: Item) -> i64 { item.value }\n",
         )
         .expect("sibling should be writable");
-        let main_source = "import \"sibling.flux\"\nimport \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        let main_source =
+            "import \"sibling.flux\"\nimport \"dep.flux\"\nfn main() -> i64 { value() }\n";
         std::fs::write(&main, main_source).expect("entry should be writable");
         let main = std::fs::canonicalize(main).unwrap();
         let main_uri = file_uri_from_path(&main);
@@ -8382,6 +8409,59 @@ mod tests {
             active_call("print(\"\"\"hello (x, y)\nworld\"\"\", "),
             Some(("print", 1))
         );
+    }
+
+    #[test]
+    fn semantic_tokens_use_project_analysis_for_imported_symbol_usages() {
+        let root =
+            std::env::temp_dir().join(format!("flux-lsp-semantic-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 42 }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let main_uri = file_uri_from_path(&main);
+        let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+
+        let data = semantic_tokens_for_document_cached(
+            &main_uri,
+            main_source,
+            &documents,
+            PositionEncoding::Utf8,
+            None,
+        );
+        let numbers = data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (chunks, remainder) = numbers.as_chunks::<5>();
+        assert!(remainder.is_empty());
+        let value_start = main_source.lines().nth(1).unwrap().find("value").unwrap() as i64;
+        let mut line = 0i64;
+        let mut start = 0i64;
+        let mut value_kind = None;
+        for token in chunks {
+            line += token[0];
+            start = if token[0] == 0 {
+                start + token[1]
+            } else {
+                token[1]
+            };
+            if line == 1 && start == value_start {
+                value_kind = Some(token[3]);
+                break;
+            }
+        }
+        assert_eq!(value_kind, Some(SemanticTokenKind::Function as i64));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

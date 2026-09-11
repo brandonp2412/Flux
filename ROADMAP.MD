@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 472
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 68 checkbox items
+- Current net scope growth after the baseline: 69 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -901,6 +901,7 @@ Web is a supported target, not the implementation substrate for native apps.
   - [x] Function-local parameter/binding/pattern/loop rename is lexical-scope aware, edits only occurrences resolving to the selected local, and refuses names colliding with another local/parameter in the same function.
   - [x] Follow-up: project-wide global-symbol references/rename and fallback symbol resolution respect function-local shadowing. Unrelated locals with the same spelling no longer make an imported/top-level symbol appear ambiguous, and local declarations/usages are excluded from global reference and rename edits while the project graph remains compiler-typed.
 - [x] Semantic highlighting through full-document LSP semantic tokens: Flux keywords, strings, numbers, operators, builtin types/functions, and semantically resolved declarations/unambiguous usages receive standard token categories with negotiated UTF-8/UTF-16 positions. There is intentionally no comment token category because comments are invalid Flux syntax.
+  - [x] Project/import-aware semantic tokens reuse the same cached typed project analysis as other editor services, so imported symbol usages and unsaved-overlay graphs retain their resolved semantic token kinds instead of degrading to generic lexical variables merely because the document contains imports.
 - [x] Formatting through `textDocument/formatting`, returning the canonical Flux formatter as a whole-document LSP text edit without a second formatting implementation.
 - [x] Code actions/fixes for machine-applicable compiler diagnostics: `textDocument/codeAction` returns preferred `quickfix` workspace edits directly from each diagnostic's structured replacement fix.
 - [x] Inlay hints where they add value: `textDocument/inlayHint` reports compiler-inferred types for struct/enum pattern bindings and range-loop variables, while deliberately omitting already-explicit `let`/`var`/parameter types.
