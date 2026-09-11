@@ -203,9 +203,17 @@ pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageDependency {
-    Registry { requirement: String },
-    Path { path: PathBuf },
-    Git { url: String, rev: String },
+    Registry {
+        requirement: String,
+    },
+    Path {
+        path: PathBuf,
+        requirement: Option<String>,
+    },
+    Git {
+        url: String,
+        rev: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -944,17 +952,29 @@ fn parse_package_dependency(text: &str) -> Result<PackageDependency, String> {
 
     let fields = parse_manifest_inline_string_table(text)?;
     if let Some(path) = fields.get("path") {
-        if fields.len() != 1 {
-            return Err("path dependencies accept only the 'path' field".to_string());
+        if fields
+            .keys()
+            .any(|field| field != "path" && field != "version")
+        {
+            return Err(
+                "path dependencies accept only 'path' and optional 'version' fields".to_string(),
+            );
         }
         if path.is_empty() {
             return Err("path dependencies require a non-empty path".to_string());
+        }
+        let requirement = fields.get("version").cloned();
+        if requirement
+            .as_deref()
+            .is_some_and(|requirement| !valid_semver_requirement(requirement))
+        {
+            return Err("path dependency 'version' must be a SemVer requirement".to_string());
         }
         let path = PathBuf::from(path);
         if path.is_absolute() {
             return Err("path dependencies must use a relative path".to_string());
         }
-        return Ok(PackageDependency::Path { path });
+        return Ok(PackageDependency::Path { path, requirement });
     }
 
     if let Some(url) = fields.get("git") {
@@ -1134,6 +1154,182 @@ fn valid_semver_identifiers(value: &str, reject_numeric_leading_zero: bool) -> b
                     || identifier == "0"
                     || !identifier.starts_with('0'))
         })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticVersion {
+    major: String,
+    minor: String,
+    patch: String,
+    prerelease: Vec<String>,
+}
+
+impl SemanticVersion {
+    fn parse(value: &str) -> Option<Self> {
+        if !valid_semver_version(value) {
+            return None;
+        }
+        let without_build = value.split_once('+').map_or(value, |(version, _)| version);
+        let (core, prerelease) = without_build
+            .split_once('-')
+            .map_or((without_build, ""), |(core, prerelease)| (core, prerelease));
+        let mut parts = core.split('.');
+        Some(Self {
+            major: parts.next()?.to_string(),
+            minor: parts.next()?.to_string(),
+            patch: parts.next()?.to_string(),
+            prerelease: if prerelease.is_empty() {
+                Vec::new()
+            } else {
+                prerelease.split('.').map(str::to_string).collect()
+            },
+        })
+    }
+
+    fn core_eq(&self, other: &Self) -> bool {
+        self.major == other.major && self.minor == other.minor && self.patch == other.patch
+    }
+
+    fn precedence_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (left, right) in [
+            (&self.major, &other.major),
+            (&self.minor, &other.minor),
+            (&self.patch, &other.patch),
+        ] {
+            let ordering = semver_numeric_cmp(left, right);
+            if ordering != std::cmp::Ordering::Equal {
+                return ordering;
+            }
+        }
+        match (self.prerelease.is_empty(), other.prerelease.is_empty()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => {
+                for (left, right) in self.prerelease.iter().zip(&other.prerelease) {
+                    let left_numeric = left.bytes().all(|byte| byte.is_ascii_digit());
+                    let right_numeric = right.bytes().all(|byte| byte.is_ascii_digit());
+                    let ordering = match (left_numeric, right_numeric) {
+                        (true, true) => semver_numeric_cmp(left, right),
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        (false, false) => left.cmp(right),
+                    };
+                    if ordering != std::cmp::Ordering::Equal {
+                        return ordering;
+                    }
+                }
+                self.prerelease.len().cmp(&other.prerelease.len())
+            }
+        }
+    }
+}
+
+fn semver_numeric_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn increment_semver_number(value: &str) -> String {
+    let mut digits = value.bytes().collect::<Vec<_>>();
+    let mut carry = true;
+    for digit in digits.iter_mut().rev() {
+        if !carry {
+            break;
+        }
+        if *digit == b'9' {
+            *digit = b'0';
+        } else {
+            *digit += 1;
+            carry = false;
+        }
+    }
+    if carry {
+        digits.insert(0, b'1');
+    }
+    String::from_utf8(digits).expect("SemVer numeric components are ASCII digits")
+}
+
+fn semver_requirement_matches(requirement: &str, version: &str) -> bool {
+    let Some(candidate) = SemanticVersion::parse(version) else {
+        return false;
+    };
+    if requirement == "*" {
+        return candidate.prerelease.is_empty();
+    }
+    let (kind, base_text) = if let Some(base) = requirement.strip_prefix('^') {
+        ('^', base)
+    } else if let Some(base) = requirement.strip_prefix('~') {
+        ('~', base)
+    } else {
+        ('=', requirement)
+    };
+    let Some(base) = SemanticVersion::parse(base_text) else {
+        return false;
+    };
+    if !candidate.prerelease.is_empty() && (base.prerelease.is_empty() || !candidate.core_eq(&base))
+    {
+        return false;
+    }
+    if kind == '=' {
+        return candidate.precedence_cmp(&base) == std::cmp::Ordering::Equal;
+    }
+    if candidate.precedence_cmp(&base) == std::cmp::Ordering::Less {
+        return false;
+    }
+    let upper = if kind == '~' {
+        SemanticVersion {
+            major: base.major.clone(),
+            minor: increment_semver_number(&base.minor),
+            patch: "0".to_string(),
+            prerelease: Vec::new(),
+        }
+    } else if base.major != "0" {
+        SemanticVersion {
+            major: increment_semver_number(&base.major),
+            minor: "0".to_string(),
+            patch: "0".to_string(),
+            prerelease: Vec::new(),
+        }
+    } else if base.minor != "0" {
+        SemanticVersion {
+            major: "0".to_string(),
+            minor: increment_semver_number(&base.minor),
+            patch: "0".to_string(),
+            prerelease: Vec::new(),
+        }
+    } else {
+        SemanticVersion {
+            major: "0".to_string(),
+            minor: "0".to_string(),
+            patch: increment_semver_number(&base.patch),
+            prerelease: Vec::new(),
+        }
+    };
+    candidate.precedence_cmp(&upper) == std::cmp::Ordering::Less
+}
+
+pub fn resolve_semver_requirement<'a>(
+    requirement: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> Result<Option<String>, String> {
+    if !valid_semver_requirement(requirement) {
+        return Err(format!("invalid SemVer requirement '{requirement}'"));
+    }
+    let mut best = None::<(SemanticVersion, String)>;
+    for candidate in candidates {
+        let parsed = SemanticVersion::parse(candidate)
+            .ok_or_else(|| format!("invalid SemVer candidate '{candidate}'"))?;
+        if !semver_requirement_matches(requirement, candidate) {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(current, _)| parsed.precedence_cmp(current).is_gt())
+        {
+            best = Some((parsed, candidate.to_string()));
+        }
+    }
+    Ok(best.map(|(_, version)| version))
 }
 
 fn parse_manifest_string_array(text: &str) -> Result<Vec<String>, String> {
@@ -1570,7 +1766,7 @@ impl Loader<'_> {
             ));
             return None;
         };
-        let PackageDependency::Path { path } = dependency else {
+        let PackageDependency::Path { path, requirement } = dependency else {
             self.diagnostics.push(Diagnostic::new(
                 DiagnosticStage::Parse,
                 span,
@@ -1597,6 +1793,29 @@ impl Loader<'_> {
                 return None;
             }
         };
+        if let Some(requirement) = requirement {
+            let Some(version) = manifest.version.as_deref() else {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    span,
+                    format!(
+                        "package dependency '{dependency_name}' requires version '{requirement}', but the path package has no [package].version"
+                    ),
+                ));
+                return None;
+            };
+            if !semver_requirement_matches(requirement, version) {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    span,
+                    format!(
+                        "package dependency '{dependency_name}' requires version '{requirement}', but path package '{}' is version '{version}'",
+                        manifest.name
+                    ),
+                ));
+                return None;
+            }
+        }
         let dependency_root = manifest
             .path
             .parent()

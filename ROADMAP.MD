@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 502
+- Completed baseline units: 503
 - Reported overall progress: **68%**
 - Current net scope growth after the baseline: 115 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -866,7 +866,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Safe ownership rules across FFI boundaries.
 - [ ] Platform implementation modules behind shared interfaces.
 - [ ] Package registry.
-- [ ] Semantic versioning/resolution.
+- [x] Semantic versioning/resolution: package dependencies now use a deterministic SemVer 2.0 precedence/matching engine for exact, caret, tilde, wildcard, prerelease, and build-metadata forms; the resolver selects the highest compatible candidate independent of registry transport. Local path dependencies may declare an optional `version` requirement that is enforced against the dependency package before any module import is loaded, while registry/Git fetching and reproducible pinning remain separately tracked by the registry/lockfile items.
 - [ ] Reproducible lockfile.
 - [ ] Native/plugin package metadata.
 - [ ] Per-platform package implementations.

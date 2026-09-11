@@ -15980,12 +15980,12 @@ fn package_manifest_parses_strict_dependency_sources() {
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\n\n[dependencies]\njson = \"^1.2.3\"\nlocal_utils = { path = \"../local-utils\" }\ngit_math = { git = \"https://github.com/example/math.git\", rev = \"0123456789abcdef\" }\n",
+        "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\n\n[dependencies]\njson = \"^1.2.3\"\nlocal_utils = { path = \"../local-utils\" }\nlocal_checked = { path = \"../local-checked\", version = \"~2.4.0\" }\ngit_math = { git = \"https://github.com/example/math.git\", rev = \"0123456789abcdef\" }\n",
     )
     .expect("dependency manifest should be writable");
 
     let parsed = fluxc::project::read_manifest(&manifest).expect("dependencies should parse");
-    assert_eq!(parsed.dependencies.len(), 3);
+    assert_eq!(parsed.dependencies.len(), 4);
     assert_eq!(
         parsed.dependencies.get("json"),
         Some(&fluxc::project::PackageDependency::Registry {
@@ -15995,7 +15995,15 @@ fn package_manifest_parses_strict_dependency_sources() {
     assert_eq!(
         parsed.dependencies.get("local_utils"),
         Some(&fluxc::project::PackageDependency::Path {
-            path: PathBuf::from("../local-utils")
+            path: PathBuf::from("../local-utils"),
+            requirement: None,
+        })
+    );
+    assert_eq!(
+        parsed.dependencies.get("local_checked"),
+        Some(&fluxc::project::PackageDependency::Path {
+            path: PathBuf::from("../local-checked"),
+            requirement: Some("~2.4.0".to_string()),
         })
     );
     assert_eq!(
@@ -16035,7 +16043,7 @@ fn package_manifest_parses_strict_dependency_sources() {
         (
             "mixed-source",
             "bad = { path = \"../pkg\", rev = \"abc\" }",
-            "path dependencies accept only the 'path' field",
+            "path dependencies accept only 'path' and optional 'version' fields",
         ),
         (
             "unknown-source",
@@ -16457,12 +16465,12 @@ fn package_import_namespace_loads_declared_path_dependencies() {
     fs::create_dir_all(dependency.join("src")).expect("dependency package should be writable");
     fs::write(
         app.join("flux.toml"),
-        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath_alias = { path = \"../math\" }\n",
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath_alias = { path = \"../math\", version = \"^1.2.0\" }\n",
     )
     .expect("app manifest should be writable");
     fs::write(
         dependency.join("flux.toml"),
-        "[package]\nname = \"flux-math\"\nentry = \"src/lib.flux\"\n",
+        "[package]\nname = \"flux-math\"\nversion = \"1.4.3\"\nentry = \"src/lib.flux\"\n",
     )
     .expect("dependency manifest should be writable");
     fs::write(
@@ -16497,6 +16505,18 @@ fn package_import_namespace_loads_declared_path_dependencies() {
     fluxc::project::check(&app).expect("package dependency imports should typecheck");
 
     fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath_alias = { path = \"../math\", version = \"~2.0.0\" }\n",
+    )
+    .expect("mismatched dependency requirement should be writable");
+    let errors = fluxc::project::check(&app)
+        .expect_err("path dependency version outside the requirement must fail");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("requires version '~2.0.0'")
+            && error.message.contains("is version '1.4.3'")
+    }));
+
+    fs::write(
         app.join("src/main.flux"),
         "import \"pkg:missing/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
     )
@@ -16527,6 +16547,46 @@ fn package_import_namespace_loads_declared_path_dependencies() {
     }));
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn semantic_version_resolution_selects_highest_compatible_release() {
+    assert_eq!(
+        fluxc::project::resolve_semver_requirement(
+            "^1.2.3",
+            ["1.2.3", "1.9.0", "2.0.0", "1.10.0", "1.10.0+build.7"],
+        )
+        .expect("caret requirement should resolve"),
+        Some("1.10.0".to_string())
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirement("~1.2.3", ["1.2.3", "1.2.9", "1.3.0"])
+            .expect("tilde requirement should resolve"),
+        Some("1.2.9".to_string())
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirement("^0.2.3", ["0.2.3", "0.2.9", "0.3.0"])
+            .expect("zero-major caret requirement should resolve"),
+        Some("0.2.9".to_string())
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirement(
+            "^1.2.3-beta.1",
+            ["1.2.3-beta.1", "1.2.3-beta.2", "1.2.3", "1.3.0-beta.1"],
+        )
+        .expect("explicit prerelease requirement should resolve"),
+        Some("1.2.3".to_string())
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirement("*", ["1.0.0-alpha", "0.9.0", "1.0.0"])
+            .expect("wildcard requirement should resolve stable releases"),
+        Some("1.0.0".to_string())
+    );
+    assert!(
+        fluxc::project::resolve_semver_requirement("^1.2.3", ["1.2"])
+            .expect_err("invalid registry candidate must fail deterministically")
+            .contains("invalid SemVer candidate")
+    );
 }
 
 #[test]
