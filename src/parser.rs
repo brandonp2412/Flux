@@ -1310,6 +1310,7 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "onExit"
                     | "onConfigurationChanged"
                     | "onLowMemory"
+                    | "onBackgroundJob"
                     | "onSaveState"
                     | "onRestoreState"
                     | "onOpenUrl"

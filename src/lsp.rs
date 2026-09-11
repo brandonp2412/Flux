@@ -1492,6 +1492,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "scheduleBackgroundJob",
+            3,
+            "fn android.scheduleBackgroundJob(jobId: i64, delayMs: i64) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "cancelBackgroundJob",
+            3,
+            "fn android.cancelBackgroundJob(jobId: i64) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "openUrl",
             3,
             "fn android.openUrl(url: str) -> void",
@@ -3085,6 +3099,22 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.finishActivity",
                         &[],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "scheduleBackgroundJob" => {
+                    return Some(signature_help_for_builtin(
+                        "android.scheduleBackgroundJob",
+                        &["jobId: i64", "delayMs: i64"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "cancelBackgroundJob" => {
+                    return Some(signature_help_for_builtin(
+                        "android.cancelBackgroundJob",
+                        &["jobId: i64"],
                         "void",
                         active_parameter,
                     ));
@@ -6530,6 +6560,11 @@ mod tests {
         assert!(android_items.contains("fn android.vibrate(durationMs: i64) -> void"));
         assert!(android_items.contains("fn android.keepScreenOn(enabled: bool) -> void"));
         assert!(android_items.contains("fn android.finishActivity() -> void"));
+        assert!(
+            android_items
+                .contains("fn android.scheduleBackgroundJob(jobId: i64, delayMs: i64) -> bool")
+        );
+        assert!(android_items.contains("fn android.cancelBackgroundJob(jobId: i64) -> void"));
         assert!(android_items.contains("\"label\":\"openUrl\""));
         assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
         assert!(android_items.contains("\"label\":\"openAppSettings\""));
@@ -7521,6 +7556,41 @@ mod tests {
         .expect("finishActivity should have signature help")
         .to_json();
         assert!(help.contains("fn android.finishActivity() -> void"));
+    }
+
+    #[test]
+    fn signature_help_supports_android_background_jobs() {
+        let uri = "file:///tmp/android-background-job-signature.flux";
+        let source = "fn main() -> i64 {\n    print(android.scheduleBackgroundJob(7, 1000))\n    android.cancelBackgroundJob(7)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "android.scheduleBackgroundJob(",
+                "fn android.scheduleBackgroundJob(jobId: i64, delayMs: i64) -> bool",
+            ),
+            (
+                "android.cancelBackgroundJob(",
+                "fn android.cancelBackgroundJob(jobId: i64) -> void",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("Android background job call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("Android background job call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

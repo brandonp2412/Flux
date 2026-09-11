@@ -17554,6 +17554,132 @@ fn main() -> i64 {
 }
 
 #[test]
+fn android_background_jobs_use_native_job_scheduler_with_compiler_owned_callback() {
+    let source = r#"
+fn background(jobId: i64) -> void {
+    print(jobId)
+}
+fn started() -> void {
+    print(android.scheduleBackgroundJob(7, 1000))
+    android.cancelBackgroundJob(8)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started, onBackgroundJob: background)
+"#;
+
+    check_source(source).expect("Android background jobs should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("Android background job app should analyze");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Android background jobs should lower directly");
+    assert!(generated.contains("static bool flux__android_schedule_background_job"));
+    assert!(generated.contains("static void flux__android_cancel_background_job"));
+    assert!(generated.contains("app/flux/runtime/FluxJobService"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxJobService_nativeRunJob"));
+    assert!(generated.contains("flux__fn_background((int64_t)job_id);"));
+    assert!(!generated.contains("MethodChannel"));
+    assert!(!generated.contains("plugin registry"));
+
+    let error = compile_to_c(source).expect_err("Android background jobs must reject Linux");
+    assert!(
+        error
+            .message
+            .contains("android.* platform APIs require the Android target")
+    );
+
+    let missing_callback = r#"
+fn started() -> void {
+    print(android.scheduleBackgroundJob(7, 1000))
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(missing_callback, SourceId::UNKNOWN)
+        .expect("background job fixture without callback should analyze before codegen");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("scheduled jobs without an application callback must fail");
+    assert!(error.message.contains(
+        "android.scheduleBackgroundJob requires application onBackgroundJob: fn(i64) -> void callback"
+    ));
+
+    let invalid = r#"
+fn badBackground(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(android.scheduleBackgroundJob("job", false))
+    android.cancelBackgroundJob("job")
+    return 0
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onBackgroundJob: badBackground)
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("Android background job contracts must be typed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.scheduleBackgroundJob jobId")
+            && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.cancelBackgroundJob jobId")
+            && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("application onBackgroundJob callback")
+            && error.message.contains("expected fn(i64) -> void")
+    }));
+
+    let unused = r#"
+fn background(jobId: i64) -> void {
+    print(jobId)
+}
+fn unused() -> void {
+    print(android.scheduleBackgroundJob(7, 1000))
+    android.cancelBackgroundJob(7)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onBackgroundJob: background)
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(unused, SourceId::UNKNOWN)
+        .expect("unreachable background job app should analyze");
+    let tree_shaken = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("unreachable Android background job code should tree-shake");
+    assert!(!tree_shaken.contains("flux__android_schedule_background_job("));
+    assert!(!tree_shaken.contains("flux__android_cancel_background_job("));
+}
+
+#[test]
 fn android_native_ui_lowers_flat_grid_text_button_and_click_dispatch() {
     let root = std::env::temp_dir().join(format!("flux-android-ui-codegen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

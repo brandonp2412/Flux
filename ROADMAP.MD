@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 478
+- Completed baseline units: 479
 - Reported overall progress: **65%**
 - Current net scope growth after the baseline: 79 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -728,7 +728,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Permissions.
   - [x] Notification permission is a typed Flux capability: API 33+ grant state can be queried/requested directly, older Android versions require no runtime prompt, and generated manifests include `POST_NOTIFICATIONS` only for reachable notification code.
   - [x] General Android permissions are declarative and typed without Gradle: `[android].permissions = ["android.permission.CAMERA", ...]` is parsed, validated, deterministically de-duplicated, and emitted as `<uses-permission>` entries; `android.permissionGranted(permission)` and `android.requestPermission(permission)` lower directly to compiler-owned framework JNI and appear in static checking plus LSP completion/signature help.
-- [ ] Background services/tasks where allowed.
+- [x] Background services/tasks where allowed: typed `android.scheduleBackgroundJob(jobId, delayMs)` registers a one-shot native Android `JobScheduler` job through compiler-generated `JobService`/DEX/manifest glue, `android.cancelBackgroundJob(jobId)` cancels it, and application `onBackgroundJob: fn(i64) -> void` receives execution directly in compiled Flux. Invalid negative/out-of-range job IDs and negative delays fail safely, unreachable scheduling/cancellation helpers and service glue tree-shake, and application source writes no Java/Kotlin/JNI bridge, method channel, serialization bus, or plugin registry. AndroidX WorkManager remains separately tracked above for richer constraints/chaining/guaranteed-work semantics.
 - [ ] Camera.
 - [ ] Microphone.
 - [ ] Media playback.

@@ -768,6 +768,17 @@ pub fn emit_c_for_target_with_source_metadata(
             "textInput.* APIs require an application target",
         ));
     }
+    if target == NativeTarget::Android
+        && runtime_usage.contains("flux__android_schedule_background_job(")
+        && program.application.as_ref().is_some_and(|application| {
+            application_metadata_function(application, "on_background_job").is_none()
+        })
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "android.scheduleBackgroundJob requires application onBackgroundJob: fn(i64) -> void callback",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -1043,6 +1054,12 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_keep_screen_on(");
     let uses_android_finish_activity =
         uses_android && runtime_usage.contains("flux__android_finish_activity(");
+    let uses_android_schedule_background_job =
+        uses_android && runtime_usage.contains("flux__android_schedule_background_job(");
+    let uses_android_cancel_background_job =
+        uses_android && runtime_usage.contains("flux__android_cancel_background_job(");
+    let uses_android_background_jobs =
+        uses_android_schedule_background_job || uses_android_cancel_background_job;
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_open_notification_settings =
         uses_android && runtime_usage.contains("flux__android_open_notification_settings(");
@@ -1140,6 +1157,7 @@ fn emit_runtime_prelude(
     let uses_android_platform_api = uses_android_vibrate
         || (uses_android_keep_screen_on && uses_android_generated_ui)
         || (uses_android_finish_activity && uses_android_generated_ui)
+        || uses_android_background_jobs
         || uses_android_open_url
         || uses_android_open_app_settings
         || uses_android_open_notification_settings
@@ -1194,6 +1212,23 @@ fn emit_runtime_prelude(
         out.push_str("        (*vm)->DetachCurrentThread(vm);\n");
         out.push_str("    }\n");
         out.push_str("}\n");
+    }
+    if uses_android_background_jobs {
+        if uses_android_schedule_background_job {
+            out.push_str("static bool flux__android_schedule_background_job(int64_t job_id, int64_t delay_ms) {\n");
+            out.push_str("    if (job_id < 0 || job_id > INT32_MAX || delay_ms < 0 || flux__android_activity == NULL) return false;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
+            out.push_str("    jclass service_class = (*env)->FindClass(env, \"app/flux/runtime/FluxJobService\"); bool scheduled = false;\n");
+            out.push_str("    if (service_class != NULL) { jmethodID method = (*env)->GetStaticMethodID(env, service_class, \"schedule\", \"(Landroid/content/Context;JJ)Z\"); if (method != NULL) scheduled = (*env)->CallStaticBooleanMethod(env, service_class, method, flux__android_activity->clazz, (jlong)job_id, (jlong)delay_ms) == JNI_TRUE; }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); scheduled = false; } if (service_class != NULL) (*env)->DeleteLocalRef(env, service_class); flux__android_release_env(detach); return scheduled;\n}\n");
+        }
+        if uses_android_cancel_background_job {
+            out.push_str("static void flux__android_cancel_background_job(int64_t job_id) {\n");
+            out.push_str("    if (job_id < 0 || job_id > INT32_MAX || flux__android_activity == NULL) return;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+            out.push_str("    jclass service_class = (*env)->FindClass(env, \"app/flux/runtime/FluxJobService\"); if (service_class != NULL) { jmethodID method = (*env)->GetStaticMethodID(env, service_class, \"cancel\", \"(Landroid/content/Context;J)V\"); if (method != NULL) (*env)->CallStaticVoidMethod(env, service_class, method, flux__android_activity->clazz, (jlong)job_id); }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (service_class != NULL) (*env)->DeleteLocalRef(env, service_class); flux__android_release_env(detach);\n}\n");
+        }
     }
     if uses_android_open_url
         || uses_android_share
@@ -5431,6 +5466,15 @@ fn emit_android_native_application(
         out.push_str("    (void)env;\n    (void)url;\n");
     }
     out.push_str("}\n\n");
+
+    if let Some(function) = application_metadata_function(application, "on_background_job") {
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxJobService_nativeRunJob(JNIEnv *env, jobject service, jint job_id) {\n    (void)env;\n    (void)service;\n");
+        out.push_str(&format!(
+            "    {}((int64_t)job_id);\n",
+            function_c_name(function)
+        ));
+        out.push_str("}\n\n");
+    }
 
     out.push_str("JNIEXPORT jstring JNICALL Java_app_flux_runtime_FluxActivity_nativeSaveState(JNIEnv *env, jobject activity) {\n    (void)activity;\n");
     if let Some(function) = application_metadata_function(application, "on_save_state") {
@@ -15820,6 +15864,38 @@ fn emit_qualified_call(
                 }
                 return Ok((
                     "flux__android_finish_activity()".to_string(),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "scheduleBackgroundJob" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let job_id = emit_expr(&args[0], env, signatures)?;
+                let delay_ms = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__android_schedule_background_job({}, {})",
+                        job_id.code, delay_ms.code
+                    ),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "cancelBackgroundJob" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let job_id = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_cancel_background_job({})", job_id.code),
                     Vec::new(),
                     None,
                 ));

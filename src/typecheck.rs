@@ -1044,6 +1044,10 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                     params: Vec::new(),
                     returns: Vec::new(),
                 }),
+                "onBackgroundJob" => Some(Type::Function {
+                    params: vec![Type::I64],
+                    returns: Vec::new(),
+                }),
                 "onSaveState" => Some(Type::Function {
                     params: Vec::new(),
                     returns: vec![Type::Str],
@@ -6953,6 +6957,46 @@ fn check_qualified_call(
                         ),
                     ));
                 }
+                return Ok(Vec::new());
+            }
+            "scheduleBackgroundJob" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.scheduleBackgroundJob expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                for (index, label) in [(0, "jobId"), (1, "delayMs")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::I64,
+                        &actual,
+                        &format!("android.scheduleBackgroundJob {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            "cancelBackgroundJob" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.cancelBackgroundJob expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "android.cancelBackgroundJob jobId",
+                )?;
                 return Ok(Vec::new());
             }
             "openUrl" => {

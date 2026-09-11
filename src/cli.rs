@@ -3843,6 +3843,61 @@ fn android_has_generated_activity(c_source: &str) -> bool {
     c_source.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi")
 }
 
+fn android_has_generated_job_service(c_source: &str) -> bool {
+    c_source.contains("flux__android_schedule_background_job(")
+        || c_source.contains("flux__android_cancel_background_job(")
+}
+
+fn android_has_generated_java(c_source: &str) -> bool {
+    android_has_generated_activity(c_source) || android_has_generated_job_service(c_source)
+}
+
+fn android_job_service_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+import android.app.job.JobInfo;
+import android.app.job.JobParameters;
+import android.app.job.JobScheduler;
+import android.app.job.JobService;
+import android.content.ComponentName;
+import android.content.Context;
+
+public final class FluxJobService extends JobService {
+    static { System.loadLibrary("flux"); }
+
+    private native void nativeRunJob(int jobId);
+
+    public static boolean schedule(Context context, long jobId, long delayMs) {
+        if (context == null || jobId < 0 || jobId > Integer.MAX_VALUE || delayMs < 0) return false;
+        JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        if (scheduler == null) return false;
+        ComponentName component = new ComponentName(context, FluxJobService.class);
+        JobInfo job = new JobInfo.Builder((int) jobId, component)
+                .setMinimumLatency(delayMs)
+                .build();
+        return scheduler.schedule(job) == JobScheduler.RESULT_SUCCESS;
+    }
+
+    public static void cancel(Context context, long jobId) {
+        if (context == null || jobId < 0 || jobId > Integer.MAX_VALUE) return;
+        JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        if (scheduler != null) scheduler.cancel((int) jobId);
+    }
+
+    @Override
+    public boolean onStartJob(JobParameters params) {
+        nativeRunJob(params.getJobId());
+        return false;
+    }
+
+    @Override
+    public boolean onStopJob(JobParameters params) {
+        return false;
+    }
+}
+"#
+}
+
 fn android_activity_java_source(c_source: &str) -> String {
     let source = r#"package app.flux.runtime;
 
@@ -4778,7 +4833,7 @@ fn compile_android_activity_dex(
     staging: &Path,
     dex_output: &Path,
 ) -> Result<(), CliError> {
-    if !android_has_generated_activity(c_source) {
+    if !android_has_generated_java(c_source) {
         return Ok(());
     }
     let d8 = toolchain.build_tools.join("d8");
@@ -4796,18 +4851,29 @@ fn compile_android_activity_dex(
         .map_err(|error| format!("failed to create generated Android class directory: {error}"))?;
     fs::create_dir_all(dex_output)
         .map_err(|error| format!("failed to create generated Android dex directory: {error}"))?;
-    let java_source = java_dir.join("FluxActivity.java");
-    fs::write(&java_source, android_activity_java_source(c_source))
-        .map_err(|error| format!("failed to write compiler-generated Android activity: {error}"))?;
-    run_checked(
-        Command::new("javac")
-            .args(["-source", "8", "-target", "8", "-classpath"])
-            .arg(&toolchain.android_jar)
-            .arg("-d")
-            .arg(&classes_dir)
-            .arg(&java_source),
-        "javac compiler-generated Android activity",
-    )?;
+    let mut java_sources = Vec::new();
+    if android_has_generated_activity(c_source) {
+        let java_source = java_dir.join("FluxActivity.java");
+        fs::write(&java_source, android_activity_java_source(c_source)).map_err(|error| {
+            format!("failed to write compiler-generated Android activity: {error}")
+        })?;
+        java_sources.push(java_source);
+    }
+    if android_has_generated_job_service(c_source) {
+        let java_source = java_dir.join("FluxJobService.java");
+        fs::write(&java_source, android_job_service_java_source()).map_err(|error| {
+            format!("failed to write compiler-generated Android job service: {error}")
+        })?;
+        java_sources.push(java_source);
+    }
+    let mut javac = Command::new("javac");
+    javac
+        .args(["-source", "8", "-target", "8", "-classpath"])
+        .arg(&toolchain.android_jar)
+        .arg("-d")
+        .arg(&classes_dir)
+        .args(&java_sources);
+    run_checked(&mut javac, "javac compiler-generated Android runtime glue")?;
     let runtime_classes = classes_dir.join("app/flux/runtime");
     let mut generated_classes = fs::read_dir(&runtime_classes)
         .map_err(|error| {
@@ -4823,12 +4889,23 @@ fn compile_android_activity_dex(
         })
         .collect::<Vec<_>>();
     generated_classes.sort();
-    let activity_class = runtime_classes.join("FluxActivity.class");
-    if !generated_classes.iter().any(|path| path == &activity_class) {
-        return Err(CliError::Message(format!(
-            "javac did not produce the compiler-generated Android activity class '{}'",
-            activity_class.display()
-        )));
+    if android_has_generated_activity(c_source) {
+        let activity_class = runtime_classes.join("FluxActivity.class");
+        if !generated_classes.iter().any(|path| path == &activity_class) {
+            return Err(CliError::Message(format!(
+                "javac did not produce the compiler-generated Android activity class '{}'",
+                activity_class.display()
+            )));
+        }
+    }
+    if android_has_generated_job_service(c_source) {
+        let service_class = runtime_classes.join("FluxJobService.class");
+        if !generated_classes.iter().any(|path| path == &service_class) {
+            return Err(CliError::Message(format!(
+                "javac did not produce the compiler-generated Android job service class '{}'",
+                service_class.display()
+            )));
+        }
     }
     let mut d8_command = Command::new(&d8);
     d8_command
@@ -4982,7 +5059,7 @@ fn build_android_apk(
     compile_android_native_library(c_source, manifest, mode, abi, &toolchain.ndk, &staging)?;
     let dex_dir = staging.join("dex");
     compile_android_activity_dex(c_source, manifest, &toolchain, &staging, &dex_dir)?;
-    if android_has_generated_activity(c_source) {
+    if android_has_generated_java(c_source) {
         fs::copy(dex_dir.join("classes.dex"), staging.join("classes.dex"))
             .map_err(|error| format!("failed to stage compiler-generated Android dex: {error}"))?;
     }
@@ -5013,7 +5090,7 @@ fn build_android_apk(
         .args(["-q", "-r"])
         .arg(&unsigned)
         .arg("lib");
-    if android_has_generated_activity(c_source) {
+    if android_has_generated_java(c_source) {
         zip.arg("classes.dex");
     }
     run_checked(&mut zip, "zip Android application payload")?;
@@ -5090,7 +5167,12 @@ fn android_manifest_xml(
         })
         .collect::<String>();
     let generated_activity = android_has_generated_activity(c_source);
-    let has_code = if generated_activity { "true" } else { "false" };
+    let generated_job_service = android_has_generated_job_service(c_source);
+    let has_code = if android_has_generated_java(c_source) {
+        "true"
+    } else {
+        "false"
+    };
     let activity_name = if generated_activity {
         "app.flux.runtime.FluxActivity"
     } else {
@@ -5117,8 +5199,13 @@ fn android_manifest_xml(
     } else {
         " android:launchMode=\"singleTop\""
     };
+    let background_service_xml = if generated_job_service {
+        "        <service android:name=\"app.flux.runtime.FluxJobService\" android:permission=\"android.permission.BIND_JOB_SERVICE\" android:exported=\"false\" />\n"
+    } else {
+        ""
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\"{activity_launch_mode}{activity_config}>\n{native_activity_metadata}            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n{deep_link_xml}        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\"{activity_launch_mode}{activity_config}>\n{native_activity_metadata}            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n{deep_link_xml}        </activity>\n{background_service_xml}    </application>\n</manifest>\n",
         manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
@@ -5751,12 +5838,12 @@ mod tests {
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_manifest_xml, android_publish_options, build_native_instrumented, build_options,
-        debug_options, demangle_profile_symbols, display_flux_symbol, json_string,
-        native_build_cache_path_configured, native_cache_entry_is_valid, output_with_timeout,
-        package_artifact_name, package_options, parse_adb_devices, profile_options,
-        profile_report_addresses, select_android_run_target, split_symbols_options,
-        symbolize_options, test_options, validate_android_publish_manifest,
+        android_job_service_java_source, android_manifest_xml, android_publish_options,
+        build_native_instrumented, build_options, debug_options, demangle_profile_symbols,
+        display_flux_symbol, json_string, native_build_cache_path_configured,
+        native_cache_entry_is_valid, output_with_timeout, package_artifact_name, package_options,
+        parse_adb_devices, profile_options, profile_report_addresses, select_android_run_target,
+        split_symbols_options, symbolize_options, test_options, validate_android_publish_manifest,
         waydroid_status_is_running, write_native_cache_metadata,
     };
 
@@ -6333,6 +6420,25 @@ mod tests {
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
         assert!(plain.contains("android:hasCode=\"false\""));
         assert!(plain.contains("android:name=\"android.app.NativeActivity\""));
+        assert!(!plain.contains("FluxJobService"));
+
+        let generated_jobs = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "static bool flux__android_schedule_background_job(int64_t job_id, int64_t delay_ms);",
+        );
+        assert!(generated_jobs.contains("android:hasCode=\"true\""));
+        assert!(generated_jobs.contains("android:name=\"android.app.NativeActivity\""));
+        assert!(generated_jobs.contains("android:name=\"app.flux.runtime.FluxJobService\""));
+        assert!(generated_jobs.contains("android.permission.BIND_JOB_SERVICE"));
+        assert!(generated_jobs.contains("android:exported=\"false\""));
+        let job_service = android_job_service_java_source();
+        assert!(job_service.contains("extends JobService"));
+        assert!(job_service.contains("new JobInfo.Builder"));
+        assert!(job_service.contains(".setMinimumLatency(delayMs)"));
+        assert!(job_service.contains("nativeRunJob(params.getJobId())"));
+        assert!(job_service.contains("JobScheduler.RESULT_SUCCESS"));
+        assert!(!job_service.contains("MethodChannel"));
 
         let mut deep_link_manifest = manifest.clone();
         deep_link_manifest.android.deep_links = vec![
