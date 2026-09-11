@@ -1388,6 +1388,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn clipboard.setText(text: str) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "readText",
+            3,
+            "fn clipboard.readText(callback: fn(str) -> void) -> void",
+        );
         return true;
     }
     if namespace == "focus" {
@@ -2858,13 +2865,24 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "clipboard" {
-            if member == "setText" {
-                return Some(signature_help_for_builtin(
-                    "clipboard.setText",
-                    &["text: str"],
-                    "void",
-                    active_parameter,
-                ));
+            match member {
+                "setText" => {
+                    return Some(signature_help_for_builtin(
+                        "clipboard.setText",
+                        &["text: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "readText" => {
+                    return Some(signature_help_for_builtin(
+                        "clipboard.readText",
+                        &["callback: fn(str) -> void"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
             }
         }
         if namespace == "focus" {
@@ -6308,6 +6326,9 @@ mod tests {
         ))
         .to_json();
         assert!(clipboard_items.contains("fn clipboard.setText(text: str) -> void"));
+        assert!(
+            clipboard_items.contains("fn clipboard.readText(callback: fn(str) -> void) -> void")
+        );
 
         let focus_line = source
             .lines()
@@ -7426,7 +7447,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_clipboard() {
         let uri = "file:///tmp/android-clipboard-signature.flux";
-        let source = "fn main() -> i64 {\n    clipboard.setText(\"portable\")\n    android.setClipboardText(\"copied\")\n    return 0\n}\n";
+        let source = "fn receive(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    clipboard.setText(\"portable\")\n    clipboard.readText(receive)\n    android.setClipboardText(\"copied\")\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let portable_needle = "clipboard.setText(";
         let portable_line_index = source
@@ -7446,6 +7467,24 @@ mod tests {
         .expect("portable clipboard call should have signature help")
         .to_json();
         assert!(portable_help.contains("fn clipboard.setText(text: str) -> void"));
+        let read_needle = "clipboard.readText(";
+        let read_line_index = source
+            .lines()
+            .position(|line| line.contains(read_needle))
+            .expect("portable clipboard read line should exist");
+        let read_line = source.lines().nth(read_line_index).unwrap();
+        let read_cursor = read_line.find(read_needle).unwrap() + read_needle.len();
+        let read_help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            read_line_index,
+            read_cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("portable clipboard read should have signature help")
+        .to_json();
+        assert!(read_help.contains("fn clipboard.readText(callback: fn(str) -> void) -> void"));
         let needle = "android.setClipboardText(";
         let line_index = source
             .lines()

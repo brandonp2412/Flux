@@ -738,7 +738,7 @@ pub fn emit_c_for_target_with_source_metadata(
             "net.* APIs require a desktop/server target",
         ));
     }
-    if runtime_usage.contains("flux__clipboard_set_text(") && program.application.is_none() {
+    if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
             "clipboard.* APIs require an application target",
@@ -990,6 +990,7 @@ fn emit_runtime_prelude(
 
     let uses_locale = runtime_usage.contains("flux__locale_");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
+    let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
     let uses_focus_next_in = runtime_usage.contains("flux__focus_next_in(");
@@ -1032,6 +1033,9 @@ fn emit_runtime_prelude(
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
     let uses_android_set_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
+    let uses_android_read_clipboard_text = uses_android
+        && (runtime_usage.contains("flux__android_read_clipboard_text(")
+            || uses_clipboard_read_text);
     let uses_android_show_keyboard =
         uses_android && runtime_usage.contains("flux__android_show_keyboard(");
     let uses_android_hide_keyboard =
@@ -1115,6 +1119,7 @@ fn emit_runtime_prelude(
         || uses_android_open_notification_settings
         || uses_android_share
         || uses_android_set_clipboard_text
+        || uses_android_read_clipboard_text
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -1836,6 +1841,30 @@ fn emit_runtime_prelude(
         out.push_str("    if (clipboard != NULL) gdk_clipboard_set_text(clipboard, text);\n");
         out.push_str("}\n");
     }
+    if uses_clipboard_read_text && uses_gtk {
+        out.push_str(
+            "typedef struct { void (*callback)(const char *); } flux__clipboard_read_context;\n",
+        );
+        out.push_str("static void flux__clipboard_read_text_finished(GObject *source, GAsyncResult *result, gpointer user_data) {\n");
+        out.push_str("    flux__clipboard_read_context *context = (flux__clipboard_read_context *)user_data;\n");
+        out.push_str("    GError *error = NULL;\n");
+        out.push_str("    char *text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), result, &error);\n");
+        out.push_str("    if (text != NULL && context != NULL && context->callback != NULL) context->callback(text);\n");
+        out.push_str("    if (text != NULL) g_free(text);\n");
+        out.push_str("    if (error != NULL) g_error_free(error);\n");
+        out.push_str("    g_free(context);\n");
+        out.push_str("}\n");
+        out.push_str("static void flux__clipboard_read_text(void (*callback)(const char *)) {\n");
+        out.push_str("    if (callback == NULL) return;\n");
+        out.push_str("    GdkDisplay *display = gdk_display_get_default();\n");
+        out.push_str("    if (display == NULL) return;\n");
+        out.push_str("    GdkClipboard *clipboard = gdk_display_get_clipboard(display);\n");
+        out.push_str("    if (clipboard == NULL) return;\n");
+        out.push_str("    flux__clipboard_read_context *context = g_new0(flux__clipboard_read_context, 1);\n");
+        out.push_str("    context->callback = callback;\n");
+        out.push_str("    gdk_clipboard_read_text_async(clipboard, NULL, flux__clipboard_read_text_finished, context);\n");
+        out.push_str("}\n");
+    }
     if uses_android_set_clipboard_text {
         out.push_str("static void flux__android_set_clipboard_text(const char *text) {\n");
         out.push_str("    if (text == NULL || flux__android_activity == NULL) return;\n");
@@ -1891,8 +1920,88 @@ fn emit_runtime_prelude(
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
+    if uses_android_read_clipboard_text {
+        out.push_str(
+            "static void flux__android_read_clipboard_text(void (*callback)(const char *)) {\n",
+        );
+        out.push_str("    if (callback == NULL || flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = NULL; jclass manager_class = NULL; jclass clip_class = NULL; jclass item_class = NULL; jclass text_class = NULL;\n");
+        out.push_str("    jstring service_name = NULL; jstring text_string = NULL;\n");
+        out.push_str("    jobject manager = NULL; jobject clip = NULL; jobject item = NULL; jobject text = NULL;\n");
+        out.push_str("    const char *utf8 = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_service = (*env)->GetMethodID(env, activity_class, \"getSystemService\", \"(Ljava/lang/String;)Ljava/lang/Object;\");\n");
+        out.push_str("    if (get_service == NULL) goto done;\n");
+        out.push_str("    service_name = (*env)->NewStringUTF(env, \"clipboard\");\n");
+        out.push_str("    if (service_name == NULL) goto done;\n");
+        out.push_str(
+            "    manager = (*env)->CallObjectMethod(env, activity, get_service, service_name);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || manager == NULL) goto done;\n");
+        out.push_str("    manager_class = (*env)->GetObjectClass(env, manager);\n");
+        out.push_str("    if (manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_primary_clip = (*env)->GetMethodID(env, manager_class, \"getPrimaryClip\", \"()Landroid/content/ClipData;\");\n");
+        out.push_str("    if (get_primary_clip == NULL) goto done;\n");
+        out.push_str("    clip = (*env)->CallObjectMethod(env, manager, get_primary_clip);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || clip == NULL) goto done;\n");
+        out.push_str("    clip_class = (*env)->GetObjectClass(env, clip);\n");
+        out.push_str("    if (clip_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_item_count = (*env)->GetMethodID(env, clip_class, \"getItemCount\", \"()I\");\n");
+        out.push_str("    jmethodID get_item_at = (*env)->GetMethodID(env, clip_class, \"getItemAt\", \"(I)Landroid/content/ClipData$Item;\");\n");
+        out.push_str("    if (get_item_count == NULL || get_item_at == NULL) goto done;\n");
+        out.push_str("    jint item_count = (*env)->CallIntMethod(env, clip, get_item_count);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || item_count <= 0) goto done;\n");
+        out.push_str("    item = (*env)->CallObjectMethod(env, clip, get_item_at, (jint)0);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || item == NULL) goto done;\n");
+        out.push_str("    item_class = (*env)->GetObjectClass(env, item);\n");
+        out.push_str("    if (item_class == NULL) goto done;\n");
+        out.push_str("    jmethodID coerce_to_text = (*env)->GetMethodID(env, item_class, \"coerceToText\", \"(Landroid/content/Context;)Ljava/lang/CharSequence;\");\n");
+        out.push_str("    if (coerce_to_text == NULL) goto done;\n");
+        out.push_str("    text = (*env)->CallObjectMethod(env, item, coerce_to_text, activity);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || text == NULL) goto done;\n");
+        out.push_str("    text_class = (*env)->GetObjectClass(env, text);\n");
+        out.push_str("    if (text_class == NULL) goto done;\n");
+        out.push_str("    jmethodID to_string = (*env)->GetMethodID(env, text_class, \"toString\", \"()Ljava/lang/String;\");\n");
+        out.push_str("    if (to_string == NULL) goto done;\n");
+        out.push_str(
+            "    text_string = (jstring)(*env)->CallObjectMethod(env, text, to_string);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env) || text_string == NULL) goto done;\n");
+        out.push_str("    utf8 = (*env)->GetStringUTFChars(env, text_string, NULL);\n");
+        out.push_str("    if (utf8 != NULL) callback(utf8);\n");
+        out.push_str("done:\n");
+        out.push_str(
+            "    if (utf8 != NULL) (*env)->ReleaseStringUTFChars(env, text_string, utf8);\n",
+        );
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (text_string != NULL) (*env)->DeleteLocalRef(env, text_string);\n");
+        out.push_str("    if (text_class != NULL) (*env)->DeleteLocalRef(env, text_class);\n");
+        out.push_str("    if (text != NULL) (*env)->DeleteLocalRef(env, text);\n");
+        out.push_str("    if (item_class != NULL) (*env)->DeleteLocalRef(env, item_class);\n");
+        out.push_str("    if (item != NULL) (*env)->DeleteLocalRef(env, item);\n");
+        out.push_str("    if (clip_class != NULL) (*env)->DeleteLocalRef(env, clip_class);\n");
+        out.push_str("    if (clip != NULL) (*env)->DeleteLocalRef(env, clip);\n");
+        out.push_str(
+            "    if (manager_class != NULL) (*env)->DeleteLocalRef(env, manager_class);\n",
+        );
+        out.push_str("    if (manager != NULL) (*env)->DeleteLocalRef(env, manager);\n");
+        out.push_str("    if (service_name != NULL) (*env)->DeleteLocalRef(env, service_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
     if uses_clipboard_set_text && uses_android {
         out.push_str("static inline void flux__clipboard_set_text(const char *text) { flux__android_set_clipboard_text(text); }\n");
+    }
+    if uses_clipboard_read_text && uses_android {
+        out.push_str("static inline void flux__clipboard_read_text(void (*callback)(const char *)) { flux__android_read_clipboard_text(callback); }\n");
     }
     if uses_android_open_url {
         out.push_str("static void flux__android_open_url(const char *url) {\n");
@@ -14695,15 +14804,16 @@ fn emit_qualified_call(
         }
     }
     if namespace == "clipboard" {
-        if !named_args.is_empty() || args.len() != 1 || name != "setText" {
+        if !named_args.is_empty() || args.len() != 1 {
             return Err(diag(span, "invalid clipboard call reached code generation"));
         }
         let value = emit_expr(&args[0], env, signatures)?;
-        return Ok((
-            format!("flux__clipboard_set_text({})", value.code),
-            Vec::new(),
-            None,
-        ));
+        let helper = match name {
+            "setText" => "flux__clipboard_set_text",
+            "readText" => "flux__clipboard_read_text",
+            _ => return Err(diag(span, "invalid clipboard call reached code generation")),
+        };
+        return Ok((format!("{helper}({})", value.code), Vec::new(), None));
     }
     if namespace == "focus" {
         if !named_args.is_empty() {

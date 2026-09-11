@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 474
+- Completed baseline units: 475
 - Reported overall progress: **64%**
 - Current net scope growth after the baseline: 76 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -602,7 +602,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions, while Android registers the same canonical shortcut on the generated Activity and dispatches matching non-repeating native `KeyEvent` key-downs through the button's existing typed `onPress` action. Both backends reject unsupported modifier/key forms rather than silently diverging.
   - [x] Common `shortcutScope: "window" | "focused"` defaults to app-window scope and can instead require the target native element to own focus: Linux maps the two contracts to GTK global/local shortcut-controller scopes, while Android filters Activity-level key dispatch against the current native focused View before calling the typed Flux action. App-window shortcuts support any built-in element with a typed `onTap` action while Buttons continue to prefer `onPress`, and the complete composed view tree rejects canonical conflicts at compile time, including repeated custom-view instances and equivalent modifier/key spellings. Generic controls do not synthesize visible accelerator labels; platform-native accelerator/menu presentation belongs to the pending menus/context-menus surface, while ordinary visible hints remain explicit text/tooltip authoring.
 - [ ] Context menus.
-- [ ] Clipboard; portable `clipboard.setText(text)` is implemented on Linux/Android, while reads remain blocked on owned-string semantics rather than returning unsafe borrowed GUI storage.
+- [x] Clipboard for the current native application backends: portable `clipboard.setText(text)` writes native plain text on Linux/Android, while `clipboard.readText(callback)` safely lends clipboard text only for the duration of an exact `fn(str) -> void` callback instead of returning an ownership-ambiguous borrowed GUI string. Linux uses GDK's asynchronous text-read API and owns/frees the native result around callback dispatch; Android reads/coerces the primary `ClipData` item through the compiler-owned JNI boundary and releases UTF-8 storage immediately after the callback. LSP completion/signature help expose both operations, unreachable helpers tree-shake, and headless use remains rejected.
 - [x] Native IME/text-composition support on the current Linux/Android backends: Flux `TextInput` lowers to native GTK `GtkEntry`/`GtkTextView` and Android `EditText` controls so ordinary composition remains owned by each platform input-method stack rather than a compiler key-event emulation layer. Android snapshots/restores composing spans together with text selection across the remaining compiler-required native hierarchy rebuilds; Linux ordinary input does not install a raw key controller unless the source explicitly requests key/submit interception. Portable programmatic composition APIs remain part of the richer text-state follow-up rather than blocking native IME correctness.
 
 # Milestone 13 — Navigation

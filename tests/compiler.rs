@@ -15915,10 +15915,14 @@ app Screen(onSaveState: badSave, onRestoreState: badRestore)
 }
 
 #[test]
-fn portable_clipboard_text_write_lowers_to_native_application_backends() {
+fn portable_clipboard_text_access_lowers_to_native_application_backends() {
     let source = r#"
+fn received(value: str) -> void {
+    print(value)
+}
 fn started() -> void {
     clipboard.setText("copied from Flux")
+    clipboard.readText(received)
 }
 view Screen {
     grid columns: 1fr
@@ -15927,12 +15931,19 @@ view Screen {
 app Screen(onStart: started)
 "#;
 
-    check_source(source).expect("portable clipboard write should typecheck");
-    let linux = compile_to_c(source).expect("portable clipboard write should lower on Linux");
+    check_source(source).expect("portable clipboard access should typecheck");
+    let linux = compile_to_c(source).expect("portable clipboard access should lower on Linux");
     assert!(linux.contains("static void flux__clipboard_set_text(const char *text)"));
     assert!(linux.contains("gdk_display_get_clipboard(display)"));
     assert!(linux.contains("gdk_clipboard_set_text(clipboard, text)"));
+    assert!(
+        linux.contains("static void flux__clipboard_read_text(void (*callback)(const char *))")
+    );
+    assert!(linux.contains("gdk_clipboard_read_text_async"));
+    assert!(linux.contains("gdk_clipboard_read_text_finish"));
+    assert!(linux.contains("context->callback(text)"));
     assert!(!linux.contains("flux__android_set_clipboard_text"));
+    assert!(!linux.contains("flux__android_read_clipboard_text"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("portable clipboard app should analyze");
@@ -15942,16 +15953,34 @@ app Screen(onStart: started)
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Android,
     )
-    .expect("portable clipboard write should lower on Android");
+    .expect("portable clipboard access should lower on Android");
     assert!(android.contains("static void flux__android_set_clipboard_text(const char *text)"));
     assert!(android.contains("android/content/ClipData"));
     assert!(android.contains("static inline void flux__clipboard_set_text(const char *text)"));
     assert!(android.contains("flux__android_set_clipboard_text(text)"));
+    assert!(
+        android.contains(
+            "static void flux__android_read_clipboard_text(void (*callback)(const char *))"
+        )
+    );
+    assert!(android.contains("getPrimaryClip"));
+    assert!(android.contains("coerceToText"));
+    assert!(android.contains("GetStringUTFChars"));
+    assert!(
+        android.contains(
+            "static inline void flux__clipboard_read_text(void (*callback)(const char *))"
+        )
+    );
+    assert!(android.contains("flux__android_read_clipboard_text(callback)"));
     assert!(!android.contains("gdk_display_get_clipboard"));
 
     let unused = r#"
+fn ignored(value: str) -> void {
+    print(value)
+}
 fn unused() -> void {
     clipboard.setText("unused")
+    clipboard.readText(ignored)
 }
 view Screen {
     grid columns: 1fr
@@ -15961,6 +15990,7 @@ app Screen
 "#;
     let tree_shaken = compile_to_c(unused).expect("unreachable clipboard code should tree-shake");
     assert!(!tree_shaken.contains("flux__clipboard_set_text"));
+    assert!(!tree_shaken.contains("flux__clipboard_read_text"));
     assert!(!tree_shaken.contains("gdk_display_get_clipboard"));
 
     let headless = r#"
@@ -15978,14 +16008,22 @@ fn main() -> i64 {
     );
 
     let invalid = r#"
+fn wrong(value: i64) -> void {
+    print(value)
+}
 fn main() -> i64 {
     clipboard.setText(42)
+    clipboard.readText(wrong)
     return 0
 }
 "#;
-    let errors = check_source_all(invalid).expect_err("clipboard text must be statically typed");
+    let errors = check_source_all(invalid).expect_err("clipboard access must be statically typed");
     assert!(errors.iter().any(|error| {
         error.message.contains("clipboard.setText text") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("clipboard.readText callback")
+            && error.message.contains("expected fn(str) -> void")
     }));
 }
 

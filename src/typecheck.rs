@@ -6769,6 +6769,26 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "clipboard.setText text")?;
                 return Ok(Vec::new());
             }
+            "readText" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("clipboard.readText expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[0].span,
+                    &expected,
+                    &actual,
+                    "clipboard.readText callback",
+                )?;
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,
