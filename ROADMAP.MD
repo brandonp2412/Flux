@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 484
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 95 checkbox items
+- Current net scope growth after the baseline: 96 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
