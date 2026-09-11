@@ -11295,6 +11295,64 @@ app Status
 }
 
 #[test]
+fn eliminates_redundant_double_boolean_negation() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn collapse(value: bool) -> bool {
+    return !!value
+}
+
+fn collapseEffect(value: bool) -> bool {
+    return !!observe(value)
+}
+
+fn retainSingle(value: bool) -> bool {
+    return !observe(value)
+}
+
+fn main() -> i64 {
+    print(collapse(true))
+    print(collapseEffect(false))
+    print(retainSingle(true))
+    return 0
+}
+"#;
+
+    check_source(source).expect("double boolean negation should typecheck");
+    let generated = compile_to_c(source).expect("double boolean negation should lower natively");
+    assert!(generated.contains("static inline bool flux__fn_collapse"));
+    assert!(generated.contains("return flux__local_value;"));
+    assert!(generated.contains("return flux__fn_observe(flux__local_value);"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "double-negated effectful expressions must still evaluate exactly once",
+    );
+    assert!(generated.contains("return (!flux__fn_observe(flux__local_value));"));
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto
+    state active: bool = true
+    Text label at 1,1
+        text: "Ready"
+        visible: !!active
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui).expect("UI double negation should share lowering");
+    assert!(!ui_generated.contains("(!((!(flux__ui_state_active))))"));
+    assert!(ui_generated.contains("flux__ui_state_active"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
