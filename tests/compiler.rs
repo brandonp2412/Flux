@@ -11936,6 +11936,62 @@ app Invalid
 }
 
 #[test]
+fn user_constants_are_zero_cost_design_tokens_for_native_ui() {
+    let source = r##"
+const cardGap: i64 = 18
+const cardRadius: i64 = 14
+const brandSurface: str = "#16324F"
+const brandOutline: str = "#5B8DB8"
+
+view Tokens {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Continue"
+        margin: cardGap
+        padding: spaceSm
+        radius: cardRadius
+        backgroundColor: brandSurface
+        borderColor: brandOutline
+        borderWidth: 1
+        transitionMs: motionFast
+}
+app Tokens
+"##;
+
+    check_source(source).expect("ordinary constants should serve as typed UI design tokens");
+
+    let linux = compile_to_c(source).expect("user design constants should lower on Linux");
+    assert!(linux.contains("gtk_widget_set_margin_top(flux__ui_action, 18)"));
+    assert!(linux.contains("padding-top: 8px;"));
+    assert!(linux.contains("border-radius: 14px;"));
+    assert!(linux.contains("background-color: #16324F;"));
+    assert!(linux.contains("border-color: #5B8DB8;"));
+    assert!(linux.contains("transition-duration: 120ms;"));
+    assert!(!linux.contains("cardGap"));
+    assert!(!linux.contains("cardRadius"));
+    assert!(!linux.contains("brandSurface"));
+    assert!(!linux.contains("brandOutline"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("user design-token fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("user design constants should lower on Android");
+    assert!(android.contains("INT64_C(24) * flux__ui_density"));
+    assert!(android.contains("INT64_C(14) * flux__ui_density"));
+    assert!(android.contains("INT64_C(8) * flux__ui_density"));
+    assert!(android.contains("\"#16324F\""));
+    assert!(android.contains("\"#5B8DB8\""));
+    assert!(!android.contains("cardGap"));
+    assert!(!android.contains("brandSurface"));
+}
+
+#[test]
 fn native_elements_support_native_shadows() {
     let source = r##"
 view Shadowed {
