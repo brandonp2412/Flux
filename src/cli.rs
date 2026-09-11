@@ -4773,7 +4773,14 @@ __FLUX_PICKER_METHODS__
             new int[] { android.R.attr.state_checked },
             new int[] {}
         };
-        view.setButtonTintList(new ColorStateList(states, new int[] { withAlpha(outline, 96), accent, outline }));
+        ColorStateList controlTint = new ColorStateList(states, new int[] { withAlpha(outline, 96), accent, outline });
+        if (view instanceof android.widget.Switch) {
+            android.widget.Switch toggle = (android.widget.Switch)view;
+            toggle.setThumbTintList(controlTint);
+            toggle.setTrackTintList(new ColorStateList(states, new int[] { withAlpha(outline, 48), withAlpha(accent, 96), withAlpha(outline, 72) }));
+        } else {
+            view.setButtonTintList(controlTint);
+        }
         view.setTextColor(parseFluxColor("text"));
     }
 

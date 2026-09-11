@@ -4384,7 +4384,7 @@ fn emit_android_native_application(
             "Button" => "android/widget/Button",
             "TextInput" => "app/flux/runtime/FluxActivity$FluxEditText",
             "Image" => "android/widget/ImageView",
-            "Toggle" => "android/widget/CheckBox",
+            "Toggle" => "android/widget/Switch",
             "Radio" => "android/widget/RadioButton",
             _ => unreachable!("validated Android native control kind"),
         };

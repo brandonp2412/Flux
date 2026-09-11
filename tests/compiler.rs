@@ -16408,7 +16408,7 @@ app Screen
         "android/widget/TextView",
         "android/widget/Button",
         "app/flux/runtime/FluxActivity$FluxEditText",
-        "android/widget/CheckBox",
+        "android/widget/Switch",
         "android/widget/RadioButton",
         "android/widget/ImageView",
     ] {
@@ -19681,7 +19681,7 @@ app Settings(theme: "dark")
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeThemeMode"));
     assert!(generated.contains("return (jint)2;"));
     assert!(generated.contains("android/widget/EditText"));
-    assert!(generated.contains("android/widget/CheckBox"));
+    assert!(generated.contains("android/widget/Switch"));
     assert!(generated.contains("android/widget/RadioButton"));
     assert!(generated.contains("FluxActivity$FluxEditText"));
     assert!(generated.contains("restoreTextInput"));
