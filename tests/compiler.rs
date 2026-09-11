@@ -1272,6 +1272,162 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_aware_cascades_are_lazy_typed_flattened_and_native() {
+    let source = r#"
+fn maybeSeed(present: bool) -> i64? {
+    if present:
+        return 2
+    return none
+}
+
+fn stageArg() -> i64 {
+    print(99)
+    return 3
+}
+
+fn scale(value: i64, factor: i64) -> i64 {
+    print(value)
+    return value * factor
+}
+
+fn maybeIncrement(value: i64) -> i64? {
+    if value == 6:
+        return value + 1
+    return none
+}
+
+fn main() -> i64 {
+    let present: i64? = maybeSeed(true) ?.. scale(stageArg()) .. maybeIncrement
+    let missing: i64? = maybeSeed(false) ?.. scale(stageArg()) .. maybeIncrement
+    print(present ?? -1)
+    print(missing ?? -1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional-aware cascades should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("optional-aware cascades should format canonically");
+    assert!(
+        formatted.contains(
+            "let present: i64? = maybeSeed(true) ?.. scale stageArg() ?.. maybeIncrement"
+        )
+    );
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional-aware cascades should reparse"),
+        formatted
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1401))
+        .expect("optional-aware cascade source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let scale_cascade = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.kind,
+                ControlFlowValueKind::OptionalCascadeCall { callee, .. } if callee == "scale"
+            )
+        })
+        .expect("optional cascade should remain explicit in typed IR");
+    let ControlFlowValueKind::OptionalCascadeCall {
+        optional,
+        arguments,
+        ..
+    } = &scale_cascade.kind
+    else {
+        unreachable!()
+    };
+    let stage_argument = *arguments
+        .first()
+        .expect("scale optional cascade should retain its explicit stage argument");
+    let stage_use = graph
+        .uses_from(scale_cascade.id)
+        .find(|usage| usage.value == stage_argument)
+        .expect("stage argument should have an IR use");
+    assert_eq!(stage_use.kind, ControlFlowValueUseKind::OptionalPresent);
+    assert!(matches!(
+        graph
+            .value_region(stage_use.region.expect("optional stage argument should name a region"))
+            .map(|region| region.kind),
+        Some(ControlFlowValueRegionKind::OptionalPresent { optional: guarded }) if guarded == *optional
+    ));
+
+    let generated = compile_to_c(source).expect("optional-aware cascades should lower natively");
+    assert!(generated.contains("flux__optional_cascade_input_"));
+    assert!(generated.contains(".has_value)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-cascade-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional-cascade directory should be writable");
+    let c_path = root.join("optional-cascade.c");
+    let exe_path = root.join("optional-cascade");
+    fs::write(&c_path, generated).expect("generated optional-cascade C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile native optional cascades");
+    assert!(
+        compile.status.success(),
+        "optional-cascade C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-cascade program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "99\n2\n7\n-1\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    let invalid: i64? = 1 ?.. increment
+    return invalid ?? 0
+}
+"#;
+    let error = check_source(non_optional)
+        .expect_err("optional-aware cascades must require an optional target");
+    assert!(
+        error
+            .message
+            .contains("optional cascade '?..' requires an optional target, got i64")
+    );
+
+    let void_stage = r#"
+fn consume(_value: i64) -> void {
+}
+
+fn main() -> i64 {
+    let value: i64? = 1
+    let invalid: i64? = value ?.. consume
+    return invalid ?? 0
+}
+"#;
+    let error =
+        check_source(void_stage).expect_err("optional-aware cascade stages must produce a value");
+    assert!(
+        error
+            .message
+            .contains("optional cascade stages must return a value")
+    );
+}
+
+#[test]
 fn process_environment_capabilities_are_typed_native_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {

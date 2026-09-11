@@ -40,6 +40,11 @@ pub enum ControlFlowValueKind {
         callee: String,
         arguments: Vec<ControlFlowValueId>,
     },
+    OptionalCascadeCall {
+        optional: ControlFlowValueId,
+        callee: String,
+        arguments: Vec<ControlFlowValueId>,
+    },
     InterfacePack {
         interface: String,
         target: String,
@@ -135,6 +140,7 @@ pub struct ControlFlowValue {
 pub enum ControlFlowValueUseKind {
     Eager,
     ShortCircuitRight,
+    OptionalPresent,
     BranchCondition,
     BranchThen,
     BranchElse,
@@ -162,6 +168,9 @@ pub enum ControlFlowValueRegionKind {
         execute_when: bool,
     },
     OptionalFallback {
+        optional: ControlFlowValueId,
+    },
+    OptionalPresent {
         optional: ControlFlowValueId,
     },
     Branch {
@@ -1669,13 +1678,29 @@ impl<'a> ControlFlowBuilder<'a> {
                 arguments: self.lower_expr_arguments(producer, args),
             },
             ExprKind::Pipe {
-                input, name, args, ..
+                input,
+                name,
+                args,
+                optional,
+                ..
             } => {
-                let mut arguments = self.lower_expr_values(producer, input, false);
-                arguments.extend(self.lower_expr_arguments(producer, args));
-                ControlFlowValueKind::Call {
-                    callee: name.clone(),
-                    arguments,
+                if *optional {
+                    let optional = self.lower_scalar_expr(producer, input);
+                    let arguments = self.lower_expr_arguments(producer, args);
+                    optional.map_or(ControlFlowValueKind::Opaque, |optional| {
+                        ControlFlowValueKind::OptionalCascadeCall {
+                            optional,
+                            callee: name.clone(),
+                            arguments,
+                        }
+                    })
+                } else {
+                    let mut arguments = self.lower_expr_values(producer, input, false);
+                    arguments.extend(self.lower_expr_arguments(producer, args));
+                    ControlFlowValueKind::Call {
+                        callee: name.clone(),
+                        arguments,
+                    }
                 }
             }
             ExprKind::List(items) => ControlFlowValueKind::List {
@@ -2754,6 +2779,31 @@ fn collect_value_uses(
                     );
                 }
             }
+            ControlFlowValueKind::OptionalCascadeCall {
+                optional,
+                arguments,
+                ..
+            } => {
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *optional,
+                    ControlFlowValueUseKind::Eager,
+                );
+                for argument in arguments {
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *argument,
+                        ControlFlowValueUseKind::OptionalPresent,
+                        ControlFlowValueRegionKind::OptionalPresent {
+                            optional: *optional,
+                        },
+                    );
+                }
+            }
             ControlFlowValueKind::InterfacePack { value: packed, .. }
             | ControlFlowValueKind::ListSpread { value: packed }
             | ControlFlowValueKind::Field { base: packed, .. } => {
@@ -3179,6 +3229,7 @@ fn value_use_is_reachable(
             Some(ConstantValue::Bool(false))
         ),
         ControlFlowValueRegionKind::OptionalFallback { .. }
+        | ControlFlowValueRegionKind::OptionalPresent { .. }
         | ControlFlowValueRegionKind::MatchGuard { .. }
         | ControlFlowValueRegionKind::LoopCondition { .. }
         | ControlFlowValueRegionKind::LoopBody { .. }

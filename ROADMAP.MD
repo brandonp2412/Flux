@@ -253,7 +253,7 @@ Flux currently reserves `nil` specifically for `error`; a general optional-value
 Dart's `..` cascade is useful because it avoids repeating a target. Flux should keep the ergonomic idea but apply it to values/functions rather than encouraging mutable object builders.
 
 - [x] Functional cascade syntax analogous to `..` for repeated transformations on one target: `value .. transform args .. finish` is typed as the equivalent value pipeline, with parenthesized or shell-style function stages supported and canonical formatting normalized to `|`.
-- [ ] Optional-aware cascade analogous to `?..`.
+- [x] Optional-aware cascades use `?..` to transform a present Copy optional value through ordinary typed functions while propagating absence, evaluating the target once, skipping stage arguments/functions when absent, flattening optional-returning stages, preserving guarded evaluation in typed IR, and lowering allocation-free to native control flow.
 - [x] Cascades produce successive transformed values rather than introducing hidden mutation: each stage receives the previous stage result as its first argument and ordinary Flux call typing applies.
 - [x] Cascades use the existing functional pipeline lowering, adding no builder object, allocation, dynamic dispatch, or distinct runtime abstraction.
 - [x] Cascade expressions evaluate the original target exactly once; lowering nests the same single-evaluation typed call flow used by pipelines.

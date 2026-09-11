@@ -706,6 +706,7 @@ pub enum ExprKind {
         name: String,
         name_span: SourceSpan,
         args: Vec<Expr>,
+        optional: bool,
     },
     List(Vec<Expr>),
     ListSpread {

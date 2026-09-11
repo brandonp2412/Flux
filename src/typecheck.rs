@@ -4635,6 +4635,71 @@ fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signa
     }
 }
 
+fn type_of_optional_pipe(
+    expr: &Expr,
+    input: &Expr,
+    name: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    let input_expr = pipe_input_expr(input, env, signatures);
+    let input_ty = signatures.canonical_type(&type_of_expr(&input_expr, env, signatures)?);
+    let Type::Optional(inner) = input_ty else {
+        return Err(diag(
+            input.span,
+            &format!(
+                "optional cascade '?..' requires an optional target, got {}",
+                input_ty.name()
+            ),
+        ));
+    };
+    if *inner == Type::Void {
+        return Err(diag(
+            input.span,
+            "optional cascade '?..' cannot infer a value type from bare none",
+        ));
+    }
+
+    let synthetic_name = format!(
+        "__flux_optional_cascade_{}_{}",
+        expr.span.line, expr.span.column
+    );
+    let mut nested_env = env.clone();
+    nested_env.insert(synthetic_name.clone(), (*inner).clone());
+    let synthetic_input = Expr {
+        line: input.line,
+        span: input.span,
+        kind: ExprKind::Var(synthetic_name),
+    };
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(synthetic_input);
+    call_args.extend(args.iter().cloned());
+    let call = Expr {
+        line: expr.line,
+        span: expr.span,
+        kind: ExprKind::Call {
+            name: name.to_string(),
+            args: call_args,
+            named_args: Vec::new(),
+        },
+    };
+    let output = signatures.canonical_type(&type_of_expr(&call, &nested_env, signatures)?);
+    if output == Type::Void {
+        return Err(diag(
+            expr.span,
+            "optional cascade stages must return a value",
+        ));
+    }
+    let result = if matches!(output, Type::Optional(_)) {
+        output
+    } else {
+        Type::Optional(Box::new(output))
+    };
+    require_known_type(expr.span, &result, signatures)?;
+    Ok(result)
+}
+
 fn type_of_anonymous_function(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -4823,8 +4888,15 @@ pub fn type_of_expr(
             type_of_expr(&call, env, signatures)
         }
         ExprKind::Pipe {
-            input, name, args, ..
+            input,
+            name,
+            args,
+            optional,
+            ..
         } => {
+            if *optional {
+                return type_of_optional_pipe(expr, input, name, args, env, signatures);
+            }
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(pipe_input_expr(input, env, signatures));
             call_args.extend(args.iter().cloned());
@@ -5915,8 +5987,17 @@ pub(crate) fn value_types_of_expr(
             value_types_of_expr(&call, env, signatures)
         }
         ExprKind::Pipe {
-            input, name, args, ..
+            input,
+            name,
+            args,
+            optional,
+            ..
         } => {
+            if *optional {
+                return Ok(vec![type_of_optional_pipe(
+                    expr, input, name, args, env, signatures,
+                )?]);
+            }
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(pipe_input_expr(input, env, signatures));
             call_args.extend(args.iter().cloned());

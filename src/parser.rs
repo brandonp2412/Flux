@@ -4779,16 +4779,21 @@ struct Token {
 fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {
     let cascade_parts = split_top_level_cascades(input);
     if cascade_parts.len() > 1 {
-        let (first, first_offset) = cascade_parts[0];
+        let (first, first_offset, _) = cascade_parts[0];
         let (first, first_column) = trim_with_column(first, column + first_offset);
         if first.is_empty() {
-            return Err(diag(line, "cascade requires a target before '..'"));
+            return Err(diag(line, "cascade requires a target before '..' or '?..'"));
         }
         let mut expr = parse_expression_at(first, line, first_column)?;
-        for (stage, offset) in cascade_parts.into_iter().skip(1) {
+        let mut optional_cascade = false;
+        for (stage, offset, starts_optional) in cascade_parts.into_iter().skip(1) {
+            optional_cascade |= starts_optional;
             let (stage, stage_column) = trim_with_column(stage, column + offset);
             if stage.is_empty() {
-                return Err(diag(line, "cascade requires a function after '..'"));
+                return Err(diag(
+                    line,
+                    "cascade requires a function after '..' or '?..'",
+                ));
             }
             let (name, name_span, args) = parse_pipe_stage(stage, line, stage_column, "cascade")?;
             let end = args
@@ -4804,6 +4809,7 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
                     name,
                     name_span,
                     args,
+                    optional: optional_cascade,
                 },
             };
         }
@@ -4837,6 +4843,7 @@ fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, 
                     name,
                     name_span,
                     args,
+                    optional: false,
                 },
             };
         }
@@ -4950,10 +4957,11 @@ fn parse_pipe_stage(
     }
 }
 
-fn split_top_level_cascades(input: &str) -> Vec<(&str, usize)> {
+fn split_top_level_cascades(input: &str) -> Vec<(&str, usize, bool)> {
     let mut parts = Vec::new();
     let bytes = input.as_bytes();
     let mut start = 0usize;
+    let mut optional_before_part = false;
     let mut paren = 0usize;
     let mut brace = 0usize;
     let mut bracket = 0usize;
@@ -4985,14 +4993,26 @@ fn split_top_level_cascades(input: &str) -> Vec<(&str, usize)> {
                 b'}' => brace = brace.saturating_sub(1),
                 b'[' => bracket += 1,
                 b']' => bracket = bracket.saturating_sub(1),
+                b'?' if paren == 0 && brace == 0 && bracket == 0 => {
+                    let is_optional_cascade =
+                        bytes.get(index + 1) == Some(&b'.') && bytes.get(index + 2) == Some(&b'.');
+                    if is_optional_cascade {
+                        parts.push((&input[start..index], start, optional_before_part));
+                        start = index + 3;
+                        optional_before_part = true;
+                        index += 2;
+                    }
+                }
                 b'.' if paren == 0 && brace == 0 && bracket == 0 => {
                     let is_double_dot = bytes.get(index + 1) == Some(&b'.');
                     let prev_dot = index > 0 && bytes[index - 1] == b'.';
+                    let prev_question = index > 0 && bytes[index - 1] == b'?';
                     let third_dot = bytes.get(index + 2) == Some(&b'.');
                     let range_equal = bytes.get(index + 2) == Some(&b'=');
-                    if is_double_dot && !prev_dot && !third_dot && !range_equal {
-                        parts.push((&input[start..index], start));
+                    if is_double_dot && !prev_dot && !prev_question && !third_dot && !range_equal {
+                        parts.push((&input[start..index], start, optional_before_part));
                         start = index + 2;
+                        optional_before_part = false;
                         index += 1;
                     }
                 }
@@ -5001,7 +5021,7 @@ fn split_top_level_cascades(input: &str) -> Vec<(&str, usize)> {
         }
         index += 1;
     }
-    parts.push((&input[start..], start));
+    parts.push((&input[start..], start, optional_before_part));
     parts
 }
 

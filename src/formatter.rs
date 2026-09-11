@@ -1036,9 +1036,14 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             }
         }
         ExprKind::Pipe {
-            input, name, args, ..
+            input,
+            name,
+            args,
+            optional,
+            ..
         } => {
-            let mut text = format!("{} | {name}", format_expr(input, 0));
+            let separator = if *optional { "?.." } else { "|" };
+            let mut text = format!("{} {separator} {name}", format_expr(input, 0));
             if !args.is_empty() {
                 text.push(' ');
                 text.push_str(

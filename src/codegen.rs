@@ -12751,6 +12751,7 @@ fn collect_function_reachability_from_ir(
                 direct_functions.insert(name.clone());
             }
             crate::ir::ControlFlowValueKind::Call { callee, .. }
+            | crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
                 if known_functions.contains(callee) =>
             {
                 direct_functions.insert(callee.clone());
@@ -17312,8 +17313,74 @@ fn emit_expr(
             return emit_expr(&call, env, signatures);
         }
         ExprKind::Pipe {
-            input, name, args, ..
+            input,
+            name,
+            args,
+            optional,
+            ..
         } => {
+            if *optional {
+                let input_expr = pipe_input_expr(input, env, signatures);
+                let emitted_input = emit_expr(&input_expr, env, signatures)?;
+                let input_ty = signatures.canonical_type(&emitted_input.ty);
+                let Type::Optional(inner) = input_ty else {
+                    return Err(diag(
+                        input.span,
+                        "invalid optional cascade target reached code generation",
+                    ));
+                };
+                if *inner == Type::Void {
+                    return Err(diag(
+                        input.span,
+                        "bare none reached optional cascade code generation",
+                    ));
+                }
+
+                let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+                let result_c = c_type(&result_ty, signatures);
+                let input_c = c_type(&Type::Optional(inner.clone()), signatures);
+                let inner_c = c_type(&inner, signatures);
+                let synthetic_name = format!(
+                    "__flux_optional_cascade_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let synthetic_c = local_c_name(&synthetic_name);
+                let mut nested_env = env.clone();
+                nested_env.insert(synthetic_name.clone(), (*inner).clone());
+                let synthetic_input = Expr {
+                    line: input.line,
+                    span: input.span,
+                    kind: ExprKind::Var(synthetic_name),
+                };
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(synthetic_input);
+                call_args.extend(args.iter().cloned());
+                let call = Expr {
+                    line: expr.line,
+                    span: expr.span,
+                    kind: ExprKind::Call {
+                        name: name.clone(),
+                        args: call_args,
+                        named_args: Vec::new(),
+                    },
+                };
+                let call_code = emit_expr_for_expected(&call, &result_ty, &nested_env, signatures)?;
+                let input_name = format!(
+                    "flux__optional_cascade_input_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__optional_cascade_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                return Ok(EmittedExpr {
+                    code: format!(
+                        "__extension__ ({{ {input_c} {input_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; if ({input_name}.has_value) {{ {inner_c} {synthetic_c} = {input_name}.value; {result_name} = {call_code}; }} {result_name}; }})",
+                        emitted_input.code
+                    ),
+                    ty: result_ty,
+                });
+            }
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(pipe_input_expr(input, env, signatures));
             call_args.extend(args.iter().cloned());
