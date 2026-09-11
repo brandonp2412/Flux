@@ -1742,6 +1742,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
     }
 
     validate_view_composition_cycles(&view_defs, diagnostics);
+    validate_application_shortcut_conflicts(program, signatures, diagnostics);
 
     for view in &program.views {
         let row_count = view.grid.rows.len() as u64;
@@ -2206,6 +2207,134 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
             }
         }
     }
+}
+
+pub(crate) fn parse_ui_shortcut(value: &str) -> Option<(bool, bool, bool, String)> {
+    let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
+    let (key, modifiers) = parts.split_last()?;
+    if key.is_empty() || modifiers.is_empty() {
+        return None;
+    }
+    let mut control = false;
+    let mut shift = false;
+    let mut alt = false;
+    for modifier in modifiers {
+        match *modifier {
+            "Ctrl" if !control => control = true,
+            "Shift" if !shift => shift = true,
+            "Alt" if !alt => alt = true,
+            _ => return None,
+        }
+    }
+    let key = match *key {
+        "Enter" | "Space" | "Tab" | "Escape" | "Delete" | "Up" | "Down" | "Left" | "Right" => {
+            key.to_string()
+        }
+        key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+            key.to_ascii_uppercase()
+        }
+        _ => return None,
+    };
+    Some((control, shift, alt, key))
+}
+
+fn canonical_ui_shortcut(value: &str) -> Option<String> {
+    let (control, shift, alt, key) = parse_ui_shortcut(value)?;
+    let mut canonical = String::new();
+    if control {
+        canonical.push_str("Ctrl+");
+    }
+    if shift {
+        canonical.push_str("Shift+");
+    }
+    if alt {
+        canonical.push_str("Alt+");
+    }
+    canonical.push_str(&key);
+    Some(canonical)
+}
+
+fn validate_application_shortcut_conflicts(
+    program: &Program,
+    signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(application) = &program.application else {
+        return;
+    };
+    let view_defs = program
+        .views
+        .iter()
+        .map(|view| (view.name.as_str(), view))
+        .collect::<HashMap<_, _>>();
+    let Some(root) = view_defs.get(application.view_name.as_str()).copied() else {
+        return;
+    };
+    let mut shortcuts = HashMap::<String, (SourceSpan, String)>::new();
+    let mut stack = Vec::<String>::new();
+    collect_view_shortcuts(
+        root,
+        root.name.clone(),
+        &view_defs,
+        signatures,
+        &mut shortcuts,
+        &mut stack,
+        diagnostics,
+    );
+}
+
+fn collect_view_shortcuts(
+    view: &crate::ast::ViewDef,
+    path: String,
+    view_defs: &HashMap<&str, &crate::ast::ViewDef>,
+    signatures: &Signatures,
+    shortcuts: &mut HashMap<String, (SourceSpan, String)>,
+    stack: &mut Vec<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if stack.iter().any(|name| name == &view.name) {
+        return;
+    }
+    stack.push(view.name.clone());
+    for element in &view.elements {
+        let element_path = format!("{path}.{}", element.name);
+        if element.kind == "Button"
+            && let Some(property) = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "shortcut")
+            && let Ok(ConstantValue::Str(value)) =
+                evaluate_default_expr(&property.value, signatures)
+            && let Some(shortcut) = canonical_ui_shortcut(&value)
+        {
+            if let Some((previous_span, previous_path)) = shortcuts.get(&shortcut) {
+                diagnostics.push(
+                    diag(
+                        property.value.span,
+                        &format!(
+                            "keyboard shortcut '{shortcut}' conflicts with another button in the app window"
+                        ),
+                    )
+                    .with_label(*previous_span, format!("first used by '{previous_path}'"))
+                    .with_note(format!("conflicting button: '{element_path}'")),
+                );
+            } else {
+                shortcuts.insert(shortcut, (property.value.span, element_path.clone()));
+            }
+        }
+        if let Some(child) = view_defs.get(element.kind.as_str()).copied() {
+            collect_view_shortcuts(
+                child,
+                element_path,
+                view_defs,
+                signatures,
+                shortcuts,
+                stack,
+                diagnostics,
+            );
+        }
+    }
+    stack.pop();
 }
 
 fn validate_view_composition_cycles(

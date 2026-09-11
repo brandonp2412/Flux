@@ -6272,37 +6272,8 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
     }
 }
 
-fn parse_ui_shortcut(value: &str) -> Option<(bool, bool, bool, String)> {
-    let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
-    let (key, modifiers) = parts.split_last()?;
-    if key.is_empty() || modifiers.is_empty() {
-        return None;
-    }
-    let mut control = false;
-    let mut shift = false;
-    let mut alt = false;
-    for modifier in modifiers {
-        match *modifier {
-            "Ctrl" if !control => control = true,
-            "Shift" if !shift => shift = true,
-            "Alt" if !alt => alt = true,
-            _ => return None,
-        }
-    }
-    let key = match *key {
-        "Enter" | "Space" | "Tab" | "Escape" | "Delete" | "Up" | "Down" | "Left" | "Right" => {
-            key.to_string()
-        }
-        key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
-            key.to_ascii_uppercase()
-        }
-        _ => return None,
-    };
-    Some((control, shift, alt, key))
-}
-
 fn gtk_shortcut_trigger(value: &str) -> Option<String> {
-    let (control, shift, alt, key) = parse_ui_shortcut(value)?;
+    let (control, shift, alt, key) = crate::typecheck::parse_ui_shortcut(value)?;
     let key = match key.as_str() {
         "Enter" => "Return".to_string(),
         "Space" => "space".to_string(),
@@ -6326,7 +6297,7 @@ fn gtk_shortcut_trigger(value: &str) -> Option<String> {
 }
 
 fn android_shortcut_trigger(value: &str) -> Option<String> {
-    let (control, shift, alt, key) = parse_ui_shortcut(value)?;
+    let (control, shift, alt, key) = crate::typecheck::parse_ui_shortcut(value)?;
     let mut trigger = String::new();
     if control {
         trigger.push_str("Ctrl+");

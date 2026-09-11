@@ -13169,6 +13169,84 @@ app Shortcuts
 }
 
 #[test]
+fn composed_app_views_reject_canonical_keyboard_shortcut_conflicts() {
+    let source = r#"
+fn activate() -> void {
+    print("activate")
+}
+
+view Actions {
+    grid columns: 1fr
+    grid rows: auto
+    Button save at 1,1
+        text: "Save"
+        shortcut: "Shift+Ctrl+k"
+        on_press: activate
+}
+
+view Root {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Actions first at 1,1
+    Button other at 2,1
+        text: "Other"
+        shortcut: "Alt+Enter"
+        on_press: activate
+    Actions second at 3,1
+}
+app Root
+"#;
+    let errors = check_source_all(source).expect_err("composed shortcut conflict must fail");
+    let conflict = errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("keyboard shortcut 'Ctrl+Shift+K' conflicts")
+        })
+        .expect("canonical shortcut conflict diagnostic");
+    assert!(
+        conflict
+            .notes
+            .iter()
+            .any(|note| note.contains("Root.second.save")),
+        "diagnostic should identify the conflicting composition path: {conflict:?}"
+    );
+    assert!(
+        conflict
+            .labels
+            .iter()
+            .any(|label| label.message.contains("Root.first.save")),
+        "diagnostic should identify the first composition path: {conflict:?}"
+    );
+
+    let unrelated = r#"
+fn activate() -> void {
+    print("activate")
+}
+
+view First {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcut: "Ctrl+K"
+        on_press: activate
+}
+
+view Second {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcut: "Ctrl+K"
+        on_press: activate
+}
+app First
+"#;
+    check_source(unrelated)
+        .expect("shortcuts in an unused view must not conflict with the app window");
+}
+
+#[test]
 fn native_elements_support_portable_keyboard_callbacks() {
     let source = r#"
 fn key_notice(key: str) -> void {
