@@ -4082,6 +4082,9 @@ fn definition_value_borrows_from(
     source: &str,
     visiting: &mut HashSet<String>,
 ) -> bool {
+    if !graph.is_value_reachable(value) {
+        return false;
+    }
     let Some(value) = graph.value(value) else {
         return false;
     };
@@ -4090,6 +4093,17 @@ fn definition_value_borrows_from(
             items
                 .iter()
                 .any(|item| value_depends_on_borrow_source(graph, *item, source, visiting))
+        }
+        ControlFlowValueKind::ListSpread { value } => {
+            value_depends_on_borrow_source(graph, *value, source, visiting)
+        }
+        ControlFlowValueKind::ListIf {
+            value, else_value, ..
+        } => {
+            value_depends_on_borrow_source(graph, *value, source, visiting)
+                || else_value.is_some_and(|value| {
+                    value_depends_on_borrow_source(graph, value, source, visiting)
+                })
         }
         ControlFlowValueKind::Slice { base, .. } => {
             value_depends_on_borrow_source(graph, *base, source, visiting)
@@ -4148,6 +4162,9 @@ fn value_depends_on_borrow_source(
     source: &str,
     visiting: &mut HashSet<String>,
 ) -> bool {
+    if !graph.is_value_reachable(value) {
+        return false;
+    }
     let Some(value) = graph.value(value) else {
         return false;
     };
@@ -4156,6 +4173,17 @@ fn value_depends_on_borrow_source(
             items
                 .iter()
                 .any(|item| value_depends_on_borrow_source(graph, *item, source, visiting))
+        }
+        ControlFlowValueKind::ListSpread { value } => {
+            value_depends_on_borrow_source(graph, *value, source, visiting)
+        }
+        ControlFlowValueKind::ListIf {
+            value, else_value, ..
+        } => {
+            value_depends_on_borrow_source(graph, *value, source, visiting)
+                || else_value.is_some_and(|value| {
+                    value_depends_on_borrow_source(graph, value, source, visiting)
+                })
         }
         ControlFlowValueKind::NameRead { name, definitions } => {
             name == source

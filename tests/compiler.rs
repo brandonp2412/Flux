@@ -4507,6 +4507,74 @@ fn main() -> i64 {
 }
 
 #[test]
+fn nested_list_spread_and_conditional_items_preserve_borrow_provenance() {
+    let live_spread = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let seed: i64[][] = [row]
+    let rows: i64[][] = [...seed]
+    let destination: i64[] = row
+    print(rows[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_spread)
+        .expect_err("a spread nested list must keep embedded list storage borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'rows' is still live")
+    }));
+
+    let dead_spread = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let seed: i64[][] = [row]
+    let rows: i64[][] = [...seed]
+    print(rows[0][0])
+    let destination: i64[] = row
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead_spread)
+        .expect("a dead spread nested list must not block a later embedded-list move");
+
+    let live_conditional = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let rows: i64[][] = [if true: row]
+    let destination: i64[] = row
+    print(rows[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_conditional)
+        .expect_err("a selected nested list item must keep embedded list storage borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'rows' is still live")
+    }));
+
+    let unselected_conditional = r#"
+fn main() -> i64 {
+    let row: i64[] = [10, 20]
+    let other: i64[] = [30, 40]
+    let rows: i64[][] = [if false: row else: other]
+    let destination: i64[] = row
+    print(rows[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(unselected_conditional)
+        .expect("a statically unselected nested list item must not borrow its list owner");
+}
+
+#[test]
 fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
     let source = r#"
 const NEVER: bool = 2 > 3
