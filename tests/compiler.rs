@@ -12557,6 +12557,107 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_inverse_add_sub_guards() {
+    let source = r#"
+const OFFSET: i64 = 7
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn addThenSubtract(value: i64) -> i64 {
+    return (value + OFFSET) - OFFSET
+}
+
+fn addLeftThenSubtract(value: i64) -> i64 {
+    return (OFFSET + value) - OFFSET
+}
+
+fn subtractThenAdd(value: i64) -> i64 {
+    return (value - OFFSET) + OFFSET
+}
+
+fn addThenSubtractEffect(value: i64) -> i64 {
+    return (observe(value) + OFFSET) - OFFSET
+}
+
+fn addRightAfterSubtract(value: i64) -> i64 {
+    return OFFSET + (value - OFFSET)
+}
+
+fn unmatched(value: i64) -> i64 {
+    return (value + OFFSET) - 3
+}
+
+fn main() -> i64 {
+    print(addThenSubtract(10))
+    print(addLeftThenSubtract(11))
+    print(subtractThenAdd(12))
+    print(addThenSubtractEffect(13))
+    print(addRightAfterSubtract(14))
+    return unmatched(15)
+}
+"#;
+
+    check_source(source).expect("inverse checked arithmetic should typecheck");
+    let generated = compile_to_c(source)
+        .expect("inverse checked arithmetic should remove only proven redundant guards");
+    assert!(
+        generated
+            .contains("return ((flux_add_i64(flux__local_value, INT64_C(7))) - (INT64_C(7)));")
+    );
+    assert!(
+        generated
+            .contains("return ((flux_add_i64(INT64_C(7), flux__local_value)) - (INT64_C(7)));")
+    );
+    assert!(
+        generated
+            .contains("return ((flux_sub_i64(flux__local_value, INT64_C(7))) + (INT64_C(7)));")
+    );
+    assert!(
+        generated
+            .contains("return ((INT64_C(7)) + (flux_sub_i64(flux__local_value, INT64_C(7))));")
+    );
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__fn_observe(flux__local_value), INT64_C(7))) - (INT64_C(7)));"
+    ));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful inner operands must still evaluate exactly once",
+    );
+    assert!(
+        generated.contains(
+            "return flux_sub_i64(flux_add_i64(flux__local_value, INT64_C(7)), INT64_C(3));"
+        )
+    );
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count + 7) - 7
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI inverse checked arithmetic should share lowering");
+    assert!(
+        ui_generated.contains("((flux_add_i64(flux__ui_state_count, INT64_C(7))) - (INT64_C(7)))")
+    );
+    assert!(
+        !ui_generated
+            .contains("flux_sub_i64(flux_add_i64(flux__ui_state_count, INT64_C(7)), INT64_C(7))")
+    );
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
