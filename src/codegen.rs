@@ -2619,6 +2619,26 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_focusable_in_touch_mode, (jboolean)({value}));\n"
             ));
         }
+        if let Some(property) = view_property(element, "autofocus") {
+            let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "autofocus must be a compile-time bool value",
+                ));
+            };
+            if autofocus {
+                if view_property(element, "focusable").is_none() {
+                    out.push_str("    jmethodID autofocus_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+                    out.push_str("    jmethodID autofocus_touch_focusable = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+                    out.push_str("    if (autofocus_focusable == NULL || autofocus_touch_focusable == NULL) return;\n");
+                    out.push_str("    (*env)->CallVoidMethod(env, child, autofocus_focusable, (jboolean)true);\n");
+                    out.push_str("    (*env)->CallVoidMethod(env, child, autofocus_touch_focusable, (jboolean)true);\n");
+                }
+                out.push_str("    jmethodID request_autofocus = (*env)->GetMethodID(env, child_class, \"requestFocus\", \"()Z\");\n");
+                out.push_str("    if (request_autofocus == NULL) return;\n");
+                out.push_str("    (*env)->CallBooleanMethod(env, child, request_autofocus);\n");
+            }
+        }
         if element.kind == "Text" {
             let (default_size, default_bold, default_line_height_percent, default_max_width_chars) =
                 text_semantic_typography(element, signatures)?;
@@ -3032,19 +3052,6 @@ fn emit_android_native_application(
                 if submit_on_enter { "true" } else { "false" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, wire_activity_class);\n");
-            if let Some(property) = view_property(element, "autofocus") {
-                let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android TextInput.autofocus must be a compile-time bool value",
-                    ));
-                };
-                if autofocus {
-                    out.push_str("    jmethodID request_focus = (*env)->GetMethodID(env, child_class, \"requestFocus\", \"()Z\");\n");
-                    out.push_str("    if (request_focus == NULL) return;\n");
-                    out.push_str("    (*env)->CallBooleanMethod(env, child, request_focus);\n");
-                }
-            }
         }
         if matches!(element.kind.as_str(), "Toggle" | "Radio") {
             let checked_property = if element.kind == "Toggle" {
@@ -4582,17 +4589,6 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if let Some(property) = view_property(element, "autofocus") {
-                    let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Linux TextInput.autofocus must be a compile-time bool value",
-                        ));
-                    };
-                    if autofocus {
-                        out.push_str(&format!("    gtk_widget_grab_focus({variable});\n"));
-                    }
-                }
             }
             "Image" => {
                 let source = match view_property(element, "source") {
@@ -4846,6 +4842,22 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_widget_set_focusable({variable}, {focusable});\n"
             ));
+        }
+        if let Some(property) = view_property(element, "autofocus") {
+            let Some(autofocus) = static_expr_bool(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "autofocus must be a compile-time bool value",
+                ));
+            };
+            if autofocus {
+                if view_property(element, "focusable").is_none() {
+                    out.push_str(&format!(
+                        "    gtk_widget_set_focusable({variable}, TRUE);\n"
+                    ));
+                }
+                out.push_str(&format!("    gtk_widget_grab_focus({variable});\n"));
+            }
         }
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;

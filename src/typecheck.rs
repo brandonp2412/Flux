@@ -1243,7 +1243,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     let property = internal_property.as_str();
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
-            "visible" | "clip" | "focusable" | "accessibility_hidden" => {
+            "visible" | "clip" | "focusable" | "autofocus" | "accessibility_hidden" => {
                 return Some(Type::Bool);
             }
             "tooltip"
@@ -1355,7 +1355,6 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         | ("TextInput", "keyboard_type")
         | ("TextInput", "validation_state") => Some(Type::Str),
         ("TextInput", "enabled")
-        | ("TextInput", "autofocus")
         | ("TextInput", "password")
         | ("TextInput", "multiline")
         | ("TextInput", "submit_on_enter") => Some(Type::Bool),
@@ -1503,6 +1502,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "visible",
     "clip",
     "focusable",
+    "autofocus",
     "status",
     "tooltip",
     "accessibility_label",
@@ -1594,7 +1594,6 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "text",
             "placeholder",
             "enabled",
-            "autofocus",
             "password",
             "multiline",
             "submit_on_enter",
@@ -2079,6 +2078,62 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         );
                     }
                 }
+            }
+        }
+
+        let mut autofocus_target = None::<(&str, SourceSpan)>;
+        for element in &view.elements {
+            if !view_element_kind_is_builtin(&element.kind) {
+                continue;
+            }
+            let Some(property) = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "autofocus")
+            else {
+                continue;
+            };
+            match evaluate_default_expr(&property.value, signatures) {
+                Ok(ConstantValue::Bool(false)) => {}
+                Ok(ConstantValue::Bool(true)) => {
+                    if let Some(focusable) = element
+                        .properties
+                        .iter()
+                        .find(|candidate| source_name_to_internal(&candidate.name) == "focusable")
+                    {
+                        match evaluate_default_expr(&focusable.value, signatures) {
+                            Ok(ConstantValue::Bool(true)) => {}
+                            Ok(ConstantValue::Bool(false)) => diagnostics.push(diag(
+                                focusable.value.span,
+                                "autofocus: true requires focusable: true when focusable is specified explicitly",
+                            )),
+                            Ok(_) => {}
+                            Err(_) => diagnostics.push(diag(
+                                focusable.value.span,
+                                "focusable must be a compile-time bool when autofocus is enabled",
+                            )),
+                        }
+                    }
+                    if let Some((previous_name, previous_span)) = autofocus_target {
+                        diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!(
+                                    "view '{}' has more than one autofocus target; '{}' is already selected",
+                                    view.name, previous_name
+                                ),
+                            )
+                            .with_label(previous_span, "first autofocus target"),
+                        );
+                    } else {
+                        autofocus_target = Some((&element.name, property.value.span));
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => diagnostics.push(diag(
+                    property.value.span,
+                    "autofocus must be a compile-time bool value",
+                )),
             }
         }
 

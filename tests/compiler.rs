@@ -12033,7 +12033,7 @@ fn key_notice(key: str) -> void {
 view KeyCard {
     state keyboardEnabled: bool = false
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text title at 1,1
         text: "Keyboard target"
         focusable: keyboardEnabled
@@ -12041,6 +12041,9 @@ view KeyCard {
     Button action at 2,1
         text: "Mouse only"
         focusable: false
+    Toggle launch at 3,1
+        label: "Initial focus"
+        autofocus: true
 }
 app KeyCard
 "#;
@@ -12052,6 +12055,8 @@ app KeyCard
     );
     assert!(linux.contains("gtk_widget_set_focusable(flux__ui_action, false)"));
     assert!(!linux.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
+    assert!(linux.contains("gtk_widget_set_focusable(flux__ui_launch, TRUE)"));
+    assert!(linux.contains("gtk_widget_grab_focus(flux__ui_launch)"));
 
     let program = fluxc::parser::parse(source).expect("focusable Android app should parse");
     let signatures =
@@ -12068,6 +12073,8 @@ app KeyCard
     assert!(android.contains("(jboolean)(flux__ui_state_keyboardEnabled)"));
     assert!(android.contains("refresh_focusable"));
     assert!(!android.contains("set_focusable, (jboolean)true"));
+    assert!(android.contains("request_autofocus"));
+    assert!(android.contains("autofocus_focusable"));
 
     let invalid = r#"
 view BadFocus {
@@ -12085,6 +12092,63 @@ app BadFocus
             .iter()
             .any(|error| error.message.contains("property 'Text.focusable'"))
     );
+
+    let ambiguous = r#"
+view AmbiguousFocus {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button first at 1,1
+        text: "First"
+        autofocus: true
+    Button second at 2,1
+        text: "Second"
+        autofocus: true
+}
+app AmbiguousFocus
+"#;
+    let errors = check_source_all(ambiguous).expect_err("a view must have one autofocus target");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("more than one autofocus target") && error.message.contains("first")
+    }));
+
+    let contradictory = r#"
+view ContradictoryFocus {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "No focus"
+        focusable: false
+        autofocus: true
+}
+app ContradictoryFocus
+"#;
+    let errors = check_source_all(contradictory)
+        .expect_err("autofocus must not contradict explicit focusability");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("autofocus: true requires focusable: true")
+    }));
+
+    let custom_property = r#"
+view Badge(autofocus: bool) {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Badge"
+}
+view CustomFocusNames {
+    grid columns: 1fr
+    grid rows: auto auto
+    Badge first at 1,1
+        autofocus: true
+    Badge second at 2,1
+        autofocus: true
+}
+app CustomFocusNames
+"#;
+    check_source(custom_property)
+        .expect("custom view parameters named autofocus must not use built-in focus validation");
 }
 
 #[test]
