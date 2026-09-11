@@ -541,7 +541,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 # Milestone 10 — Functional UI state and rendering
 
 - [ ] Local view state without `StatefulWidget`-style objects.
-  - [x] Bootstrap explicit primitive view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
+  - [x] Bootstrap explicit copyable scalar view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the current Linux/Android root-view runtimes store `bool`, `i64`, and borrowed `str` state without source-level state objects/controllers. String state starts from a compile-time stable string and transitions can swap stable borrowed string values; dynamic UI string equality/inequality lowers to content comparison rather than native pointer identity. Owned/editable strings and aggregate state remain sequenced behind the ownership model.
 - [x] Immutable state updates by default for the current functional UI-state model.
   - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer arithmetic/division, and conditionals.
 - [x] Derived/computed state for the current primitive UI-state model.

@@ -13438,6 +13438,48 @@ app Counter
 }
 
 #[test]
+fn app_string_view_state_updates_native_text_without_owned_storage() {
+    let source = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto
+    state message: str = "Ready"
+    Text label at 1,1
+        text: message
+        visible: message != "Hidden"
+    Button action at 2,1
+        text: "Complete"
+        onPress: message => "Done"
+}
+app Status
+"#;
+
+    check_source(source).expect("borrowed string view state should typecheck");
+
+    let linux = compile_to_c(source).expect("borrowed string view state should lower on Linux");
+    assert!(linux.contains("static const char *flux__ui_state_message = \"Ready\";"));
+    assert!(linux.contains("flux__ui_state_message = \"Done\";"));
+    assert!(
+        linux.contains("gtk_label_set_text(GTK_LABEL(flux__ui_label), flux__ui_state_message)")
+    );
+    assert!(linux.contains("strcmp(flux__ui_state_message, \"Hidden\") != 0"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("borrowed string state fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("borrowed string view state should lower on Android");
+    assert!(android.contains("static const char *flux__ui_state_message = \"Ready\";"));
+    assert!(android.contains("flux__ui_state_message = \"Done\";"));
+    assert!(android.contains("flux__android_utf8_string(env, flux__ui_state_message)"));
+    assert!(android.contains("strcmp(flux__ui_state_message, \"Hidden\") != 0"));
+}
+
+#[test]
 fn app_i64_view_state_uses_checked_integer_division() {
     let source = r#"
 view Counter {

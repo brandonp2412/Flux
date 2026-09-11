@@ -3328,10 +3328,22 @@ fn emit_android_native_application(
                     "static int64_t {state_name} = INT64_C({initial});\n"
                 ));
             }
+            Type::Str => {
+                let Some(initial) = static_expr_str(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Android str state requires a compile-time string initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static const char *{state_name} = {};\n",
+                    c_string(&initial)
+                ));
+            }
             _ => {
                 return Err(diag(
                     state.type_span,
-                    "bootstrap Android view state currently supports bool and i64; owned/string/aggregate state remains pending",
+                    "bootstrap Android view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
                 ));
             }
         }
@@ -5309,10 +5321,22 @@ fn emit_linux_gtk_application(
                     "static int64_t {state_name} = INT64_C({initial});\n"
                 ));
             }
+            Type::Str => {
+                let Some(initial) = static_expr_str(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Linux str state requires a compile-time string initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static const char *{state_name} = {};\n",
+                    c_string(&initial)
+                ));
+            }
             _ => {
                 return Err(diag(
                     state.type_span,
-                    "bootstrap Linux view state currently supports bool and i64; owned/string/aggregate state remains pending",
+                    "bootstrap Linux view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
                 ));
             }
         }
@@ -7587,6 +7611,40 @@ fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
     }
 }
 
+fn ui_expr_is_str(expr: &Expr, view: &crate::ast::ViewDef, signatures: &Signatures) -> bool {
+    match &expr.kind {
+        ExprKind::Str(_) => true,
+        ExprKind::Var(name) => {
+            view.states
+                .iter()
+                .find(|state| state.name == *name)
+                .is_some_and(|state| signatures.canonical_type(&state.ty) == Type::Str)
+                || view
+                    .derived
+                    .iter()
+                    .find(|derived| derived.name == *name)
+                    .is_some_and(|derived| signatures.canonical_type(&derived.ty) == Type::Str)
+                || view
+                    .params
+                    .iter()
+                    .find(|param| param.name == *name)
+                    .is_some_and(|param| signatures.canonical_type(&param.ty) == Type::Str)
+                || signatures
+                    .constant(name)
+                    .is_some_and(|constant| matches!(constant.value, ConstantValue::Str(_)))
+        }
+        ExprKind::Conditional {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            ui_expr_is_str(then_expr, view, signatures)
+                && ui_expr_is_str(else_expr, view, signatures)
+        }
+        _ => false,
+    }
+}
+
 fn ui_expr_c(
     expr: &Expr,
     view: &crate::ast::ViewDef,
@@ -7653,6 +7711,8 @@ fn ui_expr_c(
             })
         }
         ExprKind::Binary { left, op, right } => {
+            let string_comparison =
+                matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
             let left = ui_expr_c(left, view, signatures)?;
             let right = ui_expr_c(right, view, signatures)?;
             match op {
@@ -7660,6 +7720,8 @@ fn ui_expr_c(
                 BinOp::Sub => Ok(format!("flux_sub_i64({left}, {right})")),
                 BinOp::Mul => Ok(format!("flux_mul_i64({left}, {right})")),
                 BinOp::Div => Ok(format!("flux_div_i64({left}, {right})")),
+                BinOp::Eq if string_comparison => Ok(format!("(strcmp({left}, {right}) == 0)")),
+                BinOp::Ne if string_comparison => Ok(format!("(strcmp({left}, {right}) != 0)")),
                 _ => Ok(format!("({left} {} {right})", c_operator(*op))),
             }
         }
