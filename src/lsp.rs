@@ -6254,7 +6254,9 @@ mod tests {
             .expect("built-in element hover should survive incomplete source")
             .to_json();
         assert!(
-            element.contains("element Text { text: str, variant: str, selectable: bool, size: i64")
+            element.contains(
+                "element Text { text: str, richText: str, variant: str, selectable: bool, size: i64"
+            )
         );
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("accessibilityOrder: i64"));
