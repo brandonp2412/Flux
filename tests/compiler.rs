@@ -17677,10 +17677,13 @@ view ContextCard {
     grid columns: 1fr
     grid rows: auto
     state opened: bool = false
+    state selected: bool = false
     Text card at 1,1
         text: "Options"
-        visible: opened
+        visible: selected
         onContextMenu: opened => true
+        contextMenuLabel: "Open"
+        onContextMenuSelect: selected => true
 }
 app ContextCard
 "#;
@@ -17690,7 +17693,11 @@ app ContextCard
     assert!(linux.contains("flux__ui_context_menu_card"));
     assert!(linux.contains("gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(flux__context_menu_card), GDK_BUTTON_SECONDARY)"));
     assert!(linux.contains("\"released\", G_CALLBACK(flux__ui_context_menu_card)"));
+    assert!(linux.contains("gtk_button_new_with_label(\"Open\")"));
+    assert!(linux.contains("gtk_popover_set_pointing_to"));
+    assert!(linux.contains("G_CALLBACK(flux__ui_context_menu_select_card)"));
     assert!(linux.contains("flux__ui_state_opened = true; flux__ui_refresh_changed(0);"));
+    assert!(linux.contains("flux__ui_state_selected = true; flux__ui_refresh_changed(1);"));
 
     let program = fluxc::parser::parse(source).expect("context-menu app should parse");
     let signatures = fluxc::typecheck::check(&program).expect("context-menu app should typecheck");
@@ -17703,8 +17710,14 @@ app ContextCard
     .expect("context-menu requests should lower to Android long-click activation");
     assert!(android.contains("setOnLongClickListener"));
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenu"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenuSelect"));
+    assert!(android.contains("setContextMenuLabel"));
+    assert!(android.contains("NewStringUTF(env, \"Open\")"));
     assert!(android.contains(
         "flux__ui_state_opened = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0);"
+    ));
+    assert!(android.contains(
+        "flux__ui_state_selected = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 1);"
     ));
 
     let conflicting = r#"
@@ -17727,6 +17740,27 @@ app ContextCard
         error
             .message
             .contains("onContextMenu cannot be combined with onLongPress")
+    }));
+
+    let incomplete = r#"
+fn action() -> void {
+    print("action")
+}
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        contextMenuLabel: "Open"
+}
+app ContextCard
+"#;
+    let errors = check_source_all(incomplete)
+        .expect_err("presented context-menu actions require a selection callback");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("contextMenuLabel requires onContextMenuSelect")
     }));
 }
 

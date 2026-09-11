@@ -1262,6 +1262,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 return Some(Type::Bool);
             }
             "tooltip"
+            | "context_menu_label"
             | "shortcut"
             | "shortcut_scope"
             | "accessibility_label"
@@ -1325,8 +1326,15 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transition_easing" => {
                 return Some(Type::Str);
             }
-            "on_tap" | "on_double_tap" | "on_long_press" | "on_context_menu" | "on_hover"
-            | "on_leave" | "on_focus" | "on_blur" => {
+            "on_tap"
+            | "on_double_tap"
+            | "on_long_press"
+            | "on_context_menu"
+            | "on_context_menu_select"
+            | "on_hover"
+            | "on_leave"
+            | "on_focus"
+            | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
                     returns: Vec::new(),
@@ -1567,6 +1575,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "focus_scope",
     "status",
     "tooltip",
+    "context_menu_label",
     "shortcut",
     "shortcut_scope",
     "accessibility_label",
@@ -1579,6 +1588,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_double_tap",
     "on_long_press",
     "on_context_menu",
+    "on_context_menu_select",
     "on_drag",
     "on_swipe",
     "on_scale",
@@ -1934,6 +1944,56 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     ),
                 );
             }
+            let context_menu_label = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "context_menu_label");
+            let context_menu_select = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "on_context_menu_select"
+            });
+            if context_menu.is_none()
+                && let (Some(long_press), Some(label)) = (long_press, context_menu_label)
+            {
+                diagnostics.push(
+                    diag(
+                        label.name_span,
+                        "contextMenuLabel cannot be combined with onLongPress on the same element",
+                    )
+                    .with_label(long_press.name_span, "onLongPress is declared here")
+                    .with_note(
+                        "Android uses the native long-click gesture to present the context menu; choose one semantic action for that gesture",
+                    ),
+                );
+            }
+            match (context_menu_label, context_menu_select) {
+                (Some(label), None) => diagnostics.push(
+                    diag(
+                        label.name_span,
+                        "contextMenuLabel requires onContextMenuSelect on the same element",
+                    )
+                    .with_note(
+                        "the label describes the native menu action selected by that callback",
+                    ),
+                ),
+                (None, Some(select)) => diagnostics.push(
+                    diag(
+                        select.name_span,
+                        "onContextMenuSelect requires contextMenuLabel on the same element",
+                    )
+                    .with_note("declare the visible native menu action label explicitly"),
+                ),
+                (Some(label), Some(_)) => match evaluate_default_expr(&label.value, signatures) {
+                    Ok(ConstantValue::Str(value)) if !value.is_empty() => {}
+                    Ok(ConstantValue::Str(_)) => diagnostics
+                        .push(diag(label.value.span, "contextMenuLabel must not be empty")),
+                    Ok(_) => {}
+                    Err(_) => diagnostics.push(diag(
+                        label.value.span,
+                        "contextMenuLabel must be a compile-time string value",
+                    )),
+                },
+                (None, None) => {}
+            }
 
             for property in &element.properties {
                 let internal_property = source_name_to_internal(&property.name);
@@ -2053,6 +2113,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                             | (_, "on_double_tap")
                             | (_, "on_long_press")
                             | (_, "on_context_menu")
+                            | (_, "on_context_menu_select")
                             | (_, "on_hover")
                             | (_, "on_leave")
                             | (_, "on_focus")
@@ -2061,7 +2122,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress/onContextMenu, onHover/onLeave, or onFocus/onBlur",
+                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress/onContextMenu/onContextMenuSelect, onHover/onLeave, or onFocus/onBlur",
                         ));
                         continue;
                     }
