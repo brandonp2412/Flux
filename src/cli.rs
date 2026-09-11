@@ -6225,6 +6225,8 @@ mod tests {
         assert!(activity.contains("nativeOnKey(view.getId(), fluxKeyName(keyCode, event));"));
         assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
         assert!(activity.contains("nativeOnClick(viewId);"));
+        assert!(!activity.contains("MethodChannel"));
+        assert!(!activity.contains("PluginRegistry"));
         assert!(activity.contains("nativeOnTap(viewId);"));
         assert!(activity.contains("nativeOnLongPress(view.getId());"));
         assert!(

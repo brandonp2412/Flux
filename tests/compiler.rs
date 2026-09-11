@@ -13359,7 +13359,11 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("#include <android/api-level.h>"));
     assert!(generated.contains("static inline int64_t flux__android_sdk_int(void)"));
     assert!(generated.contains("android_get_device_api_level()"));
+    assert!(generated.contains("static JNIEnv *flux__android_get_env(bool *detach)"));
+    assert!(generated.contains("AttachCurrentThread"));
+    assert!(generated.contains("DetachCurrentThread"));
     assert!(generated.contains("static void flux__android_vibrate(int64_t duration_ms)"));
+    assert!(generated.contains("JNIEnv *env = flux__android_get_env(&detach);"));
     assert!(generated.contains("getSystemService"));
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
     assert!(generated.contains("static void flux__android_open_url(const char *url)"));
@@ -13442,6 +13446,8 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("static void flux__android_cancel_notification"));
     assert!(generated.contains("\"cancel\", \"(I)V\""));
     assert!(generated.contains("flux__fn_exiting();"));
+    assert!(!generated.contains("MethodChannel"));
+    assert!(!generated.contains("plugin registry"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("GtkApplication"));
 
