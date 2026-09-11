@@ -1620,6 +1620,7 @@ fn main() -> i64 {
     let (port, portError) = net.localPort(listener)
     print(port)
     print(portError)
+    print(net.setKeepAlive(listener, true))
     print(net.close(listener))
     return 0
 }
@@ -1659,19 +1660,23 @@ fn main() -> i64 {
         .lines()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 5);
     assert_eq!(lines[0], "nil");
     assert!(lines[1].parse::<u16>().is_ok_and(|port| port > 0));
-    assert_eq!(&lines[2..], &["nil", "nil"]);
+    assert_eq!(lines[2], "nil");
+    assert_eq!(lines[3], "setKeepAlive requires a connected TCP socket");
+    assert_eq!(lines[4], "nil");
 
     let rust_listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let connect_port = rust_listener.local_addr().unwrap().port();
     let connect_source = format!(
-        "fn main() -> i64 {{\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.setNoDelay(socket, true))\n    print(net.setNoDelay(socket, false))\n    print(net.close(socket))\n    return 0\n}}\n"
+        "fn main() -> i64 {{\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.setNoDelay(socket, true))\n    print(net.setNoDelay(socket, false))\n    print(net.setKeepAlive(socket, true))\n    print(net.setKeepAlive(socket, false))\n    print(net.close(socket))\n    return 0\n}}\n"
     );
     let connect_generated =
         compile_to_c(&connect_source).expect("TCP no-delay should lower on Linux");
     assert!(connect_generated.contains("flux__net_set_no_delay("));
+    assert!(connect_generated.contains("flux__net_set_keep_alive("));
+    assert!(connect_generated.contains("SO_KEEPALIVE"));
     assert!(connect_generated.contains("#include <netinet/tcp.h>"));
     assert!(connect_generated.contains("TCP_NODELAY"));
     let connect_path = root.join("connect.flux");
@@ -1693,7 +1698,10 @@ fn main() -> i64 {
         .output()
         .expect("TCP connect binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\nnil\n");
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\nnil\nnil\nnil\nnil\n"
+    );
     drop(rust_listener);
 
     let invalid = r#"
@@ -1710,6 +1718,8 @@ fn main() -> i64 {
     print(net.close(false))
     print(net.setNoDelay("bad", true))
     print(net.setNoDelay(1, 1))
+    print(net.setKeepAlive("bad", true))
+    print(net.setKeepAlive(1, 1))
     net.unknown()
     return 0
 }
@@ -1762,6 +1772,13 @@ fn main() -> i64 {
         error.message.contains("net.setNoDelay enabled") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
+        error.message.contains("net.setKeepAlive socket") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("net.setKeepAlive enabled")
+            && error.message.contains("expected bool")
+    }));
+    assert!(errors.iter().any(|error| {
         error
             .message
             .contains("net module has no function 'unknown'")
@@ -1773,6 +1790,7 @@ fn hidden() -> void {
     print(listener)
     print(failure)
     print(net.setNoDelay(listener, true))
+    print(net.setKeepAlive(listener, true))
 }
 fn main() -> i64 {
     return 0
@@ -1781,6 +1799,7 @@ fn main() -> i64 {
     let unused_generated = compile_to_c(unused).expect("dead network calls should tree-shake");
     assert!(!unused_generated.contains("flux__net_tcp_listen("));
     assert!(!unused_generated.contains("flux__net_set_no_delay("));
+    assert!(!unused_generated.contains("flux__net_set_keep_alive("));
     assert!(!unused_generated.contains("#include <netinet/tcp.h>"));
     assert!(!unused_generated.contains("#include <sys/socket.h>"));
 
@@ -3977,6 +3996,7 @@ fn main() -> i64 {
     let (port, portError) = net.localPort(socket)
     print(port)
     print(portError)
+    print(net.setKeepAlive(socket, true))
     print(net.close(socket))
     return 0
 }
@@ -4016,10 +4036,12 @@ fn main() -> i64 {
         .lines()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 5);
     assert_eq!(lines[0], "nil");
     assert!(lines[1].parse::<u16>().is_ok_and(|port| port > 0));
-    assert_eq!(&lines[2..], &["nil", "nil"]);
+    assert_eq!(lines[2], "nil");
+    assert_eq!(lines[3], "setKeepAlive requires a TCP socket");
+    assert_eq!(lines[4], "nil");
 
     let rust_socket = UdpSocket::bind("127.0.0.1:0").expect("loopback UDP socket should bind");
     let connect_port = rust_socket.local_addr().unwrap().port();

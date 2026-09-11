@@ -1234,6 +1234,10 @@ fn add_qualified_namespace_completions(
                 "fn net.setNoDelay(socket: i64, enabled: bool) -> error",
             ),
             (
+                "setKeepAlive",
+                "fn net.setKeepAlive(socket: i64, enabled: bool) -> error",
+            ),
+            (
                 "waitReadable",
                 "fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
@@ -2826,7 +2830,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "setNonblocking" | "setNoDelay" => {
+                "setNonblocking" | "setNoDelay" | "setKeepAlive" => {
                     return Some(signature_help_for_builtin(
                         &format!("net.{member}"),
                         &["socket: i64", "enabled: bool"],
@@ -6684,6 +6688,7 @@ mod tests {
         ));
         assert!(net_items.contains("fn net.setNonblocking(socket: i64, enabled: bool) -> error"));
         assert!(net_items.contains("fn net.setNoDelay(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.setKeepAlive(socket: i64, enabled: bool) -> error"));
         assert!(
             net_items
                 .contains("fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)")

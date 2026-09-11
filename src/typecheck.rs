@@ -6390,7 +6390,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "setNonblocking" | "setNoDelay" => {
+            "setNonblocking" | "setNoDelay" | "setKeepAlive" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,

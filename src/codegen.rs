@@ -3955,6 +3955,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_set_no_delay(") {
         out.push_str("static inline const char *flux__net_set_no_delay(int64_t socket_handle, bool enabled) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"setNoDelay requires a TCP socket\"; int value = enabled ? 1 : 0; return setsockopt((int)socket_handle, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value)) == 0 ? NULL : \"failed to update TCP no-delay mode\"; }\n");
     }
+    if runtime_usage.contains("flux__net_set_keep_alive(") {
+        out.push_str("static inline const char *flux__net_set_keep_alive(int64_t socket_handle, bool enabled) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"setKeepAlive requires a TCP socket\"; int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return \"failed to inspect TCP socket state\"; if (accepting != 0) return \"setKeepAlive requires a connected TCP socket\"; int value = enabled ? 1 : 0; return setsockopt((int)socket_handle, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value)) == 0 ? NULL : \"failed to update TCP keep-alive mode\"; }\n");
+    }
     if runtime_usage.contains("flux__net_shutdown_read(")
         || runtime_usage.contains("flux__net_shutdown_write(")
     {
@@ -18522,16 +18525,17 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "setNonblocking" | "setNoDelay" => {
+            "setNonblocking" | "setNoDelay" | "setKeepAlive" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
                 let enabled = emit_expr(&args[1], env, signatures)?;
-                let helper = if name == "setNonblocking" {
-                    "flux__net_set_nonblocking"
-                } else {
-                    "flux__net_set_no_delay"
+                let helper = match name {
+                    "setNonblocking" => "flux__net_set_nonblocking",
+                    "setNoDelay" => "flux__net_set_no_delay",
+                    "setKeepAlive" => "flux__net_set_keep_alive",
+                    _ => unreachable!(),
                 };
                 return Ok((
                     format!("{helper}({}, {})", socket_handle.code, enabled.code),
