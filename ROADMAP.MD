@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 479
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 79 checkbox items
+- Current net scope growth after the baseline: 80 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -537,6 +537,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
     - [x] Bootstrap `TextInput.validationState` provides compile-time `normal` / `error` / `success` / `warning` semantics with contextual LSP completion. Linux lowers non-normal states to low-priority GTK theme classes backed by semantic danger/success/warning colors; Android feeds the same semantic palette into native `EditText` state tints while retaining disabled/focused behavior. Omission remains polished `normal`, and explicit application element styling stays authoritative.
   - [x] Custom themes and explicit styling remain straightforward escape hatches without adding a theme-object framework: application metadata can override any semantic palette entry with concrete `#RRGGBB` / `#RRGGBBAA` values (`surfaceColor`, `surfaceRaisedColor`, `textColor`, `textMutedColor`, `accentColor`, `onAccentColor`, `outlineColor`, `dangerColor`, `successColor`, `warningColor`, `shadowColor`). Existing element-level color/border/radius/padding/etc. styling remains higher priority, while Linux emits the custom palette directly into GTK CSS definitions and Android resolves the same generated palette through its compiler-owned native bridge.
   - [x] README/gallery screenshots are reproducible real application captures rather than synthetic mockups: `tools/capture-readme-showcase` builds the checked-in `examples/mobile_showcase` as a release x86_64 APK, installs/launches it in ADB-connected Waydroid, forces a known 1080x1920 portrait viewport at 360 dpi for the capture, validates the resulting PNG, and restores the emulator display settings afterward. The checked-in README image was regenerated through that exact workflow after live visual verification.
+  - [ ] **Main screenshot visual example:** replace/evolve the primary README showcase into a funny but genuinely sleek **“Horse Tinder”** application: polished dating-app-style horse profile cards, sharp typography and spacing, tasteful visual jokes, and an immediately understandable like/pass interaction. The gag should make the screenshot memorable without turning it into a novelty mockup; it must still look like a credible production-quality Flux app and be captured through the reproducible real-app screenshot workflow above.
 
 # Milestone 10 — Functional UI state and rendering
 
