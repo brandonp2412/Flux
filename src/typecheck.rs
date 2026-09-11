@@ -5674,7 +5674,8 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Bool]);
             }
-            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory" => {
+            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
+            | "removeDirectories" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

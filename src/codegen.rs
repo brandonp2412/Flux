@@ -295,6 +295,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
+        || runtime_usage.contains("flux__fs_remove_directories(")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -308,6 +309,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
         || runtime_usage.contains("flux__fs_create_directories(")
+        || runtime_usage.contains("flux__fs_remove_directories(")
     {
         out.push_str("#include <errno.h>\n");
     }
@@ -335,6 +337,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__fs_") {
         out.push_str("#include <sys/stat.h>\n");
+    }
+    if runtime_usage.contains("flux__fs_remove_directories(") {
+        out.push_str("#include <dirent.h>\n");
     }
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
@@ -1755,6 +1760,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__fs_remove_directory(") {
         out.push_str("static inline const char *flux__fs_remove_directory(const char *path) { return rmdir(path) == 0 ? NULL : \"failed to remove directory\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_remove_directories(") {
+        out.push_str("static const char *flux__fs_remove_directories(const char *path) { DIR *directory = opendir(path); if (directory == NULL) return \"failed to open directory\"; const char *failure = NULL; for (;;) { errno = 0; struct dirent *entry = readdir(directory); if (entry == NULL) { if (errno != 0) failure = \"failed to read directory\"; break; } if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; size_t path_length = strlen(path); size_t name_length = strlen(entry->d_name); bool separator = path_length > 0 && path[path_length - 1] != '/'; if (name_length > SIZE_MAX - 2 || path_length > SIZE_MAX - name_length - 2) { failure = \"directory path is too long\"; break; } size_t child_length = path_length + (separator ? 1 : 0) + name_length; char *child = malloc(child_length + 1); if (child == NULL) { failure = \"failed to allocate directory path\"; break; } memcpy(child, path, path_length); size_t offset = path_length; if (separator) child[offset++] = '/'; memcpy(child + offset, entry->d_name, name_length + 1); struct stat info; if (lstat(child, &info) != 0) failure = \"failed to inspect directory entry\"; else if (S_ISDIR(info.st_mode)) failure = flux__fs_remove_directories(child); else if (unlink(child) != 0) failure = \"failed to remove directory entry\"; free(child); if (failure != NULL) break; } if (closedir(directory) != 0 && failure == NULL) failure = \"failed to close directory\"; if (failure != NULL) return failure; return rmdir(path) == 0 ? NULL : \"failed to remove directory\"; }\n");
     }
     if runtime_usage.contains("flux__fs_rename(") {
         out.push_str("static inline const char *flux__fs_rename(const char *source, const char *destination) { return rename(source, destination) == 0 ? NULL : \"failed to rename path\"; }\n");
@@ -13009,7 +13017,8 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}({})", path.code), vec![Type::Bool], None));
             }
-            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory" => {
+            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
+            | "removeDirectories" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -13021,7 +13030,8 @@ fn emit_qualified_call(
                     "createDirectory" => "flux__fs_create_directory",
                     "createDirectories" => "flux__fs_create_directories",
                     "removeFile" => "flux__fs_remove_file",
-                    _ => "flux__fs_remove_directory",
+                    "removeDirectory" => "flux__fs_remove_directory",
+                    _ => "flux__fs_remove_directories",
                 };
                 return Ok((format!("{helper}({})", path.code), vec![Type::Error], None));
             }

@@ -1891,6 +1891,11 @@ fn filesystem_capabilities_are_typed_native_and_tree_shaken() {
     let renamed = root.join("renamed.txt");
     let missing = root.join("missing.txt");
     let deep = root.join("deep/a/b");
+    let recursive_root = root.join("recursive");
+    let recursive_nested = recursive_root.join("nested");
+    fs::create_dir_all(&recursive_nested).expect("recursive fixture should be writable");
+    fs::write(recursive_nested.join("file.txt"), "nested")
+        .expect("recursive fixture file should be writable");
     fs::write(&delete, "delete me").expect("delete fixture should be writable");
     fs::write(&copy_source, "copy me").expect("copy fixture should be writable");
     let path = |value: &std::path::Path| {
@@ -1922,6 +1927,8 @@ fn main() -> i64 {{
     print(fs.exists("{}"))
     print(fs.removeDirectory("{}"))
     print(fs.exists("{}"))
+    print(fs.removeDirectories("{}"))
+    print(fs.exists("{}"))
     return 0
 }}
 "#,
@@ -1947,11 +1954,14 @@ fn main() -> i64 {{
         path(&delete),
         path(&created),
         path(&created),
+        path(&recursive_root),
+        path(&recursive_root),
     );
 
     check_source(&source).expect("filesystem capabilities should typecheck");
     let generated = compile_to_c(&source).expect("filesystem capabilities should lower natively");
     assert!(generated.contains("#include <sys/stat.h>"));
+    assert!(generated.contains("#include <dirent.h>"));
     assert!(generated.contains("static inline bool flux__fs_exists(const char *path)"));
     assert!(generated.contains("static inline bool flux__fs_is_file(const char *path)"));
     assert!(generated.contains("static inline bool flux__fs_is_directory(const char *path)"));
@@ -1966,6 +1976,7 @@ fn main() -> i64 {{
     assert!(
         generated.contains("static inline const char *flux__fs_remove_directory(const char *path)")
     );
+    assert!(generated.contains("static const char *flux__fs_remove_directories(const char *path)"));
     assert!(generated.contains("static inline const char *flux__fs_write_text_mode"));
     assert!(generated.contains(
         "static inline const char *flux__fs_rename(const char *source, const char *destination)"
@@ -2001,7 +2012,7 @@ fn main() -> i64 {{
         lines,
         [
             "true", "true", "false", "true", "nil", "true", "nil", "true", "nil", "nil", "true",
-            "nil", "true", "nil", "false", "true", "nil", "false", "nil", "false"
+            "nil", "true", "nil", "false", "true", "nil", "false", "nil", "false", "nil", "false"
         ]
     );
     assert_eq!(
@@ -2015,11 +2026,13 @@ fn main() -> i64 {{
     assert!(!copy_destination.exists());
     assert!(!delete.exists());
     assert!(!created.exists());
+    assert!(!recursive_root.exists());
 
     let unused = r#"
 fn hidden() -> void {
     print(fs.exists("/tmp"))
     print(fs.createDirectories("/tmp/unused-flux-directory/nested"))
+    print(fs.removeDirectories("/tmp/unused-flux-directory"))
     print(fs.writeText("/tmp/unused-flux-file", "unused"))
     print(fs.copyFile("/tmp/a", "/tmp/b"))
 }
@@ -2031,6 +2044,7 @@ fn main() -> i64 {
     assert!(!unused_generated.contains("#include <sys/stat.h>"));
     assert!(!unused_generated.contains("flux__fs_exists"));
     assert!(!unused_generated.contains("flux__fs_create_directories"));
+    assert!(!unused_generated.contains("flux__fs_remove_directories"));
     assert!(!unused_generated.contains("flux__fs_write_text"));
     assert!(!unused_generated.contains("flux__fs_copy_file"));
 
@@ -2043,6 +2057,7 @@ fn main() -> i64 {
     fs.createDirectories(false)
     fs.removeFile(false)
     fs.removeDirectory(1)
+    fs.removeDirectories(false)
     fs.writeText("x", 1)
     fs.appendText(1, "x")
     fs.rename(false, "x")
@@ -2060,6 +2075,7 @@ fn main() -> i64 {
         "createDirectories",
         "removeFile",
         "removeDirectory",
+        "removeDirectories",
     ] {
         assert!(
             errors
