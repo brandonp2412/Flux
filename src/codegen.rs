@@ -4118,6 +4118,21 @@ fn emit_android_native_application(
     }
 
     out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic float flux__ui_density = 1.0f;\n");
+    for element in &view.elements {
+        if view_property(element, "drag_translate").is_some() {
+            out.push_str(&format!(
+                "static int64_t {} = INT64_C(0);\nstatic int64_t {} = INT64_C(0);\n",
+                ui_gesture_translate_x_c_name(&element.name),
+                ui_gesture_translate_y_c_name(&element.name)
+            ));
+        }
+        if view_property(element, "pinch_scale").is_some() {
+            out.push_str(&format!(
+                "static int64_t {} = INT64_C(100);\n",
+                ui_gesture_scale_c_name(&element.name)
+            ));
+        }
+    }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -5122,16 +5137,33 @@ fn emit_android_native_application(
                         .map(|property| ui_expr_c(&property.value, view, signatures))
                         .unwrap_or_else(|| Ok(fallback.to_string()))
                 };
-            let translate_x = transform_value("translate_x", "0")?;
-            let translate_y = transform_value("translate_y", "0")?;
+            let mut translate_x = transform_value("translate_x", "0")?;
+            let mut translate_y = transform_value("translate_y", "0")?;
             let rotate_degrees = transform_value("rotate_degrees", "0")?;
             let scale_percent = transform_value("scale_percent", "100")?;
-            let scale_x_percent = view_property(element, "scale_x_percent")
+            let mut scale_x_percent = view_property(element, "scale_x_percent")
                 .map(|property| ui_expr_c(&property.value, view, signatures))
                 .unwrap_or_else(|| Ok(scale_percent.clone()))?;
-            let scale_y_percent = view_property(element, "scale_y_percent")
+            let mut scale_y_percent = view_property(element, "scale_y_percent")
                 .map(|property| ui_expr_c(&property.value, view, signatures))
                 .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            if static_gesture_transform_enabled(element, "drag_translate", signatures)? {
+                translate_x = format!(
+                    "({translate_x}) + {}",
+                    ui_gesture_translate_x_c_name(&element.name)
+                );
+                translate_y = format!(
+                    "({translate_y}) + {}",
+                    ui_gesture_translate_y_c_name(&element.name)
+                );
+            }
+            if static_gesture_transform_enabled(element, "pinch_scale", signatures)? {
+                let gesture_scale = ui_gesture_scale_c_name(&element.name);
+                scale_x_percent =
+                    format!("((double)({scale_x_percent}) * (double)({gesture_scale}) / 100.0)");
+                scale_y_percent =
+                    format!("((double)({scale_y_percent}) * (double)({gesture_scale}) / 100.0)");
+            }
             let origin_x = transform_value("transform_origin_x_percent", "50")?;
             let origin_y = transform_value("transform_origin_y_percent", "50")?;
             out.push_str(
@@ -5847,6 +5879,8 @@ fn emit_android_native_application(
         if view_property(element, "on_drag").is_some()
             || view_property(element, "on_swipe").is_some()
             || view_property(element, "on_scale").is_some()
+            || static_gesture_transform_enabled(element, "drag_translate", signatures)?
+            || static_gesture_transform_enabled(element, "pinch_scale", signatures)?
         {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
             out.push_str("    jmethodID set_touch_listener = (*env)->GetMethodID(env, child_class, \"setOnTouchListener\", \"(Landroid/view/View$OnTouchListener;)V\");\n");
@@ -6149,19 +6183,38 @@ fn emit_android_native_application(
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDrag(JNIEnv *env, jclass activity_class, jint view_id, jlong offset_x, jlong offset_y) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
     for element in &view.elements {
-        let Some(action) = view_property(element, "on_drag") else {
+        let action = view_property(element, "on_drag");
+        let drag_translate =
+            static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+        if action.is_none() && !drag_translate {
             continue;
+        }
+        let callback = if let Some(action) = action {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
+                ));
+            };
+            format!(
+                "{}((int64_t)offset_x, (int64_t)offset_y); ",
+                function_c_name(function)
+            )
+        } else {
+            String::new()
         };
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
-            ));
+        let gesture_update = if drag_translate {
+            format!(
+                "{} = (int64_t)offset_x; {} = (int64_t)offset_y; ",
+                ui_gesture_translate_x_c_name(&element.name),
+                ui_gesture_translate_y_c_name(&element.name)
+            )
+        } else {
+            String::new()
         };
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str(&format!(
-            "        case {element_id}: {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); break;\n",
-            function_c_name(function)
+            "        case {element_id}: {callback}{gesture_update}flux__ui_refresh(); break;\n"
         ));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
@@ -6187,19 +6240,33 @@ fn emit_android_native_application(
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnScale(JNIEnv *env, jclass activity_class, jint view_id, jlong scale_percent) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
     for element in &view.elements {
-        let Some(action) = view_property(element, "on_scale") else {
+        let action = view_property(element, "on_scale");
+        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if action.is_none() && !pinch_scale {
             continue;
+        }
+        let callback = if let Some(action) = action {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onScale requires a named fn(i64) -> void callback",
+                ));
+            };
+            format!("{}((int64_t)scale_percent); ", function_c_name(function))
+        } else {
+            String::new()
         };
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap native onScale requires a named fn(i64) -> void callback",
-            ));
+        let gesture_update = if pinch_scale {
+            format!(
+                "{} = (int64_t)scale_percent; ",
+                ui_gesture_scale_c_name(&element.name)
+            )
+        } else {
+            String::new()
         };
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str(&format!(
-            "        case {element_id}: {}((int64_t)scale_percent); flux__ui_refresh(); break;\n",
-            function_c_name(function)
+            "        case {element_id}: {callback}{gesture_update}flux__ui_refresh(); break;\n"
         ));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
@@ -6535,6 +6602,21 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
     ));
+    for element in &view.elements {
+        if view_property(element, "drag_translate").is_some() {
+            out.push_str(&format!(
+                "static int64_t {} = INT64_C(0);\nstatic int64_t {} = INT64_C(0);\n",
+                ui_gesture_translate_x_c_name(&element.name),
+                ui_gesture_translate_y_c_name(&element.name)
+            ));
+        }
+        if view_property(element, "pinch_scale").is_some() {
+            out.push_str(&format!(
+                "static int64_t {} = INT64_C(100);\n",
+                ui_gesture_scale_c_name(&element.name)
+            ));
+        }
+    }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -6767,17 +6849,36 @@ fn emit_linux_gtk_application(
                 element.name,
             ));
         }
-        if let Some(action) = view_property(element, "on_drag") {
-            let ExprKind::Var(function) = &action.value.kind else {
-                return Err(diag(
-                    action.value.span,
-                    "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
-                ));
+        let drag_action = view_property(element, "on_drag");
+        let drag_translate =
+            static_gesture_transform_enabled(element, "drag_translate", signatures)?;
+        if drag_action.is_some() || drag_translate {
+            let callback = if let Some(action) = drag_action {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
+                    ));
+                };
+                format!(
+                    "{}((int64_t)offset_x, (int64_t)offset_y); ",
+                    function_c_name(function)
+                )
+            } else {
+                String::new()
+            };
+            let gesture_update = if drag_translate {
+                format!(
+                    "{} = (int64_t)offset_x; {} = (int64_t)offset_y; ",
+                    ui_gesture_translate_x_c_name(&element.name),
+                    ui_gesture_translate_y_c_name(&element.name)
+                )
+            } else {
+                String::new()
             };
             out.push_str(&format!(
-                "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); }}\n",
+                "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {callback}{gesture_update}flux__ui_refresh(); }}\n",
                 element.name,
-                function_c_name(function),
             ));
         }
         if let Some(action) = view_property(element, "on_swipe") {
@@ -6793,17 +6894,34 @@ fn emit_linux_gtk_application(
                 function_c_name(function),
             ));
         }
-        if let Some(action) = view_property(element, "on_scale") {
-            let ExprKind::Var(function) = &action.value.kind else {
-                return Err(diag(
-                    action.value.span,
-                    "bootstrap native onScale requires a named fn(i64) -> void callback",
-                ));
+        let scale_action = view_property(element, "on_scale");
+        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if scale_action.is_some() || pinch_scale {
+            let callback = if let Some(action) = scale_action {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap native onScale requires a named fn(i64) -> void callback",
+                    ));
+                };
+                format!(
+                    "{}((int64_t)(scale * 100.0 + 0.5)); ",
+                    function_c_name(function)
+                )
+            } else {
+                String::new()
+            };
+            let gesture_update = if pinch_scale {
+                format!(
+                    "{} = (int64_t)(scale * 100.0 + 0.5); ",
+                    ui_gesture_scale_c_name(&element.name)
+                )
+            } else {
+                String::new()
             };
             out.push_str(&format!(
-                "static void flux__ui_scale_{}(GtkGestureZoom *gesture, double scale, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)(scale * 100.0 + 0.5)); flux__ui_refresh(); }}\n",
+                "static void flux__ui_scale_{}(GtkGestureZoom *gesture, double scale, gpointer data) {{ (void)gesture; (void)data; {callback}{gesture_update}flux__ui_refresh(); }}\n",
                 element.name,
-                function_c_name(function),
             ));
         }
         if let Some(action) = view_property(element, "on_key") {
@@ -7891,7 +8009,9 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
-        if view_property(element, "on_drag").is_some() {
+        if view_property(element, "on_drag").is_some()
+            || static_gesture_transform_enabled(element, "drag_translate", signatures)?
+        {
             let controller = format!("flux__drag_{}", element.name);
             out.push_str(&format!(
                 "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_drag_new());\n"
@@ -7917,7 +8037,9 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
-        if view_property(element, "on_scale").is_some() {
+        if view_property(element, "on_scale").is_some()
+            || static_gesture_transform_enabled(element, "pinch_scale", signatures)?
+        {
             let controller = format!("flux__scale_{}", element.name);
             out.push_str(&format!(
                 "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_zoom_new());\n"
@@ -8639,23 +8761,43 @@ fn emit_android_ui_refresh(
         ]
         .iter()
         .any(|name| android_ui_property_needs_refresh(element, name, &runtime_names));
-        if runtime_transform {
+        let gesture_transform =
+            static_gesture_transform_enabled(element, "drag_translate", signatures)?
+                || static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
+        if runtime_transform || gesture_transform {
             let transform_value =
                 |property_name: &str, fallback: &str| -> Result<String, Diagnostic> {
                     view_property(element, property_name)
                         .map(|property| ui_expr_c(&property.value, view, signatures))
                         .unwrap_or_else(|| Ok(fallback.to_string()))
                 };
-            let translate_x = transform_value("translate_x", "0")?;
-            let translate_y = transform_value("translate_y", "0")?;
+            let mut translate_x = transform_value("translate_x", "0")?;
+            let mut translate_y = transform_value("translate_y", "0")?;
             let rotate_degrees = transform_value("rotate_degrees", "0")?;
             let scale_percent = transform_value("scale_percent", "100")?;
-            let scale_x_percent = view_property(element, "scale_x_percent")
+            let mut scale_x_percent = view_property(element, "scale_x_percent")
                 .map(|property| ui_expr_c(&property.value, view, signatures))
                 .unwrap_or_else(|| Ok(scale_percent.clone()))?;
-            let scale_y_percent = view_property(element, "scale_y_percent")
+            let mut scale_y_percent = view_property(element, "scale_y_percent")
                 .map(|property| ui_expr_c(&property.value, view, signatures))
                 .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+            if static_gesture_transform_enabled(element, "drag_translate", signatures)? {
+                translate_x = format!(
+                    "({translate_x}) + {}",
+                    ui_gesture_translate_x_c_name(&element.name)
+                );
+                translate_y = format!(
+                    "({translate_y}) + {}",
+                    ui_gesture_translate_y_c_name(&element.name)
+                );
+            }
+            if static_gesture_transform_enabled(element, "pinch_scale", signatures)? {
+                let gesture_scale = ui_gesture_scale_c_name(&element.name);
+                scale_x_percent =
+                    format!("((double)({scale_x_percent}) * (double)({gesture_scale}) / 100.0)");
+                scale_y_percent =
+                    format!("((double)({scale_y_percent}) * (double)({gesture_scale}) / 100.0)");
+            }
             let origin_x = transform_value("transform_origin_x_percent", "50")?;
             let origin_y = transform_value("transform_origin_y_percent", "50")?;
             out.push_str("                jmethodID refresh_transform = (*env)->GetMethodID(env, activity_class, \"transformView\", \"(Landroid/view/View;FFFFFFF)V\");\n");
@@ -9965,6 +10107,36 @@ fn element_has_transform(element: &crate::ast::ViewElement) -> bool {
     TRANSFORM_VIEW_PROPERTIES
         .iter()
         .any(|name| view_property(element, name).is_some())
+        || view_property(element, "drag_translate").is_some()
+        || view_property(element, "pinch_scale").is_some()
+}
+
+fn static_gesture_transform_enabled(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    signatures: &Signatures,
+) -> Result<bool, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok(false);
+    };
+    static_expr_bool(&property.value, signatures).ok_or_else(|| {
+        diag(
+            property.value.span,
+            &format!("{property_name} must be a compile-time bool value"),
+        )
+    })
+}
+
+fn ui_gesture_translate_x_c_name(name: &str) -> String {
+    format!("flux__gesture_translate_x_{name}")
+}
+
+fn ui_gesture_translate_y_c_name(name: &str) -> String {
+    format!("flux__gesture_translate_y_{name}")
+}
+
+fn ui_gesture_scale_c_name(name: &str) -> String {
+    format!("flux__gesture_scale_{name}")
 }
 
 fn element_has_dynamic_transform(
@@ -9975,6 +10147,8 @@ fn element_has_dynamic_transform(
         .iter()
         .filter_map(|name| view_property(element, name))
         .any(|property| static_expr_i64(&property.value, signatures).is_none())
+        || view_property(element, "drag_translate").is_some()
+        || view_property(element, "pinch_scale").is_some()
 }
 
 fn ui_transform_provider_c_name(name: &str) -> String {
@@ -10013,16 +10187,33 @@ fn emit_dynamic_transform_refresh(
             .map(|property| ui_expr_c(&property.value, view, signatures))
             .unwrap_or_else(|| Ok(fallback.to_string()))
     };
-    let translate_x = value("translate_x", "0")?;
-    let translate_y = value("translate_y", "0")?;
+    let mut translate_x = value("translate_x", "0")?;
+    let mut translate_y = value("translate_y", "0")?;
     let rotate_degrees = value("rotate_degrees", "0")?;
     let scale_percent = value("scale_percent", "100")?;
-    let scale_x_percent = view_property(element, "scale_x_percent")
+    let mut scale_x_percent = view_property(element, "scale_x_percent")
         .map(|property| ui_expr_c(&property.value, view, signatures))
         .unwrap_or_else(|| Ok(scale_percent.clone()))?;
-    let scale_y_percent = view_property(element, "scale_y_percent")
+    let mut scale_y_percent = view_property(element, "scale_y_percent")
         .map(|property| ui_expr_c(&property.value, view, signatures))
         .unwrap_or_else(|| Ok(scale_percent.clone()))?;
+    if static_gesture_transform_enabled(element, "drag_translate", signatures)? {
+        translate_x = format!(
+            "({translate_x}) + {}",
+            ui_gesture_translate_x_c_name(&element.name)
+        );
+        translate_y = format!(
+            "({translate_y}) + {}",
+            ui_gesture_translate_y_c_name(&element.name)
+        );
+    }
+    if static_gesture_transform_enabled(element, "pinch_scale", signatures)? {
+        let gesture_scale = ui_gesture_scale_c_name(&element.name);
+        scale_x_percent =
+            format!("((double)({scale_x_percent}) * (double)({gesture_scale}) / 100.0)");
+        scale_y_percent =
+            format!("((double)({scale_y_percent}) * (double)({gesture_scale}) / 100.0)");
+    }
     let skew_x_degrees = value("skew_x_degrees", "0")?;
     let skew_y_degrees = value("skew_y_degrees", "0")?;
     let origin_x = value("transform_origin_x_percent", "50")?;

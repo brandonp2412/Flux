@@ -15600,6 +15600,77 @@ app Transformed
 }
 
 #[test]
+fn gesture_driven_transforms_bind_native_drag_and_pinch_directly() {
+    let source = r#"
+view DirectManipulation {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Drag and pinch"
+        translateX: 8
+        scalePercent: 120
+        dragTranslate: true
+        pinchScale: true
+}
+app DirectManipulation
+"#;
+    check_source(source).expect("gesture transform properties should be typed common bools");
+
+    let linux = compile_to_c(source).expect("gesture transforms should lower directly on Linux");
+    assert!(linux.contains("static int64_t flux__gesture_translate_x_card = INT64_C(0);"));
+    assert!(linux.contains("static int64_t flux__gesture_translate_y_card = INT64_C(0);"));
+    assert!(linux.contains("static int64_t flux__gesture_scale_card = INT64_C(100);"));
+    assert!(linux.contains("gtk_gesture_drag_new()"));
+    assert!(linux.contains("gtk_gesture_zoom_new()"));
+    assert!(linux.contains("flux__gesture_translate_x_card = (int64_t)offset_x;"));
+    assert!(linux.contains("flux__gesture_scale_card = (int64_t)(scale * 100.0 + 0.5);"));
+    assert!(linux.contains("(INT64_C(8)) + flux__gesture_translate_x_card"));
+    assert!(linux.contains("flux__gesture_scale_card"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("gesture transform fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("gesture transforms should lower directly on Android");
+    let card_id = android_stable_view_id("DirectManipulation", "card");
+    assert!(android.contains("setOnTouchListener"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnDrag"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnScale"));
+    assert!(android.contains(&format!(
+        "case {card_id}: flux__gesture_translate_x_card = (int64_t)offset_x; flux__gesture_translate_y_card = (int64_t)offset_y; flux__ui_refresh(); break;"
+    )));
+    assert!(android.contains(&format!(
+        "case {card_id}: flux__gesture_scale_card = (int64_t)scale_percent; flux__ui_refresh(); break;"
+    )));
+    assert!(android.contains("transformView"));
+    assert!(android.contains("flux__gesture_scale_card"));
+
+    let dynamic_flag = r#"
+view DirectManipulation {
+    state enabled: bool = true
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Bad"
+        dragTranslate: enabled
+}
+app DirectManipulation
+"#;
+    check_source(dynamic_flag).expect("gesture transform flags have ordinary bool property typing");
+    let error = compile_to_c(dynamic_flag)
+        .expect_err("gesture transform enablement must remain a compile-time native contract");
+    assert!(
+        error
+            .message
+            .contains("drag_translate must be a compile-time bool value")
+    );
+}
+
+#[test]
 fn portable_frame_synchronization_is_typed_native_and_tree_shaken() {
     let source = r#"
 fn drawFrame() -> void {

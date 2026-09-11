@@ -1252,7 +1252,13 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     let property = internal_property.as_str();
     if BUILTIN_VIEW_ELEMENT_KINDS.contains(&kind) {
         match property {
-            "visible" | "clip" | "focusable" | "autofocus" | "accessibility_hidden" => {
+            "visible"
+            | "clip"
+            | "focusable"
+            | "autofocus"
+            | "accessibility_hidden"
+            | "drag_translate"
+            | "pinch_scale" => {
                 return Some(Type::Bool);
             }
             "tooltip"
@@ -1575,6 +1581,8 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_drag",
     "on_swipe",
     "on_scale",
+    "drag_translate",
+    "pinch_scale",
     "on_hover",
     "on_leave",
     "on_focus",
