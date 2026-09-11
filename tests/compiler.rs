@@ -18663,6 +18663,10 @@ app ContextCard
     assert!(linux.contains("gtk_button_new_with_label(\"Open\")"));
     assert!(linux.contains("gtk_popover_set_pointing_to"));
     assert!(linux.contains("G_CALLBACK(flux__ui_context_menu_select_card)"));
+    assert!(linux.contains("flux__ui_context_menu_key_card"));
+    assert!(linux.contains("keyval != GDK_KEY_Menu"));
+    assert!(linux.contains("keyval == GDK_KEY_F10 && (state & GDK_SHIFT_MASK)"));
+    assert!(linux.contains("gtk_widget_set_focusable(flux__ui_card, TRUE)"));
     assert!(linux.contains("flux__ui_state_opened = true; flux__ui_refresh_changed(0);"));
     assert!(linux.contains("flux__ui_state_selected = true; flux__ui_refresh_changed(1);"));
 
@@ -18678,7 +18682,9 @@ app ContextCard
     assert!(android.contains("setOnLongClickListener"));
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenu"));
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenuSelect"));
+    assert!(android.contains("setContextMenuEnabled"));
     assert!(android.contains("setContextMenuLabel"));
+    assert!(android.contains("context_menu_set_focusable"));
     assert!(android.contains("NewStringUTF(env, \"Open\")"));
     assert!(android.contains(
         "flux__ui_state_opened = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0);"

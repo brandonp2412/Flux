@@ -6256,6 +6256,26 @@ fn emit_android_native_application(
             out.push_str(
                 "    (*env)->CallVoidMethod(env, child, set_long_click_listener, activity);\n",
             );
+            if view_property(element, "on_context_menu").is_some()
+                || view_property(element, "context_menu_label").is_some()
+                || view_property(element, "context_menu_items").is_some()
+            {
+                out.push_str("    jclass context_menu_enabled_activity_class = (*env)->GetObjectClass(env, activity);\n");
+                out.push_str("    if (context_menu_enabled_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID set_context_menu_enabled = (*env)->GetMethodID(env, context_menu_enabled_activity_class, \"setContextMenuEnabled\", \"(Landroid/view/View;Z)V\");\n");
+                out.push_str("    if (set_context_menu_enabled == NULL) return;\n");
+                out.push_str("    (*env)->CallVoidMethod(env, activity, set_context_menu_enabled, child, (jboolean)true);\n");
+                out.push_str(
+                    "    (*env)->DeleteLocalRef(env, context_menu_enabled_activity_class);\n",
+                );
+                if view_property(element, "focusable").is_none() {
+                    out.push_str("    jmethodID context_menu_set_focusable = (*env)->GetMethodID(env, child_class, \"setFocusable\", \"(Z)V\");\n");
+                    out.push_str("    jmethodID context_menu_set_focusable_in_touch_mode = (*env)->GetMethodID(env, child_class, \"setFocusableInTouchMode\", \"(Z)V\");\n");
+                    out.push_str("    if (context_menu_set_focusable == NULL || context_menu_set_focusable_in_touch_mode == NULL) return;\n");
+                    out.push_str("    (*env)->CallVoidMethod(env, child, context_menu_set_focusable, (jboolean)true);\n");
+                    out.push_str("    (*env)->CallVoidMethod(env, child, context_menu_set_focusable_in_touch_mode, (jboolean)true);\n");
+                }
+            }
             if let Some(label_property) = view_property(element, "context_menu_label") {
                 let Some(label) = static_expr_str(&label_property.value, signatures) else {
                     return Err(diag(
@@ -7451,7 +7471,7 @@ fn emit_linux_gtk_application(
                 String::new()
             };
             let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
-                let mut body = "GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); GtkWidget *popover = gtk_popover_new(); GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_popover_set_child(GTK_POPOVER(popover), menu_box); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {(int)x, (int)y, 1, 1}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); ".to_string();
+                let mut body = "GtkWidget *popover = gtk_popover_new(); GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_popover_set_child(GTK_POPOVER(popover), menu_box); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {(int)x, (int)y, 1, 1}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); ".to_string();
                 for (index, label) in items.iter().enumerate() {
                     body.push_str(&format!(
                         "GtkWidget *item_{index} = gtk_button_new_with_label({}); g_object_set_data(G_OBJECT(item_{index}), \"flux-menu-index\", GINT_TO_POINTER({index})); gtk_box_append(GTK_BOX(menu_box), item_{index}); g_signal_connect(item_{index}, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); ",
@@ -7489,7 +7509,17 @@ fn emit_linux_gtk_application(
                 ));
             }
             out.push_str(&format!(
-                "static void flux__ui_context_menu_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)n_press; (void)data; {request_body}{menu_body} }}\n",
+                "static void flux__ui_context_menu_present_{}(GtkWidget *anchor, double x, double y) {{ {request_body}{menu_body} }}\n",
+                element.name,
+            ));
+            out.push_str(&format!(
+                "static void flux__ui_context_menu_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)n_press; (void)data; GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); flux__ui_context_menu_present_{}(anchor, x, y); }}\n",
+                element.name,
+                element.name,
+            ));
+            out.push_str(&format!(
+                "static gboolean flux__ui_context_menu_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)data; if (keyval != GDK_KEY_Menu && !(keyval == GDK_KEY_F10 && (state & GDK_SHIFT_MASK))) return FALSE; GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); flux__ui_context_menu_present_{}(anchor, gtk_widget_get_width(anchor) / 2.0, gtk_widget_get_height(anchor) / 2.0); return TRUE; }}\n",
+                element.name,
                 element.name,
             ));
         }
@@ -8683,6 +8713,16 @@ fn emit_linux_gtk_application(
             ));
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+            if view_property(element, "focusable").is_none() {
+                out.push_str(&format!(
+                    "    gtk_widget_set_focusable({variable}, TRUE);\n"
+                ));
+            }
+            let key_controller = format!("flux__context_menu_key_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{key_controller} = gtk_event_controller_key_new();\n    gtk_event_controller_set_propagation_phase({key_controller}, GTK_PHASE_CAPTURE);\n    g_signal_connect({key_controller}, \"key-pressed\", G_CALLBACK(flux__ui_context_menu_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {key_controller});\n",
+                element.name
             ));
         }
         if let Some(property) = view_property(element, "drag_text") {

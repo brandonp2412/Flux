@@ -3980,6 +3980,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, VelocityTracker> swipeTrackers = new HashMap<>();
     private final Map<Integer, String> contextMenuLabels = new HashMap<>();
     private final Map<Integer, String[]> contextMenuItems = new HashMap<>();
+    private final Set<Integer> contextMenuViewIds = new HashSet<>();
     private final Map<Integer, String> dragTexts = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
@@ -4155,6 +4156,43 @@ __FLUX_PICKER_METHODS__
         else contextMenuItems.put(viewId, labels.clone());
     }
 
+    public void setContextMenuEnabled(View view, boolean enabled) {
+        if (view == null) return;
+        int viewId = view.getId();
+        if (enabled) contextMenuViewIds.add(viewId);
+        else contextMenuViewIds.remove(viewId);
+    }
+
+    private boolean showContextMenu(View view) {
+        if (view == null) return false;
+        int viewId = view.getId();
+        String[] labels = contextMenuItems.get(viewId);
+        String label = contextMenuLabels.get(viewId);
+        if (labels != null && labels.length > 0) {
+            android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
+            for (int index = 0; index < labels.length; index++) {
+                menu.getMenu().add(0, index, index, labels[index]);
+            }
+            menu.setOnMenuItemClickListener(item -> {
+                nativeOnContextMenuItemSelect(viewId, item.getItemId());
+                return true;
+            });
+            menu.show();
+            return true;
+        }
+        if (label != null) {
+            android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
+            menu.getMenu().add(label);
+            menu.setOnMenuItemClickListener(item -> {
+                nativeOnContextMenuSelect(viewId);
+                return true;
+            });
+            menu.show();
+            return true;
+        }
+        return false;
+    }
+
     public void setDragText(View view, String text) {
         if (view == null) return;
         int viewId = view.getId();
@@ -4174,27 +4212,9 @@ __FLUX_PICKER_METHODS__
             return true;
         }
         nativeOnLongPress(viewId);
-        nativeOnContextMenu(viewId);
-        String[] labels = contextMenuItems.get(viewId);
-        String label = contextMenuLabels.get(viewId);
-        if (labels != null && labels.length > 0) {
-            android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
-            for (int index = 0; index < labels.length; index++) {
-                menu.getMenu().add(0, index, index, labels[index]);
-            }
-            menu.setOnMenuItemClickListener(item -> {
-                nativeOnContextMenuItemSelect(viewId, item.getItemId());
-                return true;
-            });
-            menu.show();
-        } else if (label != null) {
-            android.widget.PopupMenu menu = new android.widget.PopupMenu(this, view);
-            menu.getMenu().add(label);
-            menu.setOnMenuItemClickListener(item -> {
-                nativeOnContextMenuSelect(viewId);
-                return true;
-            });
-            menu.show();
+        if (contextMenuViewIds.contains(viewId)) {
+            nativeOnContextMenu(viewId);
+            showContextMenu(view);
         }
         return true;
     }
@@ -4420,6 +4440,16 @@ __FLUX_PICKER_METHODS__
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
+                && (event.getKeyCode() == KeyEvent.KEYCODE_MENU
+                    || (event.getKeyCode() == KeyEvent.KEYCODE_F10 && event.isShiftPressed()))) {
+            View focused = getCurrentFocus();
+            if (focused != null && contextMenuViewIds.contains(focused.getId())) {
+                nativeOnContextMenu(focused.getId());
+                showContextMenu(focused);
+                return true;
+            }
+        }
         String shortcut = fluxShortcutName(event);
         Integer viewId = shortcut == null ? null : shortcutViewIds.get(shortcut);
         if (viewId != null) {
@@ -6912,14 +6942,26 @@ mod tests {
             )
         );
         assert!(
+            activity.contains("private final Set<Integer> contextMenuViewIds = new HashSet<>();")
+        );
+        assert!(
             activity.contains("private final Map<Integer, String> dragTexts = new HashMap<>();")
         );
         assert!(activity.contains("setContextMenuLabel(View view, String label)"));
         assert!(activity.contains("setContextMenuItems(View view, String[] labels)"));
+        assert!(activity.contains("setContextMenuEnabled(View view, boolean enabled)"));
+        assert!(activity.contains("private boolean showContextMenu(View view)"));
         assert!(activity.contains("nativeOnContextMenuItemSelect(viewId, item.getItemId());"));
         assert!(activity.contains("setDragText(View view, String text)"));
         assert!(activity.contains("new android.widget.PopupMenu(this, view)"));
         assert!(activity.contains("nativeOnContextMenuSelect(viewId);"));
+        assert!(activity.contains("event.getKeyCode() == KeyEvent.KEYCODE_MENU"));
+        assert!(
+            activity
+                .contains("event.getKeyCode() == KeyEvent.KEYCODE_F10 && event.isShiftPressed()")
+        );
+        assert!(activity.contains("contextMenuViewIds.contains(focused.getId())"));
+        assert!(activity.contains("showContextMenu(focused);"));
         assert!(
             activity.contains("private static native void nativeOnDrop(int viewId, String text);")
         );
