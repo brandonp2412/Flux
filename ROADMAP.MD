@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 455
+- Completed baseline units: 456
 - Reported overall progress: **62%**
 - Current net scope growth after the baseline: 46 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -456,7 +456,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [x] Bootstrap application metadata: `app ViewName(id: ..., title: ..., width: ..., height: ..., resizable: ...)` accepts compile-time typed values/constants, validates positive dimensions and GLib-compatible reverse-DNS-style application IDs, formats canonically, and lowers identity/title/default size/resizability into the native Linux window. Icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
 - [ ] Assets/resources.
 - [ ] Environment/configuration.
-- [ ] Platform permissions.
+- [x] Platform permissions for the current native application targets: Android packages accept validated declarative `[android].permissions`, generate deterministic manifest entries, expose typed `android.permissionGranted` / `android.requestPermission` runtime capabilities, and infer compiler-owned vibration/notification permissions only when reachable code needs them; Linux has no equivalent application-manifest permission surface to configure. Permission JNI/runtime support tree-shakes when unused and remains hidden behind Flux APIs rather than application bridge code.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
   - [x] Bootstrap `app` metadata accepts named typed `onStart`, `onResume`, `onPause`, `onStop`, and `onExit` `fn() -> void` callbacks. Linux maps start/stop/exit to native application activation/shutdown and resume/pause to native window active-state changes; Android maps the same callbacks directly onto `ANativeActivityCallbacks`, with no application/controller object exposed to Flux source.
   - [ ] Suspension/restoration, saved-state/configuration lifecycle, multiple-window lifecycle, and capability-rich lifecycle context.
