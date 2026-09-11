@@ -3462,6 +3462,96 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_combined_readiness_is_typed_native_tree_shaken_and_runnable() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("combined readiness listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn state(_socket: i64, _readable: bool, writable: bool) -> void {{
+    print(writable)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    let (ready, readyError) = net.waitReadyMany([socket], 1000, state)
+    print(ready)
+    print(readyError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("combined readiness should typecheck");
+    let generated = compile_to_c(&source).expect("combined readiness should lower on Linux");
+    assert!(generated.contains("flux__net_wait_ready_many("));
+    assert!(generated.contains("POLLIN | POLLOUT"));
+    assert!(generated.contains("void (*callback)(int64_t, bool, bool)"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-ready-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("combined readiness fixture should be writable");
+    let source_path = root.join("ready.flux");
+    fs::write(&source_path, &source).expect("combined readiness source should be writable");
+    let binary = root.join("ready");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("combined readiness binary should build");
+    assert!(
+        built.status.success(),
+        "combined readiness build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("combined readiness binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\ntrue\n1\nnil\nnil\n"
+    );
+
+    let timeout_error = check_source(
+        "fn state(_socket: i64, _readable: bool, _writable: bool) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.waitReadyMany([1], -2, state)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("combined readiness timeout must be statically bounded");
+    assert!(
+        timeout_error
+            .message
+            .contains("net.waitReadyMany timeoutMillis must be -1 or between 0 and 2147483647")
+    );
+    let callback_error = check_source(
+        "fn state(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.waitReadyMany([1], 0, state)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("combined readiness callback shape must be exact");
+    assert!(
+        callback_error
+            .message
+            .contains("net.waitReadyMany callback")
+    );
+
+    let unused = r#"
+fn state(_socket: i64, _readable: bool, _writable: bool) -> void {
+}
+fn hidden(socket: i64) -> void {
+    let (count, failure) = net.waitReadyMany([socket], 0, state)
+    print(count)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead combined readiness calls should tree-shake");
+    assert!(!unused_generated.contains("flux__net_wait_ready_many("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {

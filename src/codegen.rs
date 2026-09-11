@@ -4098,6 +4098,9 @@ fn emit_runtime_prelude(
             out.push_str("static inline struct flux__net_i64_error flux__net_wait_writable_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t)) { return flux__net_wait_many(sockets, timeout_millis, POLLOUT, callback, \"waitWritableMany timeoutMillis must be -1 or between 0 and 2147483647\", \"failed to wait for socket writability\"); }\n");
         }
     }
+    if runtime_usage.contains("flux__net_wait_ready_many(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_wait_ready_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t, bool, bool)) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, \"waitReadyMany timeoutMillis must be -1 or between 0 and 2147483647\"); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > (size_t)INT64_MAX) return flux__net_result(-1, \"too many socket handles\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[sockets.len]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = POLLIN | POLLOUT, .revents = 0 }; } int result; do { for (size_t index = 0; index < sockets.len; ++index) descriptors[index].revents = 0; result = poll(descriptors, (nfds_t)sockets.len, (int)timeout_millis); } while (result < 0 && errno == EINTR); if (result < 0) return flux__net_result(-1, \"failed to wait for socket readiness\"); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0) return flux__net_result(-1, \"socket readiness failed\"); bool readable = (revents & (POLLIN | POLLHUP)) != 0; bool writable = (revents & POLLOUT) != 0 && (revents & POLLHUP) == 0; if (readable || writable) { callback((int64_t)descriptors[index].fd, readable, writable); ready += 1; } } return flux__net_result(ready, NULL); }\n");
+    }
 
     if runtime_usage.contains("flux_add_i64(") {
         out.push_str("static inline int64_t flux_add_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_add_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer addition overflow\\n\", stderr); abort(); } return result; }\n");
@@ -17315,17 +17318,18 @@ fn emit_qualified_call(
                     Some("flux__net_bool_error".to_string()),
                 ));
             }
-            "waitReadableMany" | "waitWritableMany" => {
+            "waitReadableMany" | "waitWritableMany" | "waitReadyMany" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
                 let sockets = emit_expr(&args[0], env, signatures)?;
                 let timeout = emit_expr(&args[1], env, signatures)?;
                 let callback = emit_expr(&args[2], env, signatures)?;
-                let helper = if name == "waitReadableMany" {
-                    "flux__net_wait_readable_many"
-                } else {
-                    "flux__net_wait_writable_many"
+                let helper = match name {
+                    "waitReadableMany" => "flux__net_wait_readable_many",
+                    "waitWritableMany" => "flux__net_wait_writable_many",
+                    "waitReadyMany" => "flux__net_wait_ready_many",
+                    _ => unreachable!(),
                 };
                 return Ok((
                     format!(

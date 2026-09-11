@@ -5991,7 +5991,7 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Bool, Type::Error]);
             }
-            "waitReadableMany" | "waitWritableMany" => {
+            "waitReadableMany" | "waitWritableMany" | "waitReadyMany" => {
                 if args.len() != 3 {
                     return Err(diag(
                         span,
@@ -6023,7 +6023,11 @@ fn check_qualified_call(
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
                 let expected = Type::Function {
-                    params: vec![Type::I64],
+                    params: if name == "waitReadyMany" {
+                        vec![Type::I64, Type::Bool, Type::Bool]
+                    } else {
+                        vec![Type::I64]
+                    },
                     returns: Vec::new(),
                 };
                 require_type(

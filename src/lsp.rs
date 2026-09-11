@@ -1237,6 +1237,10 @@ fn add_qualified_namespace_completions(
                 "waitWritableMany",
                 "fn net.waitWritableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
+            (
+                "waitReadyMany",
+                "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
+            ),
             ("close", "fn net.close(socket: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -2778,6 +2782,18 @@ fn signature_help_for_document_cached(
                             "sockets: i64[]",
                             "timeoutMillis: i64",
                             "callback: fn(i64) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "waitReadyMany" => {
+                    return Some(signature_help_for_builtin(
+                        "net.waitReadyMany",
+                        &[
+                            "sockets: i64[]",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, bool, bool) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
@@ -6551,6 +6567,9 @@ mod tests {
             net_items
                 .contains("fn net.waitWritable(socket: i64, timeoutMillis: i64) -> (bool, error)")
         );
+        assert!(net_items.contains(
+            "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)"
+        ));
         assert!(net_items.contains("fn net.close(socket: i64) -> error"));
 
         let locale_line = source
@@ -7416,7 +7435,7 @@ mod tests {
     #[test]
     fn signature_help_supports_network_capabilities() {
         let uri = "file:///tmp/network-signatures.flux";
-        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.sendText(bound, \"hello\"))\n    print(net.sendTextTo(bound, \"127.0.0.1\", 53, \"hello\"))\n    print(net.setNonblocking(bound, true))\n    let (_ready, _readyError) = net.waitReadable(bound, 0)\n    let (_writable, _writableError) = net.waitWritable(bound, 0)\n    let (_manyReady, _manyReadyError) = net.waitReadableMany([bound], 0, ready)\n    let (_manyWritable, _manyWritableError) = net.waitWritableMany([bound], 0, ready)\n    let (_received, _receiveError) = net.receiveText(bound, 64, consume)\n    let (_receivedFrom, _receiveFromError) = net.receiveTextFrom(bound, 64, consumeFrom)\n    print(net.close(bound))\n    return 0\n}\n";
+        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn ready(_socket: i64) -> void {\n}\nfn readyState(_socket: i64, _readable: bool, _writable: bool) -> void {\n}\nfn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.sendText(bound, \"hello\"))\n    print(net.sendTextTo(bound, \"127.0.0.1\", 53, \"hello\"))\n    print(net.setNonblocking(bound, true))\n    let (_ready, _readyError) = net.waitReadable(bound, 0)\n    let (_writable, _writableError) = net.waitWritable(bound, 0)\n    let (_manyReady, _manyReadyError) = net.waitReadableMany([bound], 0, ready)\n    let (_manyWritable, _manyWritableError) = net.waitWritableMany([bound], 0, ready)\n    let (_manyState, _manyStateError) = net.waitReadyMany([bound], 0, readyState)\n    let (_received, _receiveError) = net.receiveText(bound, 64, consume)\n    let (_receivedFrom, _receiveFromError) = net.receiveTextFrom(bound, 64, consumeFrom)\n    print(net.close(bound))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -7478,6 +7497,10 @@ mod tests {
             (
                 "net.waitWritableMany(",
                 "fn net.waitWritableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+            ),
+            (
+                "net.waitReadyMany(",
+                "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
             ),
             ("net.close(", "fn net.close(socket: i64) -> error"),
         ] {
