@@ -10153,6 +10153,110 @@ fn main() -> i64 {
 }
 
 #[test]
+fn emits_c_header_for_public_primitive_optional_abi() {
+    let source = r#"
+pub type MaybeCount = i64?
+pub type OptionalMapper = fn(i64?) -> bool?
+
+pub struct OptionalScalars {
+    count: i64?
+    enabled: bool?
+    label: str?
+    failure: error?
+}
+
+pub fn passCount(value: MaybeCount) -> i64? {
+    return value
+}
+
+pub fn passScalars(value: OptionalScalars) -> OptionalScalars {
+    return value
+}
+
+pub fn chooseMapper(value: OptionalMapper) -> OptionalMapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("primitive Copy optionals should cross the C ABI by value");
+    assert!(header.contains("struct flux__optional_i64 { bool has_value; int64_t value; };"));
+    assert!(header.contains("struct flux__optional_bool { bool has_value; bool value; };"));
+    assert!(header.contains("struct flux__optional_str { bool has_value; const char * value; };"));
+    assert!(
+        header.contains("struct flux__optional_error { bool has_value; const char * value; };")
+    );
+    assert!(header.contains("typedef struct flux__optional_i64 flux__alias_MaybeCount;"));
+    assert!(header.contains(
+        "typedef struct flux__optional_bool (*flux__fn_optional_i64__to__optional_bool)(struct flux__optional_i64);"
+    ));
+    assert!(
+        header.contains(
+            "typedef flux__fn_optional_i64__to__optional_bool flux__alias_OptionalMapper;"
+        )
+    );
+    assert!(header.contains("struct flux__optional_i64 flux__field_count;"));
+    assert!(header.contains("struct flux__optional_bool flux__field_enabled;"));
+    assert!(header.contains("struct flux__optional_str flux__field_label;"));
+    assert!(header.contains("struct flux__optional_error flux__field_failure;"));
+    assert!(header.contains(
+        "struct flux__optional_i64 flux__fn_passCount(flux__alias_MaybeCount flux__local_value);"
+    ));
+    assert!(header.contains(
+        "flux__alias_OptionalMapper flux__fn_chooseMapper(flux__alias_OptionalMapper flux__local_value);"
+    ));
+
+    let root = std::env::temp_dir().join(format!("flux-c-optional-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional ABI directory should be writable");
+    let header_path = root.join("flux_optional_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header).expect("generated optional C header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_optional_api.h\"\nstatic struct flux__optional_bool present(struct flux__optional_i64 value) { return (struct flux__optional_bool){ .has_value = true, .value = value.has_value }; }\nflux__alias_OptionalMapper probe(void) { struct flux__optional_i64 value = { .has_value = true, .value = 7 }; return flux__fn_chooseMapper(present) != 0 && flux__fn_passCount(value).value == 7 ? present : 0; }\n",
+    )
+    .expect("optional ABI C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the optional ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated optional ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rejects_c_header_optional_aggregates_until_named_optional_abi_is_defined() {
+    let source = r#"
+pub struct Point {
+    x: i64
+}
+
+pub fn pass(value: Point?) -> Point? {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = compile_to_c_header(source)
+        .expect_err("optional named aggregates need a collision-safe public ABI type name first");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("unsupported FFI type 'Point?'"));
+}
+
+#[test]
 fn emits_c_header_for_public_copy_struct_abi() {
     let source = r#"
 pub struct Point {

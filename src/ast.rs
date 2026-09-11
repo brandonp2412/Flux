@@ -19,16 +19,6 @@ pub enum Type {
 impl Type {
     pub fn parse(input: &str) -> Option<Self> {
         let input = input.trim();
-        if let Some(inner) = input.strip_suffix('?') {
-            let inner = Self::parse(inner)?;
-            if matches!(inner, Self::Void | Self::Optional(_)) {
-                return None;
-            }
-            return Some(Self::Optional(Box::new(inner)));
-        }
-        if let Some(inner) = input.strip_suffix("[]") {
-            return Some(Self::List(Box::new(Self::parse(inner)?)));
-        }
         if let Some(rest) = input.strip_prefix("fn(") {
             let close = matching_type_paren(rest)?;
             let params_src = &rest[..close];
@@ -60,6 +50,16 @@ impl Type {
                 vec![Self::parse(returns_src)?]
             };
             return Some(Self::Function { params, returns });
+        }
+        if let Some(inner) = input.strip_suffix('?') {
+            let inner = Self::parse(inner)?;
+            if matches!(inner, Self::Void | Self::Optional(_)) {
+                return None;
+            }
+            return Some(Self::Optional(Box::new(inner)));
+        }
+        if let Some(inner) = input.strip_suffix("[]") {
+            return Some(Self::List(Box::new(Self::parse(inner)?)));
         }
         match input {
             "i64" => Some(Self::I64),

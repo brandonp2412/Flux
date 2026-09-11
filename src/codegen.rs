@@ -66,6 +66,13 @@ pub fn emit_c_header_with_module_names(
         .iter()
         .filter(|constant| constant.public)
         .collect::<Vec<_>>();
+    let public_optional_types = c_header_optional_types(
+        program,
+        &public_functions,
+        &public_value_defs,
+        &public_ffi_aliases,
+        signatures,
+    );
 
     for function in &public_functions {
         for param in &function.params {
@@ -113,6 +120,9 @@ pub fn emit_c_header_with_module_names(
     out.push_str(
         "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
     );
+    out.push_str(
+        "/* Primitive Copy optionals cross by value as { bool has_value; T value; }. */\n",
+    );
     out.push_str("/* Copy callback values use plain C function pointers with ABI-safe Copy parameters/results. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
 
@@ -125,6 +135,16 @@ pub fn emit_c_header_with_module_names(
         ));
     }
     if !public_value_defs.is_empty() {
+        out.push('\n');
+    }
+
+    for optional in &public_optional_types {
+        let Type::Optional(inner) = optional else {
+            unreachable!("collected C header optional type must be optional");
+        };
+        emit_c_header_optional_definition(&mut out, inner, signatures);
+    }
+    if !public_optional_types.is_empty() {
         out.push('\n');
     }
 
@@ -306,12 +326,97 @@ fn ffi_header_type_supported_inner(
                     .chain(&returns)
                     .all(|ty| ffi_header_callback_value_supported(ty, signatures))
         }
-        Type::Void | Type::List(_) | Type::Optional(_) | Type::Function { .. } => false,
+        Type::Optional(inner) => matches!(
+            signatures.canonical_type(&inner),
+            Type::I64 | Type::Bool | Type::Str | Type::Error
+        ),
+        Type::Void | Type::List(_) | Type::Function { .. } => false,
     }
 }
 
 fn ffi_header_callback_value_supported(ty: &Type, signatures: &Signatures) -> bool {
     ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new(), false)
+}
+
+fn c_header_optional_types(
+    program: &Program,
+    public_functions: &[&Function],
+    public_value_defs: &[ValueDef<'_>],
+    public_ffi_aliases: &HashSet<String>,
+    signatures: &Signatures,
+) -> Vec<Type> {
+    fn collect(ty: &Type, signatures: &Signatures, optionals: &mut HashSet<Type>) {
+        match signatures.canonical_type(ty) {
+            Type::Optional(inner) => {
+                let optional = Type::Optional(inner.clone());
+                if ffi_header_type_supported(&optional, signatures) {
+                    optionals.insert(optional);
+                }
+            }
+            Type::Function { params, returns } => {
+                for ty in params.iter().chain(&returns) {
+                    collect(ty, signatures, optionals);
+                }
+            }
+            Type::I64
+            | Type::Bool
+            | Type::Str
+            | Type::Error
+            | Type::Void
+            | Type::Named(_)
+            | Type::List(_) => {}
+        }
+    }
+
+    let mut optionals = HashSet::new();
+    for alias in program
+        .aliases
+        .iter()
+        .filter(|alias| public_ffi_aliases.contains(&alias.name))
+    {
+        collect(&alias.target, signatures, &mut optionals);
+    }
+    for function in public_functions {
+        for ty in function
+            .params
+            .iter()
+            .map(|param| &param.ty)
+            .chain(&function.returns)
+        {
+            collect(ty, signatures, &mut optionals);
+        }
+    }
+    for definition in public_value_defs {
+        match definition {
+            ValueDef::Struct(definition) => {
+                for field in &definition.fields {
+                    collect(&field.ty, signatures, &mut optionals);
+                }
+            }
+            ValueDef::Enum(definition) => {
+                for variant in &definition.variants {
+                    for payload in &variant.payloads {
+                        collect(&payload.ty, signatures, &mut optionals);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut optionals = optionals.into_iter().collect::<Vec<_>>();
+    optionals.sort_by_key(|ty| ty.name());
+    optionals
+}
+
+fn emit_c_header_optional_definition(out: &mut String, inner: &Type, signatures: &Signatures) {
+    let mangle = type_mangle(inner, signatures);
+    let guard = format!("FLUX__OPTIONAL_{}_DEFINED", mangle.to_ascii_uppercase());
+    let optional = Type::Optional(Box::new(inner.clone()));
+    out.push_str(&format!(
+        "#ifndef {guard}\n#define {guard}\n{} {{ bool has_value; {} value; }};\n#endif\n",
+        c_type(&optional, signatures),
+        c_type(inner, signatures)
+    ));
 }
 
 fn emit_c_header_function_type_typedefs(
