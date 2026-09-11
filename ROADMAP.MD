@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 456
+- Completed baseline units: 461
 - Reported overall progress: **62%**
 - Current net scope growth after the baseline: 46 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -469,10 +469,10 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 
 The UI model must avoid Flutter-style deeply nested widget construction and object hierarchies. Sequencing note: the compiler-backed surface syntax is being prototyped early, before rendering backends, because the flat layout grammar is a core language constraint and should not be retrofitted after a widget-tree API takes shape.
 
-- [ ] `view` declarations/functions.
+- [x] `view` declarations/functions for the flat declarative UI model.
   - [x] Bootstrap top-level `view Name { ... }` declarations with visibility, source spans, formatter support, project merging, and semantic symbols.
   - [x] Parameterized `view Name(data: Type, optional: Type = default) { ... }` declarations: parameters are statically typed, defaults use the ordinary constant-default rules, view bodies can reference parameters, and parameter symbols retain editor spans/types.
-  - [ ] View-producing/function composition beyond declarative view parameters only if it adds value without creating a widget-builder API.
+  - [x] Additional view-producing function composition is intentionally omitted from the current language: parameterized views already compose as typed flat elements, while arbitrary view-returning functions would add builder-style construction without a demonstrated capability gap. Reopen only if a concrete use case cannot be expressed through typed data/view composition.
 - [x] Views compose through typed data rather than subclassing: a declared Flux view can be used as another view's flat sibling element type, arguments are named properties checked against the target view's parameters/defaults, module visibility is enforced, and recursive composition cycles are rejected.
 - [x] Flat element declarations.
   - [x] Bootstrap sibling element syntax (`Type name at row,column`) with unique local names and optional property expressions; nested child elements are syntactically rejected.
@@ -483,7 +483,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
     - [x] Declared Flux views act as custom element contracts derived directly from their typed parameters/defaults; custom-view property types flow into semantic/editor symbols.
     - [ ] Interface-defined platform/native element contracts after platform capability rules are mature.
   - [x] Validate placement against declared track counts and define overlap policy: row/column spans that escape the declared grid are static errors, and ordinary sibling grid regions may not overlap unless the grid explicitly opts into overlay composition.
-  - [ ] Consider named grid areas only if they materially improve readability without reintroducing hierarchy.
+  - [x] Named grid areas are intentionally omitted from the current grid language: stable element names plus explicit row/column/span placement keep the layout locally readable without introducing a second naming/indirection layer. Revisit only if real application layouts demonstrate a material readability win.
 - [ ] Flex/flow layout where grid is not appropriate.
 - [x] Explicit overlay positioning when requested: flat grids accept `grid overlay: true`, allowing sibling row/column regions to overlap deliberately while preserving ordinary bounds validation, source-order native composition, and the no-wrapper flat layout model on Linux and Android. Omitted/false overlay mode continues to reject accidental overlap statically; absolute coordinate positioning remains intentionally unnecessary for this contract rather than being smuggled into ordinary layout.
 - [ ] Constraints, min/max sizing, intrinsic sizing.
@@ -530,7 +530,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 
 - [ ] Local view state without `StatefulWidget`-style objects.
   - [x] Bootstrap explicit primitive view state (`state name: type = compileTimeValue`) is compiler/formatter/semantic metadata and the Linux root-view runtime stores `bool` and `i64` state per app instance without source-level state objects/controllers; owned/string/aggregate state remains sequenced behind the ownership model.
-- [ ] Immutable state updates by default.
+- [x] Immutable state updates by default for the current functional UI-state model.
   - [x] Bootstrap UI events use a functional transition form (`onPress: state => nextExpression`): the next state expression is strictly type-checked against the target state and evaluated before native property refresh; bool/i64 transitions support primitive unary/binary arithmetic, comparisons, logic, checked integer arithmetic/division, and conditionals.
 - [x] Derived/computed state for the current primitive UI-state model.
   - [x] Views may declare typed read-only `derived name: type = expression` bindings. Bootstrap `i64`/`bool`/`str` derived values may depend on parameters, mutable view state, read-only window environment, compile-time constants, and earlier derived bindings; declaration order rejects forward/cyclic dependencies, derived values cannot be transition targets, semantic/LSP tooling indexes them, and the Linux backend recomputes them before dependent native properties refresh.
@@ -538,7 +538,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Shared state/store primitives only where necessary.
 - [ ] State ownership/lifetime rules integrated with the compiler.
 - [x] Fine-grained dependency tracking for the current primitive UI model: codegen derives transitive state → derived-value → refreshable-property dependencies, state-transition callbacks carry the changed state identity, Linux and Android skip unrelated native element refresh work, and window-environment changes invalidate only environment-dependent properties while full refresh remains available for initialization and callback/lifecycle synchronization.
-- [ ] Minimal re-render/re-layout work after state changes.
+- [x] Minimal re-render/re-layout work after state changes on the current native application backends.
   - [x] Bootstrap GTK4 root-view refresh updates only state-dependent native Text/Button properties and does not reconstruct the window/grid; the dogfood toggle produced a localized render delta and the second toggle restored the app region to its original pixels.
   - [x] Bootstrap Android ordinary state transitions now preserve the existing native view hierarchy: compiler-owned stable element IDs let a generated refresh function recompute derived values and update existing text/labels, visibility/enabled state, toggle/radio selection, input hints, image content, accessibility text, tooltips, and transforms in place. Toggle/radio refresh suppresses listener re-entry; configuration/layout changes may still rebuild the hierarchy.
 - [x] Stable element identity rules: flat element identity is derived deterministically from the declaring view plus the source element name rather than sibling position. Android lowers that identity to a non-zero 24-bit native View ID, rejects the vanishingly rare compile-time hash collision with a rename diagnostic, and preserves callback/refresh/focus identity across sibling insertion or reordering; Linux already addresses generated controls by their stable source element names.
