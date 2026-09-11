@@ -4674,20 +4674,46 @@ fn emit_android_native_application(
         let border_bottom_color = static_color("border_bottom_color")?;
         let border_start_color = static_color("border_start_color")?;
         let border_end_color = static_color("border_end_color")?;
-        let border_width =
-            static_non_negative_style_i64(element, "border_width", signatures)?.unwrap_or(0);
-        let border_top_width =
-            static_non_negative_style_i64(element, "border_top_width", signatures)?
-                .unwrap_or(border_width);
-        let border_bottom_width =
-            static_non_negative_style_i64(element, "border_bottom_width", signatures)?
-                .unwrap_or(border_width);
-        let border_start_width =
-            static_non_negative_style_i64(element, "border_start_width", signatures)?
-                .unwrap_or(border_width);
-        let border_end_width =
-            static_non_negative_style_i64(element, "border_end_width", signatures)?
-                .unwrap_or(border_width);
+        let border_width_property = view_property(element, "border_width");
+        let (border_width, dynamic_border_width) = if let Some(property) = border_width_property {
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if value < 0 {
+                    return Err(diag(
+                        property.value.span,
+                        "border_width must be non-negative",
+                    ));
+                }
+                if value > i64::from(i32::MAX) {
+                    return Err(diag(
+                        property.value.span,
+                        "border_width must fit within a 32-bit signed integer",
+                    ));
+                }
+                (value, false)
+            } else {
+                (0, true)
+            }
+        } else {
+            (0, false)
+        };
+        let border_top_width_static =
+            static_non_negative_style_i64(element, "border_top_width", signatures)?;
+        let border_bottom_width_static =
+            static_non_negative_style_i64(element, "border_bottom_width", signatures)?;
+        let border_start_width_static =
+            static_non_negative_style_i64(element, "border_start_width", signatures)?;
+        let border_end_width_static =
+            static_non_negative_style_i64(element, "border_end_width", signatures)?;
+        let border_top_width = border_top_width_static.unwrap_or(border_width);
+        let border_bottom_width = border_bottom_width_static.unwrap_or(border_width);
+        let border_start_width = border_start_width_static.unwrap_or(border_width);
+        let border_end_width = border_end_width_static.unwrap_or(border_width);
+        let dynamic_border_top_width = dynamic_border_width && border_top_width_static.is_none();
+        let dynamic_border_bottom_width =
+            dynamic_border_width && border_bottom_width_static.is_none();
+        let dynamic_border_start_width =
+            dynamic_border_width && border_start_width_static.is_none();
+        let dynamic_border_end_width = dynamic_border_width && border_end_width_static.is_none();
         let radius = static_non_negative_style_i64(element, "radius", signatures)?.unwrap_or(0);
         let radius_top_left =
             static_non_negative_style_i64(element, "radius_top_left", signatures)?
@@ -4722,26 +4748,47 @@ fn emit_android_native_application(
             || border_bottom_width > 0
             || border_start_width > 0
             || border_end_width > 0
+            || dynamic_border_top_width
+            || dynamic_border_bottom_width
+            || dynamic_border_start_width
+            || dynamic_border_end_width
         {
             "solid".to_string()
         } else {
             "none".to_string()
         };
-        let resolve_border_color = |width: i64, side_color: &Option<String>| {
-            if width <= 0 || border_style == "none" {
-                None
-            } else if side_color.is_some() {
-                side_color.clone()
-            } else if dynamic_border_color {
-                None
-            } else {
-                border_color.clone().or_else(|| Some("outline".to_string()))
-            }
-        };
-        let border_top_color = resolve_border_color(border_top_width, &border_top_color);
-        let border_bottom_color = resolve_border_color(border_bottom_width, &border_bottom_color);
-        let border_start_color = resolve_border_color(border_start_width, &border_start_color);
-        let border_end_color = resolve_border_color(border_end_width, &border_end_color);
+        let resolve_border_color =
+            |width: i64, dynamic_width: bool, side_color: &Option<String>| {
+                if (!dynamic_width && width <= 0) || border_style == "none" {
+                    None
+                } else if side_color.is_some() {
+                    side_color.clone()
+                } else if dynamic_border_color {
+                    None
+                } else {
+                    border_color.clone().or_else(|| Some("outline".to_string()))
+                }
+            };
+        let border_top_color = resolve_border_color(
+            border_top_width,
+            dynamic_border_top_width,
+            &border_top_color,
+        );
+        let border_bottom_color = resolve_border_color(
+            border_bottom_width,
+            dynamic_border_bottom_width,
+            &border_bottom_color,
+        );
+        let border_start_color = resolve_border_color(
+            border_start_width,
+            dynamic_border_start_width,
+            &border_start_color,
+        );
+        let border_end_color = resolve_border_color(
+            border_end_width,
+            dynamic_border_end_width,
+            &border_end_color,
+        );
         let shadow_color = static_color("shadow_color")?;
         let shadow_blur = static_style_i64(element, "shadow_blur", signatures)?.unwrap_or(0);
         let shadow_offset_x =
@@ -4772,7 +4819,15 @@ fn emit_android_native_application(
                 && (border_top_width > 0
                     || border_bottom_width > 0
                     || border_start_width > 0
-                    || border_end_width > 0))
+                    || border_end_width > 0
+                    || dynamic_border_top_width
+                    || dynamic_border_bottom_width
+                    || dynamic_border_start_width
+                    || dynamic_border_end_width))
+            || dynamic_border_top_width
+            || dynamic_border_bottom_width
+            || dynamic_border_start_width
+            || dynamic_border_end_width
             || radius_top_left > 0
             || radius_top_right > 0
             || radius_bottom_left > 0
@@ -4787,6 +4842,10 @@ fn emit_android_native_application(
         if background_color.is_some()
             || dynamic_background_color
             || dynamic_border_color
+            || dynamic_border_top_width
+            || dynamic_border_bottom_width
+            || dynamic_border_start_width
+            || dynamic_border_end_width
             || border_top_color.is_some()
             || border_bottom_color.is_some()
             || border_start_color.is_some()
@@ -4851,6 +4910,38 @@ fn emit_android_native_application(
             let border_style_value = Some(border_style.clone());
             emit_optional_jstring(out, "child_border_style", &border_style_value);
             emit_optional_jstring(out, "child_shadow", &shadow_color);
+            if dynamic_border_width {
+                let value = ui_expr_c(
+                    &border_width_property
+                        .expect("dynamic border_width property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_border_width = {value};\n    if (child_border_width < 0 || child_border_width > INT32_MAX) {{ fputs(\"Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let border_top_width_value = if dynamic_border_top_width {
+                "child_border_width".to_string()
+            } else {
+                format!("INT64_C({border_top_width})")
+            };
+            let border_end_width_value = if dynamic_border_end_width {
+                "child_border_width".to_string()
+            } else {
+                format!("INT64_C({border_end_width})")
+            };
+            let border_bottom_width_value = if dynamic_border_bottom_width {
+                "child_border_width".to_string()
+            } else {
+                format!("INT64_C({border_bottom_width})")
+            };
+            let border_start_width_value = if dynamic_border_start_width {
+                "child_border_width".to_string()
+            } else {
+                format!("INT64_C({border_start_width})")
+            };
             out.push_str(
                 "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
@@ -4858,7 +4949,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFFFFLjava/lang/String;Ljava/lang/String;FFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)(INT64_C({border_top_width}) * flux__ui_density), (jint)(INT64_C({border_end_width}) * flux__ui_density), (jint)(INT64_C({border_bottom_width}) * flux__ui_density), (jint)(INT64_C({border_start_width}) * flux__ui_density), (jfloat)(INT64_C({radius_top_left}) * flux__ui_density), (jfloat)(INT64_C({radius_top_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)({border_top_width_value} * flux__ui_density), (jint)({border_end_width_value} * flux__ui_density), (jint)({border_bottom_width_value} * flux__ui_density), (jint)({border_start_width_value} * flux__ui_density), (jfloat)(INT64_C({radius_top_left}) * flux__ui_density), (jfloat)(INT64_C({radius_top_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
             for name in [
@@ -8031,12 +8122,16 @@ fn ui_expr_refresh_dependencies(
 }
 
 fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
+    let internal_property = typecheck::source_name_to_internal(property_name);
+    let property_name = internal_property.as_str();
     if matches!(
         property_name,
         "visible"
             | "enabled"
             | "clip"
             | "background_color"
+            | "border_color"
+            | "border_width"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -8173,6 +8268,7 @@ fn android_ui_element_needs_refresh(
         "focusable",
         "background_color",
         "border_color",
+        "border_width",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -8334,6 +8430,35 @@ fn emit_android_ui_refresh(
                     "                if ({jni_name} != NULL) (*env)->DeleteLocalRef(env, {jni_name});\n"
                 ));
             }
+        }
+        if android_ui_property_needs_refresh(element, "border_width", &runtime_names)
+            && let Some(property) = view_property(element, "border_width")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let border_top_width =
+                static_non_negative_style_i64(element, "border_top_width", signatures)?;
+            let border_end_width =
+                static_non_negative_style_i64(element, "border_end_width", signatures)?;
+            let border_bottom_width =
+                static_non_negative_style_i64(element, "border_bottom_width", signatures)?;
+            let border_start_width =
+                static_non_negative_style_i64(element, "border_start_width", signatures)?;
+            let width_value = |value: Option<i64>| {
+                value
+                    .map(|value| format!("INT64_C({value})"))
+                    .unwrap_or_else(|| "refresh_border_width".to_string())
+            };
+            let top = width_value(border_top_width);
+            let end = width_value(border_end_width);
+            let bottom = width_value(border_bottom_width);
+            let start = width_value(border_start_width);
+            out.push_str(&format!(
+                "                int64_t refresh_border_width = {value};\n                if (refresh_border_width < 0 || refresh_border_width > INT32_MAX) {{ fputs(\"Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+            ));
+            out.push_str("                jmethodID refresh_border_widths = (*env)->GetMethodID(env, activity_class, \"styleViewBorderWidths\", \"(Landroid/view/View;IIII)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_border_widths != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_widths, child, (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density), (jint)({start} * flux__ui_density));\n"
+            ));
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
             && let Some(property) = view_property(element, "tooltip")

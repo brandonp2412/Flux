@@ -1403,7 +1403,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     }
 }
 
-fn source_name_to_internal(name: &str) -> String {
+pub(crate) fn source_name_to_internal(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for ch in name.chars() {
         if ch.is_ascii_uppercase() {

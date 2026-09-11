@@ -4442,10 +4442,10 @@ __FLUX_PICKER_METHODS__
         private Integer borderEnd;
         private Integer borderBottom;
         private Integer borderStart;
-        private final int borderTopWidth;
-        private final int borderEndWidth;
-        private final int borderBottomWidth;
-        private final int borderStartWidth;
+        private int borderTopWidth;
+        private int borderEndWidth;
+        private int borderBottomWidth;
+        private int borderStartWidth;
         private final float[] radii;
         private final String borderStyle;
         private final Integer shadowColor;
@@ -4592,6 +4592,14 @@ __FLUX_PICKER_METHODS__
             invalidateSelf();
         }
 
+        void setBorderWidths(int top, int end, int bottom, int start) {
+            this.borderTopWidth = Math.max(0, top);
+            this.borderEndWidth = Math.max(0, end);
+            this.borderBottomWidth = Math.max(0, bottom);
+            this.borderStartWidth = Math.max(0, start);
+            invalidateSelf();
+        }
+
         @Override
         public void setAlpha(int alpha) {
             this.alpha = Math.max(0, Math.min(255, alpha));
@@ -4660,6 +4668,13 @@ __FLUX_PICKER_METHODS__
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setBorderColors(top, end, bottom, start);
+        }
+    }
+
+    public void styleViewBorderWidths(View view, int top, int end, int bottom, int start) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setBorderWidths(top, end, bottom, start);
         }
     }
 
@@ -6795,6 +6810,10 @@ mod tests {
         assert!(activity.contains("public void styleView("));
         assert!(activity.contains("String borderTop"));
         assert!(activity.contains("String shadowColor"));
+        assert!(activity.contains("void setBorderWidths(int top, int end, int bottom, int start)"));
+        assert!(activity.contains(
+            "public void styleViewBorderWidths(View view, int top, int end, int bottom, int start)"
+        ));
         assert!(activity.contains("view.setBackgroundTintList(null);"));
         assert!(activity.contains("public void styleRoot(View view)"));
         assert!(activity.contains("public void stylePresentationState(View view, String status)"));

@@ -19677,6 +19677,7 @@ app DynamicBorder
     assert!(android.contains(&format!("find_view, (jint){panel_id}")));
     assert!(android.contains("flux__ui_state_stroke = \"danger\""));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
 
     let static_source = r#"
 view StaticBorder {
@@ -19701,6 +19702,51 @@ app StaticBorder
     .expect("static Android borderColor should lower");
     assert!(!static_android.contains("styleViewBorderColors"));
     assert!(!static_android.contains("flux__android_valid_ui_color"));
+}
+
+#[test]
+fn android_border_width_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicBorderWidth {
+    state strokeWidth: i64 = 2
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "outline"
+        borderWidth: strokeWidth
+        borderTopWidth: 5
+        radius: 14
+    Button grow at 2,1
+        text: "Grow"
+        onPress: strokeWidth => strokeWidth + 1
+}
+app DynamicBorderWidth
+"#;
+
+    check_source(source).expect("dynamic Android borderWidth should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android borderWidth should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android borderWidth should lower");
+
+    assert!(android.contains("int64_t child_border_width = flux__ui_state_strokeWidth"));
+    assert!(android.contains("int64_t refresh_border_width = flux__ui_state_strokeWidth"));
+    assert!(android.contains("styleViewBorderWidths"));
+    assert!(android.contains("(Landroid/view/View;IIII)V"));
+    assert!(
+        android.contains("borderWidth must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(android.contains("(jint)(INT64_C(5) * flux__ui_density)"));
+    assert!(android.contains("(jint)(refresh_border_width * flux__ui_density)"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__ui_state_strokeWidth = flux_add_i64"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
 }
 
 #[test]
