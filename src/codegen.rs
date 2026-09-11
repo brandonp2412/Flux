@@ -12330,6 +12330,7 @@ enum CheckedI64Reduction {
     ZeroAfterRight,
     NegateLeft,
     NegateRight,
+    DivideByConstant(i64),
 }
 
 fn checked_i64_reduction(
@@ -12356,6 +12357,9 @@ fn checked_i64_reduction(
         (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(-1))) => {
             Some(CheckedI64Reduction::NegateLeft)
         }
+        (BinOp::Div, _, Some(ConstantValue::I64(divisor))) if divisor != 0 => {
+            Some(CheckedI64Reduction::DivideByConstant(divisor))
+        }
         _ => None,
     }
 }
@@ -12375,6 +12379,9 @@ fn checked_i64_identity_c(
         CheckedI64Reduction::ZeroAfterRight => Some(format!("((void)({right_code}), INT64_C(0))")),
         CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
         CheckedI64Reduction::NegateRight => Some(format!("flux_neg_i64({right_code})")),
+        CheckedI64Reduction::DivideByConstant(divisor) => {
+            Some(format!("(({left_code}) / INT64_C({divisor}))"))
+        }
     }
 }
 
@@ -12446,9 +12453,11 @@ fn dead_store_rhs_is_discardable(
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
             match checked_i64_reduction(*op, left, right, signatures) {
-                Some(CheckedI64Reduction::Left | CheckedI64Reduction::ZeroAfterLeft) => {
-                    dead_store_rhs_is_discardable(left, env, signatures)
-                }
+                Some(
+                    CheckedI64Reduction::Left
+                    | CheckedI64Reduction::ZeroAfterLeft
+                    | CheckedI64Reduction::DivideByConstant(_),
+                ) => dead_store_rhs_is_discardable(left, env, signatures),
                 Some(CheckedI64Reduction::Right | CheckedI64Reduction::ZeroAfterRight) => {
                     dead_store_rhs_is_discardable(right, env, signatures)
                 }

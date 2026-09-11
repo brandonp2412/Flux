@@ -9874,6 +9874,9 @@ fn main() -> i64 {
     let deadDivide: i64 = dynamic / 1
     if false:
         print(deadDivide)
+    let deadSafeDivide: i64 = dynamic / 2
+    if false:
+        print(deadSafeDivide)
     let effectfulZeroProduct: i64 = observe(5) * 0
     if false:
         print(effectfulZeroProduct)
@@ -9898,6 +9901,7 @@ fn main() -> i64 {
     assert!(!generated.contains("flux__local_deadMultiplyLeft"));
     assert!(!generated.contains("flux__local_deadMultiplyRight"));
     assert!(!generated.contains("flux__local_deadDivide"));
+    assert!(!generated.contains("flux__local_deadSafeDivide"));
     assert!(generated.contains("flux__local_observed = flux__fn_observe(INT64_C(4))"));
     assert!(generated.contains(
         "flux__local_effectfulZeroProduct = ((void)(flux__fn_observe(INT64_C(5))), INT64_C(0))"
@@ -10116,8 +10120,10 @@ fn main() -> i64 {
 }
 
 #[test]
-fn eliminates_checked_integer_helpers_for_proven_identity_operations() {
+fn eliminates_checked_integer_helpers_for_proven_safe_reductions() {
     let identities = r#"
+const DIVISOR: i64 = 2
+
 fn identities(value: i64) -> i64 {
     let addedLeft: i64 = 0 + value
     let addedRight: i64 = addedLeft + 0
@@ -10143,11 +10149,21 @@ fn subtractFromZero(value: i64) -> i64 {
     return 0 - value
 }
 
+fn divideByConstant(value: i64) -> i64 {
+    return value / DIVISOR
+}
+
+fn divideByNegativeConstant(value: i64) -> i64 {
+    return value / -2
+}
+
 fn main() -> i64 {
     print(identities(7))
     print(negateMultiplyLeft(8))
     print(negateMultiplyRight(9))
     print(negateDivide(10))
+    print(divideByConstant(9))
+    print(divideByNegativeConstant(-9))
     return subtractFromZero(11)
 }
 "#;
@@ -10164,6 +10180,8 @@ fn main() -> i64 {
             .count(),
         4
     );
+    assert!(generated.contains("return ((flux__local_value) / INT64_C(2));"));
+    assert!(generated.contains("return ((flux__local_value) / INT64_C(-2));"));
 
     let annihilators = r#"
 fn observe(value: i64) -> i64 {
@@ -10206,13 +10224,19 @@ fn increment(value: i64) -> i64 {
     return value + 1
 }
 
+fn divide(value: i64, divisor: i64) -> i64 {
+    return value / divisor
+}
+
 fn main() -> i64 {
-    return increment(7)
+    print(increment(7))
+    return divide(8, 2)
 }
 "#;
     let checked_generated =
         compile_to_c(checked).expect("non-identity arithmetic should retain checked lowering");
     assert!(checked_generated.contains("flux_add_i64(flux__local_value, INT64_C(1))"));
+    assert!(checked_generated.contains("flux_div_i64(flux__local_value, flux__local_divisor)"));
 
     let ui = r#"
 view Counter {
@@ -14378,20 +14402,20 @@ app Status
 }
 
 #[test]
-fn app_i64_view_state_uses_checked_integer_division() {
+fn app_i64_view_state_keeps_checked_dynamic_integer_division() {
     let source = r#"
 view Counter {
     grid columns: 1fr
     grid rows: auto
     state count: i64 = 8
     Button action at 1,1
-        on_press: count => count / 2
+        on_press: count => count / count
 }
 app Counter
 "#;
-    check_source(source).expect("i64 division state transition should typecheck");
-    let generated = compile_to_c(source).expect("i64 division transition should lower");
-    assert!(generated.contains("flux_div_i64(flux__ui_state_count, INT64_C(2))"));
+    check_source(source).expect("dynamic i64 division state transition should typecheck");
+    let generated = compile_to_c(source).expect("dynamic i64 division transition should lower");
+    assert!(generated.contains("flux_div_i64(flux__ui_state_count, flux__ui_state_count)"));
 }
 
 #[test]
