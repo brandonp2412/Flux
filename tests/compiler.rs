@@ -17435,6 +17435,66 @@ app HoverCard
 }
 
 #[test]
+fn portable_context_menu_requests_use_native_secondary_or_long_press_gestures() {
+    let source = r#"
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    state opened: bool = false
+    Text card at 1,1
+        text: "Options"
+        visible: opened
+        onContextMenu: opened => true
+}
+app ContextCard
+"#;
+
+    check_source(source).expect("context-menu requests and state transitions should typecheck");
+    let linux = compile_to_c(source).expect("context-menu requests should lower to GTK");
+    assert!(linux.contains("flux__ui_context_menu_card"));
+    assert!(linux.contains("gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(flux__context_menu_card), GDK_BUTTON_SECONDARY)"));
+    assert!(linux.contains("\"released\", G_CALLBACK(flux__ui_context_menu_card)"));
+    assert!(linux.contains("flux__ui_state_opened = true; flux__ui_refresh_changed(0);"));
+
+    let program = fluxc::parser::parse(source).expect("context-menu app should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("context-menu app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("context-menu requests should lower to Android long-click activation");
+    assert!(android.contains("setOnLongClickListener"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenu"));
+    assert!(android.contains(
+        "flux__ui_state_opened = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0);"
+    ));
+
+    let conflicting = r#"
+fn action() -> void {
+    print("action")
+}
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        onLongPress: action
+        onContextMenu: action
+}
+app ContextCard
+"#;
+    let errors = check_source_all(conflicting)
+        .expect_err("Android long-click semantics require one long-press/context action");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("onContextMenu cannot be combined with onLongPress")
+    }));
+}
+
+#[test]
 fn passive_tap_actions_use_native_accessible_activation() {
     let source = r#"
 fn tapped() -> void {

@@ -4001,6 +4001,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnTap(int viewId);
     private static native void nativeOnDoubleTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
+    private static native void nativeOnContextMenu(int viewId);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
     private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);
     private static native void nativeOnScale(int viewId, long scalePercent);
@@ -4132,7 +4133,9 @@ __FLUX_PICKER_METHODS__
 
     @Override
     public boolean onLongClick(View view) {
-        nativeOnLongPress(view.getId());
+        int viewId = view.getId();
+        nativeOnLongPress(viewId);
+        nativeOnContextMenu(viewId);
         return true;
     }
 
@@ -6734,6 +6737,7 @@ mod tests {
         assert!(activity.contains("return \"ArrowLeft\";"));
         assert!(activity.contains("nativeOnKey(view.getId(), fluxKeyName(keyCode, event));"));
         assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
+        assert!(activity.contains("private static native void nativeOnContextMenu(int viewId);"));
         assert!(activity.contains(
             "private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);"
         ));
@@ -6751,7 +6755,8 @@ mod tests {
         assert!(activity.contains("nativeOnTap(viewId);"));
         assert!(activity.contains("ViewConfiguration.getDoubleTapTimeout()"));
         assert!(activity.contains("nativeOnDoubleTap(viewId);"));
-        assert!(activity.contains("nativeOnLongPress(view.getId());"));
+        assert!(activity.contains("nativeOnLongPress(viewId);"));
+        assert!(activity.contains("nativeOnContextMenu(viewId);"));
         assert!(
             activity.contains("private final Map<Integer, float[]> dragStarts = new HashMap<>();")
         );

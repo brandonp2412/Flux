@@ -1325,8 +1325,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transition_easing" => {
                 return Some(Type::Str);
             }
-            "on_tap" | "on_double_tap" | "on_long_press" | "on_hover" | "on_leave" | "on_focus"
-            | "on_blur" => {
+            "on_tap" | "on_double_tap" | "on_long_press" | "on_context_menu" | "on_hover"
+            | "on_leave" | "on_focus" | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
                     returns: Vec::new(),
@@ -1578,6 +1578,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_tap",
     "on_double_tap",
     "on_long_press",
+    "on_context_menu",
     "on_drag",
     "on_swipe",
     "on_scale",
@@ -1913,6 +1914,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 diagnostics.push(diagnostic);
             }
 
+            let long_press = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "on_long_press");
+            let context_menu = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "on_context_menu");
+            if let (Some(long_press), Some(context_menu)) = (long_press, context_menu) {
+                diagnostics.push(
+                    diag(
+                        context_menu.name_span,
+                        "onContextMenu cannot be combined with onLongPress on the same element",
+                    )
+                    .with_label(long_press.name_span, "onLongPress is declared here")
+                    .with_note(
+                        "Android uses the native long-click gesture for context-menu requests; choose one semantic action for that gesture",
+                    ),
+                );
+            }
+
             for property in &element.properties {
                 let internal_property = source_name_to_internal(&property.name);
                 if internal_property == "accessibility_role" {
@@ -2030,6 +2052,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                             | (_, "on_tap")
                             | (_, "on_double_tap")
                             | (_, "on_long_press")
+                            | (_, "on_context_menu")
                             | (_, "on_hover")
                             | (_, "on_leave")
                             | (_, "on_focus")
@@ -2038,7 +2061,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress, onHover/onLeave, or onFocus/onBlur",
+                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress/onContextMenu, onHover/onLeave, or onFocus/onBlur",
                         ));
                         continue;
                     }
