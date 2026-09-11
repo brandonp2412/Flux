@@ -131,16 +131,21 @@ Imports resolve relative to the importing file, must remain relative, must end i
 
 Top-level functions, constants, type aliases, structs, enums, and interfaces are private to their source module by default. Prefix a declaration with `pub` to make it usable from another module, for example `pub fn parse(...)`, `pub struct User`, or `pub interface Readable`. Private declarations remain freely usable inside their own source file. Public APIs cannot expose private named types through function signatures, public aliases, struct fields, enum payloads, or interface capabilities, and public interfaces cannot compose private interfaces. `pub` is not valid on imports or interface implementation blocks. Public imported declarations are still referenced by their declared names in source for now, so duplicate-declaration diagnostics apply across the full import graph. Internally, however, loaded sources have stable module identities: package modules are named from `[package].name` plus the root-relative source path with `.flux` removed (for example `example::src::service`), while direct source projects use paths relative to the entry file's directory. This gives tooling and future namespace/ABI work deterministic module identity without adding an object-style namespace model. `fluxc check`, `fluxc emit-c`, and `fluxc build` are project-aware and operate on the complete import graph; `fluxc format` formats the selected source file only and preserves `pub` visibility.
 
-A package may define a `flux.toml` manifest. The bootstrap manifest is intentionally small and dependency-free:
+A package may define a `flux.toml` manifest. The bootstrap manifest stays deliberately small and strict:
 
 ```toml
 [package]
 name = "example"
 version = "0.1.0"
 entry = "src/main.flux"
+
+[dependencies]
+json = "^1.2.3"
+local_utils = { path = "../local-utils" }
+git_math = { git = "https://github.com/example/math.git", rev = "0123456789abcdef" }
 ```
 
-`name` and `entry` are required quoted strings; `version` is optional. The entry path must be relative, end in `.flux`, exist, and remain inside the package root after canonical path resolution. Package fields outside this currently specified schema are rejected so unsupported metadata is not silently ignored. `fluxc check`, `fluxc emit-c`, and `fluxc build` accept a direct `.flux` entry as before, a package directory containing `flux.toml`, or the `flux.toml` path itself. The manifest now anchors stable package-qualified module identities, but source-level namespace qualification, dependency resolution, and package ABI rules remain later work.
+`name` and `entry` are required quoted strings; `version` is optional. The entry path must be relative, end in `.flux`, exist, and remain inside the package root after canonical path resolution. Optional `[dependencies]` entries are typed manifest metadata: a quoted exact/caret/tilde SemVer requirement (or `"*"`) denotes a registry package, `{ path = "..." }` denotes a relative local development dependency, and `{ git = "...", rev = "..." }` denotes a revision-pinned Git development dependency. Dependency names and source shapes are validated strictly, while resolution, fetching, lockfiles, and package-import syntax remain later package-management work. Package fields and dependency forms outside the specified schema are rejected so unsupported metadata is not silently ignored. `fluxc check`, `fluxc emit-c`, and `fluxc build` accept a direct `.flux` entry as before, a package directory containing `flux.toml`, or the `flux.toml` path itself. The manifest anchors stable package-qualified module identities, but source-level package import qualification, dependency resolution, and package ABI rules remain later work.
 
 ## Struct values
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -185,12 +185,20 @@ pub struct AndroidPackageConfig {
 pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageDependency {
+    Registry { requirement: String },
+    Path { path: PathBuf },
+    Git { url: String, rev: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
     pub format_version: u32,
     pub name: String,
     pub version: Option<String>,
     pub entry: PathBuf,
     pub path: PathBuf,
+    pub dependencies: BTreeMap<String, PackageDependency>,
     pub android: AndroidPackageConfig,
 }
 
@@ -424,6 +432,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_deep_links = None::<Vec<String>>;
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
+    let mut dependencies = BTreeMap::<String, PackageDependency>::new();
     let mut diagnostics = Vec::new();
 
     for (index, raw_line) in source.lines().enumerate() {
@@ -442,7 +451,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 continue;
             }
             let table = line[1..line.len() - 1].trim();
-            if !matches!(table, "package" | "android") {
+            if !matches!(table, "package" | "android" | "dependencies") {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
                     line_number,
@@ -506,6 +515,36 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         source_id,
                         line_number,
                         format!("duplicate [package] field '{key}'"),
+                    ));
+                }
+            }
+            Some("dependencies") => {
+                if !valid_dependency_name(key) {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!(
+                            "invalid dependency name '{key}'; names use ASCII letters, digits, '.', '-', or '_' and must start with a letter or digit"
+                        ),
+                    ));
+                    continue;
+                }
+                let dependency = match parse_package_dependency(raw_value) {
+                    Ok(dependency) => dependency,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("invalid dependency '{key}': {message}"),
+                        ));
+                        continue;
+                    }
+                };
+                if dependencies.insert(key.to_string(), dependency).is_some() {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!("duplicate [dependencies] entry '{key}'"),
                     ));
                 }
             }
@@ -584,7 +623,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package] or [android]",
+                "manifest fields must be declared inside [package], [dependencies], or [android]",
             )),
         }
     }
@@ -761,6 +800,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         version,
         entry: canonical_entry,
         path: canonical_manifest,
+        dependencies,
     })
 }
 
@@ -771,6 +811,190 @@ fn canonical_source(path: &Path, kind: &str) -> Result<PathBuf, Vec<Diagnostic>>
             format!("failed to read {kind} '{}': {error}", path.display()),
         )]
     })
+}
+
+fn parse_package_dependency(text: &str) -> Result<PackageDependency, String> {
+    let text = text.trim();
+    if text.starts_with('"') {
+        let requirement = parse_manifest_string(text)?;
+        if !valid_semver_requirement(&requirement) {
+            return Err(
+                "registry dependencies require a SemVer requirement such as \"1.2.3\", \"^1.2.3\", \"~1.2.3\", or \"*\""
+                    .to_string(),
+            );
+        }
+        return Ok(PackageDependency::Registry { requirement });
+    }
+
+    let fields = parse_manifest_inline_string_table(text)?;
+    if let Some(path) = fields.get("path") {
+        if fields.len() != 1 {
+            return Err("path dependencies accept only the 'path' field".to_string());
+        }
+        if path.is_empty() {
+            return Err("path dependencies require a non-empty path".to_string());
+        }
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return Err("path dependencies must use a relative path".to_string());
+        }
+        return Ok(PackageDependency::Path { path });
+    }
+
+    if let Some(url) = fields.get("git") {
+        if fields.len() != 2 || !fields.contains_key("rev") {
+            return Err("Git dependencies require exactly 'git' and 'rev' fields".to_string());
+        }
+        let rev = fields.get("rev").expect("Git dependency rev was checked");
+        if url.is_empty() || rev.is_empty() {
+            return Err("Git dependency 'git' and 'rev' values cannot be empty".to_string());
+        }
+        return Ok(PackageDependency::Git {
+            url: url.clone(),
+            rev: rev.clone(),
+        });
+    }
+
+    Err("dependencies must be a SemVer string, { path = \"...\" }, or { git = \"...\", rev = \"...\" }".to_string())
+}
+
+fn parse_manifest_inline_string_table(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let text = text.trim();
+    if !text.starts_with('{') || !text.ends_with('}') {
+        return Err("dependency tables must use { key = \"value\", ... } syntax".to_string());
+    }
+    let inner = text[1..text.len() - 1].trim();
+    if inner.is_empty() {
+        return Err("dependency tables cannot be empty".to_string());
+    }
+
+    let bytes = inner.as_bytes();
+    let mut index = 0usize;
+    let mut fields = BTreeMap::new();
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let key_start = index;
+        while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+        {
+            index += 1;
+        }
+        if key_start == index {
+            return Err("dependency table fields require an identifier key".to_string());
+        }
+        let key = &inner[key_start..index];
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&b'=') {
+            return Err(format!("dependency table field '{key}' requires '='"));
+        }
+        index += 1;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&b'"') {
+            return Err(format!(
+                "dependency table field '{key}' must be a quoted string"
+            ));
+        }
+        let value_start = index;
+        index += 1;
+        let mut escaped = false;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            index += 1;
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                break;
+            }
+        }
+        if index > bytes.len() || bytes.get(index.saturating_sub(1)) != Some(&b'"') {
+            return Err(format!("unterminated dependency table string for '{key}'"));
+        }
+        let value = parse_manifest_string(&inner[value_start..index])?;
+        if fields.insert(key.to_string(), value).is_some() {
+            return Err(format!("duplicate dependency table field '{key}'"));
+        }
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index == bytes.len() {
+            break;
+        }
+        if bytes[index] != b',' {
+            return Err("dependency table fields must be separated by commas".to_string());
+        }
+        index += 1;
+        if inner[index..].trim().is_empty() {
+            return Err("dependency tables may not end with a trailing comma".to_string());
+        }
+    }
+    Ok(fields)
+}
+
+fn valid_dependency_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|ch| ch.is_ascii_alphanumeric())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn valid_semver_requirement(value: &str) -> bool {
+    if value == "*" {
+        return true;
+    }
+    let version = value
+        .strip_prefix('^')
+        .or_else(|| value.strip_prefix('~'))
+        .unwrap_or(value);
+    valid_semver_version(version)
+}
+
+fn valid_semver_version(value: &str) -> bool {
+    let (without_build, build) = value
+        .split_once('+')
+        .map_or((value, None), |(version, build)| (version, Some(build)));
+    if build.is_some_and(|build| !valid_semver_identifiers(build, false)) {
+        return false;
+    }
+    let (core, prerelease) = without_build
+        .split_once('-')
+        .map_or((without_build, None), |(core, prerelease)| {
+            (core, Some(prerelease))
+        });
+    if prerelease.is_some_and(|prerelease| !valid_semver_identifiers(prerelease, true)) {
+        return false;
+    }
+
+    let mut parts = core.split('.');
+    let (Some(major), Some(minor), Some(patch), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    [major, minor, patch].into_iter().all(|part| {
+        !part.is_empty()
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+    })
+}
+
+fn valid_semver_identifiers(value: &str, reject_numeric_leading_zero: bool) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|identifier| {
+            !identifier.is_empty()
+                && identifier
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && (!reject_numeric_leading_zero
+                    || !identifier.bytes().all(|byte| byte.is_ascii_digit())
+                    || identifier == "0"
+                    || !identifier.starts_with('0'))
+        })
 }
 
 fn parse_manifest_string_array(text: &str) -> Result<Vec<String>, String> {

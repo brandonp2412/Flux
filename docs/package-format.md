@@ -20,7 +20,9 @@ The package-format version covers the schema and semantics of `flux.toml`; it is
 
 ## Compatibility policy
 
-Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`) and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
+Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]` table, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
+
+`[dependencies]` is an additive version-1 extension. Registry entries use quoted exact/caret/tilde SemVer requirements or `"*"`; local development entries use `{ path = "relative/path" }`; Git development entries use `{ git = "repository-url", rev = "immutable-revision" }`. The manifest parser validates names, source shape, required fields, duplicates, relative local paths, and registry requirement syntax. Dependency resolution/fetching and lockfile semantics are separate package-management features, so accepting this metadata does not imply that a dependency graph is resolved yet.
 
 Backward-compatible additions, such as a new optional field with a well-defined default, may remain in package format version 1. A change that removes or renames a supported field, changes an existing field's meaning incompatibly, makes previously optional metadata mandatory without a compatible default, or otherwise requires existing valid manifests to be rewritten must use a new package-format version.
 

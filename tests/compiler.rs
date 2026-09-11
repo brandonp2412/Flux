@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9885,6 +9886,112 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
         assert!(run.status.success());
         assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
     }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_manifest_parses_strict_dependency_sources() {
+    let root =
+        std::env::temp_dir().join(format!("flux-package-dependencies-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary package directory should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\n\n[dependencies]\njson = \"^1.2.3\"\nlocal_utils = { path = \"../local-utils\" }\ngit_math = { git = \"https://github.com/example/math.git\", rev = \"0123456789abcdef\" }\n",
+    )
+    .expect("dependency manifest should be writable");
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("dependencies should parse");
+    assert_eq!(parsed.dependencies.len(), 3);
+    assert_eq!(
+        parsed.dependencies.get("json"),
+        Some(&fluxc::project::PackageDependency::Registry {
+            requirement: "^1.2.3".to_string()
+        })
+    );
+    assert_eq!(
+        parsed.dependencies.get("local_utils"),
+        Some(&fluxc::project::PackageDependency::Path {
+            path: PathBuf::from("../local-utils")
+        })
+    );
+    assert_eq!(
+        parsed.dependencies.get("git_math"),
+        Some(&fluxc::project::PackageDependency::Git {
+            url: "https://github.com/example/math.git".to_string(),
+            rev: "0123456789abcdef".to_string()
+        })
+    );
+
+    let invalid_cases = [
+        (
+            "bad-version",
+            "bad = \"latest\"",
+            "require a SemVer requirement",
+        ),
+        (
+            "leading-zero-version",
+            "bad = \"01.2.3\"",
+            "require a SemVer requirement",
+        ),
+        (
+            "empty-prerelease",
+            "bad = \"1.2.3-\"",
+            "require a SemVer requirement",
+        ),
+        (
+            "absolute-path",
+            "bad = { path = \"/tmp/pkg\" }",
+            "must use a relative path",
+        ),
+        (
+            "git-without-rev",
+            "bad = { git = \"https://github.com/example/pkg.git\" }",
+            "require exactly 'git' and 'rev' fields",
+        ),
+        (
+            "mixed-source",
+            "bad = { path = \"../pkg\", rev = \"abc\" }",
+            "path dependencies accept only the 'path' field",
+        ),
+        (
+            "unknown-source",
+            "bad = { url = \"https://example.test/pkg\" }",
+            "must be a SemVer string",
+        ),
+    ];
+    for (name, dependency, expected) in invalid_cases {
+        fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\n\n[dependencies]\n{dependency}\n"
+            ),
+        )
+        .expect("invalid dependency manifest should be writable");
+        let errors = fluxc::project::read_manifest(&manifest)
+            .expect_err(&format!("{name} dependency must be rejected"));
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "{name} should report '{expected}', got {errors:?}"
+        );
+    }
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"sample\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndupe = \"1.2.3\"\ndupe = \"1.2.4\"\n",
+    )
+    .expect("duplicate dependency manifest should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("duplicate dependency names must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("duplicate [dependencies] entry 'dupe'")
+    }));
 
     let _ = fs::remove_dir_all(&root);
 }
