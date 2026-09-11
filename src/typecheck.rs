@@ -1252,6 +1252,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                 return Some(Type::Bool);
             }
             "tooltip"
+            | "shortcut"
             | "accessibility_label"
             | "accessibility_description"
             | "accessibility_role" => {
@@ -1350,7 +1351,6 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("Button", "text") => Some(Type::Str),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
-        ("Button", "shortcut") => Some(Type::Str),
         ("Button", "on_press") | ("Toggle", "on_change") | ("Radio", "on_select") => {
             Some(Type::Function {
                 params: Vec::new(),
@@ -1513,6 +1513,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "focus_scope",
     "status",
     "tooltip",
+    "shortcut",
     "accessibility_label",
     "accessibility_description",
     "accessibility_role",
@@ -1598,7 +1599,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "max_width_chars",
             "color",
         ],
-        "Button" => &["text", "enabled", "primary", "shortcut", "on_press"],
+        "Button" => &["text", "enabled", "primary", "on_press"],
         "TextInput" => &[
             "text",
             "placeholder",
@@ -1999,20 +2000,34 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 }
             }
 
-            if element.kind == "Button"
-                && element
-                    .properties
-                    .iter()
-                    .any(|property| property.name == "shortcut")
-                && !element
-                    .properties
-                    .iter()
-                    .any(|property| source_name_to_internal(&property.name) == "on_press")
+            if element
+                .properties
+                .iter()
+                .any(|property| source_name_to_internal(&property.name) == "shortcut")
             {
-                diagnostics.push(diag(
-                    element.span,
-                    "Button.shortcut requires Button.onPress so the shortcut has a typed Flux action",
-                ));
+                let has_press = element.kind == "Button"
+                    && element
+                        .properties
+                        .iter()
+                        .any(|property| source_name_to_internal(&property.name) == "on_press");
+                let has_tap = element
+                    .properties
+                    .iter()
+                    .any(|property| source_name_to_internal(&property.name) == "on_tap");
+                if !has_press && !has_tap {
+                    diagnostics.push(diag(
+                        element.span,
+                        &format!(
+                            "{}.shortcut requires {} so the shortcut has a typed Flux action",
+                            element.kind,
+                            if element.kind == "Button" {
+                                "Button.onPress or onTap"
+                            } else {
+                                "onTap"
+                            }
+                        ),
+                    ));
+                }
             }
 
             if let Some(target) = custom_view {
@@ -2298,11 +2313,10 @@ fn collect_view_shortcuts(
     stack.push(view.name.clone());
     for element in &view.elements {
         let element_path = format!("{path}.{}", element.name);
-        if element.kind == "Button"
-            && let Some(property) = element
-                .properties
-                .iter()
-                .find(|property| source_name_to_internal(&property.name) == "shortcut")
+        if let Some(property) = element
+            .properties
+            .iter()
+            .find(|property| source_name_to_internal(&property.name) == "shortcut")
             && let Ok(ConstantValue::Str(value)) =
                 evaluate_default_expr(&property.value, signatures)
             && let Some(shortcut) = canonical_ui_shortcut(&value)
@@ -2312,11 +2326,11 @@ fn collect_view_shortcuts(
                     diag(
                         property.value.span,
                         &format!(
-                            "keyboard shortcut '{shortcut}' conflicts with another button in the app window"
+                            "keyboard shortcut '{shortcut}' conflicts with another action in the app window"
                         ),
                     )
                     .with_label(*previous_span, format!("first used by '{previous_path}'"))
-                    .with_note(format!("conflicting button: '{element_path}'")),
+                    .with_note(format!("conflicting action: '{element_path}'")),
                 );
             } else {
                 shortcuts.insert(shortcut, (property.value.span, element_path.clone()));

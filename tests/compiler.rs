@@ -13263,11 +13263,13 @@ app Shortcuts
         fluxc::codegen::NativeTarget::Android,
     )
     .expect("button shortcut should lower to Android");
-    assert!(android.contains("\"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;)V\""));
-    assert!(android.contains("NewStringUTF(env, \"Ctrl+Shift+Enter\")"));
     assert!(
-        android.contains("CallVoidMethod(env, activity, register_shortcut, child, child_shortcut)")
+        android.contains("\"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;Z)V\"")
     );
+    assert!(android.contains("NewStringUTF(env, \"Ctrl+Shift+Enter\")"));
+    assert!(android.contains(
+        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_FALSE)"
+    ));
 
     let missing_action = r#"
 view Shortcuts {
@@ -13282,7 +13284,7 @@ app Shortcuts
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("Button.shortcut requires Button.onPress")
+            .contains("Button.shortcut requires Button.onPress or onTap")
     }));
 
     let invalid = r#"
@@ -13314,6 +13316,58 @@ app Shortcuts
     )
     .expect_err("unsupported shortcut syntax must also fail for Android");
     assert!(android_error.message.contains("modifiers Ctrl/Shift/Alt"));
+}
+
+#[test]
+fn non_button_shortcuts_dispatch_typed_tap_actions() {
+    let source = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    state active: bool = false
+    Text action at 1,1
+        text: "Toggle"
+        shortcut: "Ctrl+K"
+        onTap: active => !active
+}
+app Shortcuts
+"#;
+    check_source(source).expect("common shortcut should accept a non-button onTap action");
+    let generated = compile_to_c(source).expect("non-button shortcut should lower on Linux");
+    assert!(generated.contains("static gboolean flux__ui_shortcut_action"));
+    assert!(generated.contains("gtk_callback_action_new(flux__ui_shortcut_action, NULL, NULL)"));
+
+    let program = fluxc::parser::parse(source).expect("shortcut app should parse for Android");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("shortcut app should typecheck for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("non-button shortcut should lower to Android");
+    assert!(android.contains("NewStringUTF(env, \"Ctrl+K\")"));
+    assert!(android.contains(
+        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_TRUE)"
+    ));
+
+    let missing_action = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    Text action at 1,1
+        text: "No action"
+        shortcut: "Ctrl+K"
+}
+app Shortcuts
+"#;
+    let errors = check_source_all(missing_action).expect_err("non-button shortcut needs onTap");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("Text.shortcut requires onTap"))
+    );
 }
 
 #[test]

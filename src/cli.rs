@@ -3856,8 +3856,10 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import java.io.File;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
@@ -3873,6 +3875,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
+    private final Set<String> shortcutTapActions = new HashSet<>();
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
@@ -4088,8 +4091,11 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         return false;
     }
 
-    public void registerShortcut(View view, String shortcut) {
-        if (view != null && shortcut != null) shortcutViewIds.put(shortcut, view.getId());
+    public void registerShortcut(View view, String shortcut, boolean tapAction) {
+        if (view == null || shortcut == null) return;
+        shortcutViewIds.put(shortcut, view.getId());
+        if (tapAction) shortcutTapActions.add(shortcut);
+        else shortcutTapActions.remove(shortcut);
     }
 
     private static String fluxShortcutName(KeyEvent event) {
@@ -4129,7 +4135,8 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         String shortcut = fluxShortcutName(event);
         Integer viewId = shortcut == null ? null : shortcutViewIds.get(shortcut);
         if (viewId != null) {
-            nativeOnClick(viewId);
+            if (shortcutTapActions.contains(shortcut)) nativeOnTap(viewId);
+            else nativeOnClick(viewId);
             return true;
         }
         return super.dispatchKeyEvent(event);
@@ -6292,10 +6299,18 @@ mod tests {
             activity
                 .contains("private final Map<String, Integer> shortcutViewIds = new HashMap<>();")
         );
-        assert!(activity.contains("public void registerShortcut(View view, String shortcut)"));
+        assert!(
+            activity.contains("private final Set<String> shortcutTapActions = new HashSet<>();")
+        );
+        assert!(activity.contains(
+            "public void registerShortcut(View view, String shortcut, boolean tapAction)"
+        ));
         assert!(activity.contains("public boolean dispatchKeyEvent(KeyEvent event)"));
         assert!(activity.contains("if (event.isCtrlPressed()) shortcut.append(\"Ctrl+\");"));
-        assert!(activity.contains("nativeOnClick(viewId);"));
+        assert!(
+            activity.contains("if (shortcutTapActions.contains(shortcut)) nativeOnTap(viewId);")
+        );
+        assert!(activity.contains("else nativeOnClick(viewId);"));
         assert!(
             activity.contains(
                 "private static native void nativeOnChecked(int viewId, boolean checked);"

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 466
+- Completed baseline units: 467
 - Reported overall progress: **63%**
 - Current net scope growth after the baseline: 55 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -578,12 +578,12 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Pointer/mouse input for the bootstrap native UI: common tap plus hover/leave events cover ordinary pointer activation and presence without exposing event/controller objects; richer coordinates/buttons/drag semantics remain in the dedicated gesture/drag follow-up work.
   - [x] Common typed `onTap: fn() -> void` works on every built-in native element without exposing pointer/controller objects; Linux lowers it to a native `GtkGestureClick` release callback and supports the ordinary functional state-transition form.
 - [x] Touch input for the bootstrap native UI: portable tap and native long-press recognition are wired on current application backends; multi-touch/drag/scale/velocity semantics remain in the dedicated gesture work.
-  - [x] The same `onTap` contract lowers on Android to a compiler-wired native `View.OnTouchListener` and dispatches `ACTION_UP` directly back into compiled Flux callbacks/state transitions, with no application-authored Java/Kotlin/JNI bridge.
+  - [x] The same `onTap` contract lowers on Android through the native `View.OnClickListener` activation path so pointer, keyboard, and accessibility `performClick` activation converge before direct Flux callback/state-transition dispatch, with no application-authored Java/Kotlin/JNI bridge.
   - [x] Common `onLongPress: fn() -> void` lowers to Android's native `View.OnLongClickListener`, consumes the recognized long press after direct Flux dispatch, and supports typed functional state transitions without exposing `MotionEvent` or listener objects.
 - [x] Keyboard input.
   - [x] Bootstrap native text typing reaches `TextInput` through GTK's keyboard handling; `onChange` receives the current borrowed text and Enter dispatches `onSubmit`. Common `onKey: fn(str) -> void` now provides portable explicit key-down handling on Linux and Android without exposing toolkit event objects: focused elements receive normalized names such as `Enter`, `Escape`, `Backspace`, `Delete`, `ArrowLeft`/`ArrowRight`/`ArrowUp`/`ArrowDown`, `Home`, `End`, and `PageUp`/`PageDown`, while printable Unicode keys are passed as their text value. Linux uses a capture-phase GTK key controller and Android uses the native `View.OnKeyListener`; declaring `onKey` also makes otherwise non-focusable native elements keyboard-focusable.
-- [ ] Focus model.
-  - [x] Bootstrap initial focus and focus events remain native and object-free: common compile-time `autofocus: bool` works on every built-in element on Linux and Android, automatically makes an otherwise passive target focusable, and rejects multiple enabled autofocus targets or an explicit `focusable: false` contradiction within one view. `TextInput` retains the same source spelling, common `onFocus` / `onBlur` events accept named `fn() -> void` callbacks or typed functional state transitions, and native traversal remains available. Portable focus scopes now build on the same model; broader focus restoration remains pending.
+- [x] Focus model for the current native application backends: initial focus, typed focus/blur events, portable traversal/scopes, and stable focus restoration across native UI refresh/rebuild paths remain compiler-owned and object-free.
+  - [x] Bootstrap initial focus and focus events remain native and object-free: common compile-time `autofocus: bool` works on every built-in element on Linux and Android, automatically makes an otherwise passive target focusable, and rejects multiple enabled autofocus targets or an explicit `focusable: false` contradiction within one view. `TextInput` retains the same source spelling, common `onFocus` / `onBlur` events accept named `fn() -> void` callbacks or typed functional state transitions, and native traversal remains available. Android preserves the focused stable element ID across configuration-driven hierarchy rebuilds while suppressing synthetic focus callbacks during restoration; Linux state refresh keeps the existing native hierarchy/focus intact.
   - [x] Portable programmatic focus navigation remains compiler-owned and object-free: `focus.next(wrap: bool = false)`, `focus.previous(wrap: bool = false)`, `focus.first()`, `focus.last()`, and `focus.clear()` lower to native GTK focus traversal on Linux and reuse direct native View focus traversal on Android, with LSP completion/signature help and no focus/controller object exposed to Flux source.
 - [x] Hover.
   - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
@@ -594,7 +594,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions, while Android registers the same canonical shortcut on the generated Activity and dispatches matching non-repeating native `KeyEvent` key-downs through the button's existing typed `onPress` action. Both backends reject unsupported modifier/key forms rather than silently diverging.
-  - [ ] Broader shortcut scopes, non-button actions, and platform-specific shortcut presentation remain; the current single app window now rejects canonical shortcut conflicts across the complete composed view tree at compile time, including repeated custom-view instances and equivalent modifier/key spellings.
+  - [ ] Broader shortcut scopes and platform-specific shortcut presentation remain; app-window shortcuts now support any built-in element with a typed `onTap` action while Buttons continue to prefer `onPress`, and the complete composed view tree rejects canonical conflicts at compile time, including repeated custom-view instances and equivalent modifier/key spellings.
 - [ ] Context menus.
 - [ ] Clipboard; portable `clipboard.setText(text)` is implemented on Linux/Android, while reads remain blocked on owned-string semantics rather than returning unsafe borrowed GUI storage.
 - [ ] IME/text-composition support.

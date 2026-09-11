@@ -2547,31 +2547,34 @@ fn emit_android_native_application(
                 if primary { "JNI_TRUE" } else { "JNI_FALSE" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
-            if let Some(property) = view_property(element, "shortcut") {
-                let Some(value) = static_expr_str(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "Button.shortcut must be a compile-time string",
-                    ));
-                };
-                let Some(shortcut) = android_shortcut_trigger(&value) else {
-                    return Err(diag(
-                        property.value.span,
-                        "Button.shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
-                    ));
-                };
-                out.push_str(
-                    "    jclass shortcut_activity_class = (*env)->GetObjectClass(env, activity);\n",
-                );
-                out.push_str("    if (shortcut_activity_class == NULL) return;\n");
-                out.push_str("    jmethodID register_shortcut = (*env)->GetMethodID(env, shortcut_activity_class, \"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
-                out.push_str("    if (register_shortcut == NULL) return;\n");
-                out.push_str(&format!(
-                    "    jstring child_shortcut = (*env)->NewStringUTF(env, {});\n    if (child_shortcut == NULL) return;\n    (*env)->CallVoidMethod(env, activity, register_shortcut, child, child_shortcut);\n    (*env)->DeleteLocalRef(env, child_shortcut);\n",
-                    c_string(&shortcut)
+        }
+        if let Some(property) = view_property(element, "shortcut") {
+            let Some(value) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must be a compile-time string",
                 ));
-                out.push_str("    (*env)->DeleteLocalRef(env, shortcut_activity_class);\n");
-            }
+            };
+            let Some(shortcut) = android_shortcut_trigger(&value) else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                ));
+            };
+            let tap_action =
+                element.kind != "Button" || view_property(element, "on_press").is_none();
+            out.push_str(
+                "    jclass shortcut_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
+            out.push_str("    if (shortcut_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID register_shortcut = (*env)->GetMethodID(env, shortcut_activity_class, \"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;Z)V\");\n");
+            out.push_str("    if (register_shortcut == NULL) return;\n");
+            out.push_str(&format!(
+                "    jstring child_shortcut = (*env)->NewStringUTF(env, {});\n    if (child_shortcut == NULL) return;\n    (*env)->CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean){});\n    (*env)->DeleteLocalRef(env, child_shortcut);\n",
+                c_string(&shortcut),
+                if tap_action { "JNI_TRUE" } else { "JNI_FALSE" }
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, shortcut_activity_class);\n");
         }
         if element.kind == "TextInput" {
             let validation_state = match view_property(element, "validation_state") {
@@ -4314,10 +4317,19 @@ fn emit_linux_gtk_application(
         ));
     }
     for element in &view.elements {
-        if element.kind == "Button" && view_property(element, "shortcut").is_some() {
+        if view_property(element, "shortcut").is_none() {
+            continue;
+        }
+        if element.kind == "Button" && view_property(element, "on_press").is_some() {
             out.push_str(&format!(
                 "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data) {{ (void)args; (void)data; flux__ui_click_{}(widget, NULL); return TRUE; }}\n",
                 element.name, element.name
+            ));
+        } else if let Some(action) = view_property(element, "on_tap") {
+            let body = ui_zero_arg_event_body(action, view, signatures)?;
+            out.push_str(&format!(
+                "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data) {{ (void)widget; (void)args; (void)data; {body} return TRUE; }}\n",
+                element.name
             ));
         }
     }
@@ -5178,26 +5190,6 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if let Some(property) = view_property(element, "shortcut") {
-                    let Some(shortcut) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "Button.shortcut must be a compile-time string",
-                        ));
-                    };
-                    let Some(trigger) = gtk_shortcut_trigger(&shortcut) else {
-                        return Err(diag(
-                            property.value.span,
-                            "Button.shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
-                        ));
-                    };
-                    let controller = format!("flux__shortcut_controller_{}", element.name);
-                    out.push_str(&format!(
-                        "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), GTK_SHORTCUT_SCOPE_GLOBAL);\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
-                        c_string(&trigger),
-                        element.name,
-                    ));
-                }
                 if view_property(element, "on_press").is_some() {
                     out.push_str(&format!(
                         "    g_signal_connect({variable}, \"clicked\", G_CALLBACK(flux__ui_click_{}), NULL);\n",
@@ -5206,6 +5198,26 @@ fn emit_linux_gtk_application(
                 }
             }
             _ => unreachable!("unsupported app element rejected before lowering"),
+        }
+        if let Some(property) = view_property(element, "shortcut") {
+            let Some(shortcut) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must be a compile-time string",
+                ));
+            };
+            let Some(trigger) = gtk_shortcut_trigger(&shortcut) else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                ));
+            };
+            let controller = format!("flux__shortcut_controller_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), GTK_SHORTCUT_SCOPE_GLOBAL);\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
+                c_string(&trigger),
+                element.name,
+            ));
         }
         let presentation_status = match view_property(element, "status") {
             Some(property) => {
