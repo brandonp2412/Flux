@@ -3295,7 +3295,7 @@ fn emit_runtime_prelude(
             if (ending[0] != '\r' || ending[1] != '\n') return flux__net_result(-1, "malformed HTTP chunk terminator");
         }
         body_length = body_offset;
-    } else {
+    } else if (content_length_seen) {
         while (body_offset < body_length) {
             ssize_t received;
             do { received = recv((int)socket_handle, body + body_offset, body_length - body_offset, 0); } while (received < 0 && errno == EINTR);
@@ -3305,6 +3305,25 @@ fn emit_runtime_prelude(
             body_offset += (size_t)received;
             body_wire_length += (size_t)received;
         }
+    } else {
+        for (;;) {
+            if (body_offset >= (size_t)max_body_bytes) {
+                char overflow_probe;
+                ssize_t received;
+                do { received = recv((int)socket_handle, &overflow_probe, 1, 0); } while (received < 0 && errno == EINTR);
+                if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
+                if (received == 0) break;
+                return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+            }
+            ssize_t received;
+            do { received = recv((int)socket_handle, body + body_offset, (size_t)max_body_bytes - body_offset, 0); } while (received < 0 && errno == EINTR);
+            if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
+            if (received == 0) break;
+            if (memchr(body + body_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP response body contains a NUL byte");
+            body_offset += (size_t)received;
+            body_wire_length += (size_t)received;
+        }
+        body_length = body_offset;
     }
     body[body_length] = '\0';
     response_callback(socket_handle, version, status, reason);

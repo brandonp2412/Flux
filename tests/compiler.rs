@@ -2303,6 +2303,116 @@ fn http_chunked_text_response_body_is_decoded_bounded_and_does_not_overread() {
 }
 
 #[test]
+fn http_connection_close_text_response_body_is_bounded_and_runnable() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP close-delimited listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("HTTP close-delimited client should connect");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nX-Trace: eof\r\n\r\nhello close")
+            .expect("close-delimited HTTP response should be writable");
+    });
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-close-delimited-client-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP close-delimited fixture should be writable");
+    let source_path = root.join("client.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn response(_socket: i64, version: str, status: i64, reason: str) -> void {{\n    print(version)\n    print(status)\n    print(reason)\n}}\nfn header(_socket: i64, name: str, value: str) -> void {{\n    print(name)\n    print(value)\n}}\nfn body(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveResponseWithTextBody(socket, 4096, 32, response, header, body)\n    print(received > 0)\n    print(receiveError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP close-delimited client source should be writable");
+    let binary = root.join("client");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP close-delimited client binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP close-delimited client fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP close-delimited client binary should run");
+    server
+        .join()
+        .expect("HTTP close-delimited server fixture should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nHTTP/1.1\n200\nOK\nConnection\nclose\nX-Trace\neof\nhello close\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_connection_close_text_response_body_rejects_overflow() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .expect("HTTP close-delimited overflow listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("HTTP close-delimited overflow client should connect");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nhello")
+            .expect("oversized close-delimited HTTP response should be writable");
+    });
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-close-delimited-overflow-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP close-delimited overflow fixture should be writable");
+    let source_path = root.join("client.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {{\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, _value: str) -> void {{\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (_, receiveError) = http.receiveResponseWithTextBody(socket, 4096, 4, response, header, body)\n    print(receiveError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP close-delimited overflow source should be writable");
+    let binary = root.join("client");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP close-delimited overflow binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP close-delimited overflow fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP close-delimited overflow binary should run");
+    server
+        .join()
+        .expect("HTTP close-delimited overflow server fixture should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nHTTP response body exceeds maxBodyBytes\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
