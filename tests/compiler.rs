@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -1450,6 +1451,189 @@ fn main() -> i64 {
         error
             .message
             .contains("process.* APIs require a desktop/server target")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tcp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    let (listener, listenError) = net.tcpListen("127.0.0.1", 0, 8)
+    print(listenError)
+    let (port, portError) = net.localPort(listener)
+    print(port)
+    print(portError)
+    print(net.close(listener))
+    return 0
+}
+"#;
+    check_source(source).expect("TCP socket lifecycle should typecheck");
+    let generated = compile_to_c(source).expect("TCP socket lifecycle should lower on Linux");
+    assert!(generated.contains("struct flux__net_i64_error"));
+    assert!(generated.contains("flux__net_tcp_listen("));
+    assert!(generated.contains("flux__net_local_port("));
+    assert!(generated.contains("flux__net_close("));
+    assert!(generated.contains("#include <sys/socket.h>"));
+    assert!(generated.contains("#include <netdb.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("network API fixture should be writable");
+    let source_path = root.join("listen.flux");
+    fs::write(&source_path, source).expect("network API source should be writable");
+    let binary = root.join("listen");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("network API binary should build");
+    assert!(
+        built.status.success(),
+        "network API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("network API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0], "nil");
+    assert!(lines[1].parse::<u16>().is_ok_and(|port| port > 0));
+    assert_eq!(&lines[2..], &["nil", "nil"]);
+
+    let rust_listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+    let connect_port = rust_listener.local_addr().unwrap().port();
+    let connect_source = format!(
+        "fn main() -> i64 {{\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.close(socket))\n    return 0\n}}\n"
+    );
+    let connect_path = root.join("connect.flux");
+    fs::write(&connect_path, connect_source).expect("TCP connect source should be writable");
+    let connect_binary = root.join("connect");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&connect_path)
+        .arg("-o")
+        .arg(&connect_binary)
+        .output()
+        .expect("TCP connect binary should build");
+    assert!(
+        built.status.success(),
+        "TCP connect build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&connect_binary)
+        .output()
+        .expect("TCP connect binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\n");
+    drop(rust_listener);
+
+    let invalid = r#"
+fn main() -> i64 {
+    let (socket, failure) = net.tcpConnect(1, 70000)
+    let (listener, listenFailure) = net.tcpListen("127.0.0.1", -1, 0)
+    let (accepted, acceptFailure) = net.tcpAccept("bad")
+    print(socket)
+    print(failure)
+    print(listener)
+    print(listenFailure)
+    print(accepted)
+    print(acceptFailure)
+    print(net.close(false))
+    net.unknown()
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid network calls should fail statically");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("net.tcpConnect host")
+                && error.message.contains("expected str"))
+    );
+    let connect_port_error = check_source("fn main() -> i64 {\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", 70000)\n    return 0\n}\n")
+        .expect_err("constant TCP connect ports outside the valid range must fail");
+    assert!(
+        connect_port_error
+            .message
+            .contains("net.tcpConnect port must be between 1 and 65535")
+    );
+    let listen_port_error = check_source("fn main() -> i64 {\n    let (listener, failure) = net.tcpListen(\"127.0.0.1\", -1, 8)\n    return 0\n}\n")
+        .expect_err("constant TCP listen ports outside the valid range must fail");
+    assert!(
+        listen_port_error
+            .message
+            .contains("net.tcpListen port must be between 0 and 65535")
+    );
+    let backlog_error = check_source("fn main() -> i64 {\n    let (listener, failure) = net.tcpListen(\"127.0.0.1\", 0, 0)\n    return 0\n}\n")
+        .expect_err("constant TCP listen backlogs must be positive");
+    assert!(
+        backlog_error
+            .message
+            .contains("net.tcpListen backlog must be between 1 and 2147483647")
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("net.tcpAccept socket")
+                && error.message.contains("expected i64"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("net.close socket")
+                && error.message.contains("expected i64"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("net module has no function 'unknown'")
+    }));
+
+    let unused = r#"
+fn hidden() -> void {
+    let (listener, failure) = net.tcpListen("127.0.0.1", 0, 8)
+    print(listener)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead network calls should tree-shake");
+    assert!(!unused_generated.contains("flux__net_tcp_listen("));
+    assert!(!unused_generated.contains("#include <sys/socket.h>"));
+
+    let android_root = root.join("android");
+    fs::create_dir_all(android_root.join("src"))
+        .expect("Android network fixture should be writable");
+    fs::write(
+        android_root.join("flux.toml"),
+        "[package]\nname = \"network-android\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("Android network manifest should be writable");
+    fs::write(
+        android_root.join("src/main.flux"),
+        "fn main() -> i64 {\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", 80)\n    print(socket)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect("Android network source should be writable");
+    let analysis =
+        fluxc::project::analyze(&android_root).expect("Android network fixture should analyze");
+    let error = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect_err("network APIs must reject Android lowering");
+    assert!(
+        error
+            .message
+            .contains("net.* APIs require a desktop/server target")
     );
     let _ = fs::remove_dir_all(&root);
 }

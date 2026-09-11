@@ -1172,6 +1172,27 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "net" {
+        for (label, detail) in [
+            (
+                "tcpConnect",
+                "fn net.tcpConnect(host: str, port: i64) -> (i64, error)",
+            ),
+            (
+                "tcpListen",
+                "fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)",
+            ),
+            (
+                "tcpAccept",
+                "fn net.tcpAccept(listener: i64) -> (i64, error)",
+            ),
+            ("localPort", "fn net.localPort(socket: i64) -> (i64, error)"),
+            ("close", "fn net.close(socket: i64) -> error"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "locale" {
         push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
         push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
@@ -2339,6 +2360,51 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        if namespace == "net" {
+            match member {
+                "tcpConnect" => {
+                    return Some(signature_help_for_builtin(
+                        "net.tcpConnect",
+                        &["host: str", "port: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "tcpListen" => {
+                    return Some(signature_help_for_builtin(
+                        "net.tcpListen",
+                        &["host: str", "port: i64", "backlog: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "tcpAccept" => {
+                    return Some(signature_help_for_builtin(
+                        "net.tcpAccept",
+                        &["listener: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "localPort" => {
+                    return Some(signature_help_for_builtin(
+                        "net.localPort",
+                        &["socket: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "close" => {
+                    return Some(signature_help_for_builtin(
+                        "net.close",
+                        &["socket: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
         if namespace == "process" {
             match member {
                 "pid" | "parentPid" | "cpuMillis" | "peakResidentMemoryBytes" => {
@@ -5448,7 +5514,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5508,6 +5574,29 @@ mod tests {
         assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
+
+        let net_line = source
+            .lines()
+            .position(|line| line.trim() == "net.")
+            .expect("network completion line should exist");
+        let net_source = source.lines().nth(net_line).unwrap();
+        let net_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(net_line),
+            Some(net_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(net_items.contains("fn net.tcpConnect(host: str, port: i64) -> (i64, error)"));
+        assert!(
+            net_items
+                .contains("fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)")
+        );
+        assert!(net_items.contains("fn net.tcpAccept(listener: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.close(socket: i64) -> error"));
 
         let locale_line = source
             .lines()

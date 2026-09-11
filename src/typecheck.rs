@@ -5494,6 +5494,104 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "net" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("net.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "tcpConnect" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("net.tcpConnect expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let host = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &host, "net.tcpConnect host")?;
+                let port = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &port, "net.tcpConnect port")?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.tcpConnect port must be between 1 and 65535",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "tcpListen" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("net.tcpListen expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let host = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &host, "net.tcpListen host")?;
+                let port = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &port, "net.tcpListen port")?;
+                let backlog = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::I64, &backlog, "net.tcpListen backlog")?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(0..=65535).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.tcpListen port must be between 0 and 65535",
+                    ));
+                }
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if value < 1 || value > i32::MAX as i64
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.tcpListen backlog must be between 1 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "tcpAccept" | "localPort" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("net.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    &format!("net.{name} socket"),
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("net.close expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "net.close socket")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("net module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "locale" {
         if !named_args.is_empty() {
             return Err(diag(

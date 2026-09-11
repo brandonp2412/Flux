@@ -139,6 +139,12 @@ pub fn emit_c_for_target_with_source_paths(
             "process.* APIs require a desktop/server target",
         ));
     }
+    if target == NativeTarget::Android && runtime_usage.contains("flux__net_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "net.* APIs require a desktop/server target",
+        ));
+    }
     if runtime_usage.contains("flux__clipboard_set_text(") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -296,6 +302,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
         || runtime_usage.contains("flux__fs_remove_directories(")
+        || runtime_usage.contains("flux__net_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -310,6 +317,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
         || runtime_usage.contains("flux__fs_create_directories(")
         || runtime_usage.contains("flux__fs_remove_directories(")
+        || runtime_usage.contains("flux__net_")
     {
         out.push_str("#include <errno.h>\n");
     }
@@ -340,6 +348,14 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__fs_remove_directories(") {
         out.push_str("#include <dirent.h>\n");
+    }
+    if runtime_usage.contains("flux__net_") {
+        out.push_str("#include <limits.h>\n");
+        out.push_str("#include <sys/socket.h>\n");
+        out.push_str("#include <netdb.h>\n");
+        out.push_str("#include <netinet/in.h>\n");
+        out.push_str("#include <arpa/inet.h>\n");
+        out.push_str("#include <unistd.h>\n");
     }
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
@@ -1692,6 +1708,31 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_exit(") {
         out.push_str("static inline void flux__process_exit(int64_t code) { if (code < 0 || code > 255) { fputs(\"Flux runtime error: process.exit code must be between 0 and 255\\n\", stderr); abort(); } exit((int)code); }\n");
+    }
+
+    if runtime_usage.contains("flux__net_") {
+        out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
+    if runtime_usage.contains("flux__net_tcp_connect(")
+        || runtime_usage.contains("flux__net_tcp_listen(")
+    {
+        out.push_str("static struct flux__net_i64_error flux__net_open_tcp(const char *host, int64_t port, int passive, int backlog) { if (port < 0 || port > 65535 || (!passive && port == 0)) return flux__net_result(-1, passive ? \"TCP listen port must be between 0 and 65535\" : \"TCP connect port must be between 1 and 65535\"); char service[6]; snprintf(service, sizeof(service), \"%lld\", (long long)port); struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM; hints.ai_protocol = IPPROTO_TCP; hints.ai_flags = passive ? AI_PASSIVE : 0; struct addrinfo *addresses = NULL; const char *node = passive && host[0] == '\\0' ? NULL : host; if (getaddrinfo(node, service, &hints, &addresses) != 0) return flux__net_result(-1, passive ? \"failed to resolve TCP listen address\" : \"failed to resolve TCP host\"); int fd = -1; for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol); if (fd < 0) continue; if (passive) { int enabled = 1; (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)); if (bind(fd, address->ai_addr, address->ai_addrlen) == 0 && listen(fd, backlog) == 0) break; } else if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) { break; } close(fd); fd = -1; } freeaddrinfo(addresses); if (fd < 0) return flux__net_result(-1, passive ? \"failed to listen on TCP socket\" : \"failed to connect TCP socket\"); return flux__net_result((int64_t)fd, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__net_tcp_connect(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_connect(const char *host, int64_t port) { return flux__net_open_tcp(host, port, 0, 0); }\n");
+    }
+    if runtime_usage.contains("flux__net_tcp_listen(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_listen(const char *host, int64_t port, int64_t backlog) { if (backlog < 1 || backlog > INT_MAX) return flux__net_result(-1, \"TCP listen backlog must be positive\"); return flux__net_open_tcp(host, port, 1, (int)backlog); }\n");
+    }
+    if runtime_usage.contains("flux__net_tcp_accept(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept(int64_t listener) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); return fd < 0 ? flux__net_result(-1, \"failed to accept TCP connection\") : flux__net_result((int64_t)fd, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__net_local_port(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_local_port(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); struct sockaddr_storage address; socklen_t length = sizeof(address); if (getsockname((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return flux__net_result(-1, \"failed to read socket address\"); if (address.ss_family == AF_INET) return flux__net_result((int64_t)ntohs(((struct sockaddr_in *)&address)->sin_port), NULL); if (address.ss_family == AF_INET6) return flux__net_result((int64_t)ntohs(((struct sockaddr_in6 *)&address)->sin6_port), NULL); return flux__net_result(-1, \"socket address has unsupported family\"); }\n");
+    }
+    if runtime_usage.contains("flux__net_close(") {
+        out.push_str("static inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; return close((int)socket_handle) == 0 ? NULL : \"failed to close socket\"; }\n");
     }
 
     if uses_locale && !uses_android {
@@ -12893,6 +12934,75 @@ fn emit_qualified_call(
             _ => {
                 return Err(diag(span, "unknown process call reached code generation"));
             }
+        }
+    }
+    if namespace == "net" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid network call reached code generation"));
+        }
+        match name {
+            "tcpConnect" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let host = emit_expr(&args[0], env, signatures)?;
+                let port = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__net_tcp_connect({}, {})", host.code, port.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "tcpListen" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let host = emit_expr(&args[0], env, signatures)?;
+                let port = emit_expr(&args[1], env, signatures)?;
+                let backlog = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_tcp_listen({}, {}, {})",
+                        host.code, port.code, backlog.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "tcpAccept" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let listener = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__net_tcp_accept({})", listener.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "localPort" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__net_local_port({})", socket_handle.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__net_close({})", socket_handle.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown network call reached code generation")),
         }
     }
     if namespace == "locale" {
