@@ -3771,6 +3771,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn borrowed_list_parameter_aliases_reborrow_transitively() {
+    let source = r#"
+fn inspect(values: i64[]) -> i64 {
+    let firstAlias: i64[] = values
+    let secondAlias: i64[] = firstAlias
+    print(values.first)
+    print(firstAlias.last)
+    return secondAlias.first
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 4]
+    let result: i64 = inspect(values)
+    print(values.last)
+    return result
+}
+"#;
+
+    check_source(source).expect("borrowed list aliases should reborrow transitively");
+    compile_to_c(source).expect("transitive borrowed aliases should lower natively");
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1207))
+        .expect("transitive borrowed aliases should analyze");
+    let graph = database
+        .control_flow_graph("inspect")
+        .expect("inspect should expose a CFG");
+    for name in ["firstAlias", "secondAlias"] {
+        let binding = graph
+            .nodes()
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind,
+                    ControlFlowNodeKind::Binding { name: binding_name, .. } if binding_name == name
+                )
+            })
+            .expect("borrowed alias binding should be represented in the CFG");
+        assert!(
+            binding.ownership.moves.is_empty(),
+            "{name} must be a reborrow"
+        );
+    }
+}
+
+#[test]
 fn ownership_ignores_non_copy_borrows_in_statically_dead_expression_regions() {
     let dead_borrow = r#"
 fn main() -> i64 {

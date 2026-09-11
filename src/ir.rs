@@ -486,10 +486,13 @@ struct ControlFlowBuilder<'a> {
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     scoped_definition_stack: Vec<HashMap<String, ControlFlowDefinitionId>>,
     evaluation_types: Vec<(SourceSpan, Vec<Type>)>,
+    borrowed_list_reborrow_spans: HashSet<(u32, usize, usize, usize)>,
 }
 
 impl<'a> ControlFlowBuilder<'a> {
     fn new(function: &Function, signatures: &'a Signatures) -> Self {
+        let borrowed_list_reborrow_spans =
+            collect_borrowed_list_reborrow_spans(function, signatures);
         let mut builder = Self {
             signatures,
             function: function.name.clone(),
@@ -511,6 +514,7 @@ impl<'a> ControlFlowBuilder<'a> {
             scoped_definitions: Vec::new(),
             scoped_definition_stack: Vec::new(),
             evaluation_types: collect_evaluation_types(function, signatures),
+            borrowed_list_reborrow_spans,
         };
         builder.entry = builder.node(ControlFlowNodeKind::Entry, function.keyword_span);
         builder.exit = builder.node(ControlFlowNodeKind::Exit, function.return_span);
@@ -1786,7 +1790,9 @@ impl<'a> ControlFlowBuilder<'a> {
     fn binding_move_ownership(&self, name: &str, ty: &Type, expr: &Expr) -> ControlFlowOwnership {
         let moves = if !self.signatures.is_copy_type(ty)
             && let ExprKind::Var(source) = &expr.kind
-            && !self.is_borrowed_list_parameter(source)
+            && !self
+                .borrowed_list_reborrow_spans
+                .contains(&span_key(expr.span))
         {
             vec![OwnershipMove {
                 source: source.clone(),
@@ -1802,12 +1808,101 @@ impl<'a> ControlFlowBuilder<'a> {
             moves,
         }
     }
+}
 
-    fn is_borrowed_list_parameter(&self, name: &str) -> bool {
-        self.parameters.iter().any(|parameter| {
-            parameter.name == name
-                && matches!(self.signatures.canonical_type(&parameter.ty), Type::List(_))
-        })
+fn collect_borrowed_list_reborrow_spans(
+    function: &Function,
+    signatures: &Signatures,
+) -> HashSet<(u32, usize, usize, usize)> {
+    let mut borrowed = function
+        .params
+        .iter()
+        .filter(|parameter| matches!(signatures.canonical_type(&parameter.ty), Type::List(_)))
+        .map(|parameter| parameter.name.clone())
+        .collect::<HashSet<_>>();
+    let mut spans = HashSet::new();
+    collect_block_borrowed_list_reborrows(&function.body, &mut borrowed, signatures, &mut spans);
+    spans
+}
+
+fn collect_block_borrowed_list_reborrows(
+    body: &[Stmt],
+    borrowed: &mut HashSet<String>,
+    signatures: &Signatures,
+    spans: &mut HashSet<(u32, usize, usize, usize)>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { name, ty, expr, .. } => {
+                if matches!(signatures.canonical_type(ty), Type::List(_))
+                    && let ExprKind::Var(source) = &expr.kind
+                    && borrowed.contains(source)
+                {
+                    spans.insert(span_key(expr.span));
+                    borrowed.insert(name.clone());
+                }
+            }
+            StmtKind::If {
+                body, else_body, ..
+            } => {
+                let mut then_borrowed = borrowed.clone();
+                collect_block_borrowed_list_reborrows(body, &mut then_borrowed, signatures, spans);
+                let mut else_borrowed = borrowed.clone();
+                collect_block_borrowed_list_reborrows(
+                    else_body,
+                    &mut else_borrowed,
+                    signatures,
+                    spans,
+                );
+            }
+            StmtKind::ForRange { body, .. }
+            | StmtKind::ForEach { body, .. }
+            | StmtKind::While { body, .. } => {
+                let mut nested_borrowed = borrowed.clone();
+                collect_block_borrowed_list_reborrows(
+                    body,
+                    &mut nested_borrowed,
+                    signatures,
+                    spans,
+                );
+            }
+            StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    let mut arm_borrowed = borrowed.clone();
+                    collect_block_borrowed_list_reborrows(
+                        &arm.body,
+                        &mut arm_borrowed,
+                        signatures,
+                        spans,
+                    );
+                }
+            }
+            StmtKind::ListMatch { arms, .. } => {
+                for arm in arms {
+                    let mut arm_borrowed = borrowed.clone();
+                    collect_block_borrowed_list_reborrows(
+                        &arm.body,
+                        &mut arm_borrowed,
+                        signatures,
+                        spans,
+                    );
+                }
+            }
+            StmtKind::Var { .. }
+            | StmtKind::Assign { .. }
+            | StmtKind::AssignMultiDestructure { .. }
+            | StmtKind::AssignListDestructure { .. }
+            | StmtKind::AssignStructDestructure { .. }
+            | StmtKind::LetDestructure { .. }
+            | StmtKind::LetMultiDestructure { .. }
+            | StmtKind::LetListDestructure { .. }
+            | StmtKind::LetStructDestructure { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Expr(_)
+            | StmtKind::Shell { .. } => {}
+        }
     }
 }
 
