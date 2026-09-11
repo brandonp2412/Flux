@@ -9628,6 +9628,19 @@ fn formatter_is_deterministic_without_comments() {
 }
 
 #[test]
+fn grammar_contract_has_a_stable_discoverable_version() {
+    assert_eq!(fluxc::GRAMMAR_VERSION, 1);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["grammar", "--version"])
+        .output()
+        .expect("flux grammar --version should launch");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
     assert_eq!(fluxc::formatter::FORMATTER_VERSION, 1);
 

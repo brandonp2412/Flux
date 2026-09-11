@@ -10,6 +10,8 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
+pub const GRAMMAR_VERSION: u32 = 1;
+
 #[derive(Debug, Clone)]
 struct Line {
     number: usize,

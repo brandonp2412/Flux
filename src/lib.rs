@@ -15,6 +15,7 @@ pub use diagnostic::{
     DIAGNOSTIC_JSON_SCHEMA_VERSION, Diagnostic, DiagnosticFix, DiagnosticLabel, DiagnosticStage,
     SourceId, SourceSpan, diagnostics_envelope_to_json, diagnostics_to_json,
 };
+pub use parser::GRAMMAR_VERSION;
 pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
 
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {

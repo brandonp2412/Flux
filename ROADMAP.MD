@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 475
+- Completed baseline units: 476
 - Reported overall progress: **64%**
 - Current net scope growth after the baseline: 77 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -1041,7 +1041,7 @@ Flux must remain equally credible for headless native binaries.
 
 # Milestone 29 — Flux 1.0 stability
 
-- [ ] Stable grammar.
+- [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
 - [ ] Stable type/memory model.
 - [x] Stable package format: `flux.toml` now has an explicit compiler-owned package-format compatibility version (`PACKAGE_FORMAT_VERSION = 1`); `flux new` writes `format_version = 1`, existing unversioned manifests remain version-1 compatible, and explicitly unsupported versions fail before build rather than being silently reinterpreted. The versioning/additive-change contract is documented in `docs/package-format.md` and covered by manifest/scaffolding regression tests.
 - [ ] Stable native/platform ABI policy.
