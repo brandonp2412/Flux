@@ -2673,6 +2673,80 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_text_response_custom_headers_are_validated_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    print(http.sendTextResponseWithHeaders(1, 200, "text/plain", "hello", "Cache-Control: no-store\r\nX-Trace: abc", true))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP custom-header response should typecheck");
+    let generated = compile_to_c(source).expect("HTTP custom-header response should lower");
+    assert!(generated.contains("flux__net_http_send_text_response_with_headers("));
+    assert!(generated.contains("HTTP custom headers cannot override framing headers"));
+
+    let invalid_type = check_source(
+        "fn main() -> i64 {\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"hello\", false))\n    return 0\n}\n",
+    )
+    .expect_err("custom response headers must be text");
+    assert!(
+        invalid_type
+            .message
+            .contains("http.sendTextResponseWithHeaders headers")
+    );
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP custom-header response listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root =
+        std::env::temp_dir().join(format!("flux-http-custom-response-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP custom-header response fixture should be writable");
+    let source_path = root.join("response.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn main() -> i64 {{\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"bad\", \"Content-Length: 99\"))\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextResponseWithHeaders(socket, 202, \"text/plain; charset=utf-8\", \"hello\", \"Cache-Control: no-store\\r\\nX-Trace: abc-123\", true))\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP custom-header response Flux source should be writable");
+    let binary = root.join("response");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP custom-header response Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP custom-header response fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP custom-header response Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "HTTP custom headers cannot override framing headers\nnil\nnil\nnil\n"
+    );
+
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP custom-header response connection should accept");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("HTTP custom-header response should be readable");
+    assert_eq!(
+        response,
+        "HTTP/1.1 202 \r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nX-Trace: abc-123\r\nConnection: keep-alive\r\n\r\nhello"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_text_io_is_typed_borrowed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback text listener should bind");
     let port = listener.local_addr().unwrap().port();

@@ -6489,6 +6489,63 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "sendTextResponseWithHeaders" => {
+                if !(5..=6).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.sendTextResponseWithHeaders expects 5 or 6 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.sendTextResponseWithHeaders socket",
+                )?;
+                let status = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &status,
+                    "http.sendTextResponseWithHeaders status",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(100..=599).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.sendTextResponseWithHeaders status must be between 100 and 599",
+                    ));
+                }
+                for (index, label) in [
+                    (2usize, "contentType"),
+                    (3usize, "body"),
+                    (4usize, "headers"),
+                ] {
+                    let value = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &value,
+                        &format!("http.sendTextResponseWithHeaders {label}"),
+                    )?;
+                }
+                if args.len() == 6 {
+                    let keep_alive = type_of_expr(&args[5], env, signatures)?;
+                    require_type(
+                        args[5].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.sendTextResponseWithHeaders keepAlive",
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
             "sendTextResponse" => {
                 if !(4..=5).contains(&args.len()) {
                     return Err(diag(

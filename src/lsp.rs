@@ -1310,6 +1310,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "sendTextResponseWithHeaders",
+            3,
+            "fn http.sendTextResponseWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+        );
         return true;
     }
     if namespace == "locale" {
@@ -2863,6 +2870,21 @@ fn signature_help_for_document_cached(
                             "status: i64",
                             "contentType: str",
                             "body: str",
+                            "keepAlive: bool = false",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "sendTextResponseWithHeaders" => {
+                    return Some(signature_help_for_builtin(
+                        "http.sendTextResponseWithHeaders",
+                        &[
+                            "socket: i64",
+                            "status: i64",
+                            "contentType: str",
+                            "body: str",
+                            "headers: str",
                             "keepAlive: bool = false",
                         ],
                         "error",
@@ -7407,7 +7429,7 @@ mod tests {
     #[test]
     fn signature_help_supports_http_client_capabilities() {
         let uri = "file:///tmp/http-signatures.flux";
-        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Accept: application/json\"))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
+        let source = "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseHttp(\"https://example.test/\", parsed))\n    print(http.sendTextRequest(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\"))\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", \"Accept: application/json\"))\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"ok\", true))\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"ok\", \"Cache-Control: no-store\", true))\n    let (_headReceived, _headFailure) = http.receiveResponseHeadWithHeaders(1, 4096, response, header)\n    let (_received, _failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -7425,6 +7447,10 @@ mod tests {
             (
                 "http.sendTextResponse(",
                 "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+            ),
+            (
+                "http.sendTextResponseWithHeaders(",
+                "fn http.sendTextResponseWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.receiveResponseHeadWithHeaders(",
