@@ -4763,6 +4763,10 @@ __FLUX_PICKER_METHODS__
         }
     }
 
+    public void setAccessibilityValue(View view, String value) {
+        if (Build.VERSION.SDK_INT >= 30) view.setStateDescription(value);
+    }
+
     public void setAccessibilityRole(View view, String role) {
         if (role == null) return;
         if (Build.VERSION.SDK_INT >= 28) view.setAccessibilityHeading("heading".equals(role));
@@ -6563,6 +6567,9 @@ mod tests {
         assert!(activity.contains("private native int nativeThemeMode();"));
         assert!(activity.contains("private native String nativeThemeColor(String token);"));
         assert!(activity.contains("view.setContentDescription"));
+        assert!(activity.contains("setAccessibilityValue(View view, String value)"));
+        assert!(activity.contains("Build.VERSION.SDK_INT >= 30"));
+        assert!(activity.contains("view.setStateDescription(value)"));
         assert!(activity.contains("setAccessibilityRole(View view, String role)"));
         assert!(activity.contains("info.setClassName(className)"));
         assert!(activity.contains("info.setHeading(\"heading\".equals(role))"));

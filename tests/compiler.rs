@@ -15623,6 +15623,7 @@ app Screen
 fn native_controls_preserve_platform_screen_reader_bridges() {
     let source = r#"
 view Screen {
+    state semanticValue: str = "Off"
     grid columns: 1fr
     grid rows: auto auto auto auto auto auto
     Text title at 1,1
@@ -15642,6 +15643,7 @@ view Screen {
     Toggle toggle at 4,1
         label: "Enabled"
         accessibilityLabel: "Enabled setting"
+        accessibilityValue: semanticValue
         accessibilityRole: "switch"
         accessibilityOrder: 40
     Radio radio at 5,1
@@ -15670,6 +15672,11 @@ app Screen
     assert!(linux.contains("gtk_picture_new"));
     assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_LABEL"));
     assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION"));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT"));
+    assert!(
+        linux.matches("GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT").count() >= 2,
+        "state-driven accessibility values should lower for initial render and refresh"
+    );
     assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION"));
     assert!(linux.contains("GTK_ACCESSIBLE_STATE_HIDDEN"));
     assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO"));
@@ -15698,6 +15705,11 @@ app Screen
         );
     }
     assert!(android.contains("setAccessibility"));
+    assert!(android.contains("setAccessibilityValue"));
+    assert!(
+        android.matches("setAccessibilityValue").count() >= 2,
+        "state-driven Android accessibility values should lower for initial render and refresh"
+    );
     assert!(android.contains("setAccessibilityRole"));
     assert!(android.contains("setAccessibilityHidden"));
     assert!(android.contains("setAccessibilityTraversalAfter"));

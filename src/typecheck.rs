@@ -1258,6 +1258,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "shortcut_scope"
             | "accessibility_label"
             | "accessibility_description"
+            | "accessibility_value"
             | "accessibility_role" => {
                 return Some(Type::Str);
             }
@@ -1562,6 +1563,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "shortcut_scope",
     "accessibility_label",
     "accessibility_description",
+    "accessibility_value",
     "accessibility_role",
     "accessibility_hidden",
     "accessibility_order",

@@ -6298,6 +6298,7 @@ mod tests {
             "element Text { text: str, richText: str, variant: str, selectable: bool, size: i64"
         ));
         assert!(element.contains("accessibilityLabel: str"));
+        assert!(element.contains("accessibilityValue: str"));
         assert!(element.contains("accessibilityOrder: i64"));
         assert!(element.contains("focusScope: i64"));
         assert!(element.contains("focusable: bool"));

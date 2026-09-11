@@ -4788,6 +4788,20 @@ fn emit_android_native_application(
             out.push_str("    if (child_accessibility_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_label);\n");
             out.push_str("    if (child_accessibility_description != NULL) (*env)->DeleteLocalRef(env, child_accessibility_description);\n");
         }
+        if let Some(property) = view_property(element, "accessibility_value") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    jstring child_accessibility_value = flux__android_utf8_string(env, {value});\n"
+            ));
+            out.push_str("    if (child_accessibility_value == NULL) return;\n");
+            out.push_str("    jclass accessibility_value_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (accessibility_value_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility_value = (*env)->GetMethodID(env, accessibility_value_activity_class, \"setAccessibilityValue\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_accessibility_value == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, set_accessibility_value, child, child_accessibility_value);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_value_activity_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_accessibility_value);\n");
+        }
         if let Some(property) = view_property(element, "accessibility_role") {
             let Some(role) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -7284,6 +7298,12 @@ fn emit_linux_gtk_application(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
             ));
         }
+        if let Some(property) = view_property(element, "accessibility_value") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, {value}, -1);\n"
+            ));
+        }
         if let Some(property) = view_property(element, "accessibility_role") {
             let Some(role) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -7753,6 +7773,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
+            | "accessibility_value"
             | "accessibility_hidden"
             | "translate_x"
             | "translate_y"
@@ -7877,6 +7898,7 @@ fn android_ui_element_needs_refresh(
         "tooltip",
         "accessibility_label",
         "accessibility_description",
+        "accessibility_value",
         "accessibility_hidden",
         "translate_x",
         "translate_y",
@@ -8324,6 +8346,17 @@ fn emit_android_ui_refresh(
             out.push_str("                if (refresh_accessibility != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility, child, refresh_accessibility_label, refresh_accessibility_description);\n");
             out.push_str("                if (refresh_accessibility_label != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_label);\n");
             out.push_str("                if (refresh_accessibility_description != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_description);\n");
+        }
+        if android_ui_property_needs_refresh(element, "accessibility_value", &runtime_names)
+            && let Some(property) = view_property(element, "accessibility_value")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "                jstring refresh_accessibility_value = flux__android_utf8_string(env, {value});\n"
+            ));
+            out.push_str("                jmethodID refresh_accessibility_value_method = (*env)->GetMethodID(env, activity_class, \"setAccessibilityValue\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("                if (refresh_accessibility_value_method != NULL && refresh_accessibility_value != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility_value_method, child, refresh_accessibility_value);\n");
+            out.push_str("                if (refresh_accessibility_value != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_value);\n");
         }
         if android_ui_property_needs_refresh(element, "accessibility_hidden", &runtime_names)
             && let Some(property) = view_property(element, "accessibility_hidden")
@@ -8792,6 +8825,12 @@ fn emit_ui_refresh(
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_value") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, {value}, -1);\n"
             ));
         }
         if let Some(property) = view_property(element, "accessibility_hidden") {
