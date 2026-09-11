@@ -7278,6 +7278,48 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Str]);
             }
+            "select" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("locale.select expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    let actual = type_of_expr(argument, env, signatures)?;
+                    require_type(
+                        argument.span,
+                        &Type::Str,
+                        &actual,
+                        match index {
+                            0 => "locale.select key",
+                            1 => "locale.select selector",
+                            _ => "locale.select fallback",
+                        },
+                    )?;
+                }
+                return Ok(vec![Type::Str]);
+            }
+            "plural" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("locale.plural expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let key = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &key, "locale.plural key")?;
+                let count = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &count, "locale.plural count")?;
+                let fallback = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::Str,
+                    &fallback,
+                    "locale.plural fallback",
+                )?;
+                return Ok(vec![Type::Str]);
+            }
             _ => {
                 return Err(diag(
                     *name_span,

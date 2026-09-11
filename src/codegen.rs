@@ -1058,6 +1058,9 @@ fn emit_runtime_prelude(
 
     let uses_locale = runtime_usage.contains("flux__locale_");
     let uses_locale_text = runtime_usage.contains("flux__locale_text(");
+    let uses_locale_select = runtime_usage.contains("flux__locale_select(");
+    let uses_locale_plural = runtime_usage.contains("flux__locale_plural(");
+    let uses_locale_resources = uses_locale_text || uses_locale_select || uses_locale_plural;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
@@ -3975,19 +3978,19 @@ fn emit_runtime_prelude(
 
     if uses_locale && !uses_android {
         out.push_str("static inline const char *flux__locale_source(void) { const char *value = getenv(\"LC_ALL\"); if (value == NULL || value[0] == '\\0') value = getenv(\"LC_MESSAGES\"); if (value == NULL || value[0] == '\\0') value = getenv(\"LANG\"); return value != NULL && value[0] != '\\0' ? value : \"C\"; }\n");
-        if runtime_usage.contains("flux__locale_language(") || uses_locale_text {
+        if runtime_usage.contains("flux__locale_language(") || uses_locale_resources {
             out.push_str("static const char *flux__locale_language(void) { static char language[32]; const char *source = flux__locale_source(); if (strcmp(source, \"POSIX\") == 0 || source[0] == 'C' && (source[1] == '\\0' || source[1] == '.')) return \"und\"; size_t index = 0; while (source[index] != '\\0' && source[index] != '_' && source[index] != '-' && source[index] != '.' && source[index] != '@' && index + 1 < sizeof(language)) { language[index] = source[index]; index += 1; } language[index] = '\\0'; return index > 0 ? language : \"und\"; }\n");
         }
-        if runtime_usage.contains("flux__locale_region(") || uses_locale_text {
+        if runtime_usage.contains("flux__locale_region(") || uses_locale_resources {
             out.push_str("static const char *flux__locale_region(void) { static char region[32]; const char *source = flux__locale_source(); if (strcmp(source, \"POSIX\") == 0 || source[0] == 'C' && (source[1] == '\\0' || source[1] == '.')) return \"\"; const char *separator = NULL; for (const char *cursor = source; *cursor != '\\0' && *cursor != '.' && *cursor != '@'; cursor += 1) { if (*cursor == '_' || *cursor == '-') { separator = cursor; break; } } if (separator == NULL) return \"\"; separator += 1; size_t index = 0; while (separator[index] != '\\0' && separator[index] != '_' && separator[index] != '-' && separator[index] != '.' && separator[index] != '@' && index + 1 < sizeof(region)) { region[index] = separator[index]; index += 1; } region[index] = '\\0'; return region; }\n");
         }
     }
     if uses_locale && uses_android {
         out.push_str("static const char *flux__android_locale_component(const char *method_name, const char *fallback, char *buffer, size_t capacity) { if (capacity == 0 || flux__android_activity == NULL) return fallback; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return fallback; jclass locale_class = (*env)->FindClass(env, \"java/util/Locale\"); if (locale_class == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); flux__android_release_env(detach); return fallback; } jmethodID get_default = (*env)->GetStaticMethodID(env, locale_class, \"getDefault\", \"()Ljava/util/Locale;\"); jobject locale = get_default != NULL ? (*env)->CallStaticObjectMethod(env, locale_class, get_default) : NULL; jmethodID component = (*env)->GetMethodID(env, locale_class, method_name, \"()Ljava/lang/String;\"); jstring value = locale != NULL && component != NULL ? (jstring)(*env)->CallObjectMethod(env, locale, component) : NULL; const char *chars = value != NULL ? (*env)->GetStringUTFChars(env, value, NULL) : NULL; if (chars != NULL) { strncpy(buffer, chars, capacity - 1); buffer[capacity - 1] = '\\0'; (*env)->ReleaseStringUTFChars(env, value, chars); } else { buffer[0] = '\\0'; } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value != NULL) (*env)->DeleteLocalRef(env, value); if (locale != NULL) (*env)->DeleteLocalRef(env, locale); (*env)->DeleteLocalRef(env, locale_class); flux__android_release_env(detach); return buffer[0] != '\\0' ? buffer : fallback; }\n");
-        if runtime_usage.contains("flux__locale_language(") || uses_locale_text {
+        if runtime_usage.contains("flux__locale_language(") || uses_locale_resources {
             out.push_str("static const char *flux__locale_language(void) { static char language[32]; return flux__android_locale_component(\"getLanguage\", \"und\", language, sizeof(language)); }\n");
         }
-        if runtime_usage.contains("flux__locale_region(") || uses_locale_text {
+        if runtime_usage.contains("flux__locale_region(") || uses_locale_resources {
             out.push_str("static const char *flux__locale_region(void) { static char region[32]; return flux__android_locale_component(\"getCountry\", \"\", region, sizeof(region)); }\n");
         }
     }
@@ -4016,6 +4019,44 @@ fn emit_runtime_prelude(
             out.push_str(" return fallback; }");
         }
         out.push_str(" return fallback; }\n");
+    }
+    if uses_locale_select || uses_locale_plural {
+        out.push_str("static const char *flux__locale_variant(const char *key, const char *selector) { const char *language = flux__locale_language(); const char *region = flux__locale_region();");
+        for (resource_key, localized) in translations {
+            let Some((base_key, selector)) = resource_key.rsplit_once('.') else {
+                continue;
+            };
+            out.push_str(&format!(
+                " if (strcmp(key, {}) == 0 && strcmp(selector, {}) == 0) {{",
+                c_string(base_key),
+                c_string(selector)
+            ));
+            for (locale, text) in localized.iter().filter(|(locale, _)| locale.contains('-')) {
+                let (language_tag, region_tag) = locale
+                    .split_once('-')
+                    .expect("validated region-specific translation locale");
+                out.push_str(&format!(
+                    " if (strcmp(language, {}) == 0 && strcmp(region, {}) == 0) return {};",
+                    c_string(language_tag),
+                    c_string(region_tag),
+                    c_string(text)
+                ));
+            }
+            for (locale, text) in localized.iter().filter(|(locale, _)| !locale.contains('-')) {
+                out.push_str(&format!(
+                    " if (strcmp(language, {}) == 0) return {};",
+                    c_string(locale),
+                    c_string(text)
+                ));
+            }
+            out.push_str(" }");
+        }
+        out.push_str(" return NULL; }\n");
+        out.push_str("static const char *flux__locale_select(const char *key, const char *selector, const char *fallback) { const char *value = flux__locale_variant(key, selector); if (value != NULL) return value; if (strcmp(selector, \"other\") != 0) { value = flux__locale_variant(key, \"other\"); if (value != NULL) return value; } return fallback; }\n");
+    }
+    if uses_locale_plural {
+        out.push_str("static const char *flux__locale_plural_category(int64_t count) { const char *language = flux__locale_language(); const char *region = flux__locale_region(); uint64_t n = count < 0 ? (uint64_t)(-(count + 1)) + UINT64_C(1) : (uint64_t)count; uint64_t mod10 = n % 10; uint64_t mod100 = n % 100; if (strcmp(language, \"ar\") == 0) { if (n == 0) return \"zero\"; if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (mod100 >= 3 && mod100 <= 10) return \"few\"; if (mod100 >= 11 && mod100 <= 99) return \"many\"; return \"other\"; } if (strcmp(language, \"ru\") == 0 || strcmp(language, \"uk\") == 0) { if (mod10 == 1 && mod100 != 11) return \"one\"; if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return \"few\"; if (mod10 == 0 || mod10 >= 5 || (mod100 >= 11 && mod100 <= 14)) return \"many\"; return \"other\"; } if (strcmp(language, \"pl\") == 0) { if (n == 1) return \"one\"; if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return \"few\"; if (n != 1 && (mod10 == 0 || mod10 == 1 || mod10 >= 5 || (mod100 >= 12 && mod100 <= 14))) return \"many\"; return \"other\"; } if (strcmp(language, \"cs\") == 0 || strcmp(language, \"sk\") == 0) { if (n == 1) return \"one\"; if (n >= 2 && n <= 4) return \"few\"; return \"other\"; } if (strcmp(language, \"sl\") == 0) { if (mod100 == 1) return \"one\"; if (mod100 == 2) return \"two\"; if (mod100 == 3 || mod100 == 4) return \"few\"; return \"other\"; } if (strcmp(language, \"lt\") == 0) { if (mod10 == 1 && !(mod100 >= 11 && mod100 <= 19)) return \"one\"; if (mod10 >= 2 && mod10 <= 9 && !(mod100 >= 11 && mod100 <= 19)) return \"few\"; return \"other\"; } if (strcmp(language, \"lv\") == 0) { if (mod10 == 0 || (mod100 >= 11 && mod100 <= 19)) return \"zero\"; if (mod10 == 1 && mod100 != 11) return \"one\"; return \"other\"; } if (strcmp(language, \"ro\") == 0) { if (n == 1) return \"one\"; if (n == 0 || (mod100 >= 1 && mod100 <= 19)) return \"few\"; return \"other\"; } if (strcmp(language, \"ga\") == 0) { if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (n >= 3 && n <= 6) return \"few\"; if (n >= 7 && n <= 10) return \"many\"; return \"other\"; } if (strcmp(language, \"cy\") == 0) { if (n == 0) return \"zero\"; if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (n == 3) return \"few\"; if (n == 6) return \"many\"; return \"other\"; } if (strcmp(language, \"mt\") == 0) { if (n == 1) return \"one\"; if (n == 0 || (mod100 >= 2 && mod100 <= 10)) return \"few\"; if (mod100 >= 11 && mod100 <= 19) return \"many\"; return \"other\"; } if (strcmp(language, \"fr\") == 0 || (strcmp(language, \"pt\") == 0 && strcmp(region, \"PT\") != 0)) return n == 0 || n == 1 ? \"one\" : \"other\"; if (strcmp(language, \"zh\") == 0 || strcmp(language, \"ja\") == 0 || strcmp(language, \"ko\") == 0 || strcmp(language, \"th\") == 0 || strcmp(language, \"vi\") == 0 || strcmp(language, \"id\") == 0) return \"other\"; return n == 1 ? \"one\" : \"other\"; }\n");
+        out.push_str("static const char *flux__locale_plural(const char *key, int64_t count, const char *fallback) { return flux__locale_select(key, flux__locale_plural_category(count), fallback); }\n");
     }
 
     if runtime_usage.contains("flux__time_unix_millis(")
@@ -18780,6 +18821,38 @@ fn emit_qualified_call(
             let fallback = emit_expr(&args[1], env, signatures)?;
             return Ok((
                 format!("flux__locale_text({}, {})", key.code, fallback.code),
+                vec![Type::Str],
+                None,
+            ));
+        }
+        if name == "select" {
+            if args.len() != 3 {
+                return Err(diag(span, "invalid locale call reached code generation"));
+            }
+            let key = emit_expr(&args[0], env, signatures)?;
+            let selector = emit_expr(&args[1], env, signatures)?;
+            let fallback = emit_expr(&args[2], env, signatures)?;
+            return Ok((
+                format!(
+                    "flux__locale_select({}, {}, {})",
+                    key.code, selector.code, fallback.code
+                ),
+                vec![Type::Str],
+                None,
+            ));
+        }
+        if name == "plural" {
+            if args.len() != 3 {
+                return Err(diag(span, "invalid locale call reached code generation"));
+            }
+            let key = emit_expr(&args[0], env, signatures)?;
+            let count = emit_expr(&args[1], env, signatures)?;
+            let fallback = emit_expr(&args[2], env, signatures)?;
+            return Ok((
+                format!(
+                    "flux__locale_plural({}, {}, {})",
+                    key.code, count.code, fallback.code
+                ),
                 vec![Type::Str],
                 None,
             ));

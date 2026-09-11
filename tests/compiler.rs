@@ -4435,6 +4435,131 @@ fn main() -> i64 {
 }
 
 #[test]
+fn locale_plural_and_select_rules_are_native_locale_aware_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!("flux-plural-select-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("plural fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        r#"[package]
+name = "plural-select"
+entry = "src/main.flux"
+
+[translations]
+items.zero = ["ar=zero"]
+items.one = ["en=one", "fr=fr-one", "ru=ru-one", "ar=ar-one"]
+items.two = ["ar=two"]
+items.few = ["ru=ru-few", "ar=ar-few"]
+items.many = ["ru=ru-many", "ar=ar-many"]
+items.other = ["en=other", "fr=fr-other", "ru=ru-other", "ar=ar-other"]
+tone.formal = ["en=formal", "fr=formel", "ru=formal-ru"]
+tone.other = ["en=common", "fr=commun", "ru=common-ru"]
+"#,
+    )
+    .expect("plural manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r#"
+fn main() -> i64 {
+    print(locale.plural("items", 0, "fallback"))
+    print(locale.plural("items", 1, "fallback"))
+    print(locale.plural("items", 2, "fallback"))
+    print(locale.plural("items", 5, "fallback"))
+    print(locale.plural("items", 11, "fallback"))
+    print(locale.select("tone", "formal", "fallback"))
+    print(locale.select("tone", "casual", "fallback"))
+    return 0
+}
+"#,
+    )
+    .expect("plural source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("plural package should analyze");
+    let generated = analysis
+        .emit_c()
+        .expect("plural rules should lower on Linux");
+    assert!(generated.contains("flux__locale_plural_category"));
+    assert!(generated.contains("flux__locale_variant"));
+    assert!(generated.contains("flux__locale_select"));
+    assert!(generated.contains("flux__locale_plural"));
+    let android_generated = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("plural rules should lower on Android");
+    assert!(android_generated.contains("flux__locale_plural_category"));
+    assert!(android_generated.contains("flux__locale_select"));
+
+    let binary = root.join("plural-select-bin");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("plural fixture should build");
+    assert!(
+        built.status.success(),
+        "plural fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    for (locale, expected) in [
+        (
+            "en_NZ.UTF-8",
+            "other\none\nother\nother\nother\nformal\ncommon\n",
+        ),
+        (
+            "fr_FR.UTF-8",
+            "fr-one\nfr-one\nfr-other\nfr-other\nfr-other\nformel\ncommun\n",
+        ),
+        (
+            "ru_RU.UTF-8",
+            "ru-many\nru-one\nru-few\nru-many\nru-many\nformal-ru\ncommon-ru\n",
+        ),
+    ] {
+        let run = Command::new(&binary)
+            .env("LC_ALL", locale)
+            .env_remove("LC_MESSAGES")
+            .env_remove("LANG")
+            .output()
+            .expect("plural fixture should run");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    }
+
+    let invalid = r#"
+fn main() -> i64 {
+    print(locale.plural(1, 2, "fallback"))
+    print(locale.select("tone", 1, "fallback"))
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid locale rules should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.plural key: expected str, got i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.select selector: expected str, got i64")
+    }));
+
+    fs::write(
+        root.join("src/main.flux"),
+        "fn hidden() -> void {\n    print(locale.plural(\"items\", 2, \"fallback\"))\n}\nfn main() -> i64 {\n    return 0\n}\n",
+    )
+    .expect("dead plural source should be writable");
+    let dead_generated = fluxc::project::analyze(&root)
+        .expect("dead plural package should analyze")
+        .emit_c()
+        .expect("dead plural source should lower safely");
+    assert!(!dead_generated.contains("flux__locale_plural_category"));
+    assert!(!dead_generated.contains("\"ru-many\""));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {
