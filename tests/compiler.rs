@@ -7534,6 +7534,50 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_c_header_aggregates_with_nested_unsupported_ffi_types() {
+    let function_field = r#"
+pub type Mapper = fn(i64) -> i64
+
+pub struct CallbackBox {
+    callback: Mapper
+}
+
+pub fn choose(value: CallbackBox) -> CallbackBox {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = compile_to_c_header(function_field)
+        .expect_err("function values nested in Copy structs must not leak into the C ABI");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("unsupported FFI type 'CallbackBox'"));
+
+    let function_payload = r#"
+pub type Mapper = fn(i64) -> i64
+
+pub enum MaybeMapper {
+    None
+    Some(Mapper)
+}
+
+pub fn choose(value: MaybeMapper) -> MaybeMapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = compile_to_c_header(function_payload)
+        .expect_err("function values nested in Copy enums must not leak into the C ABI");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("unsupported FFI type 'MaybeMapper'"));
+}
+
+#[test]
 fn tree_shakes_background_runtime_from_statically_unreachable_control_flow() {
     let source = r#"
 fn main() -> i64 {

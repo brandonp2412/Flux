@@ -242,13 +242,38 @@ fn ordered_public_scalar_aliases<'a>(
 }
 
 fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
+    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new())
+}
+
+fn ffi_header_type_supported_inner(
+    ty: &Type,
+    signatures: &Signatures,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str | Type::Error => true,
         Type::Named(name) => {
-            (signatures.struct_type(&name).is_some() || signatures.enum_type(&name).is_some())
-                && signatures.is_copy_type(ty)
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let supported = if let Some(definition) = signatures.struct_type(&name) {
+                definition
+                    .fields
+                    .iter()
+                    .all(|field| ffi_header_type_supported_inner(&field.ty, signatures, visiting))
+            } else if let Some(definition) = signatures.enum_type(&name) {
+                definition.variants.iter().all(|variant| {
+                    variant.payloads.iter().all(|payload| {
+                        ffi_header_type_supported_inner(payload, signatures, visiting)
+                    })
+                })
+            } else {
+                false
+            };
+            visiting.remove(&name);
+            supported
         }
-        _ => false,
+        Type::Void | Type::List(_) | Type::Function { .. } => false,
     }
 }
 
