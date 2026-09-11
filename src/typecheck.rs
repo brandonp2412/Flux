@@ -6453,6 +6453,118 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "receiveResponseWithTextBody" => {
+                if args.len() != 6 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.receiveResponseWithTextBody expects 6 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.receiveResponseWithTextBody socket",
+                )?;
+                for (index, label, minimum) in [
+                    (1usize, "maxHeadBytes", 1i64),
+                    (2usize, "maxBodyBytes", 0i64),
+                ] {
+                    let limit = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::I64,
+                        &limit,
+                        &format!("http.receiveResponseWithTextBody {label}"),
+                    )?;
+                    if matches!(
+                        constant_primitive_value(&args[index], signatures),
+                        Some(ConstantValue::I64(value)) if value < minimum || value > 65536
+                    ) {
+                        return Err(diag(
+                            args[index].span,
+                            &format!(
+                                "http.receiveResponseWithTextBody {label} must be between {minimum} and 65536"
+                            ),
+                        ));
+                    }
+                }
+                let response_callback =
+                    signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let expected_response_callback = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[3].span,
+                    &expected_response_callback,
+                    &response_callback,
+                    "http.receiveResponseWithTextBody responseCallback",
+                )?;
+                let header_callback =
+                    signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
+                let expected_header_callback = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[4].span,
+                    &expected_header_callback,
+                    &header_callback,
+                    "http.receiveResponseWithTextBody headerCallback",
+                )?;
+                let body_callback =
+                    signatures.canonical_type(&type_of_expr(&args[5], env, signatures)?);
+                let expected_body_callback = Type::Function {
+                    params: vec![Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[5].span,
+                    &expected_body_callback,
+                    &body_callback,
+                    "http.receiveResponseWithTextBody bodyCallback",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "sendTextRequest" => {
+                if args.len() != 6 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.sendTextRequest expects 6 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.sendTextRequest socket",
+                )?;
+                for (index, label) in [
+                    (1usize, "method"),
+                    (2usize, "target"),
+                    (3usize, "host"),
+                    (4usize, "contentType"),
+                    (5usize, "body"),
+                ] {
+                    let value = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &value,
+                        &format!("http.sendTextRequest {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
             "sendTextResponse" => {
                 if args.len() != 4 {
                     return Err(diag(

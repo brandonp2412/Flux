@@ -2016,6 +2016,181 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_text_request_is_typed_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    print(http.sendTextRequest(1, "POST", "/items", "example.test", "text/plain", "hello"))
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP text request should typecheck");
+    let generated = compile_to_c(source).expect("HTTP text request should lower on Linux");
+    assert!(generated.contains("flux__net_http_send_text_request("));
+    assert!(generated.contains("Host: %s"));
+    assert!(generated.contains("Content-Length: %zu"));
+    assert!(generated.contains("Connection: close"));
+    assert!(generated.contains("#include <sys/socket.h>"));
+
+    let invalid_type = check_source(
+        "fn main() -> i64 {\n    print(http.sendTextRequest(1, \"POST\", \"/\", false, \"text/plain\", \"nope\"))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP host must be text");
+    assert!(invalid_type.message.contains("http.sendTextRequest host"));
+
+    let unused = r#"
+fn hidden() -> void {
+    print(http.sendTextRequest(1, "GET", "/", "example.test", "text/plain", ""))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead HTTP request helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_send_text_request("));
+    assert!(!unused_generated.contains("#include <sys/socket.h>"));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!("flux-http-send-request-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP fixture should be writable");
+    let source_path = root.join("request.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextRequest(socket, \"POST\", \"/items?q=1\", \"127.0.0.1:{port}\", \"text/plain; charset=utf-8\", \"hello\"))\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP Flux source should be writable");
+    let binary = root.join("request");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\n");
+
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP loopback connection should accept");
+    let mut request = String::new();
+    stream
+        .read_to_string(&mut request)
+        .expect("HTTP request should be readable");
+    assert_eq!(
+        request,
+        format!(
+            "POST /items?q=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello"
+        )
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn main() -> i64 {
+    let (received, failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)
+    print(received)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP text response body should typecheck");
+    let generated = compile_to_c(source).expect("HTTP text response body should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_response_with_text_body("));
+    assert!(generated.contains("Transfer-Encoding response bodies are not supported"));
+
+    let invalid_limit = check_source(
+        "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveResponseWithTextBody(1, 4096, 65537, response, header, body)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("oversized HTTP response body cap must fail");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.receiveResponseWithTextBody maxBodyBytes must be between 0 and 65536")
+    );
+
+    let unused = source.replace(
+        "fn main() -> i64 {\n    let (received, failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    print(received)\n    print(failure)\n    return 0\n}",
+        "fn hidden() -> void {\n    let (received, failure) = http.receiveResponseWithTextBody(1, 4096, 1024, response, header, body)\n    print(received)\n    print(failure)\n}\nfn main() -> i64 {\n    return 0\n}",
+    );
+    let unused_generated =
+        compile_to_c(&unused).expect("dead HTTP response body helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_response_with_text_body("));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let expected_request = format!(
+        "POST /echo HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nping"
+    );
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("HTTP client should connect");
+        let mut request = vec![0u8; expected_request.len()];
+        stream
+            .read_exact(&mut request)
+            .expect("HTTP request should arrive completely");
+        assert_eq!(String::from_utf8_lossy(&request), expected_request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Trace: abc\r\n\r\nhello")
+            .expect("HTTP response should be writable");
+    });
+
+    let root = std::env::temp_dir().join(format!("flux-http-client-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP fixture should be writable");
+    let source_path = root.join("client.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn response(socket: i64, version: str, status: i64, reason: str) -> void {{\n    print(socket >= 0)\n    print(version)\n    print(status)\n    print(reason)\n}}\nfn header(socket: i64, name: str, value: str) -> void {{\n    print(socket >= 0)\n    print(name)\n    print(value)\n}}\nfn body(socket: i64, value: str) -> void {{\n    print(socket >= 0)\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextRequest(socket, \"POST\", \"/echo\", \"127.0.0.1:{port}\", \"text/plain\", \"ping\"))\n    let (received, receiveError) = http.receiveResponseWithTextBody(socket, 4096, 1024, response, header, body)\n    print(received > 0)\n    print(receiveError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP client source should be writable");
+    let binary = root.join("client");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP client binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP client fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP client binary should run");
+    server.join().expect("HTTP server fixture should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\ntrue\nHTTP/1.1\n200\nOK\ntrue\nContent-Length\n5\ntrue\nX-Trace\nabc\ntrue\nhello\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
