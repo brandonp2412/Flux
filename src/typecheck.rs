@@ -1439,6 +1439,8 @@ pub fn view_element_property_type(
     })
 }
 
+pub const UI_API_VERSION: u32 = 1;
+
 pub const BUILTIN_VIEW_ELEMENT_KINDS: &[&str] = &[
     "Text",
     "Button",

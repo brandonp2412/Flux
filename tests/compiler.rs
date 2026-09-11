@@ -10450,6 +10450,19 @@ fn grammar_contract_has_a_stable_discoverable_version() {
 }
 
 #[test]
+fn ui_api_contract_has_a_stable_discoverable_version() {
+    assert_eq!(fluxc::UI_API_VERSION, 1);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["ui", "--version"])
+        .output()
+        .expect("flux ui --version should launch");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
     assert_eq!(fluxc::formatter::FORMATTER_VERSION, 1);
 

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 482
+- Completed baseline units: 483
 - Reported overall progress: **65%**
 - Current net scope growth after the baseline: 90 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -1064,7 +1064,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] Stable type/memory model.
 - [x] Stable package format: `flux.toml` now has an explicit compiler-owned package-format compatibility version (`PACKAGE_FORMAT_VERSION = 1`); `flux new` writes `format_version = 1`, existing unversioned manifests remain version-1 compatible, and explicitly unsupported versions fail before build rather than being silently reinterpreted. The versioning/additive-change contract is documented in `docs/package-format.md` and covered by manifest/scaffolding regression tests.
 - [ ] Stable native/platform ABI policy.
-- [ ] Stable UI API compatibility policy.
+- [x] Stable UI API compatibility policy: the compiler-owned portable UI surface now has explicit compatibility version `UI_API_VERSION = 1`, exposed through `flux ui --version` for tooling. `docs/ui-compatibility.md` defines the versioned contract across built-in elements/properties/types, events, view state/derived state, layout directives, portable focus/input/accessibility semantics, semantic presentation values, and UI environment bindings; additive source-compatible UI growth may remain within a version, while removals/renames/type/default/callback/portable-behavior changes require a version bump. Native backend rewrites remain free to optimize or change toolkit implementation details without perturbing the portable source API contract.
 - [x] Stable formatter: canonical formatting is deterministic/idempotent, the CLI/LSP/library share one implementation, `flux format --check` provides the CI contract, and formatter compatibility is explicitly versioned through public `FORMATTER_VERSION` plus `flux format --version`. Version 1 changes only when already-canonical source intentionally acquires different canonical bytes; the stability contract and editor/CI guidance are documented in `docs/formatting.md` and regression-tested.
 - [x] Stable diagnostics contract for tooling: machine analysis output is pinned to documented `schema_version: 1`, exposes one shared versioned envelope for successful and failed `flux check --json` / `flux analyze --json` runs, ships a checked-in JSON Schema, keeps diagnostic/span/label/note/fix field meanings explicit, and defines additive-vs-breaking compatibility rules in `docs/diagnostics.md`. The version constant and envelope serializer are public so compiler-integrating tools do not need to duplicate the wire contract.
 - [ ] Android, iOS, Windows, macOS, Linux, web, and headless/server targets meet documented support tiers.

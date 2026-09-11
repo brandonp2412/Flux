@@ -17,6 +17,7 @@ pub use diagnostic::{
 };
 pub use parser::GRAMMAR_VERSION;
 pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
+pub use typecheck::UI_API_VERSION;
 
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
     compile_to_c_with_source(source, SourceId::UNKNOWN)
