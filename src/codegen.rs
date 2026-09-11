@@ -2216,6 +2216,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_send_text(") {
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
     }
+    if runtime_usage.contains("flux__net_http_send_text_response(") {
+        out.push_str("static inline const char *flux__net_http_send_text_response(int64_t socket_handle, int64_t status, const char *content_type, const char *body) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; if (status < 100 || status > 599) return \"HTTP status must be between 100 and 599\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL) return \"HTTP content type must not contain CR or LF\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"HTTP response requires a TCP socket\"; size_t body_length = strlen(body); char header[512]; int header_length = snprintf(header, sizeof(header), \"HTTP/1.1 %lld \\r\\nContent-Length: %zu\\r\\nContent-Type: %s\\r\\nConnection: close\\r\\n\\r\\n\", (long long)status, body_length, content_type); if (header_length < 0 || (size_t)header_length >= sizeof(header)) return \"HTTP response headers are too large\"; size_t header_offset = 0; while (header_offset < (size_t)header_length) { ssize_t sent; do { sent = send((int)socket_handle, header + header_offset, (size_t)header_length - header_offset, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP response headers\"; header_offset += (size_t)sent; } size_t body_offset = 0; while (body_offset < body_length) { size_t remaining = body_length - body_offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, body + body_offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send HTTP response body\"; body_offset += (size_t)sent; } return NULL; }\n");
+    }
     if runtime_usage.contains("flux__net_send_text_to(") {
         out.push_str("static inline const char *flux__net_send_text_to(int64_t socket_handle, const char *host, int64_t port, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; if (port < 1 || port > 65535) return \"sendTextTo port must be between 1 and 65535\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_DGRAM) return \"sendTextTo requires a UDP socket\"; struct sockaddr_storage local; socklen_t local_length = sizeof(local); if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return \"failed to read UDP socket address\"; char service[6]; snprintf(service, sizeof(service), \"%lld\", (long long)port); struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = local.ss_family; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP; struct addrinfo *addresses = NULL; if (getaddrinfo(host, service, &hints, &addresses) != 0) return \"failed to resolve UDP peer\"; size_t length = strlen(text); if (length > (size_t)SSIZE_MAX) { freeaddrinfo(addresses); return \"text is too large to send\"; } const char *failure = \"failed to send UDP text\"; for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { ssize_t sent; do { sent = sendto((int)socket_handle, text, length, 0, address->ai_addr, address->ai_addrlen); } while (sent < 0 && errno == EINTR); if (sent == (ssize_t)length) { failure = NULL; break; } } freeaddrinfo(addresses); return failure; }\n");
     }
@@ -13813,6 +13816,31 @@ fn emit_qualified_call(
                 ));
             }
             _ => return Err(diag(span, "unknown network call reached code generation")),
+        }
+    }
+    if namespace == "http" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid HTTP call reached code generation"));
+        }
+        match name {
+            "sendTextResponse" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let status = emit_expr(&args[1], env, signatures)?;
+                let content_type = emit_expr(&args[2], env, signatures)?;
+                let body = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_http_send_text_response({}, {}, {}, {})",
+                        socket_handle.code, status.code, content_type.code, body.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown HTTP call reached code generation")),
         }
     }
     if namespace == "locale" {

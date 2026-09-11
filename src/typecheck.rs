@@ -6133,6 +6133,71 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "http" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("http.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "sendTextResponse" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.sendTextResponse expects 4 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.sendTextResponse socket",
+                )?;
+                let status = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &status,
+                    "http.sendTextResponse status",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(100..=599).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.sendTextResponse status must be between 100 and 599",
+                    ));
+                }
+                let content_type = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::Str,
+                    &content_type,
+                    "http.sendTextResponse contentType",
+                )?;
+                let body = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::Str,
+                    &body,
+                    "http.sendTextResponse body",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("http module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "locale" {
         if !named_args.is_empty() {
             return Err(diag(

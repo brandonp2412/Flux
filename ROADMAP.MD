@@ -1007,6 +1007,7 @@ The first Flux package ecosystem must require **no Flux-operated hosting bill or
 Flux must remain equally credible for headless native binaries.
 
 - [ ] HTTP server.
+  - [x] Bootstrap HTTP/1.1 text responses through compiler-owned `http.sendTextResponse(socket, status, contentType, body)`: status and argument types are checked statically, dynamic status values retain a runtime `100..=599` guard, response framing emits `Content-Length`, `Content-Type`, and `Connection: close`, header injection through CR/LF content types is rejected, stream writes are EINTR/partial-write safe with `MSG_NOSIGNAL`, the helper tree-shakes when unreachable, LSP completion/signature help expose the typed call, and native loopback coverage validates exact response bytes. Request parsing, persistent connections, streaming/binary bodies, routing, TLS, and task-integrated request handling remain pending.
 - [ ] TLS server.
 - [ ] WebSocket server.
 - [ ] TCP/UDP sockets.

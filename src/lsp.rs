@@ -1237,6 +1237,16 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "http" {
+        push_completion_item(
+            items,
+            seen,
+            "sendTextResponse",
+            3,
+            "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str) -> error",
+        );
+        return true;
+    }
     if namespace == "locale" {
         push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
         push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
@@ -2559,6 +2569,19 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "http" && member == "sendTextResponse" {
+            return Some(signature_help_for_builtin(
+                "http.sendTextResponse",
+                &[
+                    "socket: i64",
+                    "status: i64",
+                    "contentType: str",
+                    "body: str",
+                ],
+                "error",
+                active_parameter,
+            ));
         }
         if namespace == "process" {
             match member {
