@@ -4451,10 +4451,10 @@ __FLUX_PICKER_METHODS__
         private int borderStartWidth;
         private final float[] radii;
         private final String borderStyle;
-        private final Integer shadowColor;
-        private final float shadowBlur;
-        private final float shadowOffsetX;
-        private final float shadowOffsetY;
+        private Integer shadowColor;
+        private float shadowBlur;
+        private float shadowOffsetX;
+        private float shadowOffsetY;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private int alpha = 255;
         private ColorFilter colorFilter;
@@ -4611,6 +4611,14 @@ __FLUX_PICKER_METHODS__
             invalidateSelf();
         }
 
+        void setShadow(String color, float blur, float offsetX, float offsetY) {
+            this.shadowColor = color == null ? null : parseFluxColor(color);
+            this.shadowBlur = Math.max(0.0f, blur);
+            this.shadowOffsetX = offsetX;
+            this.shadowOffsetY = offsetY;
+            invalidateSelf();
+        }
+
         @Override
         public void setAlpha(int alpha) {
             this.alpha = Math.max(0, Math.min(255, alpha));
@@ -4693,6 +4701,18 @@ __FLUX_PICKER_METHODS__
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setRadii(topLeft, topRight, bottomRight, bottomLeft);
+        }
+    }
+
+    public void styleViewShadow(View view, String color, float blur, float offsetX, float offsetY) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setShadow(color, blur, offsetX, offsetY);
+            if (color != null && (blur > 0.0f || offsetX != 0.0f || offsetY != 0.0f)) {
+                view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+            } else {
+                view.setLayerType(View.LAYER_TYPE_NONE, null);
+            }
         }
     }
 
@@ -6841,6 +6861,15 @@ mod tests {
         assert!(activity.contains(
             "public void styleViewBorderWidths(View view, int top, int end, int bottom, int start)"
         ));
+        assert!(
+            activity
+                .contains("void setShadow(String color, float blur, float offsetX, float offsetY)")
+        );
+        assert!(activity.contains(
+            "public void styleViewShadow(View view, String color, float blur, float offsetX, float offsetY)"
+        ));
+        assert!(activity.contains("view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);"));
+        assert!(activity.contains("view.setLayerType(View.LAYER_TYPE_NONE, null);"));
         assert!(activity.contains("view.setBackgroundTintList(null);"));
         assert!(activity.contains("public void styleRoot(View view)"));
         assert!(activity.contains("public void stylePresentationState(View view, String status)"));

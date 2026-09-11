@@ -4990,25 +4990,62 @@ fn emit_android_native_application(
             dynamic_border_end_width,
             &border_end_color,
         );
-        let shadow_color = static_color("shadow_color")?;
-        let shadow_blur = static_style_i64(element, "shadow_blur", signatures)?.unwrap_or(0);
-        let shadow_offset_x =
-            static_style_i64(element, "shadow_offset_x", signatures)?.unwrap_or(0);
-        let shadow_offset_y =
-            static_style_i64(element, "shadow_offset_y", signatures)?.unwrap_or(0);
-        if shadow_blur < 0 {
-            let span = view_property(element, "shadow_blur")
-                .expect("shadow blur exists when negative")
-                .value
-                .span;
-            return Err(diag(span, "shadow_blur must be non-negative"));
-        }
+        let shadow_color_property = view_property(element, "shadow_color");
+        let (shadow_color, dynamic_shadow_color) = if let Some(property) = shadow_color_property {
+            if let Some(value) = static_expr_str(&property.value, signatures) {
+                if !valid_ui_color(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        "shadow_color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                    ));
+                }
+                (Some(value), false)
+            } else {
+                (None, true)
+            }
+        } else {
+            (None, false)
+        };
+        let shadow_style_i64 =
+            |property_name: &str, non_negative: bool| -> Result<(i64, bool), Diagnostic> {
+                let Some(property) = view_property(element, property_name) else {
+                    return Ok((0, false));
+                };
+                let Some(value) = static_expr_i64(&property.value, signatures) else {
+                    return Ok((0, true));
+                };
+                if non_negative && value < 0 {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("{property_name} must be non-negative"),
+                    ));
+                }
+                if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("{property_name} must fit within a 32-bit signed integer"),
+                    ));
+                }
+                Ok((value, false))
+            };
+        let shadow_blur_property = view_property(element, "shadow_blur");
+        let shadow_offset_x_property = view_property(element, "shadow_offset_x");
+        let shadow_offset_y_property = view_property(element, "shadow_offset_y");
+        let (shadow_blur, dynamic_shadow_blur) = shadow_style_i64("shadow_blur", true)?;
+        let (shadow_offset_x, dynamic_shadow_offset_x) =
+            shadow_style_i64("shadow_offset_x", false)?;
+        let (shadow_offset_y, dynamic_shadow_offset_y) =
+            shadow_style_i64("shadow_offset_y", false)?;
         let has_shadow = shadow_color.is_some()
+            || dynamic_shadow_color
             || shadow_blur != 0
+            || dynamic_shadow_blur
             || shadow_offset_x != 0
-            || shadow_offset_y != 0;
+            || dynamic_shadow_offset_x
+            || shadow_offset_y != 0
+            || dynamic_shadow_offset_y;
         let shadow_color = if has_shadow {
-            shadow_color.or_else(|| Some("shadow".to_string()))
+            shadow_color.or_else(|| (!dynamic_shadow_color).then(|| "shadow".to_string()))
         } else {
             None
         };
@@ -5118,7 +5155,65 @@ fn emit_android_native_application(
             emit_border_jstring(out, "child_border_start", &border_start_color);
             let border_style_value = Some(border_style.clone());
             emit_optional_jstring(out, "child_border_style", &border_style_value);
-            emit_optional_jstring(out, "child_shadow", &shadow_color);
+            if dynamic_shadow_color {
+                let value = ui_expr_c(
+                    &shadow_color_property
+                        .expect("dynamic shadow_color property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    const char *child_shadow_value = {value};\n    if (!flux__android_valid_ui_color(child_shadow_value)) {{ fputs(\"Flux runtime error: shadowColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n    jstring child_shadow = flux__android_utf8_string(env, child_shadow_value);\n    if (child_shadow == NULL) return;\n"
+                ));
+            } else {
+                emit_optional_jstring(out, "child_shadow", &shadow_color);
+            }
+            let shadow_blur_value = if dynamic_shadow_blur {
+                let value = ui_expr_c(
+                    &shadow_blur_property
+                        .expect("dynamic shadow_blur property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_shadow_blur = {value};\n    if (child_shadow_blur < 0 || child_shadow_blur > INT32_MAX) {{ fputs(\"Flux runtime error: shadowBlur must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+                "child_shadow_blur".to_string()
+            } else {
+                format!("INT64_C({shadow_blur})")
+            };
+            let shadow_offset_x_value = if dynamic_shadow_offset_x {
+                let value = ui_expr_c(
+                    &shadow_offset_x_property
+                        .expect("dynamic shadow_offset_x property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_shadow_offset_x = {value};\n    if (child_shadow_offset_x < INT32_MIN || child_shadow_offset_x > INT32_MAX) {{ fputs(\"Flux runtime error: shadowOffsetX must fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+                "child_shadow_offset_x".to_string()
+            } else {
+                format!("INT64_C({shadow_offset_x})")
+            };
+            let shadow_offset_y_value = if dynamic_shadow_offset_y {
+                let value = ui_expr_c(
+                    &shadow_offset_y_property
+                        .expect("dynamic shadow_offset_y property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_shadow_offset_y = {value};\n    if (child_shadow_offset_y < INT32_MIN || child_shadow_offset_y > INT32_MAX) {{ fputs(\"Flux runtime error: shadowOffsetY must fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+                "child_shadow_offset_y".to_string()
+            } else {
+                format!("INT64_C({shadow_offset_y})")
+            };
             if dynamic_border_width {
                 let value = ui_expr_c(
                     &border_width_property
@@ -5183,7 +5278,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFFFFLjava/lang/String;Ljava/lang/String;FFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)({border_top_width_value} * flux__ui_density), (jint)({border_end_width_value} * flux__ui_density), (jint)({border_bottom_width_value} * flux__ui_density), (jint)({border_start_width_value} * flux__ui_density), (jfloat)({radius_top_left_value} * flux__ui_density), (jfloat)({radius_top_right_value} * flux__ui_density), (jfloat)({radius_bottom_right_value} * flux__ui_density), (jfloat)({radius_bottom_left_value} * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)({border_top_width_value} * flux__ui_density), (jint)({border_end_width_value} * flux__ui_density), (jint)({border_bottom_width_value} * flux__ui_density), (jint)({border_start_width_value} * flux__ui_density), (jfloat)({radius_top_left_value} * flux__ui_density), (jfloat)({radius_top_right_value} * flux__ui_density), (jfloat)({radius_bottom_right_value} * flux__ui_density), (jfloat)({radius_bottom_left_value} * flux__ui_density), child_border_style, child_shadow, (jfloat)({shadow_blur_value} * flux__ui_density), (jfloat)({shadow_offset_x_value} * flux__ui_density), (jfloat)({shadow_offset_y_value} * flux__ui_density));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
             for name in [
@@ -8757,6 +8852,10 @@ fn android_ui_element_needs_refresh(
         "border_color",
         "border_width",
         "radius",
+        "shadow_color",
+        "shadow_blur",
+        "shadow_offset_x",
+        "shadow_offset_y",
         "padding",
         "margin",
         "tooltip",
@@ -8978,6 +9077,60 @@ fn emit_android_ui_refresh(
             out.push_str(&format!(
                 "                if (refresh_radii != NULL) (*env)->CallVoidMethod(env, activity, refresh_radii, child, (jfloat)({top_left} * flux__ui_density), (jfloat)({top_right} * flux__ui_density), (jfloat)({bottom_right} * flux__ui_density), (jfloat)({bottom_left} * flux__ui_density));\n"
             ));
+        }
+        let dynamic_shadow_color =
+            android_ui_property_needs_refresh(element, "shadow_color", &runtime_names);
+        let dynamic_shadow_blur =
+            android_ui_property_needs_refresh(element, "shadow_blur", &runtime_names);
+        let dynamic_shadow_offset_x =
+            android_ui_property_needs_refresh(element, "shadow_offset_x", &runtime_names);
+        let dynamic_shadow_offset_y =
+            android_ui_property_needs_refresh(element, "shadow_offset_y", &runtime_names);
+        if dynamic_shadow_color
+            || dynamic_shadow_blur
+            || dynamic_shadow_offset_x
+            || dynamic_shadow_offset_y
+        {
+            let shadow_color = view_property(element, "shadow_color")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| c_string("shadow"));
+            let shadow_blur = view_property(element, "shadow_blur")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "INT64_C(0)".to_string());
+            let shadow_offset_x = view_property(element, "shadow_offset_x")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "INT64_C(0)".to_string());
+            let shadow_offset_y = view_property(element, "shadow_offset_y")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "INT64_C(0)".to_string());
+            out.push_str(&format!(
+                "                const char *refresh_shadow_value = {shadow_color};\n"
+            ));
+            if dynamic_shadow_color {
+                out.push_str("                if (!flux__android_valid_ui_color(refresh_shadow_value)) { fputs(\"Flux runtime error: shadowColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }\n");
+            }
+            out.push_str(&format!(
+                "                int64_t refresh_shadow_blur = {shadow_blur};\n                int64_t refresh_shadow_offset_x = {shadow_offset_x};\n                int64_t refresh_shadow_offset_y = {shadow_offset_y};\n"
+            ));
+            if dynamic_shadow_blur {
+                out.push_str("                if (refresh_shadow_blur < 0 || refresh_shadow_blur > INT32_MAX) { fputs(\"Flux runtime error: shadowBlur must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }\n");
+            }
+            if dynamic_shadow_offset_x {
+                out.push_str("                if (refresh_shadow_offset_x < INT32_MIN || refresh_shadow_offset_x > INT32_MAX) { fputs(\"Flux runtime error: shadowOffsetX must fit within a 32-bit signed integer\\n\", stderr); abort(); }\n");
+            }
+            if dynamic_shadow_offset_y {
+                out.push_str("                if (refresh_shadow_offset_y < INT32_MIN || refresh_shadow_offset_y > INT32_MAX) { fputs(\"Flux runtime error: shadowOffsetY must fit within a 32-bit signed integer\\n\", stderr); abort(); }\n");
+            }
+            out.push_str("                jstring refresh_shadow = flux__android_utf8_string(env, refresh_shadow_value);\n");
+            out.push_str("                if (refresh_shadow != NULL) {\n");
+            out.push_str("                    jmethodID refresh_shadow_style = (*env)->GetMethodID(env, activity_class, \"styleViewShadow\", \"(Landroid/view/View;Ljava/lang/String;FFF)V\");\n");
+            out.push_str("                    if (refresh_shadow_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_shadow_style, child, refresh_shadow, (jfloat)(refresh_shadow_blur * flux__ui_density), (jfloat)(refresh_shadow_offset_x * flux__ui_density), (jfloat)(refresh_shadow_offset_y * flux__ui_density));\n");
+            out.push_str("                    (*env)->DeleteLocalRef(env, refresh_shadow);\n");
+            out.push_str("                }\n");
         }
         if android_ui_property_needs_refresh(element, "padding", &runtime_names)
             && let Some(property) = view_property(element, "padding")

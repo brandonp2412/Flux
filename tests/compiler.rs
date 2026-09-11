@@ -20669,6 +20669,87 @@ app StaticRadius
 }
 
 #[test]
+fn android_shadow_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicShadow {
+    state shadowTone: str = "shadow"
+    state shadowBlur: i64 = 6
+    state shadowX: i64 = -2
+    state shadowY: i64 = 3
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Panel"
+        backgroundColor: "surfaceRaised"
+        shadowColor: shadowTone
+        shadowBlur: shadowBlur
+        shadowOffsetX: shadowX
+        shadowOffsetY: shadowY
+}
+app DynamicShadow
+"#;
+
+    check_source(source).expect("dynamic Android shadow styling should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android shadow styling should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android shadow styling should lower");
+
+    assert!(android.contains("const char *child_shadow_value = flux__ui_state_shadowTone"));
+    assert!(android.contains("int64_t child_shadow_blur = flux__ui_state_shadowBlur"));
+    assert!(android.contains("int64_t child_shadow_offset_x = flux__ui_state_shadowX"));
+    assert!(android.contains("int64_t child_shadow_offset_y = flux__ui_state_shadowY"));
+    assert!(android.contains("const char *refresh_shadow_value = flux__ui_state_shadowTone"));
+    assert!(android.contains("int64_t refresh_shadow_blur = flux__ui_state_shadowBlur"));
+    assert!(android.contains("int64_t refresh_shadow_offset_x = flux__ui_state_shadowX"));
+    assert!(android.contains("int64_t refresh_shadow_offset_y = flux__ui_state_shadowY"));
+    assert!(android.contains("styleViewShadow"));
+    assert!(android.contains("(Landroid/view/View;Ljava/lang/String;FFF)V"));
+    assert!(
+        android.contains(
+            "shadowColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+        )
+    );
+    assert!(
+        android.contains("shadowBlur must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(android.contains("shadowOffsetX must fit within a 32-bit signed integer"));
+    assert!(android.contains("shadowOffsetY must fit within a 32-bit signed integer"));
+    let panel_id = android_stable_view_id("DynamicShadow", "panel");
+    assert!(android.contains(&format!("find_view, (jint){panel_id}")));
+
+    let static_source = r#"
+view StaticShadow {
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Panel"
+        shadowColor: "shadow"
+        shadowBlur: 8
+        shadowOffsetY: 2
+}
+app StaticShadow
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android shadow styling should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android shadow styling should lower");
+    assert!(!static_android.contains("styleViewShadow"));
+    assert!(!static_android.contains("refresh_shadow_value"));
+}
+
+#[test]
 fn android_text_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicColor {
