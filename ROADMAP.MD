@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 473
+- Completed baseline units: 474
 - Reported overall progress: **64%**
 - Current net scope growth after the baseline: 73 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -731,7 +731,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Media playback.
 - [ ] Secure storage.
 - [ ] Files/media picker.
-- [ ] Android keyboard/IME.
+- [x] Android keyboard/IME: the current native Android surface covers platform-owned text composition, keyboard-type selection, submit policy, compiler-managed caret/selection/composition preservation across required rebuilds, direct show/hide IME control, focus restoration and scoped traversal, focused selection/caret mutation, and typed IME action configuration. The integrated Android codegen regression verifies these helpers lower through direct platform/JNI calls, reject non-Android reachability, tree-shake when unused, and introduce no method-channel/plugin bridge.
   - [x] Bootstrap native text input supports compiler-managed autofocus, password input type, maximum length, live `onChange: fn(str)`, native multiline editing, compile-time `submitOnEnter` policy, and IME Done/Enter `onSubmit: fn(str)` callbacks without application Java/Kotlin code.
   - [x] Portable compile-time `TextInput.keyboardType` selects `text`, `email`, `number`, `decimal`, `phone`, or `url`; Android lowers to the corresponding native `InputType` flags and Linux lowers to the corresponding GTK input purpose, with unsupported values rejected at compile time.
   - [x] Compiler-owned Android text caching preserves caret/selection plus active IME composing ranges across the full native-view rebuilds still required for configuration/layout recreation; ordinary functional state transitions now avoid that rebuild path entirely.
