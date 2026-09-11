@@ -11617,6 +11617,69 @@ app Status
 }
 
 #[test]
+fn eliminates_redundant_checked_double_integer_negation() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn collapse(value: i64) -> i64 {
+    return -(-value)
+}
+
+fn collapseEffect(value: i64) -> i64 {
+    return -(-observe(value))
+}
+
+fn retainSingle(value: i64) -> i64 {
+    return -observe(value)
+}
+
+fn main() -> i64 {
+    print(collapse(7))
+    print(collapseEffect(8))
+    return retainSingle(9)
+}
+"#;
+
+    check_source(source).expect("double integer negation should typecheck");
+    let generated =
+        compile_to_c(source).expect("double integer negation should lower with one guard");
+    assert!(generated.contains("return (-flux_neg_i64(flux__local_value));"));
+    assert!(generated.contains("return (-flux_neg_i64(flux__fn_observe(flux__local_value)));"));
+    assert!(!generated.contains("flux_neg_i64(flux_neg_i64("));
+    assert_eq!(
+        generated.matches("flux_neg_i64(").count(),
+        4,
+        "each double negation should keep one checked guard, plus the ordinary single negation",
+    );
+    assert!(generated.contains("if (value == INT64_MIN)"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "double-negated effectful expressions must still evaluate exactly once",
+    );
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => -(-count)
+}
+app Counter
+"#;
+    let ui_generated = compile_to_c(ui).expect("UI double integer negation should share lowering");
+    assert!(!ui_generated.contains("flux_neg_i64(flux_neg_i64("));
+    assert!(ui_generated.contains("(-flux_neg_i64(flux__ui_state_count))"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";

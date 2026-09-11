@@ -10265,6 +10265,16 @@ fn ui_expr_c(
                     return ui_expr_c(double_negated, view, signatures);
                 }
             }
+            if matches!(op, UnaryOp::Neg) {
+                if let ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: double_negated,
+                } = &inner.kind
+                {
+                    let inner = ui_expr_c(double_negated, view, signatures)?;
+                    return Ok(format!("(-flux_neg_i64({inner}))"));
+                }
+            }
             let inner = ui_expr_c(inner, view, signatures)?;
             Ok(match op {
                 UnaryOp::Neg => format!("flux_neg_i64({inner})"),
@@ -17931,6 +17941,19 @@ fn emit_expr(
                 } = &inner.kind
                 {
                     return emit_expr(double_negated, env, signatures);
+                }
+            }
+            if matches!(op, UnaryOp::Neg) {
+                if let ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: double_negated,
+                } = &inner.kind
+                {
+                    let inner = emit_expr(double_negated, env, signatures)?;
+                    return Ok(EmittedExpr {
+                        code: format!("(-flux_neg_i64({}))", inner.code),
+                        ty: Type::I64,
+                    });
                 }
             }
             let inner = emit_expr(inner, env, signatures)?;
