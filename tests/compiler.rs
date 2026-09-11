@@ -19101,6 +19101,7 @@ view Form {
         multiline: true
         readOnly: true
         keyboardType: "text"
+        maxLength: 12
         submitOnEnter: true
         onChange: submit
         onSubmit: submit
@@ -19121,6 +19122,13 @@ app Form
     ));
     assert!(generated.contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_query), FALSE)"));
     assert!(generated.contains("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW(flux__ui_query), GTK_INPUT_PURPOSE_FREE_FORM)"));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_buffer_query, \"insert-text\", G_CALLBACK(flux__ui_limit_query), NULL)"
+    ));
+    assert!(generated.contains("const gint limit = 12"));
+    assert!(generated.contains("g_utf8_strlen(text, length)"));
+    assert!(generated.contains("g_utf8_offset_to_pointer(text, available)"));
+    assert!(generated.contains("g_signal_stop_emission_by_name(buffer, \"insert-text\")"));
     assert!(generated.contains(
         "g_signal_connect(flux__ui_buffer_query, \"changed\", G_CALLBACK(flux__ui_change_query), NULL)"
     ));
@@ -19148,22 +19156,30 @@ app Form
     let generated = compile_to_c(multiline_default_enter)
         .expect("multiline input should keep Enter as text unless submission is explicit");
     assert!(!generated.contains("flux__submit_controller_query"));
+    assert!(
+        !generated.contains("flux__ui_limit_query"),
+        "multiline max-length support must disappear when maxLength is omitted"
+    );
 
-    for (property, expected) in [
-        (
-            "placeholder: \"Notes\"",
-            "TextInput.placeholder is not yet supported",
-        ),
-        ("maxLength: 32", "TextInput.maxLength is not yet supported"),
-    ] {
-        let source = format!(
-            "view Form {{\n    grid columns: 1fr\n    grid rows: auto\n    TextInput query at 1,1\n        multiline: true\n        {property}\n}}\napp Form\n"
-        );
-        check_source(&source).expect("multiline restriction fixture should typecheck generically");
-        let error =
-            compile_to_c(&source).expect_err("unsupported multiline option must fail explicitly");
-        assert!(error.message.contains(expected));
-    }
+    let unsupported_placeholder = r#"
+view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        multiline: true
+        placeholder: "Notes"
+}
+app Form
+"#;
+    check_source(unsupported_placeholder)
+        .expect("multiline placeholder restriction should typecheck generically");
+    let error = compile_to_c(unsupported_placeholder)
+        .expect_err("unsupported multiline placeholder must fail explicitly");
+    assert!(
+        error
+            .message
+            .contains("TextInput.placeholder is not yet supported")
+    );
 }
 
 #[test]

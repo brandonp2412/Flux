@@ -7567,6 +7567,24 @@ fn emit_linux_gtk_application(
                 }
                 None => false,
             };
+            if multiline && let Some(property) = view_property(element, "max_length") {
+                let Some(max_length) = static_expr_i64(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
+                    ));
+                };
+                if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                    return Err(diag(
+                        property.value.span,
+                        "TextInput.maxLength must be between 0 and 2147483647",
+                    ));
+                }
+                out.push_str(&format!(
+                    "static void flux__ui_limit_{}(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {{ (void)data; const gint limit = {max_length}; gint current = gtk_text_buffer_get_char_count(buffer); glong incoming = g_utf8_strlen(text, length); gint available = limit - current; if (incoming <= available) return; g_signal_stop_emission_by_name(buffer, \"insert-text\"); if (available <= 0) return; const gchar *end = g_utf8_offset_to_pointer(text, available); gtk_text_buffer_insert(buffer, location, text, (gint)(end - text)); }}\n",
+                    element.name,
+                ));
+            }
             for (property_name, callback_name) in [("on_change", "change"), ("on_submit", "submit")]
             {
                 let Some(action) = view_property(element, property_name) else {
@@ -8544,14 +8562,15 @@ fn emit_linux_gtk_application(
                         ));
                     }
                     if multiline {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.maxLength is not yet supported for multiline Linux GTK input",
+                        out.push_str(&format!(
+                            "    g_signal_connect({multiline_buffer}, \"insert-text\", G_CALLBACK(flux__ui_limit_{}), NULL);\n",
+                            element.name
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    gtk_entry_set_max_length(GTK_ENTRY({variable}), {max_length});\n"
                         ));
                     }
-                    out.push_str(&format!(
-                        "    gtk_entry_set_max_length(GTK_ENTRY({variable}), {max_length});\n"
-                    ));
                 }
                 if view_property(element, "on_change").is_some() {
                     if multiline {
