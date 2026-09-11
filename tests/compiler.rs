@@ -12581,7 +12581,7 @@ view Transformed {
         transform_origin_x_percent: 50 + moved
         transition_ms: 180
         transition_delay_ms: 20
-        transition_easing: "ease_out"
+        transition_easing: "springSnappy"
     Button toggle at 2,1
         text: "Move"
         on_press: moved => moved + 4
@@ -12600,7 +12600,7 @@ app Transformed
     assert!(generated.contains("transition-property: all;"));
     assert!(generated.contains("transition-duration: 180ms;"));
     assert!(generated.contains("transition-delay: 20ms;"));
-    assert!(generated.contains("transition-timing-function: ease-out;"));
+    assert!(generated.contains("transition-timing-function: cubic-bezier(0.16, 1.30, 0.30, 1);"));
     assert!(generated.contains("@media (prefers-reduced-motion: reduce)"));
     assert!(generated.contains("\"gtk-interface-reduced-motion\""));
     assert!(generated.contains("\"prefers-reduced-motion\""));
@@ -12619,6 +12619,31 @@ app Transformed
     let error = compile_to_c(invalid_transition)
         .expect_err("transition easing without a duration should fail clearly");
     assert!(error.message.contains("require transition_ms"));
+
+    let invalid_easing = r#"
+view Transformed {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad easing"
+        transition_ms: 180
+        transition_easing: "wobbleForever"
+}
+app Transformed
+"#;
+    let easing_error = check_source(invalid_easing)
+        .expect_err("unknown transition easing should fail during static checking");
+    assert!(
+        easing_error
+            .message
+            .contains("unsupported transitionEasing 'wobbleForever'")
+    );
+    assert!(
+        easing_error
+            .notes
+            .iter()
+            .any(|note| { note.contains("springGentle") && note.contains("springSnappy") })
+    );
 
     let oversized = r#"
 view Transformed {

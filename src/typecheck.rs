@@ -1448,6 +1448,30 @@ pub const ACCESSIBILITY_ROLES: &[&str] = &[
 
 pub const TEXT_INPUT_VALIDATION_STATES: &[&str] = &["normal", "error", "success", "warning"];
 pub const UI_PRESENTATION_STATES: &[&str] = &["normal", "loading", "empty", "error"];
+pub const TRANSITION_EASINGS: &[&str] = &[
+    "linear",
+    "ease",
+    "easeIn",
+    "easeOut",
+    "easeInOut",
+    "spring",
+    "springGentle",
+    "springSnappy",
+];
+
+pub fn transition_easing_css_value(value: &str) -> Option<&'static str> {
+    match value {
+        "linear" => Some("linear"),
+        "ease" => Some("ease"),
+        "easeIn" | "ease_in" => Some("ease-in"),
+        "easeOut" | "ease_out" => Some("ease-out"),
+        "easeInOut" | "ease_in_out" => Some("ease-in-out"),
+        "spring" => Some("cubic-bezier(0.22, 1.20, 0.36, 1)"),
+        "springGentle" | "spring_gentle" => Some("cubic-bezier(0.34, 1.36, 0.64, 1)"),
+        "springSnappy" | "spring_snappy" => Some("cubic-bezier(0.16, 1.30, 0.30, 1)"),
+        _ => None,
+    }
+}
 
 pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "surface",
@@ -1900,6 +1924,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         Err(_) => diagnostics.push(diag(
                             property.value.span,
                             "TextInput.validationState must be a compile-time string value",
+                        )),
+                    }
+                }
+                if internal_property == "transition_easing" {
+                    match evaluate_default_expr(&property.value, signatures) {
+                        Ok(ConstantValue::Str(easing))
+                            if transition_easing_css_value(&easing).is_some() => {}
+                        Ok(ConstantValue::Str(easing)) => diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!("unsupported transitionEasing '{easing}'"),
+                            )
+                            .with_note(format!(
+                                "supported transition easings: {}",
+                                TRANSITION_EASINGS.join(", ")
+                            )),
+                        ),
+                        Ok(_) => {}
+                        Err(_) => diagnostics.push(diag(
+                            property.value.span,
+                            "transitionEasing must be a compile-time string value",
                         )),
                     }
                 }

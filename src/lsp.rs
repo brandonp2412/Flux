@@ -1889,6 +1889,17 @@ fn add_builtin_ui_context_completions(
                     );
                 }
             }
+            if property.trim() == "transitionEasing" {
+                for easing in crate::typecheck::TRANSITION_EASINGS {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{easing}\""),
+                        12,
+                        "native Flux transition easing",
+                    );
+                }
+            }
             if property.trim() == "accessibilityRole" {
                 for role in crate::typecheck::ACCESSIBILITY_ROLES {
                     push_completion_item(
@@ -6188,6 +6199,23 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.get("detail").and_then(JsonValue::as_str)
                 == Some("semantic TextInput validation state")
+        }));
+    }
+
+    #[test]
+    fn completion_suggests_transition_easings_and_springs() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        text: \"Flux\"\n        transitionEasing: \n}\n";
+        let uri = "file:///tmp/transition-easing-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(5));
+        for easing in crate::typecheck::TRANSITION_EASINGS {
+            let expected = format!("\"{easing}\"");
+            assert!(items.iter().any(|item| {
+                item.get("label").and_then(JsonValue::as_str) == Some(expected.as_str())
+            }));
+        }
+        assert!(items.iter().any(|item| {
+            item.get("detail").and_then(JsonValue::as_str) == Some("native Flux transition easing")
         }));
     }
 

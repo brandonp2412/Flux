@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 467
+- Completed baseline units: 468
 - Reported overall progress: **63%**
 - Current net scope growth after the baseline: 56 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -645,8 +645,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
   - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to native platform emphasis without exposing platform widget APIs in Flux source: Linux uses GTK's `suggested-action` style class, while Android resolves the active native theme accent, applies it through the platform button tint surface, derives contrasting label text, keeps an explicit lower-emphasis disabled color state, and preserves ordinary Android pressed/focus/accessibility behavior.
 - [ ] Animation timelines.
-- [ ] Easing/springs.
-  - [x] Bootstrap property transitions accept compile-time `transitionEasing` values `linear`, `ease`, `easeIn`, `easeOut`, and `easeInOut`, mapped to native GTK CSS timing functions. Spring curves remain pending.
+- [x] Easing/springs.
+  - [x] Bootstrap property transitions accept compile-time `transitionEasing` values `linear`, `ease`, `easeIn`, `easeOut`, `easeInOut`, `spring`, `springGentle`, and `springSnappy`. Ordinary easing maps to native GTK timing functions; the spring roles map to compiler-owned overshooting cubic-bezier curves with no animation object/runtime allocation. Static checking rejects unsupported/non-constant easing names, LSP value completion exposes the canonical roles, and the existing reduced-motion override remains authoritative.
 - [x] Property transitions.
   - [x] Every built-in element accepts non-negative compile-time `transitionMs` plus optional `transitionDelayMs` / `transitionEasing`. Linux lowers these to standard GTK CSS transitions on `all` animatable properties; this already animates state-driven transform changes without an animation object model. Reduced-motion policy and selective transition-property syntax remain separate follow-up work.
 - [ ] Layout transitions.

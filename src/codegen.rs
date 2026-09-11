@@ -7003,18 +7003,18 @@ fn emit_element_style(
                     "transition_easing must be a compile-time string",
                 ));
             };
-            let css_value = match value.as_str() {
-                "linear" => "linear",
-                "ease" => "ease",
-                "easeIn" | "ease_in" => "ease-in",
-                "easeOut" | "ease_out" => "ease-out",
-                "easeInOut" | "ease_in_out" => "ease-in-out",
-                _ => {
-                    return Err(diag(
-                        property.value.span,
-                        "transitionEasing must be one of 'linear', 'ease', 'easeIn', 'easeOut', or 'easeInOut'",
-                    ));
-                }
+            let Some(css_value) = typecheck::transition_easing_css_value(&value) else {
+                return Err(diag(
+                    property.value.span,
+                    &format!(
+                        "transitionEasing must be one of {}",
+                        typecheck::TRANSITION_EASINGS
+                            .iter()
+                            .map(|value| format!("'{value}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
             };
             Ok(css_value)
         })
