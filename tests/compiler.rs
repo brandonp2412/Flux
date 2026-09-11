@@ -1932,7 +1932,7 @@ fn http_chunked_text_request_body_is_decoded_bounded_and_does_not_overread() {
             .expect("HTTP chunked request receiver should connect");
         stream
             .write_all(
-                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\n\r\nTAIL",
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\nX-Checksum: request-ok\r\nX-Mode:\t trailer \t\r\n\r\nTAIL",
             )
             .expect("chunked HTTP request should be writable");
     });
@@ -2258,7 +2258,7 @@ fn http_chunked_text_response_body_is_decoded_bounded_and_does_not_overread() {
             .expect("HTTP chunked client should connect");
         stream
             .write_all(
-                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Trace: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\n\r\nTAIL",
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Trace: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\nX-Checksum: response-ok\r\nX-Mode:\t trailer \t\r\n\r\nTAIL",
             )
             .expect("chunked HTTP response should be writable");
     });

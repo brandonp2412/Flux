@@ -3032,17 +3032,35 @@ fn emit_runtime_prelude(
                 if (chunk_size > remaining_capacity) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
             }
             if (chunk_size == 0) {
-                char ending[2];
-                size_t ending_offset = 0;
-                while (ending_offset < 2) {
-                    ssize_t received;
-                    do { received = recv((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0); } while (received < 0 && errno == EINTR);
-                    if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunked body terminator");
-                    if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunked body completed");
-                    ending_offset += (size_t)received;
-                    body_wire_length += (size_t)received;
+                size_t trailer_bytes = 0;
+                for (;;) {
+                    char trailer_line[1025];
+                    size_t trailer_line_length = 0;
+                    for (;;) {
+                        if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP request trailers exceed maxHeadBytes");
+                        ssize_t received;
+                        do { received = recv((int)socket_handle, trailer_line + trailer_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                        if (received < 0) return flux__net_result(-1, "failed to receive HTTP request trailers");
+                        if (received == 0) return flux__net_result(-1, "connection closed before HTTP request trailers completed");
+                        if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP request trailer contains a NUL byte");
+                        trailer_line_length += 1;
+                        trailer_bytes += 1;
+                        body_wire_length += 1;
+                        if (trailer_line_length >= 2 && trailer_line[trailer_line_length - 2] == '\r' && trailer_line[trailer_line_length - 1] == '\n') break;
+                    }
+                    if (trailer_line_length == 2) break;
+                    trailer_line[trailer_line_length - 2] = '\0';
+                    if (trailer_line[0] == ' ' || trailer_line[0] == '\t') return flux__net_result(-1, "folded HTTP request trailers are not supported");
+                    char *colon = strchr(trailer_line, ':');
+                    if (colon == NULL || colon == trailer_line) return flux__net_result(-1, "malformed HTTP request trailer field");
+                    for (const unsigned char *part = (const unsigned char *)trailer_line; part < (const unsigned char *)colon; part += 1) {
+                        bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+                        if (!token) return flux__net_result(-1, "invalid HTTP request trailer name");
+                    }
+                    for (const unsigned char *part = (const unsigned char *)(colon + 1); *part != '\0'; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP request trailer value");
+                    size_t name_length = (size_t)(colon - trailer_line);
+                    if ((name_length == 14 && strncasecmp(trailer_line, "Content-Length", 14) == 0) || (name_length == 17 && strncasecmp(trailer_line, "Transfer-Encoding", 17) == 0)) return flux__net_result(-1, "HTTP framing fields are not allowed in trailers");
                 }
-                if (ending[0] != '\r' || ending[1] != '\n') return flux__net_result(-1, "HTTP chunk trailers are not supported");
                 break;
             }
             size_t chunk_offset = 0;
@@ -3222,17 +3240,35 @@ fn emit_runtime_prelude(
                 if (chunk_size > remaining_capacity) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
             }
             if (chunk_size == 0) {
-                char ending[2];
-                size_t ending_offset = 0;
-                while (ending_offset < 2) {
-                    ssize_t received;
-                    do { received = recv((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0); } while (received < 0 && errno == EINTR);
-                    if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunked body terminator");
-                    if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunked body completed");
-                    ending_offset += (size_t)received;
-                    body_wire_length += (size_t)received;
+                size_t trailer_bytes = 0;
+                for (;;) {
+                    char trailer_line[1025];
+                    size_t trailer_line_length = 0;
+                    for (;;) {
+                        if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP response trailers exceed maxHeadBytes");
+                        ssize_t received;
+                        do { received = recv((int)socket_handle, trailer_line + trailer_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                        if (received < 0) return flux__net_result(-1, "failed to receive HTTP response trailers");
+                        if (received == 0) return flux__net_result(-1, "connection closed before HTTP response trailers completed");
+                        if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP response trailer contains a NUL byte");
+                        trailer_line_length += 1;
+                        trailer_bytes += 1;
+                        body_wire_length += 1;
+                        if (trailer_line_length >= 2 && trailer_line[trailer_line_length - 2] == '\r' && trailer_line[trailer_line_length - 1] == '\n') break;
+                    }
+                    if (trailer_line_length == 2) break;
+                    trailer_line[trailer_line_length - 2] = '\0';
+                    if (trailer_line[0] == ' ' || trailer_line[0] == '\t') return flux__net_result(-1, "folded HTTP response trailers are not supported");
+                    char *colon = strchr(trailer_line, ':');
+                    if (colon == NULL || colon == trailer_line) return flux__net_result(-1, "malformed HTTP response trailer field");
+                    for (const unsigned char *part = (const unsigned char *)trailer_line; part < (const unsigned char *)colon; part += 1) {
+                        bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr("!#$%&'*+-.^_`|~", *part) != NULL;
+                        if (!token) return flux__net_result(-1, "invalid HTTP response trailer name");
+                    }
+                    for (const unsigned char *part = (const unsigned char *)(colon + 1); *part != '\0'; part += 1) if ((*part < 0x20 && *part != '\t') || *part == 0x7f) return flux__net_result(-1, "invalid HTTP response trailer value");
+                    size_t name_length = (size_t)(colon - trailer_line);
+                    if ((name_length == 14 && strncasecmp(trailer_line, "Content-Length", 14) == 0) || (name_length == 17 && strncasecmp(trailer_line, "Transfer-Encoding", 17) == 0)) return flux__net_result(-1, "HTTP framing fields are not allowed in trailers");
                 }
-                if (ending[0] != '\r' || ending[1] != '\n') return flux__net_result(-1, "HTTP chunk trailers are not supported");
                 break;
             }
             size_t chunk_offset = 0;
