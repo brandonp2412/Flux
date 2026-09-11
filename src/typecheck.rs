@@ -6359,6 +6359,65 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "receiveResponseHeadWithHeaders" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.receiveResponseHeadWithHeaders expects 4 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.receiveResponseHeadWithHeaders socket",
+                )?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "http.receiveResponseHeadWithHeaders maxBytes",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.receiveResponseHeadWithHeaders maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let response_callback =
+                    signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected_response_callback = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected_response_callback,
+                    &response_callback,
+                    "http.receiveResponseHeadWithHeaders responseCallback",
+                )?;
+                let header_callback =
+                    signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let expected_header_callback = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[3].span,
+                    &expected_header_callback,
+                    &header_callback,
+                    "http.receiveResponseHeadWithHeaders headerCallback",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "sendTextResponse" => {
                 if args.len() != 4 {
                     return Err(diag(

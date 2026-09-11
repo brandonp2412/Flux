@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 474
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 73 checkbox items
+- Current net scope growth after the baseline: 74 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -861,6 +861,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] SQLite interface.
 - [ ] Database driver/plugin model.
 - [ ] HTTP client.
+  - [x] Bootstrap bounded borrowed HTTP/1.0/1.1 response-head parsing through compiler-owned `http.receiveResponseHeadWithHeaders(socket, maxBytes, responseCallback, headerCallback)`: the API requires a TCP socket, validates a `1..=65536` byte cap statically where possible and at runtime, reads exactly through `\r\n\r\n` without consuming response-body bytes, validates HTTP version/status/reason/header grammar, lends response/header strings only to exact callback scope, tree-shakes when unreachable, participates in LSP completion/signature help, and has native loopback coverage proving body bytes remain unread for subsequent I/O. Response-body framing/decoding, redirects, request construction, TLS, and owned response values remain pending.
 - [ ] WebSocket client/server.
 - [ ] Background networking.
 - [ ] Serialization/code generation where useful without source generics.

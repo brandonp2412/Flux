@@ -1921,6 +1921,101 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_response_head_with_headers_is_typed_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn handleResponse(socket: i64, version: str, status: i64, reason: str) -> void {
+    print(socket >= 0)
+    print(version)
+    print(status)
+    print(reason)
+}
+fn handleHeader(socket: i64, name: str, value: str) -> void {
+    print(socket >= 0)
+    print(name)
+    print(value)
+}
+fn main() -> i64 {
+    let (received, receiveError) = http.receiveResponseHeadWithHeaders(1, 4096, handleResponse, handleHeader)
+    print(received)
+    print(receiveError)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP response-head receive should typecheck");
+    let generated = compile_to_c(source).expect("HTTP response head should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_response_head_with_headers("));
+    assert!(generated.contains("invalid HTTP status code"));
+    assert!(generated.contains("invalid HTTP header name"));
+
+    let invalid_limit = check_source(
+        "fn response(socket: i64, version: str, status: i64, reason: str) -> void {\n    print(socket)\n    print(version)\n    print(status)\n    print(reason)\n}\nfn header(socket: i64, name: str, value: str) -> void {\n    print(socket)\n    print(name)\n    print(value)\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveResponseHeadWithHeaders(1, 0, response, header)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("constant HTTP response-head limit outside the valid range must fail");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.receiveResponseHeadWithHeaders maxBytes must be between 1 and 65536")
+    );
+
+    let unused = source.replace(
+        "fn main() -> i64 {\n    let (received, receiveError) = http.receiveResponseHeadWithHeaders(1, 4096, handleResponse, handleHeader)\n    print(received)\n    print(receiveError)\n    return 0\n}",
+        "fn hidden() -> void {\n    let (received, receiveError) = http.receiveResponseHeadWithHeaders(1, 4096, handleResponse, handleHeader)\n    print(received)\n    print(receiveError)\n}\nfn main() -> i64 {\n    return 0\n}",
+    );
+    let unused_generated =
+        compile_to_c(&unused).expect("dead HTTP response-head helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_response_head_with_headers("));
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP response-head listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!("flux-http-response-head-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP response-head fixture should be writable");
+    let source_path = root.join("response-head.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn handleResponse(socket: i64, version: str, status: i64, reason: str) -> void {{\n    print(socket >= 0)\n    print(version)\n    print(status)\n    print(reason)\n}}\nfn handleHeader(socket: i64, name: str, value: str) -> void {{\n    print(socket >= 0)\n    print(name)\n    print(value)\n}}\nfn handleExtra(socket: i64, body: str) -> void {{\n    print(socket >= 0)\n    print(body)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveResponseHeadWithHeaders(socket, 4096, handleResponse, handleHeader)\n    print(received > 0)\n    print(receiveError)\n    let (extraReceived, extraError) = net.receiveText(socket, 4, handleExtra)\n    print(extraReceived == 4)\n    print(extraError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP response-head Flux source should be writable");
+    let binary = root.join("response-head");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP response-head Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP response-head fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP response-head Flux binary should start");
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP response-head connection should accept");
+    stream
+        .write_all(
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 4\r\nX-Trace:\t abc-123 \t\r\n\r\nBODY",
+        )
+        .expect("HTTP response head should be writable");
+    let output = child
+        .wait_with_output()
+        .expect("HTTP response-head Flux binary should finish");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\ntrue\nHTTP/1.1\n204\nNo Content\ntrue\nContent-Length\n4\ntrue\nX-Trace\nabc-123\ntrue\nnil\ntrue\nBODY\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
