@@ -6014,6 +6014,28 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "peerAddress" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("net.peerAddress expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "net.peerAddress socket")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str, Type::I64],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    "net.peerAddress callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "setNonblocking" => {
                 if args.len() != 2 {
                     return Err(diag(

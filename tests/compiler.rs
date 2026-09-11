@@ -1639,6 +1639,93 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_peer_address_is_typed_borrowed_tree_shaken_and_runnable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn inspect(host: str, port: i64) -> void {{
+    print(host)
+    print(port)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.peerAddress(socket, inspect))
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("connected peer inspection should typecheck");
+    let generated = compile_to_c(&source).expect("connected peer inspection should lower on Linux");
+    assert!(generated.contains("flux__net_peer_address("));
+    assert!(generated.contains("getpeername("));
+    assert!(generated.contains("inet_ntop("));
+
+    let root = std::env::temp_dir().join(format!("flux-net-peer-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("peer address fixture should be writable");
+    let source_path = root.join("peer.flux");
+    fs::write(&source_path, &source).expect("peer address source should be writable");
+    let binary = root.join("peer");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("peer address binary should build");
+    assert!(
+        built.status.success(),
+        "peer address build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("peer address binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 5);
+    assert_eq!(lines[0], "nil");
+    assert_eq!(lines[1], "127.0.0.1");
+    assert_eq!(lines[2], port.to_string());
+    assert_eq!(&lines[3..], &["nil", "nil"]);
+
+    let callback_error = check_source(
+        "fn inspect(_host: str) -> void {\n}\nfn main() -> i64 {\n    print(net.peerAddress(1, inspect))\n    return 0\n}\n",
+    )
+    .expect_err("peer address callback shape must be exact");
+    assert!(callback_error.message.contains("net.peerAddress callback"));
+    let socket_error = check_source(
+        "fn inspect(_host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    print(net.peerAddress(\"bad\", inspect))\n    return 0\n}\n",
+    )
+    .expect_err("peer address socket must be an i64 handle");
+    assert!(
+        socket_error.message.contains("net.peerAddress socket")
+            && socket_error.message.contains("expected i64")
+    );
+
+    let unused = r#"
+fn inspect(_host: str, _port: i64) -> void {
+}
+fn hidden(socket: i64) -> void {
+    print(net.peerAddress(socket, inspect))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead peer-address support should tree-shake");
+    assert!(!unused_generated.contains("flux__net_peer_address("));
+    let _ = fs::remove_dir_all(&root);
+    drop(listener);
+}
+
+#[test]
 fn http_request_head_is_typed_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {

@@ -3272,6 +3272,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_local_port(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_local_port(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); struct sockaddr_storage address; socklen_t length = sizeof(address); if (getsockname((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return flux__net_result(-1, \"failed to read socket address\"); if (address.ss_family == AF_INET) return flux__net_result((int64_t)ntohs(((struct sockaddr_in *)&address)->sin_port), NULL); if (address.ss_family == AF_INET6) return flux__net_result((int64_t)ntohs(((struct sockaddr_in6 *)&address)->sin6_port), NULL); return flux__net_result(-1, \"socket address has unsupported family\"); }\n");
     }
+    if runtime_usage.contains("flux__net_peer_address(") {
+        out.push_str("static inline const char *flux__net_peer_address(int64_t socket_handle, void (*callback)(const char *, int64_t)) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; struct sockaddr_storage address; socklen_t length = sizeof(address); if (getpeername((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return \"failed to read peer address\"; char host[INET6_ADDRSTRLEN]; const void *source = NULL; int64_t port = -1; if (address.ss_family == AF_INET) { struct sockaddr_in *ipv4 = (struct sockaddr_in *)&address; source = &ipv4->sin_addr; port = (int64_t)ntohs(ipv4->sin_port); } else if (address.ss_family == AF_INET6) { struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)&address; source = &ipv6->sin6_addr; port = (int64_t)ntohs(ipv6->sin6_port); } else { return \"peer address has unsupported family\"; } if (inet_ntop(address.ss_family, source, host, sizeof(host)) == NULL) return \"failed to format peer address\"; callback(host, port); return NULL; }\n");
+    }
     if runtime_usage.contains("flux__net_send_text(") {
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
     }
@@ -17413,6 +17416,21 @@ fn emit_qualified_call(
                     format!("flux__net_local_port({})", socket_handle.code),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "peerAddress" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_peer_address({}, {})",
+                        socket_handle.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
                 ));
             }
             "sendText" => {
