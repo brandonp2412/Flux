@@ -2116,8 +2116,9 @@ fn main() -> i64 {
 "#;
     check_source(source).expect("HTTP text response body should typecheck");
     let generated = compile_to_c(source).expect("HTTP text response body should lower on Linux");
-    assert!(generated.contains("flux__net_http_receive_response_with_text_body("));
-    assert!(generated.contains("Transfer-Encoding response bodies are not supported"));
+    assert!(generated.contains("flux__net_http_receive_response_with_text_body_v2("));
+    assert!(generated.contains("unsupported HTTP Transfer-Encoding"));
+    assert!(generated.contains("Content-Length with Transfer-Encoding is not supported"));
 
     let invalid_limit = check_source(
         "fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveResponseWithTextBody(1, 4096, 65537, response, header, body)\n    print(failure)\n    return 0\n}\n",
@@ -2186,6 +2187,61 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
         "nil\nnil\ntrue\nHTTP/1.1\n200\nOK\ntrue\nContent-Length\n5\ntrue\nX-Trace\nabc\ntrue\nhello\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_chunked_text_response_body_is_decoded_bounded_and_does_not_overread() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP chunked loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("HTTP chunked client should connect");
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Trace: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\n\r\nTAIL",
+            )
+            .expect("chunked HTTP response should be writable");
+    });
+
+    let root =
+        std::env::temp_dir().join(format!("flux-http-chunked-client-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP chunked fixture should be writable");
+    let source_path = root.join("client.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn response(_socket: i64, version: str, status: i64, reason: str) -> void {{\n    print(version)\n    print(status)\n    print(reason)\n}}\nfn header(_socket: i64, name: str, value: str) -> void {{\n    print(name)\n    print(value)\n}}\nfn body(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn tail(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveResponseWithTextBody(socket, 4096, 1024, response, header, body)\n    print(received > 0)\n    print(receiveError)\n    let (tailBytes, tailError) = net.receiveText(socket, 4, tail)\n    print(tailBytes)\n    print(tailError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP chunked client source should be writable");
+    let binary = root.join("client");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP chunked client binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP chunked client fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP chunked client binary should run");
+    server
+        .join()
+        .expect("HTTP chunked server fixture should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nHTTP/1.1\n200\nOK\nTransfer-Encoding\nchunked\nX-Trace\nchunked\nhello world\ntrue\nnil\nTAIL\n4\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
