@@ -4169,9 +4169,29 @@ fn analyzed_project_document_cached(
     crate::semantic::SemanticDatabase,
     Vec<crate::project::ProjectSource>,
 )> {
-    let current_path = std::fs::canonicalize(file_uri_path(uri)?).ok()?;
+    workspace_project_analyses_cached(uri, documents, cache, false)
+        .into_iter()
+        .next()
+}
+
+fn workspace_project_analyses_cached(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    mut cache: Option<&mut crate::project::ProjectAnalysisCache>,
+    include_reverse_dependents: bool,
+) -> Vec<(
+    crate::semantic::SemanticDatabase,
+    Vec<crate::project::ProjectSource>,
+)> {
+    let Some(current_path) = file_uri_path(uri).and_then(|path| std::fs::canonicalize(path).ok())
+    else {
+        return Vec::new();
+    };
     let overlays = document_overlays(documents);
     let mut candidates = workspace_project_targets(documents);
+    if include_reverse_dependents {
+        candidates.extend(reverse_dependency_project_targets(&current_path));
+    }
     if !candidates
         .iter()
         .any(|candidate| candidate == &current_path)
@@ -4181,8 +4201,7 @@ fn analyzed_project_document_cached(
     candidates.sort();
     candidates.dedup();
 
-    let mut best: Option<(usize, bool, crate::project::ProjectAnalysis)> = None;
-    let mut cache = cache;
+    let mut analyses = Vec::new();
     for candidate in candidates {
         let analysis = if let Some(cache) = cache.as_deref_mut() {
             cache.analyze_with_overlays(&candidate, &overlays)
@@ -4203,18 +4222,25 @@ fn analyzed_project_document_cached(
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name == "flux.toml");
-        let score = (analysis.sources.len(), manifest_backed);
-        if best
-            .as_ref()
-            .is_none_or(|(count, manifest, _)| score > (*count, *manifest))
-        {
-            best = Some((analysis.sources.len(), manifest_backed, analysis));
-        }
+        analyses.push((analysis.sources.len(), manifest_backed, candidate, analysis));
     }
-    let (_, _, analysis) = best?;
-    let database =
-        crate::semantic::SemanticDatabase::from_analyzed(analysis.program, analysis.signatures);
-    Some((database, analysis.sources))
+    analyses.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    analyses
+        .into_iter()
+        .map(|(_, _, _, analysis)| {
+            let database = crate::semantic::SemanticDatabase::from_analyzed(
+                analysis.program,
+                analysis.signatures,
+            );
+            (database, analysis.sources)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -4299,9 +4325,10 @@ fn references_for_document_cached(
     encoding: PositionEncoding,
     cache: Option<&mut crate::project::ProjectAnalysisCache>,
 ) -> Vec<JsonValue> {
-    if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
+    let analyses = workspace_project_analyses_cached(uri, documents, cache, true);
+    if let Some((database, sources)) = analyses.first() {
         let Some(symbol) =
-            symbol_for_position(&database, uri, source, line_index, character, encoding)
+            symbol_for_position(database, uri, source, line_index, character, encoding).cloned()
         else {
             return Vec::new();
         };
@@ -4315,8 +4342,8 @@ fn references_for_document_cached(
             return local_symbol_occurrences(
                 &project_source.text,
                 project_source.source_id,
-                symbol,
-                &database,
+                &symbol,
+                database,
             )
             .into_iter()
             .map(|span| {
@@ -4327,23 +4354,53 @@ fn references_for_document_cached(
             })
             .collect();
         }
-        return sources
-            .iter()
-            .flat_map(|project_source| {
-                project_symbol_occurrences(
+
+        let mut locations = Vec::new();
+        let mut seen = HashSet::new();
+        for (analysis_database, analysis_sources) in &analyses {
+            let Some(analysis_symbol) = analysis_database.symbols().iter().find(|candidate| {
+                candidate.name == symbol.name
+                    && candidate.kind == symbol.kind
+                    && candidate.span == symbol.span
+            }) else {
+                continue;
+            };
+            for project_source in analysis_sources {
+                for span in project_symbol_occurrences(
                     &project_source.text,
                     project_source.source_id,
-                    symbol,
-                    &database,
-                )
-                .into_iter()
-                .map(|span| {
-                    object([
-                        ("uri", JsonValue::String(project_source_uri(project_source))),
-                        ("range", lsp_range(span, &project_source.text, encoding)),
-                    ])
-                })
-                .collect::<Vec<_>>()
+                    analysis_symbol,
+                    analysis_database,
+                ) {
+                    let key = (
+                        project_source.path.clone(),
+                        span.line,
+                        span.column,
+                        span.length,
+                    );
+                    if seen.insert(key) {
+                        locations.push((
+                            project_source.path.clone(),
+                            project_source.text.clone(),
+                            span,
+                        ));
+                    }
+                }
+            }
+        }
+        locations.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.2.line.cmp(&right.2.line))
+                .then_with(|| left.2.column.cmp(&right.2.column))
+        });
+        return locations
+            .into_iter()
+            .map(|(path, text, span)| {
+                object([
+                    ("uri", JsonValue::String(file_uri_from_path(&path))),
+                    ("range", lsp_range(span, &text, encoding)),
+                ])
             })
             .collect();
     }
@@ -4407,20 +4464,22 @@ fn rename_for_document_cached(
     if !is_valid_identifier(new_name) || is_flux_keyword(new_name) {
         return None;
     }
-    if let Some((database, sources)) = analyzed_project_document_cached(uri, documents, cache) {
-        let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+    let analyses = workspace_project_analyses_cached(uri, documents, cache, true);
+    if let Some((database, sources)) = analyses.first() {
+        let symbol =
+            symbol_for_position(database, uri, source, line_index, character, encoding)?.clone();
         if is_local_symbol_kind(symbol.kind) {
             let project_source = sources
                 .iter()
                 .find(|source| source.source_id == symbol.span.source_id)?;
-            if local_symbol_name_conflicts(&project_source.text, symbol, new_name, &database) {
+            if local_symbol_name_conflicts(&project_source.text, &symbol, new_name, database) {
                 return None;
             }
             let edits = local_symbol_occurrences(
                 &project_source.text,
                 project_source.source_id,
-                symbol,
-                &database,
+                &symbol,
+                database,
             )
             .into_iter()
             .map(|span| {
@@ -4434,29 +4493,53 @@ fn rename_for_document_cached(
             changes.insert(project_source_uri(project_source), JsonValue::Array(edits));
             return Some(object([("changes", JsonValue::Object(changes))]));
         }
-        if database.symbols_named(new_name).next().is_some() {
+        if analyses
+            .iter()
+            .any(|(database, _)| database.symbols_named(new_name).next().is_some())
+        {
             return None;
         }
-        let mut changes = BTreeMap::new();
-        for project_source in &sources {
-            let edits = project_symbol_occurrences(
-                &project_source.text,
-                project_source.source_id,
-                symbol,
-                &database,
-            )
-            .into_iter()
-            .map(|span| {
-                object([
-                    ("range", lsp_range(span, &project_source.text, encoding)),
-                    ("newText", JsonValue::String(new_name.to_string())),
-                ])
-            })
-            .collect::<Vec<_>>();
-            if !edits.is_empty() {
-                changes.insert(project_source_uri(project_source), JsonValue::Array(edits));
+
+        let mut changes = BTreeMap::<String, Vec<JsonValue>>::new();
+        let mut seen = HashSet::new();
+        for (analysis_database, analysis_sources) in &analyses {
+            let Some(analysis_symbol) = analysis_database.symbols().iter().find(|candidate| {
+                candidate.name == symbol.name
+                    && candidate.kind == symbol.kind
+                    && candidate.span == symbol.span
+            }) else {
+                continue;
+            };
+            for project_source in analysis_sources {
+                for span in project_symbol_occurrences(
+                    &project_source.text,
+                    project_source.source_id,
+                    analysis_symbol,
+                    analysis_database,
+                ) {
+                    let key = (
+                        project_source.path.clone(),
+                        span.line,
+                        span.column,
+                        span.length,
+                    );
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    changes
+                        .entry(project_source_uri(project_source))
+                        .or_default()
+                        .push(object([
+                            ("range", lsp_range(span, &project_source.text, encoding)),
+                            ("newText", JsonValue::String(new_name.to_string())),
+                        ]));
+                }
             }
         }
+        let changes = changes
+            .into_iter()
+            .map(|(uri, edits)| (uri, JsonValue::Array(edits)))
+            .collect::<BTreeMap<_, _>>();
         return Some(object([("changes", JsonValue::Object(changes))]));
     }
     let database = analyzed_document(uri, source)?;
@@ -4979,6 +5062,65 @@ fn workspace_project_targets(documents: &HashMap<String, String>) -> Vec<PathBuf
         targets.push(canonical.clone());
         if let Some(manifest) = nearest_package_manifest(&canonical) {
             targets.push(manifest);
+        }
+    }
+    targets
+}
+
+fn reverse_dependency_project_targets(current_path: &std::path::Path) -> Vec<PathBuf> {
+    const MAX_WORKSPACE_SOURCES: usize = 2048;
+
+    let manifest = nearest_package_manifest(current_path);
+    let (root, recursive) = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.parent().map(|root| (root.to_path_buf(), true)))
+        .unwrap_or_else(|| {
+            (
+                current_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf(),
+                false,
+            )
+        });
+    let mut directories = vec![root];
+    let mut targets = manifest.into_iter().collect::<Vec<_>>();
+
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if recursive {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if !name.starts_with('.') && name != "target" {
+                        directories.push(path);
+                    }
+                }
+                continue;
+            }
+            if !file_type.is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("flux")
+            {
+                continue;
+            }
+            if let Ok(canonical) = std::fs::canonicalize(path) {
+                targets.push(canonical);
+                if targets.len() >= MAX_WORKSPACE_SOURCES {
+                    return targets;
+                }
+            }
+        }
+        if !recursive {
+            break;
         }
     }
     targets
@@ -7629,6 +7771,61 @@ mod tests {
         assert!(rename.contains("dep.flux"));
         assert!(rename.contains("main.flux"));
         assert!(rename.contains("answer"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn references_and_rename_discover_unopened_reverse_dependents() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-lsp-reverse-dependents-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let first = root.join("first.flux");
+        let second = root.join("second.flux");
+        let dependency_source = "pub fn value() -> i64 { 42 }\n";
+        let first_source = "import \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        let second_source = "import \"dep.flux\"\nfn main() -> i64 { value() + 1 }\n";
+        std::fs::write(&dependency, dependency_source).expect("dependency should be writable");
+        std::fs::write(&first, first_source).expect("first reverse dependent should be writable");
+        std::fs::write(&second, second_source)
+            .expect("second reverse dependent should be writable");
+        let dependency = std::fs::canonicalize(dependency).unwrap();
+        let dependency_uri = file_uri_from_path(&dependency);
+        let documents = HashMap::from([(dependency_uri.clone(), dependency_source.to_string())]);
+
+        let references = references_for_document(
+            &dependency_uri,
+            dependency_source,
+            &documents,
+            0,
+            8,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(references.len(), 3);
+        let references_json = JsonValue::Array(references).to_json();
+        assert!(references_json.contains("dep.flux"));
+        assert!(references_json.contains("first.flux"));
+        assert!(references_json.contains("second.flux"));
+
+        let rename = rename_for_document(
+            &dependency_uri,
+            dependency_source,
+            &documents,
+            0,
+            8,
+            "answer",
+            PositionEncoding::Utf8,
+        )
+        .expect("rename should cover unopened reverse dependents")
+        .to_json();
+        assert_eq!(rename.matches("newText").count(), 3);
+        assert!(rename.contains("dep.flux"));
+        assert!(rename.contains("first.flux"));
+        assert!(rename.contains("second.flux"));
 
         let _ = std::fs::remove_dir_all(root);
     }
