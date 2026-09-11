@@ -5636,6 +5636,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn foreach_nested_list_bindings_preserve_borrow_provenance() {
+    let live_binding = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    for row in rows:
+        let destination: i64[][] = rows
+        print(row[0])
+        print(destination[0][0])
+        break
+    return 0
+}
+"#;
+
+    let errors = check_source_all(live_binding)
+        .expect_err("a live nested-list foreach binding must keep its iterable owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'row' is still live")
+    }));
+
+    let dead_binding = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    for row in rows:
+        print(row[0])
+        let destination: i64[][] = rows
+        print(destination[0][0])
+        break
+    return 0
+}
+"#;
+
+    check_source(dead_binding)
+        .expect("a foreach element borrow must end after its final reachable use");
+    compile_to_c(dead_binding)
+        .expect("moving after the foreach element's last use on a breaking path should lower");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead_binding, SourceId::new(1210))
+        .expect("foreach borrow provenance should remain available through semantic CFG analysis");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph.borrowed_definition_span("row", "rows").is_some(),
+        "normalized ownership IR should expose the foreach element borrow source"
+    );
+}
+
+#[test]
 fn sibling_branch_alias_names_do_not_cross_contaminate_borrow_provenance() {
     let source = r#"
 fn positive(value: i64) -> bool {

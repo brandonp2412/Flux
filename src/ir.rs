@@ -496,7 +496,7 @@ impl ControlFlowGraph {
             return None;
         }
         let source_node = match self.nodes.get(node.0)?.kind {
-            ControlFlowNodeKind::Destructure { .. } => node,
+            ControlFlowNodeKind::Destructure { .. } | ControlFlowNodeKind::Loop => node,
             ControlFlowNodeKind::PatternBindings => {
                 self.edges
                     .iter()
@@ -518,6 +518,7 @@ impl ControlFlowGraph {
                         ControlFlowEvaluationKind::DestructureValue
                             | ControlFlowEvaluationKind::AssignmentValue
                             | ControlFlowEvaluationKind::MatchValue
+                            | ControlFlowEvaluationKind::Iterable
                     )
                 )
                 .then(|| source.values.first().copied())

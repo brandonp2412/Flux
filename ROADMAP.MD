@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 480
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 84 checkbox items
+- Current net scope growth after the baseline: 85 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -357,6 +357,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Follow-up: nested-list comprehensions preserve borrow provenance from scoped element bindings into the constructed aggregate; moving the source owner is rejected while a comprehension-projected inner view remains live and becomes valid immediately after the aggregate's last reachable use.
   - [x] Follow-up: descriptor-preserving nested-list `filter`/`where`, `concat`, and nested-result `flatten` keep embedded list owners borrowed until the transformed aggregate's last reachable use; capture-free anonymous functions also reject list returns so stack-backed collection storage cannot escape a callback before owned collection transfer/lifetime semantics exist.
   - [x] Follow-up: live-view move validation resolves each live alias through the definitions that actually reach the move node, and transitive borrow provenance follows resolved definition identities rather than globally matching a binding name. Mutually exclusive sibling branches may therefore reuse local view names without an unrelated borrowed definition falsely poisoning a valid owner move, while real same-path transitive views remain protected.
+  - [x] Follow-up: nested-list `for value in source` bindings retain their normalized borrow source from the foreach iterable. Moving the outer list owner while a projected list element is still live now fails with the same CFG-liveness borrow diagnostic as destructuring/match views, while a breaking path may move the owner after the element's final reachable use.
 - [ ] Prevent aliasing violations.
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.
