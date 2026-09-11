@@ -34,4 +34,14 @@ flux profile benchmarks/perf/compute.flux --leaks
 
 The leak profiler is intentionally separate from normal debug/profile/release builds, so sanitizer instrumentation adds no overhead unless `--leaks` is requested. A sanitizer finding uses a dedicated failing exit status and Flux removes the temporary binary afterward. Full retained-object graph visualization is not meaningful for most current Flux values because the bootstrap language still lacks general owned heap collections; richer heap graphs can extend this tooling as those value models land.
 
-Task/render timelines and low-overhead production profiling remain roadmap work. CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.
+## Low-overhead sampling
+
+`flux profile <target> --sample` builds the ordinary optimized `profile` binary with debug information and frame pointers but no compiler profiling instrumentation, then samples it with Linux `perf record --call-graph dwarf`. When the program exits, Flux prints `perf report --stdio`, removes the compiler `flux__fn_` prefix from application symbols, and deletes the temporary binary and `perf.data` file.
+
+```sh
+flux profile benchmarks/perf/compute.flux --sample
+```
+
+This path is intended for production-representative CPU investigation where `gprof` instrumentation would distort the workload. It requires Linux `perf` plus permission to use the kernel performance counters; restrictive `kernel.perf_event_paranoid` or container policies can still block sampling. `flux doctor` reports whether the `perf` command is installed, and failures point at the kernel permission setting rather than silently falling back to an instrumented profiler. Ordinary Flux binaries remain unchanged.
+
+Task/render timelines remain roadmap work. CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.

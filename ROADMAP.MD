@@ -930,7 +930,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Source mapping. `flux profile` collects sampled native addresses from gprof output and resolves them through `addr2line` against the exact instrumented binary, replacing compiler-stdin locations with original `.flux` file/line locations wherever DWARF has a source mapping while retaining a safe native fallback for prologue/runtime instructions.
 - [ ] UI inspector without exposing a widget-object hierarchy.
 - [ ] Performance overlays.
-- [ ] Low-overhead production profiling hooks.
+- [x] Low-overhead production profiling hooks: `flux profile <target> --sample` builds the ordinary optimized/profile native binary with debug information and frame pointers but no profiler instrumentation, samples it through Linux `perf record --call-graph dwarf`, prints a demangled `perf report --stdio`, cleans temporary artifacts, and leaves normal Flux binaries unchanged. `flux doctor` reports `perf` availability and the command fails clearly when the tool or kernel performance-counter permissions are unavailable.
 
 # Milestone 26 — CLI/build/developer workflow
 

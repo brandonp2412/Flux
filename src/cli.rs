@@ -130,6 +130,7 @@ enum ProfileKind {
     Cpu,
     Allocation,
     Leaks,
+    Sampling,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -461,6 +462,7 @@ fn run() -> Result<(), CliError> {
                 ProfileKind::Cpu => profile_cpu_target(&options.target),
                 ProfileKind::Allocation => profile_allocation_target(&options.target),
                 ProfileKind::Leaks => profile_leak_target(&options.target),
+                ProfileKind::Sampling => profile_sampling_target(&options.target),
             }
         }
         "symbolize" => {
@@ -2286,9 +2288,102 @@ fn profile_leak_target(target: &Path) -> Result<(), CliError> {
     }
 }
 
+fn profile_sampling_target(target: &Path) -> Result<(), CliError> {
+    command_first_line("perf", &["--version"]).map_err(|message| {
+        CliError::Message(format!(
+            "Flux sampling profiling requires Linux perf: {message}"
+        ))
+    })?;
+
+    let sources = validate_project(target)?;
+    let generated = match fluxc::project::compile_to_c(target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = profile_binary_path();
+    let data = profile_sampling_data_path();
+    let _ = fs::remove_file(&data);
+    build_native_instrumented(
+        &generated,
+        &binary,
+        BuildMode::Profile,
+        NativeInstrumentation::None,
+    )?;
+
+    eprintln!("profile: sampling optimized native binary with Linux perf");
+    let run_status = Command::new("perf")
+        .args(["record", "--call-graph", "dwarf", "-o"])
+        .arg(&data)
+        .arg("--")
+        .arg(&binary)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| format!("failed to launch Linux perf: {error}"));
+
+    let report_result = if data.is_file() {
+        eprintln!("profile: sampling report");
+        match Command::new("perf")
+            .args(["report", "--stdio", "-i"])
+            .arg(&data)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let report = String::from_utf8_lossy(&output.stdout);
+                print!("{}", demangle_profile_symbols(&report));
+                io::stdout().flush().map_err(|error| {
+                    CliError::Message(format!("failed to flush profiler report: {error}"))
+                })
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(CliError::Message(format!(
+                    "perf report exited with status {}: {}",
+                    output
+                        .status
+                        .code()
+                        .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+                    stderr.trim()
+                )))
+            }
+            Err(error) => Err(CliError::Message(format!(
+                "failed to launch perf report: {error}"
+            ))),
+        }
+    } else {
+        Err(CliError::Message(
+            "sampling profiler produced no perf.data; check perf_event permissions and kernel.perf_event_paranoid"
+                .to_string(),
+        ))
+    };
+
+    let _ = fs::remove_file(&binary);
+    let _ = fs::remove_file(&data);
+    let run_status = run_status?;
+    report_result?;
+    if run_status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "profiled program exited with status {}",
+            run_status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string())
+        )))
+    }
+}
+
 fn profile_binary_path() -> PathBuf {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     env::temp_dir().join(format!("flux-profile-{}{suffix}", std::process::id()))
+}
+
+fn profile_sampling_data_path() -> PathBuf {
+    env::temp_dir().join(format!("flux-perf-{}.data", std::process::id()))
 }
 
 fn profile_data_dir() -> PathBuf {
@@ -3167,6 +3262,10 @@ fn run_doctor() -> Result<(), CliError> {
             println!("  [warn] glibc memusage allocation profiler unavailable: {message}")
         }
     }
+    match command_first_line("perf", &["--version"]) {
+        Ok(version) => println!("  [ok] Linux perf sampling profiler: {version}"),
+        Err(message) => println!("  [warn] Linux perf sampling profiler unavailable: {message}"),
+    }
     match command_first_line("addr2line", &["--version"]) {
         Ok(version) => println!("  [ok] addr2line crash symbolizer: {version}"),
         Err(message) => println!("  [warn] addr2line crash symbolizer unavailable: {message}"),
@@ -3392,7 +3491,7 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
 fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
     let Some(target) = args.first() else {
         return Err(
-            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks]'"
+            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample]'"
                 .to_string(),
         );
     };
@@ -3406,21 +3505,28 @@ fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
         match flag.as_str() {
             "--alloc" => {
                 if mode_seen {
-                    return Err("profile modes '--alloc' and '--leaks' are mutually exclusive and may only be supplied once".to_string());
+                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
                 }
                 kind = ProfileKind::Allocation;
                 mode_seen = true;
             }
             "--leaks" => {
                 if mode_seen {
-                    return Err("profile modes '--alloc' and '--leaks' are mutually exclusive and may only be supplied once".to_string());
+                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
                 }
                 kind = ProfileKind::Leaks;
                 mode_seen = true;
             }
+            "--sample" => {
+                if mode_seen {
+                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
+                }
+                kind = ProfileKind::Sampling;
+                mode_seen = true;
+            }
             _ => {
                 return Err(format!(
-                    "unknown profile option '{flag}'; expected '--alloc' or '--leaks'"
+                    "unknown profile option '{flag}'; expected '--alloc', '--leaks', or '--sample'"
                 ));
             }
         }
@@ -5419,7 +5525,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         "--format directory|tar.gz|container|systemd",
@@ -5457,7 +5563,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_options_default_to_cpu_and_accept_memory_modes() {
+    fn profile_options_default_to_cpu_and_accept_specialized_modes() {
         let cpu = profile_options(&["app.flux".to_string()]).expect("CPU profile should parse");
         assert_eq!(cpu.kind, ProfileKind::Cpu);
         assert_eq!(cpu.target, std::path::Path::new("app.flux"));
@@ -5469,6 +5575,10 @@ mod tests {
         let leaks = profile_options(&["app.flux".to_string(), "--leaks".to_string()])
             .expect("leak profile should parse");
         assert_eq!(leaks.kind, ProfileKind::Leaks);
+
+        let sampling = profile_options(&["app.flux".to_string(), "--sample".to_string()])
+            .expect("sampling profile should parse");
+        assert_eq!(sampling.kind, ProfileKind::Sampling);
         assert!(profile_options(&["--alloc".to_string()]).is_err());
         assert!(
             profile_options(&[
@@ -5482,6 +5592,14 @@ mod tests {
             profile_options(&[
                 "app.flux".to_string(),
                 "--alloc".to_string(),
+                "--leaks".to_string(),
+            ])
+            .is_err()
+        );
+        assert!(
+            profile_options(&[
+                "app.flux".to_string(),
+                "--sample".to_string(),
                 "--leaks".to_string(),
             ])
             .is_err()
