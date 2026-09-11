@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 454
 - Reported overall progress: **61%**
-- Current net scope growth after the baseline: 45 checkbox items
+- Current net scope growth after the baseline: 46 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -328,7 +328,7 @@ Adapt the convenience of Dart's async language features while preserving Flux's 
 
 # Milestone 4 — Ownership and memory safety
 
-The ownership track now has an explicit compiler-level copyability classification rather than relying on ad-hoc list checks. Bootstrap scalar handles (`i64`, `bool`, `str`, `error`), function values, closed interface values, and recursively copyable structs/enums are `Copy`; `void` is not a value and local list/view types are deliberately non-copy until owned collection storage and move/borrow rules exist. Existing mutable-binding and aggregate-storage safety gates query that classification, so future non-copy value types inherit the conservative restrictions automatically. Direct non-copy moves are represented on the semantic CFG and a deterministic forward may-analysis computes moved-value state at every reachable CFG node; use-after-move diagnostics consume those normalized path facts rather than maintaining a second syntax-shaped branch/loop ownership state machine. Borrowed list-parameter aliases are likewise reclassified from normalized reaching-definition/value provenance before move-state propagation, including transitive aliases, so the bootstrap borrow checker no longer carries a parallel syntax-tree reborrow analysis.
+The ownership track now has an explicit compiler-level copyability classification rather than relying on ad-hoc list checks. Bootstrap scalar handles (`i64`, `bool`, `str`, `error`), function values, closed interface values, and recursively copyable structs/enums are `Copy`; `void` is not a value and local list/view types are deliberately non-copy until owned collection storage and move/borrow rules exist. Existing mutable-binding and aggregate-storage safety gates query that classification, so future non-copy value types inherit the conservative restrictions automatically. Direct non-copy moves are represented on the semantic CFG and a deterministic forward may-analysis computes moved-value state at every reachable CFG node; use-after-move diagnostics consume those normalized path facts rather than maintaining a second syntax-shaped branch/loop ownership state machine. Borrowed list-parameter aliases are likewise reclassified from normalized reaching-definition/value provenance before move-state propagation, including transitive aliases, so the bootstrap borrow checker no longer carries a parallel syntax-tree reborrow analysis. Zero-copy local list views now also participate in CFG-liveness ownership validation: a list owner cannot move while a derived slice/indexed-list/`take`/`skip`/`chunked` view remains live, while a move after the view's final use stays valid.
 
 - [x] Define copyable primitive/value types with alias-aware structural classification shared by semantic validation.
 - [ ] Move semantics for non-copy values.
@@ -349,6 +349,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Direct-local use-after-move diagnostics are driven by CFG/IR move-state before each normalized evaluation node, including loops, branch joins, `break`, `continue`, and returns.
   - [ ] Extend CFG/IR-wide move-state analysis to consuming calls, partial moves, future owned aggregates, and owned resource types.
 - [ ] Prevent dangling borrows.
+  - [x] Bootstrap live-view move exclusion for zero-copy list borrows: CFG liveness rejects moving a local list owner while a derived slice, nested-list index, `take`, `skip`, `chunked`, or transitive view binding remains live, while permitting the move immediately after the borrow's last reachable use. Full first-class lifetime inference and escaping-borrow validation remain pending.
 - [ ] Prevent aliasing violations.
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.

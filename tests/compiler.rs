@@ -3681,6 +3681,68 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_moving_list_owner_while_zero_copy_view_is_live() {
+    let live_slice = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30]
+    let tail: i64[] = source[1:]
+    let destination: i64[] = source
+    print(tail[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_slice)
+        .expect_err("moving a list owner while a slice borrow is live must fail");
+    let borrow_error = errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("while borrowed view 'tail' is still live")
+        })
+        .expect("the live borrowed view should be identified");
+    assert!(
+        borrow_error
+            .labels
+            .iter()
+            .any(|label| label.message.contains("'tail' borrows from 'source'"))
+    );
+
+    let dead_slice = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30]
+    let tail: i64[] = source[1:]
+    print(tail[0])
+    let destination: i64[] = source
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead_slice).expect("a dead slice borrow must not prevent a later owner move");
+    compile_to_c(dead_slice).expect("a move after the slice's last use should lower natively");
+
+    let chained_view = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30, 40]
+    let tail: i64[] = source[1:]
+    let lastTwo: i64[] = tail | take 2
+    let destination: i64[] = source
+    print(lastTwo[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(chained_view)
+        .expect_err("transitive zero-copy view borrows must keep the owner live");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'lastTwo' is still live")
+    }));
+}
+
+#[test]
 fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
     let source = r#"
 const NEVER: bool = 2 > 3

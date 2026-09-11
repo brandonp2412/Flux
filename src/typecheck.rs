@@ -5,7 +5,9 @@ use crate::ast::{
     Program, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
-use crate::ir::ControlFlowGraph;
+use crate::ir::{
+    ControlFlowDefinitionId, ControlFlowGraph, ControlFlowValueId, ControlFlowValueKind,
+};
 
 #[derive(Debug, Clone)]
 pub struct Signature {
@@ -3828,6 +3830,151 @@ fn check_cfg_moved_reads(
             }
         }
         diagnostics.push(diagnostic);
+    }
+    check_cfg_live_borrow_moves(&graph, diagnostics);
+}
+
+fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for node in graph.nodes() {
+        if !graph.is_reachable(node.id) || node.ownership.moves.is_empty() {
+            continue;
+        }
+        let Some(live_after) = graph.live_after(node.id) else {
+            continue;
+        };
+        for ownership_move in &node.ownership.moves {
+            let mut aliases = live_after
+                .live()
+                .iter()
+                .filter(|name| {
+                    *name != &ownership_move.source && *name != &ownership_move.destination
+                })
+                .filter_map(|name| {
+                    borrowed_definition_span(graph, name, &ownership_move.source)
+                        .map(|span| (name.clone(), span))
+                })
+                .collect::<Vec<_>>();
+            aliases.sort_by(|left, right| left.0.cmp(&right.0));
+            aliases.dedup_by(|left, right| left.0 == right.0);
+            for (alias, borrow_span) in aliases {
+                diagnostics.push(
+                    diag(
+                        ownership_move.span,
+                        &format!(
+                            "cannot move non-copy binding '{}' while borrowed view '{}' is still live",
+                            ownership_move.source, alias
+                        ),
+                    )
+                    .with_label(borrow_span, format!("'{alias}' borrows from '{}'", ownership_move.source))
+                    .with_note("use the borrowed view before moving its owner, or move the owner only after the view's last use"),
+                );
+            }
+        }
+    }
+}
+
+fn borrowed_definition_span(
+    graph: &ControlFlowGraph,
+    name: &str,
+    source: &str,
+) -> Option<SourceSpan> {
+    let mut visiting = HashSet::new();
+    borrowed_definition_span_inner(graph, name, source, &mut visiting)
+}
+
+fn borrowed_definition_span_inner(
+    graph: &ControlFlowGraph,
+    name: &str,
+    source: &str,
+    visiting: &mut HashSet<String>,
+) -> Option<SourceSpan> {
+    if !visiting.insert(name.to_string()) {
+        return None;
+    }
+    let result = graph.nodes().iter().find_map(|node| {
+        node.definitions
+            .iter()
+            .enumerate()
+            .find_map(|(index, definition)| {
+                if definition.name != name || !matches!(definition.ty, Type::List(_)) {
+                    return None;
+                }
+                let id = ControlFlowDefinitionId::Node {
+                    node: node.id,
+                    index,
+                };
+                let value = graph.definition_value(id)?;
+                definition_value_borrows_from(graph, value, source, visiting)
+                    .then_some(definition.span)
+            })
+    });
+    visiting.remove(name);
+    result
+}
+
+fn definition_value_borrows_from(
+    graph: &ControlFlowGraph,
+    value: ControlFlowValueId,
+    source: &str,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    let Some(value) = graph.value(value) else {
+        return false;
+    };
+    match &value.kind {
+        ControlFlowValueKind::Slice { base, .. } => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
+        ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+            value_depends_on_borrow_source(graph, *base, source, visiting)
+        }
+        ControlFlowValueKind::Call { callee, arguments }
+            if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+        {
+            arguments.first().is_some_and(|argument| {
+                value_depends_on_borrow_source(graph, *argument, source, visiting)
+            })
+        }
+        ControlFlowValueKind::NameRead { definitions, .. } => {
+            definitions.iter().any(|definition| match definition {
+                ControlFlowDefinitionId::Parameter(_) => false,
+                ControlFlowDefinitionId::Node { .. } | ControlFlowDefinitionId::Scoped { .. } => {
+                    graph
+                        .definition_name(*definition)
+                        .and_then(|name| {
+                            borrowed_definition_span_inner(graph, name, source, visiting)
+                        })
+                        .is_some()
+                }
+            })
+        }
+        _ => false,
+    }
+}
+
+fn value_depends_on_borrow_source(
+    graph: &ControlFlowGraph,
+    value: ControlFlowValueId,
+    source: &str,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    let Some(value) = graph.value(value) else {
+        return false;
+    };
+    match &value.kind {
+        ControlFlowValueKind::NameRead { name, definitions } => {
+            name == source
+                || definitions.iter().any(|definition| {
+                    graph
+                        .definition_name(*definition)
+                        .filter(|name| *name != source)
+                        .and_then(|name| {
+                            borrowed_definition_span_inner(graph, name, source, visiting)
+                        })
+                        .is_some()
+                })
+        }
+        _ => false,
     }
 }
 
