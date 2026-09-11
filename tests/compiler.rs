@@ -13084,6 +13084,53 @@ app Screen
 }
 
 #[test]
+fn native_linux_backend_emits_window_render_and_input_without_emulation_layer() {
+    let source = r#"
+fn changed(value: str) -> void {
+    print(value)
+}
+
+fn keyed(value: str) -> void {
+    print(value)
+}
+
+view NativeLinux {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    state clicked: bool = false
+    Text title at 1,1
+        text: "Native Linux"
+        onTap: clicked => !clicked
+        onKey: keyed
+    TextInput query at 2,1
+        text: "type here"
+        onChange: changed
+    Button action at 3,1
+        text: "Toggle"
+        onPress: clicked => !clicked
+}
+app NativeLinux(title: "Native Linux")
+"#;
+
+    check_source(source).expect("native Linux application surface should typecheck");
+    let generated = compile_to_c(source).expect("native Linux UI should lower through GTK4");
+
+    assert!(generated.contains("gtk_application_new("));
+    assert!(generated.contains("gtk_application_window_new(application)"));
+    assert!(generated.contains("GtkWidget *grid = gtk_grid_new()"));
+    assert!(generated.contains("gtk_label_new("));
+    assert!(generated.contains("gtk_entry_new()"));
+    assert!(generated.contains("gtk_button_new_with_label("));
+    assert!(generated.contains("GtkGestureClick *gesture"));
+    assert!(generated.contains("gtk_event_controller_key_new()"));
+    assert!(generated.contains("\"changed\", G_CALLBACK(flux__ui_change_query)"));
+    assert!(generated.contains("\"clicked\", G_CALLBACK(flux__ui_click_action)"));
+    assert!(!generated.contains("ANativeActivity_onCreate"));
+    assert!(!generated.contains("android/widget/"));
+    assert!(!generated.contains("emscripten"));
+}
+
+#[test]
 fn application_metadata_types_formats_and_lowers_native_window_properties() {
     let source = r#"
 const WINDOW_WIDTH: i64 = 400 + 20

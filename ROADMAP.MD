@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 461
+- Completed baseline units: 462
 - Reported overall progress: **62%**
 - Current net scope growth after the baseline: 47 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -740,7 +740,7 @@ Android is the first application-platform target. Android integration must feel 
 
 ## Linux
 
-- [ ] Native Linux window/render/input backend.
+- [x] Native Linux window/render/input backend: the current GTK4 backend owns the real Linux application window, native flat-grid rendering, pointer/keyboard/text input, focus, and direct callback dispatch without a browser/widget-emulation runtime. A dedicated compiler regression now exercises window + Text + TextInput + Button lowering together and rejects Android/web runtime leakage.
   - [x] Bootstrap GTK4 backend opens a real native Linux window, lowers Flux flat grid/Text/Button to native controls, and dispatches native button clicks into Flux callbacks.
 - [x] Wayland-first support with appropriate fallback where practical.
   - [x] Bootstrap GUI was built and launched end-to-end on a real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
