@@ -18245,6 +18245,46 @@ app Settings(theme: "dark")
 }
 
 #[test]
+fn android_text_size_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicText {
+    state text_size: i64 = 18
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Resizable"
+        size: text_size
+    Button grow at 2,1
+        text: "Grow"
+        onPress: text_size => text_size + 1
+}
+app DynamicText
+"#;
+
+    check_source(source).expect("dynamic Android Text.size should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android Text.size should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android Text.size should lower");
+
+    assert!(android.contains("int64_t child_text_size = flux__ui_state_text_size"));
+    assert!(android.contains("int64_t refresh_text_size = flux__ui_state_text_size"));
+    assert!(android.contains("refresh_text_style"));
+    assert!(android.contains("(jfloat)refresh_text_size"));
+    assert!(android.contains(
+        "Text.size must be greater than zero and fit within a 32-bit signed integer"
+    ));
+    let label_id = android_stable_view_id("DynamicText", "label");
+    assert!(android.contains(&format!("find_view, (jint){label_id}")));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {

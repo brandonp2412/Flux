@@ -4550,24 +4550,22 @@ fn emit_android_native_application(
                     Ok(value)
                 })
                 .transpose()?;
-            let text_size = view_property(element, "size")
-                .map(|property| {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.size must be a compile-time i64 value",
-                        ));
-                    };
+            let text_size_property = view_property(element, "size");
+            let (text_size, dynamic_text_size) = if let Some(property) = text_size_property {
+                if let Some(value) = static_expr_i64(&property.value, signatures) {
                     if value <= 0 || value > i64::from(i32::MAX) {
                         return Err(diag(
                             property.value.span,
-                            "Text.size must be greater than zero",
+                            "Text.size must be greater than zero and fit within a 32-bit signed integer",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?
-                .unwrap_or(default_size);
+                    (format!("{value}.0f"), false)
+                } else {
+                    (ui_expr_c(&property.value, view, signatures)?, true)
+                }
+            } else {
+                (format!("{default_size}.0f"), false)
+            };
             let text_flag = |name: &str, default: bool| -> Result<String, Diagnostic> {
                 let Some(property) = view_property(element, name) else {
                     return Ok(default.to_string());
@@ -4581,26 +4579,32 @@ fn emit_android_native_application(
             let italic = text_flag("italic", false)?;
             let underline = text_flag("underline", false)?;
             let strikethrough = text_flag("strikethrough", false)?;
-            if text_color.is_some() || text_size > 0 {
-                if let Some(value) = text_color.as_ref() {
-                    out.push_str(&format!(
-                        "    jstring child_text_color = flux__android_utf8_string(env, {});\n",
-                        c_string(value)
-                    ));
-                    out.push_str("    if (child_text_color == NULL) return;\n");
-                } else {
-                    out.push_str("    jstring child_text_color = NULL;\n");
-                }
-                out.push_str("    jclass text_style_activity_class = (*env)->GetObjectClass(env, activity);\n");
-                out.push_str("    if (text_style_activity_class == NULL) return;\n");
-                out.push_str("    jmethodID style_text = (*env)->GetMethodID(env, text_style_activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
-                out.push_str("    if (style_text == NULL) return;\n");
+            if let Some(value) = text_color.as_ref() {
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, style_text, child, child_text_color, (jfloat){text_size}.0f, (jboolean){bold}, (jboolean){italic}, (jboolean){underline}, (jboolean){strikethrough});\n"
+                    "    jstring child_text_color = flux__android_utf8_string(env, {});\n",
+                    c_string(value)
                 ));
-                out.push_str("    (*env)->DeleteLocalRef(env, text_style_activity_class);\n");
-                out.push_str("    if (child_text_color != NULL) (*env)->DeleteLocalRef(env, child_text_color);\n");
+                out.push_str("    if (child_text_color == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_text_color = NULL;\n");
             }
+            let text_size_call = if dynamic_text_size {
+                out.push_str(&format!(
+                    "    int64_t child_text_size = {text_size};\n    if (child_text_size <= 0 || child_text_size > INT32_MAX) {{ fputs(\"Flux runtime error: Text.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+                "child_text_size"
+            } else {
+                text_size.as_str()
+            };
+            out.push_str("    jclass text_style_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (text_style_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_text = (*env)->GetMethodID(env, text_style_activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
+            out.push_str("    if (style_text == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, activity, style_text, child, child_text_color, (jfloat){text_size_call}, (jboolean){bold}, (jboolean){italic}, (jboolean){underline}, (jboolean){strikethrough});\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, text_style_activity_class);\n");
+            out.push_str("    if (child_text_color != NULL) (*env)->DeleteLocalRef(env, child_text_color);\n");
             let font_family = view_property(element, "font_family")
                 .map(|property| {
                     let Some(value) = static_expr_str(&property.value, signatures) else {
@@ -7370,6 +7374,7 @@ fn android_ui_element_needs_refresh(
             "text",
             "selectable",
             "wrap",
+            "size",
             "bold",
             "italic",
             "underline",
@@ -7543,12 +7548,14 @@ fn emit_android_ui_refresh(
                             "                if (refresh_single_line != NULL) (*env)->CallVoidMethod(env, child, refresh_single_line, (jboolean)(!({value})));\n"
                         ));
                     }
+                    let dynamic_size =
+                        android_ui_property_needs_refresh(element, "size", &runtime_names);
                     let dynamic_emphasis = ["bold", "italic", "underline", "strikethrough"]
                         .iter()
                         .any(|name| {
                             android_ui_property_needs_refresh(element, name, &runtime_names)
                         });
-                    if dynamic_emphasis {
+                    if dynamic_size || dynamic_emphasis {
                         let (_, default_bold, _, _) =
                             text_semantic_typography(element, signatures)?;
                         let emphasis_value =
@@ -7561,9 +7568,24 @@ fn emit_android_ui_refresh(
                         let italic = emphasis_value("italic", false)?;
                         let underline = emphasis_value("underline", false)?;
                         let strikethrough = emphasis_value("strikethrough", false)?;
+                        let refresh_size = if dynamic_size {
+                            let value = ui_expr_c(
+                                &view_property(element, "size")
+                                    .expect("dynamic Text.size property exists")
+                                    .value,
+                                view,
+                                signatures,
+                            )?;
+                            out.push_str(&format!(
+                                "                int64_t refresh_text_size = {value};\n                if (refresh_text_size <= 0 || refresh_text_size > INT32_MAX) {{ fputs(\"Flux runtime error: Text.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                            ));
+                            "refresh_text_size"
+                        } else {
+                            "0"
+                        };
                         out.push_str("                jmethodID refresh_text_style = (*env)->GetMethodID(env, activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
                         out.push_str(&format!(
-                            "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat)0.0f, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
+                            "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat){refresh_size}, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
                         ));
                     }
                 }
