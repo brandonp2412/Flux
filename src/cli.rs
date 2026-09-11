@@ -4013,6 +4013,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnKey(int viewId, String key);
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
+__FLUX_DIALOG_DECLARATIONS__
 __FLUX_FRAME_DECLARATIONS__
 __FLUX_PICKER_DECLARATIONS__
 
@@ -4061,6 +4062,7 @@ __FLUX_PICKER_DECLARATIONS__
         setIntent(intent);
         dispatchFluxUrl(intent);
     }
+__FLUX_DIALOG_METHODS__
 __FLUX_FRAME_METHODS__
 __FLUX_PICKER_METHODS__
 
@@ -5048,6 +5050,27 @@ __FLUX_PICKER_METHODS__
     } else {
         ""
     };
+    let dialog_confirm_enabled =
+        c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnDialogConfirm");
+    let dialog_declarations = if dialog_confirm_enabled {
+        "    private static native void nativeOnDialogConfirm(long callback);"
+    } else {
+        ""
+    };
+    let dialog_methods = if dialog_confirm_enabled {
+        r#"
+
+    public void fluxShowConfirmDialog(String title, String message, long callback) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("OK", (dialog, which) -> nativeOnDialogConfirm(callback))
+                .show();
+    }"#
+    } else {
+        ""
+    };
     let frame_enabled = c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnFrame");
     let frame_declarations = if frame_enabled {
         "    private static native void nativeOnFrame(long callback);"
@@ -5065,6 +5088,8 @@ __FLUX_PICKER_METHODS__
         ""
     };
     source
+        .replace("__FLUX_DIALOG_DECLARATIONS__", dialog_declarations)
+        .replace("__FLUX_DIALOG_METHODS__", dialog_methods)
         .replace("__FLUX_FRAME_DECLARATIONS__", frame_declarations)
         .replace("__FLUX_FRAME_METHODS__", frame_methods)
         .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations)
@@ -6716,6 +6741,22 @@ mod tests {
         assert!(!activity.contains("ACTION_OPEN_DOCUMENT"));
         assert!(!activity.contains("nativeOnFrame"));
         assert!(!activity.contains("fluxRequestFrame"));
+        assert!(!activity.contains("nativeOnDialogConfirm"));
+        assert!(!activity.contains("fluxShowConfirmDialog"));
+        let dialog_activity = android_activity_java_source(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDialogConfirm(JNIEnv *env, jclass activity_class, jlong callback_pointer);",
+        );
+        assert!(
+            dialog_activity
+                .contains("private static native void nativeOnDialogConfirm(long callback);")
+        );
+        assert!(dialog_activity.contains(
+            "public void fluxShowConfirmDialog(String title, String message, long callback)"
+        ));
+        assert!(dialog_activity.contains(
+            ".setPositiveButton(\"OK\", (dialog, which) -> nativeOnDialogConfirm(callback))"
+        ));
+        assert!(!dialog_activity.contains("__FLUX_DIALOG_"));
         let frame_activity = android_activity_java_source(
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer);",
         );

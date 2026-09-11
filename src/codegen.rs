@@ -1059,6 +1059,7 @@ fn emit_runtime_prelude(
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
+    let uses_dialog_confirm = runtime_usage.contains("flux__dialog_confirm(");
     let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
     let uses_file_dialog_save_file = runtime_usage.contains("flux__file_dialog_save_file(");
     let uses_file_dialog_select_directory =
@@ -1212,7 +1213,7 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_read_clipboard_text
-        || (uses_android && uses_dialog_alert)
+        || (uses_android && (uses_dialog_alert || uses_dialog_confirm))
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -1299,7 +1300,7 @@ fn emit_runtime_prelude(
     if uses_android_open_url
         || uses_android_share
         || uses_android_set_clipboard_text
-        || (uses_android && uses_dialog_alert)
+        || (uses_android && (uses_dialog_alert || uses_dialog_confirm))
         || uses_android_notifications
         || uses_android_has_system_feature
         || uses_android_permission_granted
@@ -2054,6 +2055,11 @@ fn emit_runtime_prelude(
         out.push_str("static void flux__dialog_alert_response(GtkDialog *dialog, gint response, gpointer data) { (void)response; (void)data; gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
         out.push_str("static void flux__dialog_alert(const char *title, const char *message) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_alert_response), NULL); gtk_window_present(GTK_WINDOW(dialog)); }\n");
     }
+    if uses_dialog_confirm && uses_gtk {
+        out.push_str("typedef struct { void (*callback)(void); } flux__dialog_confirm_context;\n");
+        out.push_str("static void flux__dialog_confirm_response(GtkDialog *dialog, gint response, gpointer data) { flux__dialog_confirm_context *context = (flux__dialog_confirm_context *)data; if (response == GTK_RESPONSE_ACCEPT && context != NULL && context->callback != NULL) context->callback(); g_free(context); gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
+        out.push_str("static void flux__dialog_confirm(const char *title, const char *message, void (*callback)(void)) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); gtk_dialog_add_button(GTK_DIALOG(dialog), \"Cancel\", GTK_RESPONSE_CANCEL); gtk_dialog_add_button(GTK_DIALOG(dialog), \"OK\", GTK_RESPONSE_ACCEPT); flux__dialog_confirm_context *context = g_new0(flux__dialog_confirm_context, 1); if (context == NULL) { gtk_window_destroy(GTK_WINDOW(dialog)); return; } context->callback = callback; g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_confirm_response), context); gtk_window_present(GTK_WINDOW(dialog)); }\n");
+    }
     if uses_clipboard_read_text && uses_gtk {
         out.push_str(
             "typedef struct { void (*callback)(const char *); } flux__clipboard_read_context;\n",
@@ -2275,6 +2281,19 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->CallObjectMethod(env, builder, set_title, title_string); (*env)->CallObjectMethod(env, builder, set_message, message_string); (*env)->CallObjectMethod(env, builder, set_positive, ok_string, NULL); if ((*env)->ExceptionCheck(env)) goto done; dialog = (*env)->CallObjectMethod(env, builder, show);\n");
         out.push_str("done:\n");
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (dialog != NULL) (*env)->DeleteLocalRef(env, dialog); if (ok_string != NULL) (*env)->DeleteLocalRef(env, ok_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (builder != NULL) (*env)->DeleteLocalRef(env, builder); if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class); flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_dialog_confirm && uses_android {
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDialogConfirm(JNIEnv *env, jclass activity_class, jlong callback_pointer) { (void)env; (void)activity_class; void (*callback)(void) = (void (*)(void))(intptr_t)callback_pointer; if (callback != NULL) callback(); }\n");
+        out.push_str("static void flux__dialog_confirm(const char *title, const char *message, void (*callback)(void)) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz); jstring title_string = NULL; jstring message_string = NULL;\n");
+        out.push_str("    if (activity_class == NULL) goto done; jmethodID show_confirm = (*env)->GetMethodID(env, activity_class, \"fluxShowConfirmDialog\", \"(Ljava/lang/String;Ljava/lang/String;J)V\"); if (show_confirm == NULL) goto done;\n");
+        out.push_str("    title_string = flux__android_utf8_string(env, title == NULL ? \"\" : title); message_string = flux__android_utf8_string(env, message == NULL ? \"\" : message); if (title_string == NULL || message_string == NULL) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, show_confirm, title_string, message_string, (jlong)(intptr_t)callback);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
     if uses_android_open_url {
@@ -18453,16 +18472,34 @@ fn emit_qualified_call(
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
     }
     if namespace == "dialog" {
-        if !named_args.is_empty() || args.len() != 2 || name != "alert" {
+        if !named_args.is_empty() {
             return Err(diag(span, "invalid dialog call reached code generation"));
         }
-        let title = emit_expr(&args[0], env, signatures)?;
-        let message = emit_expr(&args[1], env, signatures)?;
-        return Ok((
-            format!("flux__dialog_alert({}, {})", title.code, message.code),
-            Vec::new(),
-            None,
-        ));
+        match name {
+            "alert" if args.len() == 2 => {
+                let title = emit_expr(&args[0], env, signatures)?;
+                let message = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__dialog_alert({}, {})", title.code, message.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "confirm" if args.len() == 3 => {
+                let title = emit_expr(&args[0], env, signatures)?;
+                let message = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__dialog_confirm({}, {}, {})",
+                        title.code, message.code, callback.code
+                    ),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "invalid dialog call reached code generation")),
+        }
     }
     if namespace == "fileDialog" {
         if !named_args.is_empty() || args.len() != 1 {

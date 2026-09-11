@@ -19033,6 +19033,92 @@ fn main() -> i64 {
 }
 
 #[test]
+fn portable_confirm_dialogs_dispatch_typed_callbacks_on_native_backends() {
+    let source = r#"
+fn confirmed() -> void {
+    print("confirmed")
+}
+fn started() -> void {
+    dialog.confirm("Flux", "Continue?", confirmed)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable confirm dialog should typecheck");
+    let linux = compile_to_c(source).expect("portable confirm dialog should lower on Linux");
+    assert!(linux.contains("static void flux__dialog_confirm("));
+    assert!(linux.contains("GTK_MESSAGE_QUESTION"));
+    assert!(linux.contains("gtk_dialog_add_button(GTK_DIALOG(dialog), \"Cancel\""));
+    assert!(linux.contains("gtk_dialog_add_button(GTK_DIALOG(dialog), \"OK\""));
+    assert!(linux.contains("context->callback()"));
+    assert!(linux.contains("flux__dialog_confirm(\"Flux\", \"Continue?\","));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable confirm app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable confirm dialog should lower on Android");
+    assert!(android.contains("flux__dialog_confirm(\"Flux\", \"Continue?\","));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnDialogConfirm"));
+    assert!(android.contains("fluxShowConfirmDialog"));
+    assert!(!android.contains("gtk_message_dialog_new"));
+
+    let unused = r#"
+fn confirmed() -> void {
+    print("hidden")
+}
+fn unused() -> void {
+    dialog.confirm("Unused", "Hidden", confirmed)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable confirm code should tree-shake");
+    assert!(!tree_shaken.contains("flux__dialog_confirm"));
+
+    let invalid = r#"
+fn wrong(value: i64) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    dialog.confirm(42, "message", wrong)
+    dialog.confirm("Title", false, wrong)
+    dialog.confirm("Title", "message", wrong)
+    dialog.confirm("missing", "callback")
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("dialog confirm arguments must be statically typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.confirm title") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.confirm message") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.confirm callback")
+            && error.message.contains("expected fn() -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dialog.confirm expects 3 arguments, got 2")
+    }));
+}
+
+#[test]
 fn linux_file_dialogs_are_typed_native_tree_shaken_and_target_checked() {
     let source = r#"
 fn selected(path: str) -> void {

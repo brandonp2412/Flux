@@ -7390,6 +7390,29 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::Str, &message, "dialog.alert message")?;
                 return Ok(Vec::new());
             }
+            "confirm" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("dialog.confirm expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let title = type_of_expr(&args[0], env, signatures)?;
+                let message = type_of_expr(&args[1], env, signatures)?;
+                let callback = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &title, "dialog.confirm title")?;
+                require_type(args[1].span, &Type::Str, &message, "dialog.confirm message")?;
+                require_type(
+                    args[2].span,
+                    &Type::Function {
+                        params: Vec::new(),
+                        returns: Vec::new(),
+                    },
+                    &callback,
+                    "dialog.confirm callback",
+                )?;
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,
