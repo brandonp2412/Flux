@@ -5166,20 +5166,75 @@ fn emit_android_native_application(
                 ));
             }
         }
-        let padding = static_non_negative_style_i64(element, "padding", signatures)?.unwrap_or(0);
-        let padding_top =
-            static_non_negative_style_i64(element, "padding_top", signatures)?.unwrap_or(padding);
-        let padding_bottom = static_non_negative_style_i64(element, "padding_bottom", signatures)?
-            .unwrap_or(padding);
-        let padding_start =
-            static_non_negative_style_i64(element, "padding_start", signatures)?.unwrap_or(padding);
-        let padding_end =
-            static_non_negative_style_i64(element, "padding_end", signatures)?.unwrap_or(padding);
-        if padding_top > 0 || padding_bottom > 0 || padding_start > 0 || padding_end > 0 {
+        let padding_property = view_property(element, "padding");
+        let (padding, dynamic_padding) = if let Some(property) = padding_property {
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if value < 0 {
+                    return Err(diag(property.value.span, "padding must be non-negative"));
+                }
+                if value > i64::from(i32::MAX) {
+                    return Err(diag(
+                        property.value.span,
+                        "padding must fit within a 32-bit signed integer",
+                    ));
+                }
+                (value, false)
+            } else {
+                (0, true)
+            }
+        } else {
+            (0, false)
+        };
+        let padding_top_static = static_non_negative_style_i64(element, "padding_top", signatures)?;
+        let padding_bottom_static =
+            static_non_negative_style_i64(element, "padding_bottom", signatures)?;
+        let padding_start_static =
+            static_non_negative_style_i64(element, "padding_start", signatures)?;
+        let padding_end_static = static_non_negative_style_i64(element, "padding_end", signatures)?;
+        let padding_top = padding_top_static.unwrap_or(padding);
+        let padding_bottom = padding_bottom_static.unwrap_or(padding);
+        let padding_start = padding_start_static.unwrap_or(padding);
+        let padding_end = padding_end_static.unwrap_or(padding);
+        let dynamic_padding_top = dynamic_padding && padding_top_static.is_none();
+        let dynamic_padding_bottom = dynamic_padding && padding_bottom_static.is_none();
+        let dynamic_padding_start = dynamic_padding && padding_start_static.is_none();
+        let dynamic_padding_end = dynamic_padding && padding_end_static.is_none();
+        if dynamic_padding_top
+            || dynamic_padding_bottom
+            || dynamic_padding_start
+            || dynamic_padding_end
+            || padding_top > 0
+            || padding_bottom > 0
+            || padding_start > 0
+            || padding_end > 0
+        {
+            if dynamic_padding {
+                let value = ui_expr_c(
+                    &padding_property
+                        .expect("dynamic padding property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_padding = {value};\n    if (child_padding < 0 || child_padding > INT32_MAX) {{ fputs(\"Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let padding_value = |dynamic: bool, value: i64| {
+                if dynamic {
+                    "child_padding".to_string()
+                } else {
+                    format!("INT64_C({value})")
+                }
+            };
+            let padding_top_value = padding_value(dynamic_padding_top, padding_top);
+            let padding_bottom_value = padding_value(dynamic_padding_bottom, padding_bottom);
+            let padding_start_value = padding_value(dynamic_padding_start, padding_start);
+            let padding_end_value = padding_value(dynamic_padding_end, padding_end);
             out.push_str("    jmethodID set_child_padding = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
             out.push_str("    if (set_child_padding == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)(INT64_C({padding_start}) * flux__ui_density), (jint)(INT64_C({padding_top}) * flux__ui_density), (jint)(INT64_C({padding_end}) * flux__ui_density), (jint)(INT64_C({padding_bottom}) * flux__ui_density));\n"
+                "    (*env)->CallVoidMethod(env, child, set_child_padding, (jint)({padding_start_value} * flux__ui_density), (jint)({padding_top_value} * flux__ui_density), (jint)({padding_end_value} * flux__ui_density), (jint)({padding_bottom_value} * flux__ui_density));\n"
             ));
         }
         if element_has_transform(element) {
@@ -8440,6 +8495,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "border_color"
             | "border_width"
             | "radius"
+            | "padding"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -8578,6 +8634,7 @@ fn android_ui_element_needs_refresh(
         "border_color",
         "border_width",
         "radius",
+        "padding",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -8796,6 +8853,33 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_radii = (*env)->GetMethodID(env, activity_class, \"styleViewRadii\", \"(Landroid/view/View;FFFF)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_radii != NULL) (*env)->CallVoidMethod(env, activity, refresh_radii, child, (jfloat)({top_left} * flux__ui_density), (jfloat)({top_right} * flux__ui_density), (jfloat)({bottom_right} * flux__ui_density), (jfloat)({bottom_left} * flux__ui_density));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "padding", &runtime_names)
+            && let Some(property) = view_property(element, "padding")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let padding_top = static_non_negative_style_i64(element, "padding_top", signatures)?;
+            let padding_bottom =
+                static_non_negative_style_i64(element, "padding_bottom", signatures)?;
+            let padding_start =
+                static_non_negative_style_i64(element, "padding_start", signatures)?;
+            let padding_end = static_non_negative_style_i64(element, "padding_end", signatures)?;
+            let padding_value = |value: Option<i64>| {
+                value
+                    .map(|value| format!("INT64_C({value})"))
+                    .unwrap_or_else(|| "refresh_padding".to_string())
+            };
+            let top = padding_value(padding_top);
+            let bottom = padding_value(padding_bottom);
+            let start = padding_value(padding_start);
+            let end = padding_value(padding_end);
+            out.push_str(&format!(
+                "                int64_t refresh_padding = {value};\n                if (refresh_padding < 0 || refresh_padding > INT32_MAX) {{ fputs(\"Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+            ));
+            out.push_str("                jmethodID refresh_padding_method = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_padding_method != NULL) (*env)->CallVoidMethod(env, child, refresh_padding_method, (jint)({start} * flux__ui_density), (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density));\n"
             ));
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)

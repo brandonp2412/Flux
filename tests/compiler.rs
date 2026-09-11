@@ -19808,6 +19808,72 @@ app Settings(theme: "dark")
 }
 
 #[test]
+fn android_padding_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicPadding {
+    state spacing: i64 = 8
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        padding: spacing
+        paddingTop: 20
+    Button grow at 2,1
+        text: "Grow"
+        onPress: spacing => spacing + 2
+}
+app DynamicPadding
+"#;
+
+    check_source(source).expect("dynamic Android padding should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android padding should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android padding should lower");
+
+    assert!(android.contains("int64_t child_padding = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t refresh_padding = flux__ui_state_spacing"));
+    assert!(
+        android.contains("padding must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(android.contains("refresh_padding_method"));
+    assert!(android.contains("setPadding"));
+    assert!(android.contains("(jint)(INT64_C(20) * flux__ui_density)"));
+    assert!(android.contains("(jint)(refresh_padding * flux__ui_density)"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__ui_state_spacing = flux_add_i64"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticPadding {
+    grid columns: 1fr
+    grid rows: auto
+    Text panel at 1,1
+        text: "Panel"
+        padding: 12
+}
+app StaticPadding
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android padding should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android padding should lower");
+    assert!(!static_android.contains("refresh_padding_method"));
+    assert!(!static_android.contains("int64_t child_padding ="));
+}
+
+#[test]
 fn android_text_size_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicText {
