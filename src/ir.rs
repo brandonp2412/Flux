@@ -373,6 +373,7 @@ pub struct ControlFlowGraph {
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     scoped_borrow_sources: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    reaching_definitions_before: Vec<Option<ReachingDefinitionMap>>,
     move_states_before: Vec<ControlFlowMoveState>,
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
@@ -576,6 +577,25 @@ impl ControlFlowGraph {
         self.borrowed_definition_span_inner(name, source, &mut visiting)
     }
 
+    pub fn borrowed_reaching_definition_span(
+        &self,
+        node: ControlFlowNodeId,
+        name: &str,
+        source: &str,
+    ) -> Option<SourceSpan> {
+        let definitions = self
+            .reaching_definitions_before
+            .get(node.0)?
+            .as_ref()?
+            .get(name)?;
+        let mut visiting = HashSet::new();
+        definitions.iter().find_map(|definition| {
+            self.definition_id_borrows_from(*definition, source, &mut visiting)
+                .then(|| self.definition_span(*definition))
+                .flatten()
+        })
+    }
+
     fn borrowed_definition_span_inner(
         &self,
         name: &str,
@@ -609,6 +629,19 @@ impl ControlFlowGraph {
         });
         visiting.remove(name);
         result
+    }
+
+    fn definition_id_borrows_from(
+        &self,
+        definition: ControlFlowDefinitionId,
+        source: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        self.definition_borrow_source_value(definition)
+            .is_some_and(|value| self.value_depends_on_borrow_source(value, source, visiting))
+            || self
+                .definition_value(definition)
+                .is_some_and(|value| self.definition_value_borrows_from(value, source, visiting))
     }
 
     fn definition_value_borrows_from(
@@ -684,24 +717,9 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*then_value, source, visiting)
                     || self.value_depends_on_borrow_source(*else_value, source, visiting)
             }
-            ControlFlowValueKind::NameRead { definitions, .. } => {
-                definitions.iter().any(|definition| {
-                    self.definition_borrow_source_value(*definition)
-                        .is_some_and(|value| {
-                            self.value_depends_on_borrow_source(value, source, visiting)
-                        })
-                        || match definition {
-                            ControlFlowDefinitionId::Parameter(_) => false,
-                            ControlFlowDefinitionId::Node { .. }
-                            | ControlFlowDefinitionId::Scoped { .. } => self
-                                .definition_name(*definition)
-                                .and_then(|name| {
-                                    self.borrowed_definition_span_inner(name, source, visiting)
-                                })
-                                .is_some(),
-                        }
-                })
-            }
+            ControlFlowValueKind::NameRead { definitions, .. } => definitions
+                .iter()
+                .any(|definition| self.definition_id_borrows_from(*definition, source, visiting)),
             _ => false,
         }
     }
@@ -741,17 +759,7 @@ impl ControlFlowGraph {
             ControlFlowValueKind::NameRead { name, definitions } => {
                 name == source
                     || definitions.iter().any(|definition| {
-                        self.definition_borrow_source_value(*definition)
-                            .is_some_and(|value| {
-                                self.value_depends_on_borrow_source(value, source, visiting)
-                            })
-                            || self
-                                .definition_name(*definition)
-                                .filter(|name| *name != source)
-                                .and_then(|name| {
-                                    self.borrowed_definition_span_inner(name, source, visiting)
-                                })
-                                .is_some()
+                        self.definition_id_borrows_from(*definition, source, visiting)
                     })
             }
             ControlFlowValueKind::Slice { base, .. } => {
@@ -854,7 +862,7 @@ impl<'a> ControlFlowBuilder<'a> {
 
     fn finish(mut self) -> ControlFlowGraph {
         let definition_values = compute_definition_values(&self.nodes, &self.edges);
-        loop {
+        let reaching_definitions_before = loop {
             let reaching_definitions = compute_reaching_definitions(
                 &self.nodes,
                 &self.edges,
@@ -864,9 +872,9 @@ impl<'a> ControlFlowBuilder<'a> {
             resolve_name_read_definitions(&mut self.values, &reaching_definitions);
             propagate_definition_constants(&mut self.values, &definition_values);
             if !prune_constant_control_edges(&self.nodes, &mut self.edges, &self.values) {
-                break;
+                break reaching_definitions;
             }
-        }
+        };
         reclassify_borrowed_list_reborrows(
             &mut self.nodes,
             &self.values,
@@ -905,6 +913,7 @@ impl<'a> ControlFlowBuilder<'a> {
             scoped_definitions: self.scoped_definitions,
             definition_values,
             scoped_borrow_sources: self.scoped_borrow_sources,
+            reaching_definitions_before,
             move_states_before,
             live_before,
             live_after,

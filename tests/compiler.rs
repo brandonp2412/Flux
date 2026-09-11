@@ -5636,6 +5636,35 @@ fn main() -> i64 {
 }
 
 #[test]
+fn sibling_branch_alias_names_do_not_cross_contaminate_borrow_provenance() {
+    let source = r#"
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30]
+    if positive(1):
+        let view: i64[] = source[1:]
+        let projected: i64[] = take(view, 1)
+        print(projected[0])
+    else:
+        let view: i64[] = [90, 100]
+        let projected: i64[] = take(view, 1)
+        let destination: i64[] = source
+        print(projected[0])
+        print(destination[0])
+    return 0
+}
+"#;
+
+    check_source(source).expect(
+        "a borrowed view chain in one branch must not poison unrelated same-named bindings in a sibling branch",
+    );
+    compile_to_c(source).expect("branch-local borrow provenance should lower natively");
+}
+
+#[test]
 fn nested_list_aggregates_preserve_borrow_provenance() {
     let live_nested_literal = r#"
 fn main() -> i64 {

@@ -4106,7 +4106,7 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
                 })
                 .filter_map(|name| {
                     graph
-                        .borrowed_definition_span(name, &ownership_move.source)
+                        .borrowed_reaching_definition_span(node.id, name, &ownership_move.source)
                         .map(|span| (name.clone(), span))
                 })
                 .collect::<Vec<_>>();
