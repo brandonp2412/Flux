@@ -3859,23 +3859,20 @@ fn emit_android_native_application(
                 })
                 .transpose()?
                 .unwrap_or(default_size);
-            let text_flag = |name: &str, default: bool| -> Result<bool, Diagnostic> {
+            let text_flag = |name: &str, default: bool| -> Result<String, Diagnostic> {
                 let Some(property) = view_property(element, name) else {
-                    return Ok(default);
+                    return Ok(default.to_string());
                 };
-                static_expr_bool(&property.value, signatures).ok_or_else(|| {
-                    diag(
-                        property.value.span,
-                        &format!("bootstrap Android Text.{name} must be a compile-time bool value"),
-                    )
-                })
+                if let Some(value) = static_expr_bool(&property.value, signatures) {
+                    return Ok(value.to_string());
+                }
+                ui_expr_c(&property.value, view, signatures)
             };
             let bold = text_flag("bold", default_bold)?;
             let italic = text_flag("italic", false)?;
             let underline = text_flag("underline", false)?;
             let strikethrough = text_flag("strikethrough", false)?;
-            if text_color.is_some() || text_size > 0 || bold || italic || underline || strikethrough
-            {
+            if text_color.is_some() || text_size > 0 {
                 if let Some(value) = text_color.as_ref() {
                     out.push_str(&format!(
                         "    jstring child_text_color = flux__android_utf8_string(env, {});\n",
@@ -6628,7 +6625,15 @@ fn android_ui_element_needs_refresh(
         "transform_origin_y_percent",
     ];
     let specific: &[&str] = match element.kind.as_str() {
-        "Text" => &["text", "selectable", "wrap"],
+        "Text" => &[
+            "text",
+            "selectable",
+            "wrap",
+            "bold",
+            "italic",
+            "underline",
+            "strikethrough",
+        ],
         "Button" => &["text"],
         "TextInput" => &["placeholder"],
         "Image" => &["source", "alt", "can_shrink"],
@@ -6795,6 +6800,29 @@ fn emit_android_ui_refresh(
                         out.push_str("                jmethodID refresh_single_line = (*env)->GetMethodID(env, child_class, \"setSingleLine\", \"(Z)V\");\n");
                         out.push_str(&format!(
                             "                if (refresh_single_line != NULL) (*env)->CallVoidMethod(env, child, refresh_single_line, (jboolean)(!({value})));\n"
+                        ));
+                    }
+                    let dynamic_emphasis = ["bold", "italic", "underline", "strikethrough"]
+                        .iter()
+                        .any(|name| {
+                            android_ui_property_needs_refresh(element, name, &runtime_names)
+                        });
+                    if dynamic_emphasis {
+                        let (_, default_bold, _, _) =
+                            text_semantic_typography(element, signatures)?;
+                        let emphasis_value =
+                            |name: &str, default: bool| -> Result<String, Diagnostic> {
+                                view_property(element, name)
+                                    .map(|property| ui_expr_c(&property.value, view, signatures))
+                                    .unwrap_or_else(|| Ok(default.to_string()))
+                            };
+                        let bold = emphasis_value("bold", default_bold)?;
+                        let italic = emphasis_value("italic", false)?;
+                        let underline = emphasis_value("underline", false)?;
+                        let strikethrough = emphasis_value("strikethrough", false)?;
+                        out.push_str("                jmethodID refresh_text_style = (*env)->GetMethodID(env, activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
+                        out.push_str(&format!(
+                            "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat)0.0f, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
                         ));
                     }
                 }

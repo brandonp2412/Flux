@@ -4544,6 +4544,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         int typefaceStyle = (bold ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
         view.setTypeface(view.getTypeface(), typefaceStyle);
         int flags = view.getPaintFlags();
+        flags &= ~(Paint.UNDERLINE_TEXT_FLAG | Paint.STRIKE_THRU_TEXT_FLAG);
         if (underline) flags |= Paint.UNDERLINE_TEXT_FLAG;
         if (strike) flags |= Paint.STRIKE_THRU_TEXT_FLAG;
         view.setPaintFlags(flags);
@@ -6425,6 +6426,10 @@ mod tests {
         assert!(activity.contains("parseFluxColor(\"warning\")"));
         assert!(activity.contains("android.R.attr.state_focused"));
         assert!(activity.contains("if (size > 0) view.setTextSize(size);"));
+        assert!(
+            activity
+                .contains("flags &= ~(Paint.UNDERLINE_TEXT_FLAG | Paint.STRIKE_THRU_TEXT_FLAG);")
+        );
         assert!(
             !activity.contains("COMPLEX_UNIT_PX"),
             "generated Android typography must keep TextView's scaled-pixel semantics so user font scaling remains active"

@@ -17045,10 +17045,10 @@ view Settings {
         color: "#AABBCCDD"
         font_family: "sans-serif"
         size: 18
-        bold: true
-        italic: true
-        underline: true
-        strikethrough: true
+        bold: enabled
+        italic: !enabled
+        underline: enabled
+        strikethrough: !enabled
         letter_spacing: 2
         line_height_percent: 140
         text_align: "center"
@@ -17130,6 +17130,7 @@ app Settings(theme: "dark")
     assert!(generated.contains("set_child_padding"));
     assert!(generated.contains("setGravity"));
     assert!(generated.contains("styleText"));
+    assert!(generated.contains("refresh_text_style"));
     assert!(generated.contains("styleTextLayout"));
     assert!(generated.contains("sans-serif"));
     assert!(generated.contains("word_char"));
