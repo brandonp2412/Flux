@@ -14288,6 +14288,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
         r#"fn started() -> void {
     print(android.sdkInt())
     android.vibrate(25)
+    android.keepScreenOn(true)
     android.openUrl("https://example.com")
     android.openAppSettings()
     android.openNotificationSettings()
@@ -14385,6 +14386,8 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("AttachCurrentThread"));
     assert!(generated.contains("DetachCurrentThread"));
     assert!(generated.contains("static void flux__android_vibrate(int64_t duration_ms)"));
+    assert!(generated.contains("flux__android_keep_screen_on(bool enabled)"));
+    assert!(generated.contains("AWINDOW_FLAG_KEEP_SCREEN_ON"));
     assert!(generated.contains("JNIEnv *env = flux__android_get_env(&detach);"));
     assert!(generated.contains("getSystemService"));
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
@@ -14512,6 +14515,7 @@ fn main() -> i64 {
         r#"fn unused_android() -> void {
     android.openAppSettings()
     android.openNotificationSettings()
+    android.keepScreenOn(false)
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
@@ -14547,6 +14551,8 @@ app Screen
         .expect("Android tree-shaking fixture should lower");
     assert!(!tree_generated.contains("flux__android_open_app_settings"));
     assert!(!tree_generated.contains("flux__android_open_notification_settings"));
+    assert!(!tree_generated.contains("flux__android_keep_screen_on"));
+    assert!(!tree_generated.contains("AWINDOW_FLAG_KEEP_SCREEN_ON"));
     assert!(!tree_generated.contains("android.settings.APPLICATION_DETAILS_SETTINGS"));
     assert!(!tree_generated.contains("android.settings.APP_NOTIFICATION_SETTINGS"));
     assert!(!tree_generated.contains("flux__android_show_keyboard"));
@@ -14582,6 +14588,7 @@ app Screen
 fn main() -> i64 {
     android.sdkInt(1)
     android.vibrate("long")
+    android.keepScreenOn(1)
     android.openUrl(42)
     android.openAppSettings(1)
     android.openNotificationSettings(false)
@@ -14617,6 +14624,10 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate durationMs")
             && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.keepScreenOn enabled")
+            && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.openUrl url") && error.message.contains("expected str")

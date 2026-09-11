@@ -6150,6 +6150,25 @@ fn check_qualified_call(
                 )?;
                 return Ok(Vec::new());
             }
+            "keepScreenOn" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.keepScreenOn expects 1 argument, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Bool,
+                    &actual,
+                    "android.keepScreenOn enabled",
+                )?;
+                return Ok(Vec::new());
+            }
             "openUrl" => {
                 if args.len() != 1 {
                     return Err(diag(

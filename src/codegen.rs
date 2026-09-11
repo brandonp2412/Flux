@@ -362,6 +362,9 @@ fn emit_runtime_prelude(
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
+        if runtime_usage.contains("flux__android_keep_screen_on(") {
+            out.push_str("#include <android/window.h>\n");
+        }
         if runtime_usage.contains("flux__android_sdk_int(")
             || runtime_usage.contains("flux__android_create_notification_channel(")
             || runtime_usage.contains("flux__android_notification_permission_granted(")
@@ -399,6 +402,8 @@ fn emit_runtime_prelude(
         || uses_focus_clear;
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
+    let uses_android_keep_screen_on =
+        uses_android && runtime_usage.contains("flux__android_keep_screen_on(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_open_notification_settings =
         uses_android && runtime_usage.contains("flux__android_open_notification_settings(");
@@ -477,6 +482,7 @@ fn emit_runtime_prelude(
         || uses_android_notify_url_action
         || uses_android_cancel_notification;
     let uses_android_platform_api = uses_android_vibrate
+        || (uses_android_keep_screen_on && uses_android_generated_ui)
         || uses_android_open_url
         || uses_android_open_app_settings
         || uses_android_open_notification_settings
@@ -499,6 +505,9 @@ fn emit_runtime_prelude(
     }
     if uses_android_sdk_int {
         out.push_str("static inline int64_t flux__android_sdk_int(void) { return (int64_t)android_get_device_api_level(); }\n");
+    }
+    if uses_android_keep_screen_on && !uses_android_generated_ui {
+        out.push_str("static inline void flux__android_keep_screen_on(bool enabled) { if (flux__android_activity != NULL) ANativeActivity_setWindowFlags(flux__android_activity, enabled ? AWINDOW_FLAG_KEEP_SCREEN_ON : 0, enabled ? 0 : AWINDOW_FLAG_KEEP_SCREEN_ON); }\n");
     }
     if uses_android_platform_api {
         out.push_str("static JNIEnv *flux__android_get_env(bool *detach) {\n");
@@ -555,6 +564,34 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, string_class);\n");
         out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
         out.push_str("    return result;\n");
+        out.push_str("}\n");
+    }
+    if uses_android_keep_screen_on && uses_android_generated_ui {
+        out.push_str("static void flux__android_keep_screen_on(bool enabled) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    jobject window = NULL; jclass window_class = NULL;\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_window = (*env)->GetMethodID(env, activity_class, \"getWindow\", \"()Landroid/view/Window;\");\n");
+        out.push_str("    if (get_window == NULL) goto done;\n");
+        out.push_str("    window = (*env)->CallObjectMethod(env, activity, get_window);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || window == NULL) goto done;\n");
+        out.push_str("    window_class = (*env)->GetObjectClass(env, window);\n");
+        out.push_str("    if (window_class == NULL) goto done;\n");
+        out.push_str("    jmethodID set_flags = (*env)->GetMethodID(env, window_class, \"setFlags\", \"(II)V\");\n");
+        out.push_str("    if (set_flags != NULL) (*env)->CallVoidMethod(env, window, set_flags, (jint)(enabled ? AWINDOW_FLAG_KEEP_SCREEN_ON : 0), (jint)AWINDOW_FLAG_KEEP_SCREEN_ON);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (window_class != NULL) (*env)->DeleteLocalRef(env, window_class);\n");
+        out.push_str("    if (window != NULL) (*env)->DeleteLocalRef(env, window);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
     if uses_android_vibrate {
@@ -13780,6 +13817,20 @@ fn emit_qualified_call(
                 return Ok((
                     format!("flux__android_set_selection({}, {})", start.code, end.code),
                     vec![Type::Bool],
+                    None,
+                ));
+            }
+            "keepScreenOn" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let enabled = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_keep_screen_on({})", enabled.code),
+                    Vec::new(),
                     None,
                 ));
             }
