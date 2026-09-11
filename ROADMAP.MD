@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 469
 - Reported overall progress: **63%**
-- Current net scope growth after the baseline: 58 checkbox items
+- Current net scope growth after the baseline: 59 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -192,7 +192,8 @@ The interface/capability foundation is complete for the bootstrap compiler: decl
 - [x] Qualified names consistently use dot syntax; `.` distinguishes namespace/type qualification by static context while remaining ordinary value field access for values.
 - [x] Cyclic dependency diagnostics with the cycle reported at the importing path span and the resolved cycle chain attached as a note.
 - [ ] Package-level constants/resources.
-- [ ] Stable ABI rules for native/library boundaries. The current scalar C-export subset now exposes explicit `FLUX_C_ABI_VERSION 1`, emits forward/chained public aliases in dependency-safe order while preserving their declared alias names, keeps deterministic compiler-prefixed function/constant/multi-return symbols, rejects unsupported ownership-sensitive types, and is regression-validated by compiling the generated header as C11. Completion still requires package/module-qualified library symbol identity plus stable ownership/layout/callback rules for aggregates and other non-scalar foreign values.
+- [ ] Stable ABI rules for native/library boundaries. The scalar C-export subset now uses project/package ABI v2 with deterministic package/module-qualified linker symbols for public functions while preserving dependency-safe public scalar aliases/constants and module-qualified multi-return header tags; unsupported ownership-sensitive types remain rejected. Completion still requires stable ownership/layout/callback rules for aggregates and other non-scalar foreign values.
+  - [x] Package/module-qualified scalar C export identity: project builds derive the external linker symbol from the stable source module identity, bind generated C to that symbol without changing internal call lowering, emit the same qualified function name and multi-return tag in ABI v2 headers, and regression-test the compiled object with `nm` to ensure the legacy unqualified public function symbol does not leak.
 
 ---
 

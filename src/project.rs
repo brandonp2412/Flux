@@ -27,7 +27,12 @@ impl ProjectAnalysis {
     }
 
     pub fn emit_c_header(&self) -> Result<String, Diagnostic> {
-        codegen::emit_c_header(&self.program, &self.signatures)
+        let source_modules = self
+            .sources
+            .iter()
+            .map(|source| (source.source_id, source.module_name.clone()))
+            .collect::<HashMap<_, _>>();
+        codegen::emit_c_header_with_module_names(&self.program, &self.signatures, &source_modules)
     }
 
     pub fn emit_c_for_target(&self, target: codegen::NativeTarget) -> Result<String, Diagnostic> {
@@ -36,10 +41,16 @@ impl ProjectAnalysis {
             .iter()
             .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
             .collect::<HashMap<_, _>>();
-        codegen::emit_c_for_target_with_source_paths(
+        let source_modules = self
+            .sources
+            .iter()
+            .map(|source| (source.source_id, source.module_name.clone()))
+            .collect::<HashMap<_, _>>();
+        codegen::emit_c_for_target_with_source_metadata(
             &self.program,
             &self.signatures,
             &source_paths,
+            &source_modules,
             target,
         )
     }

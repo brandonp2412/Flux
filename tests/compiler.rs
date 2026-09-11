@@ -7045,6 +7045,79 @@ fn main() -> i64 {
 }
 
 #[test]
+fn package_c_abi_exports_use_module_qualified_linker_symbols() {
+    let root =
+        std::env::temp_dir().join(format!("flux-module-qualified-abi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary ABI package directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"abi_sample\"\nentry = \"main.flux\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("ABI package manifest should be writable");
+    fs::write(
+        root.join("main.flux"),
+        r#"pub fn scale(value: i64) -> i64 {
+    return value * 2
+}
+
+fn main() -> i64 {
+    return scale(2)
+}
+"#,
+    )
+    .expect("ABI package source should be writable");
+
+    let header = fluxc::project::compile_to_c_header(&root)
+        .expect("package C header should use stable module-qualified exports");
+    let generated = fluxc::project::compile_to_c(&root)
+        .expect("package C source should use stable module-qualified exports");
+    let module_component = "abi_sample::main"
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let symbol = format!("flux__abi_{module_component}__fn_scale");
+
+    assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
+    assert!(header.contains(&format!("int64_t {symbol}(int64_t flux__local_value);")));
+    assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
+
+    let c_path = root.join("package.c");
+    let object_path = root.join("package.o");
+    fs::write(&c_path, generated).expect("generated package C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-c"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .expect("clang should compile the package C output");
+    assert!(
+        compile.status.success(),
+        "package C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let symbols = Command::new("nm")
+        .args(["-g", "--defined-only"])
+        .arg(&object_path)
+        .output()
+        .expect("nm should inspect package ABI symbols");
+    assert!(symbols.status.success());
+    let symbols = String::from_utf8_lossy(&symbols.stdout);
+    assert!(
+        symbols.contains(&symbol),
+        "qualified ABI symbol should be exported"
+    );
+    assert!(
+        !symbols.contains("flux__fn_scale"),
+        "the legacy unqualified linker symbol must not leak from package builds"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_c_header_exports_with_non_scalar_ffi_types() {
     let source = r#"
 pub struct Point {

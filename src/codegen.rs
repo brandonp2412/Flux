@@ -19,6 +19,14 @@ pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diag
 }
 
 pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
+    emit_c_header_with_module_names(program, signatures, &HashMap::new())
+}
+
+pub fn emit_c_header_with_module_names(
+    program: &Program,
+    signatures: &Signatures,
+    source_modules: &HashMap<SourceId, String>,
+) -> Result<String, Diagnostic> {
     let public_functions = program
         .functions
         .iter()
@@ -71,7 +79,11 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
 
     let mut out = String::new();
     out.push_str("#pragma once\n\n");
-    out.push_str("#define FLUX_C_ABI_VERSION 1\n\n");
+    out.push_str(if source_modules.is_empty() {
+        "#define FLUX_C_ABI_VERSION 1\n\n"
+    } else {
+        "#define FLUX_C_ABI_VERSION 2\n\n"
+    });
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
@@ -106,7 +118,7 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
 
     for function in &public_functions {
         if function.returns.len() > 1 {
-            let tag = multi_return_struct_name(&function.name);
+            let tag = c_header_multi_return_struct_name(function, source_modules);
             out.push_str(&format!("struct {tag} {{\n"));
             for (index, ty) in function.returns.iter().enumerate() {
                 out.push_str(&format!(
@@ -123,6 +135,7 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
             function,
             &public_scalar_aliases,
             signatures,
+            source_modules,
         ));
         out.push_str(";\n");
     }
@@ -198,11 +211,15 @@ fn c_header_function_prototype(
     function: &Function,
     public_scalar_aliases: &HashSet<String>,
     signatures: &Signatures,
+    source_modules: &HashMap<SourceId, String>,
 ) -> String {
     let ret = match function.returns.as_slice() {
         [] => "void".to_string(),
         [ty] => c_header_type(ty, public_scalar_aliases, signatures),
-        _ => format!("struct {}", multi_return_struct_name(&function.name)),
+        _ => format!(
+            "struct {}",
+            c_header_multi_return_struct_name(function, source_modules)
+        ),
     };
     let params = if function.params.is_empty() {
         "void".to_string()
@@ -220,7 +237,45 @@ fn c_header_function_prototype(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("{ret} {}({params})", function_c_name(&function.name))
+    let name = abi_export_symbol(function, source_modules)
+        .unwrap_or_else(|| function_c_name(&function.name));
+    format!("{ret} {name}({params})")
+}
+
+fn c_header_multi_return_struct_name(
+    function: &Function,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&function.span.source_id) {
+        format!(
+            "flux__abi_{}__ret_{}",
+            abi_module_component(module),
+            function.name
+        )
+    } else {
+        multi_return_struct_name(&function.name)
+    }
+}
+
+fn abi_export_symbol(
+    function: &Function,
+    source_modules: &HashMap<SourceId, String>,
+) -> Option<String> {
+    let module = source_modules.get(&function.span.source_id)?;
+    Some(format!(
+        "flux__abi_{}__fn_{}",
+        abi_module_component(module),
+        function.name
+    ))
+}
+
+fn abi_module_component(module: &str) -> String {
+    let mut encoded = String::with_capacity(module.len() * 2);
+    for byte in module.as_bytes() {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 pub fn emit_c_with_source_paths(
@@ -235,6 +290,22 @@ pub fn emit_c_for_target_with_source_paths(
     program: &Program,
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
+    target: NativeTarget,
+) -> Result<String, Diagnostic> {
+    emit_c_for_target_with_source_metadata(
+        program,
+        signatures,
+        source_paths,
+        &HashMap::new(),
+        target,
+    )
+}
+
+pub fn emit_c_for_target_with_source_metadata(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+    source_modules: &HashMap<SourceId, String>,
     target: NativeTarget,
 ) -> Result<String, Diagnostic> {
     let function_ir = build_function_ir_cache(program, signatures);
@@ -472,6 +543,12 @@ pub fn emit_c_for_target_with_source_paths(
     for function in &program.functions {
         if reachable_functions.contains(&function.name) {
             out.push_str(&function_prototype(function, signatures));
+            if function.public
+                && function.name != "main"
+                && let Some(symbol) = abi_export_symbol(function, source_modules)
+            {
+                out.push_str(&format!(" __asm__(\"{symbol}\")"));
+            }
             out.push_str(";\n");
         }
     }
