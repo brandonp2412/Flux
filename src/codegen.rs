@@ -4741,23 +4741,22 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, text_style_activity_class);\n");
             out.push_str("    if (child_text_color != NULL) (*env)->DeleteLocalRef(env, child_text_color);\n");
-            let font_family = view_property(element, "font_family")
-                .map(|property| {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.font_family must be a compile-time str value",
-                        ));
-                    };
+            let font_family_property = view_property(element, "font_family");
+            let (font_family, dynamic_font_family) = if let Some(property) = font_family_property {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
                     if value.is_empty() {
                         return Err(diag(
                             property.value.span,
                             "Text.font_family cannot be empty",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
             let letter_spacing = view_property(element, "letter_spacing")
                 .map(|property| {
                     let Some(value) = static_expr_i64(&property.value, signatures) else {
@@ -4880,6 +4879,7 @@ fn emit_android_native_application(
                 .transpose()?
                 .unwrap_or(default_max_width_chars);
             if font_family.is_some()
+                || dynamic_font_family.is_some()
                 || letter_spacing.is_some()
                 || line_height_percent.is_some()
                 || text_align.is_some()
@@ -4900,7 +4900,14 @@ fn emit_android_native_application(
                             out.push_str(&format!("    jstring {variable} = NULL;\n"));
                         }
                     };
-                emit_optional_text(out, "child_font_family", font_family.as_ref());
+                if let Some(value) = dynamic_font_family.as_ref() {
+                    out.push_str(&format!(
+                        "    const char *child_font_family_value = {value};\n    if (child_font_family_value == NULL || child_font_family_value[0] == '\\0') {{ fputs(\"Flux runtime error: Text.font_family cannot be empty\\n\", stderr); abort(); }}\n    jstring child_font_family = flux__android_utf8_string(env, child_font_family_value);\n"
+                    ));
+                    out.push_str("    if (child_font_family == NULL) return;\n");
+                } else {
+                    emit_optional_text(out, "child_font_family", font_family.as_ref());
+                }
                 emit_optional_text(out, "child_text_align", text_align.as_ref());
                 emit_optional_text(out, "child_wrap_mode", wrap_mode.as_ref());
                 emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
@@ -7445,6 +7452,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
         ("Text", "text")
             | ("Text", "selectable")
             | ("Text", "wrap")
+            | ("Text", "font_family")
             | ("Button", "text")
             | ("TextInput", "placeholder")
             | ("Image", "source")
@@ -7566,6 +7574,7 @@ fn android_ui_element_needs_refresh(
             "italic",
             "underline",
             "strikethrough",
+            "font_family",
         ],
         "Button" => &["text"],
         "TextInput" => &["placeholder"],
@@ -7774,6 +7783,19 @@ fn emit_android_ui_refresh(
                         out.push_str(&format!(
                             "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat){refresh_size}, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
                         ));
+                    }
+                    if android_ui_property_needs_refresh(element, "font_family", &runtime_names)
+                        && let Some(property) = view_property(element, "font_family")
+                    {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "                const char *refresh_font_family_value = {value};\n                if (refresh_font_family_value == NULL || refresh_font_family_value[0] == '\\0') {{ fputs(\"Flux runtime error: Text.font_family cannot be empty\\n\", stderr); abort(); }}\n                jstring refresh_font_family = flux__android_utf8_string(env, refresh_font_family_value);\n"
+                        ));
+                        out.push_str("                if (refresh_font_family != NULL) {\n");
+                        out.push_str("                    jmethodID refresh_text_layout = (*env)->GetMethodID(env, activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
+                        out.push_str("                    if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint)INT32_MIN, (jint)0, NULL, NULL, NULL, (jint)0, (jint)0);\n");
+                        out.push_str("                    (*env)->DeleteLocalRef(env, refresh_font_family);\n");
+                        out.push_str("                }\n");
                     }
                 }
                 if matches!(element.kind.as_str(), "Toggle" | "Radio") {

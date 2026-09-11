@@ -18644,6 +18644,46 @@ app DynamicText
 }
 
 #[test]
+fn android_font_family_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicFont {
+    state font: str = "sans-serif"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Typeface"
+        font_family: font
+    Button swap at 2,1
+        text: "Swap"
+        onPress: font => "serif"
+}
+app DynamicFont
+"#;
+
+    check_source(source).expect("dynamic Android Text.fontFamily should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android Text.fontFamily should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android Text.fontFamily should lower");
+
+    assert!(android.contains("const char *child_font_family_value = flux__ui_state_font"));
+    assert!(android.contains("const char *refresh_font_family_value = flux__ui_state_font"));
+    assert!(android.contains("jstring refresh_font_family = flux__android_utf8_string"));
+    assert!(android.contains("refresh_text_layout"));
+    assert!(android.contains("refresh_font_family, (jint)INT32_MIN, (jint)0"));
+    assert!(android.contains("Text.font_family cannot be empty"));
+    let label_id = android_stable_view_id("DynamicFont", "label");
+    assert!(android.contains(&format!("find_view, (jint){label_id}")));
+    assert!(android.contains("flux__ui_state_font = \"serif\""));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {
