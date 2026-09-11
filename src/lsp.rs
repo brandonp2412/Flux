@@ -1195,6 +1195,14 @@ fn add_qualified_namespace_completions(
                 "fn net.tcpAccept(listener: i64) -> (i64, error)",
             ),
             ("localPort", "fn net.localPort(socket: i64) -> (i64, error)"),
+            (
+                "sendText",
+                "fn net.sendText(socket: i64, text: str) -> error",
+            ),
+            (
+                "receiveText",
+                "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+            ),
             ("close", "fn net.close(socket: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -2416,6 +2424,26 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "net.localPort",
                         &["socket: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendText" => {
+                    return Some(signature_help_for_builtin(
+                        "net.sendText",
+                        &["socket: i64", "text: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "receiveText" => {
+                    return Some(signature_help_for_builtin(
+                        "net.receiveText",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "callback: fn(i64, str) -> void",
+                        ],
                         "(i64, error)",
                         active_parameter,
                     ));
@@ -5641,6 +5669,10 @@ mod tests {
         );
         assert!(net_items.contains("fn net.tcpAccept(listener: i64) -> (i64, error)"));
         assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.sendText(socket: i64, text: str) -> error"));
+        assert!(net_items.contains(
+            "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
         assert!(net_items.contains("fn net.close(socket: i64) -> error"));
 
         let locale_line = source
@@ -6384,7 +6416,7 @@ mod tests {
     #[test]
     fn signature_help_supports_network_capabilities() {
         let uri = "file:///tmp/network-signatures.flux";
-        let source = "fn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.close(bound))\n    return 0\n}\n";
+        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.sendText(bound, \"hello\"))\n    let (_received, _receiveError) = net.receiveText(bound, 64, consume)\n    print(net.close(bound))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -6410,6 +6442,14 @@ mod tests {
             (
                 "net.localPort(",
                 "fn net.localPort(socket: i64) -> (i64, error)",
+            ),
+            (
+                "net.sendText(",
+                "fn net.sendText(socket: i64, text: str) -> error",
+            ),
+            (
+                "net.receiveText(",
+                "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             ("net.close(", "fn net.close(socket: i64) -> error"),
         ] {

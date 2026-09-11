@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -1635,6 +1635,161 @@ fn main() -> i64 {
             .message
             .contains("net.* APIs require a desktop/server target")
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn socket_text_io_is_typed_borrowed_tree_shaken_and_runnable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback text listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn consume(_socket: i64, text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.sendText(socket, "ping"))
+    let (received, receiveError) = net.receiveText(socket, 64, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("borrowed socket text I/O should typecheck");
+    let generated = compile_to_c(&source).expect("socket text I/O should lower on Linux");
+    assert!(generated.contains("flux__net_send_text("));
+    assert!(generated.contains("flux__net_receive_text("));
+    assert!(generated.contains("void (*callback)(int64_t, const char *)"));
+    assert!(generated.contains("MSG_NOSIGNAL"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-text-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("network text fixture should be writable");
+    let source_path = root.join("text.flux");
+    fs::write(&source_path, &source).expect("network text source should be writable");
+    let binary = root.join("text");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("network text binary should build");
+    assert!(
+        built.status.success(),
+        "network text build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Flux client should connect");
+        let mut request = [0u8; 4];
+        stream
+            .read_exact(&mut request)
+            .expect("Flux client should send all text bytes");
+        assert_eq!(&request, b"ping");
+        stream
+            .write_all(b"pong")
+            .expect("test server should send response text");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("network text binary should run");
+    server.join().expect("network text server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\npong\n4\nnil\nnil\n"
+    );
+
+    let udp_server = UdpSocket::bind("127.0.0.1:0").expect("loopback text UDP socket should bind");
+    let udp_port = udp_server.local_addr().unwrap().port();
+    let udp_source = format!(
+        r#"fn consume(_socket: i64, text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.udpConnect("127.0.0.1", {udp_port})
+    print(connectError)
+    print(net.sendText(socket, "ping"))
+    let (received, receiveError) = net.receiveText(socket, 64, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    let udp_path = root.join("udp-text.flux");
+    fs::write(&udp_path, &udp_source).expect("UDP text source should be writable");
+    let udp_binary = root.join("udp-text");
+    let udp_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&udp_path)
+        .arg("-o")
+        .arg(&udp_binary)
+        .output()
+        .expect("UDP text binary should build");
+    assert!(
+        udp_built.status.success(),
+        "UDP text build failed: {}",
+        String::from_utf8_lossy(&udp_built.stderr)
+    );
+    let udp_peer = thread::spawn(move || {
+        let mut request = [0u8; 4];
+        let (length, peer) = udp_server
+            .recv_from(&mut request)
+            .expect("Flux UDP client should send one datagram");
+        assert_eq!(length, 4);
+        assert_eq!(&request, b"ping");
+        udp_server
+            .send_to(b"pong", peer)
+            .expect("test UDP server should send response datagram");
+    });
+    let udp_run = Command::new(&udp_binary)
+        .output()
+        .expect("UDP text binary should run");
+    udp_peer.join().expect("UDP text server should finish");
+    assert!(udp_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&udp_run.stdout),
+        "nil\nnil\npong\n4\nnil\nnil\n"
+    );
+
+    let max_error = check_source(
+        "fn consume(_socket: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveText(1, 0, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("constant receive bounds must fail statically");
+    assert!(
+        max_error
+            .message
+            .contains("net.receiveText maxBytes must be between 1 and 65536")
+    );
+    let callback_error = check_source(
+        "fn consume(_text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveText(1, 64, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("receive callback shape must be exact");
+    assert!(callback_error.message.contains("net.receiveText callback"));
+
+    let unused = r#"
+fn consume(_socket: i64, _text: str) -> void {
+}
+fn hidden(socket: i64) -> void {
+    print(net.sendText(socket, "hidden"))
+    let (received, failure) = net.receiveText(socket, 64, consume)
+    print(received)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead socket text I/O should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text("));
+    assert!(!unused_generated.contains("flux__net_receive_text("));
     let _ = fs::remove_dir_all(&root);
 }
 
