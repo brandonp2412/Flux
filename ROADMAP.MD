@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 468
+- Completed baseline units: 469
 - Reported overall progress: **63%**
 - Current net scope growth after the baseline: 57 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -506,7 +506,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Text inputs.
   - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, compile-time `keyboardType: str`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers single-line input to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking/validated maximum length plus text/email/number/decimal/phone/URL input purposes, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
   - [x] Linux GTK multiline bootstrap parity: `multiline: true` lowers to native `GtkTextView`/`GtkTextBuffer`, preserves word/character wrapping, delivers full-buffer `onChange`, defaults Enter to text insertion, and supports explicit `submitOnEnter: true` through a native key controller without application bridge code. Password masking, placeholder text, and maximum-length enforcement remain explicit unsupported combinations rather than silently degrading semantics.
-  - [ ] Editable Flux-owned text state, richer data/message validation, portable selection/caret APIs, and fully portable IME semantics. Semantic validation presentation is now first-class through `validationState`; Android already has native multiline submit policy plus direct focused selection/caret APIs.
+  - [ ] Editable Flux-owned text state, richer data/message validation, portable selection/caret APIs, and portable programmatic composition controls. Semantic validation presentation is now first-class through `validationState`; ordinary text entry already stays on each platform's native IME/composition path, Android preserves composing spans across compiler-required rebuilds, and Android also has native multiline submit policy plus direct focused selection/caret APIs.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `onChange` event; Linux lowers to `GtkCheckButton`, while `onChange: state => nextExpression` reuses the same functional transition/state refresh model as buttons.
   - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `onSelect`; sibling radios are grouped natively and `onSelect` fires only for the newly active control, while shared Flux state remains the source of truth for selection.
@@ -598,7 +598,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [ ] Broader shortcut scopes and platform-specific shortcut presentation remain; app-window shortcuts now support any built-in element with a typed `onTap` action while Buttons continue to prefer `onPress`, and the complete composed view tree rejects canonical conflicts at compile time, including repeated custom-view instances and equivalent modifier/key spellings.
 - [ ] Context menus.
 - [ ] Clipboard; portable `clipboard.setText(text)` is implemented on Linux/Android, while reads remain blocked on owned-string semantics rather than returning unsafe borrowed GUI storage.
-- [ ] IME/text-composition support.
+- [x] Native IME/text-composition support on the current Linux/Android backends: Flux `TextInput` lowers to native GTK `GtkEntry`/`GtkTextView` and Android `EditText` controls so ordinary composition remains owned by each platform input-method stack rather than a compiler key-event emulation layer. Android snapshots/restores composing spans together with text selection across the remaining compiler-required native hierarchy rebuilds; Linux ordinary input does not install a raw key controller unless the source explicitly requests key/submit interception. Portable programmatic composition APIs remain part of the richer text-state follow-up rather than blocking native IME correctness.
 
 # Milestone 13 — Navigation
 

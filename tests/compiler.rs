@@ -13670,6 +13670,57 @@ app Form
 }
 
 #[test]
+fn native_text_inputs_preserve_platform_ime_composition() {
+    let source = r#"
+fn changed(value: str) -> void {
+    print(value)
+}
+
+view Editor {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput title at 1,1
+        keyboardType: "text"
+        onChange: changed
+    TextInput body at 2,1
+        multiline: true
+        keyboardType: "text"
+        onChange: changed
+}
+app Editor
+"#;
+
+    check_source(source).expect("native IME text inputs should typecheck");
+    let linux = compile_to_c(source).expect("native IME text inputs should lower on Linux");
+    assert!(linux.contains("flux__ui_title = gtk_entry_new()"));
+    assert!(linux.contains("flux__ui_body = gtk_text_view_new()"));
+    assert!(linux.contains(
+        "gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_title), GTK_INPUT_PURPOSE_FREE_FORM)"
+    ));
+    assert!(linux.contains(
+        "gtk_text_view_set_input_purpose(GTK_TEXT_VIEW(flux__ui_body), GTK_INPUT_PURPOSE_FREE_FORM)"
+    ));
+    assert!(
+        !linux.contains("gtk_event_controller_key_new()"),
+        "ordinary text composition must stay on GTK's native input-method path unless the app explicitly asks for key/submit interception"
+    );
+
+    let program = fluxc::parser::parse(source).expect("native IME fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("native IME fixture should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("native IME text inputs should lower on Android");
+    assert!(android.contains("restoreTextInput"));
+    assert!(android.contains("wireTextInput"));
+    assert!(android.contains("android/widget/EditText"));
+}
+
+#[test]
 fn button_shortcuts_validate_and_dispatch_through_existing_press_action() {
     let source = r#"
 view Shortcuts {
