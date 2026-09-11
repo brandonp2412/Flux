@@ -4233,6 +4233,45 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_moving_list_owner_while_match_scoped_nested_view_is_live() {
+    let source = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20, 30], [40, 50, 60]]
+    let view: i64[] = match rows:
+        []: [0]
+        [first, ..._]: first[1:]
+    let destination: i64[][] = rows
+    print(view[0])
+    print(destination[0][0])
+    return 0
+}
+"#;
+
+    let errors = check_source_all(source)
+        .expect_err("a match-scoped nested list view must keep the outer owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'view' is still live")
+    }));
+
+    let dead_view = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20, 30], [40, 50, 60]]
+    let view: i64[] = match rows:
+        []: [0]
+        [first, ..._]: first[1:]
+    print(view[0])
+    let destination: i64[][] = rows
+    print(destination[0][0])
+    return 0
+}
+"#;
+    check_source(dead_view).expect("a dead match-scoped nested view must not block a later move");
+    compile_to_c(dead_view).expect("a move after the scoped view's last use should lower natively");
+}
+
+#[test]
 fn rejects_moving_list_owner_while_zero_copy_view_is_live() {
     let live_slice = r#"
 fn main() -> i64 {

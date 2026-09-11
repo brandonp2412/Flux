@@ -372,6 +372,7 @@ pub struct ControlFlowGraph {
     reachable_values: BTreeSet<ControlFlowValueId>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    scoped_borrow_sources: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     move_states_before: Vec<ControlFlowMoveState>,
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
@@ -483,6 +484,9 @@ impl ControlFlowGraph {
         &self,
         id: ControlFlowDefinitionId,
     ) -> Option<ControlFlowValueId> {
+        if let Some(value) = self.scoped_borrow_sources.get(&id) {
+            return Some(*value);
+        }
         let ControlFlowDefinitionId::Node { node, index } = id else {
             return None;
         };
@@ -586,6 +590,7 @@ struct ControlFlowBuilder<'a> {
     values: Vec<ControlFlowValue>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     scoped_definition_stack: Vec<HashMap<String, ControlFlowDefinitionId>>,
+    scoped_borrow_sources: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     evaluation_types: Vec<(SourceSpan, Vec<Type>)>,
 }
 
@@ -611,6 +616,7 @@ impl<'a> ControlFlowBuilder<'a> {
             values: Vec::new(),
             scoped_definitions: Vec::new(),
             scoped_definition_stack: Vec::new(),
+            scoped_borrow_sources: BTreeMap::new(),
             evaluation_types: collect_evaluation_types(function, signatures),
         };
         builder.entry = builder.node(ControlFlowNodeKind::Entry, function.keyword_span);
@@ -670,6 +676,7 @@ impl<'a> ControlFlowBuilder<'a> {
             reachable_values,
             scoped_definitions: self.scoped_definitions,
             definition_values,
+            scoped_borrow_sources: self.scoped_borrow_sources,
             move_states_before,
             live_before,
             live_after,
@@ -1271,6 +1278,19 @@ impl<'a> ControlFlowBuilder<'a> {
             .collect()
     }
 
+    fn record_scoped_borrow_sources(
+        &mut self,
+        definitions: &[(String, ControlFlowDefinitionId)],
+        source: Option<ControlFlowValueId>,
+    ) {
+        let Some(source) = source else {
+            return;
+        };
+        for (_, definition) in definitions {
+            self.scoped_borrow_sources.insert(*definition, source);
+        }
+    }
+
     fn push_scoped_definitions(
         &mut self,
         definitions: impl IntoIterator<Item = (String, ControlFlowDefinitionId)>,
@@ -1451,6 +1471,7 @@ impl<'a> ControlFlowBuilder<'a> {
                     _ => Vec::new(),
                 };
                 let definitions = self.add_scoped_definitions(producer, definitions);
+                self.record_scoped_borrow_sources(&definitions, iterable_value);
                 self.push_scoped_definitions(definitions);
                 let condition = condition
                     .as_deref()
@@ -1539,6 +1560,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 for arm in arms {
                     let definitions = self.enum_match_expr_definitions(value, arm);
                     let definitions = self.add_scoped_definitions(producer, definitions);
+                    self.record_scoped_borrow_sources(&definitions, matched_value);
                     self.push_scoped_definitions(definitions);
                     guards.push(
                         arm.guard
@@ -1565,6 +1587,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 for arm in arms {
                     let definitions = self.list_match_definitions(value, &arm.pattern);
                     let definitions = self.add_scoped_definitions(producer, definitions);
+                    self.record_scoped_borrow_sources(&definitions, matched_value);
                     self.push_scoped_definitions(definitions);
                     guards.push(
                         arm.guard

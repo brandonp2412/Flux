@@ -3986,16 +3986,22 @@ fn definition_value_borrows_from(
                 || value_depends_on_borrow_source(graph, *else_value, source, visiting)
         }
         ControlFlowValueKind::NameRead { definitions, .. } => {
-            definitions.iter().any(|definition| match definition {
-                ControlFlowDefinitionId::Parameter(_) => false,
-                ControlFlowDefinitionId::Node { .. } | ControlFlowDefinitionId::Scoped { .. } => {
-                    graph
-                        .definition_name(*definition)
-                        .and_then(|name| {
-                            borrowed_definition_span_inner(graph, name, source, visiting)
-                        })
-                        .is_some()
-                }
+            definitions.iter().any(|definition| {
+                graph
+                    .definition_borrow_source_value(*definition)
+                    .is_some_and(|value| {
+                        value_depends_on_borrow_source(graph, value, source, visiting)
+                    })
+                    || match definition {
+                        ControlFlowDefinitionId::Parameter(_) => false,
+                        ControlFlowDefinitionId::Node { .. }
+                        | ControlFlowDefinitionId::Scoped { .. } => graph
+                            .definition_name(*definition)
+                            .and_then(|name| {
+                                borrowed_definition_span_inner(graph, name, source, visiting)
+                            })
+                            .is_some(),
+                    }
             })
         }
         _ => false,
@@ -4016,12 +4022,17 @@ fn value_depends_on_borrow_source(
             name == source
                 || definitions.iter().any(|definition| {
                     graph
-                        .definition_name(*definition)
-                        .filter(|name| *name != source)
-                        .and_then(|name| {
-                            borrowed_definition_span_inner(graph, name, source, visiting)
+                        .definition_borrow_source_value(*definition)
+                        .is_some_and(|value| {
+                            value_depends_on_borrow_source(graph, value, source, visiting)
                         })
-                        .is_some()
+                        || graph
+                            .definition_name(*definition)
+                            .filter(|name| *name != source)
+                            .and_then(|name| {
+                                borrowed_definition_span_inner(graph, name, source, visiting)
+                            })
+                            .is_some()
                 })
         }
         ControlFlowValueKind::Slice { base, .. } => {
