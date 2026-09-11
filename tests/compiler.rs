@@ -7314,12 +7314,21 @@ fn package_c_abi_exports_use_module_qualified_linker_symbols() {
     value: i64
 }
 
+pub enum Choice {
+    Off
+    On
+}
+
 pub fn scale(value: i64) -> i64 {
     return value * 2
 }
 
 pub fn identity(point: Point) -> Point {
     return point
+}
+
+pub fn roundtrip(choice: Choice) -> Choice {
+    return choice
 }
 
 fn main() -> i64 {
@@ -7340,16 +7349,28 @@ fn main() -> i64 {
         .collect::<String>();
     let symbol = format!("flux__abi_{module_component}__fn_scale");
     let identity_symbol = format!("flux__abi_{module_component}__fn_identity");
+    let roundtrip_symbol = format!("flux__abi_{module_component}__fn_roundtrip");
     let point_type = format!("flux__abi_{module_component}__type_Point");
+    let choice_type = format!("flux__abi_{module_component}__type_Choice");
+    let choice_tag = format!("flux__abi_{module_component}__tag_Choice");
 
     assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
     assert!(header.contains(&format!("struct {point_type} {{")));
+    assert!(header.contains(&format!("typedef int32_t {choice_tag};")));
+    assert!(header.contains(&format!(
+        "#define {choice_tag}_Off (({choice_tag})INT32_C(0))"
+    )));
+    assert!(header.contains(&format!("struct {choice_type} {{")));
     assert!(header.contains(&format!("int64_t {symbol}(int64_t flux__local_value);")));
     assert!(header.contains(&format!(
         "struct {point_type} {identity_symbol}(struct {point_type} flux__local_point);"
     )));
+    assert!(header.contains(&format!(
+        "struct {choice_type} {roundtrip_symbol}(struct {choice_type} flux__local_choice);"
+    )));
     assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{identity_symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{roundtrip_symbol}\")")));
 
     let header_path = root.join("package.h");
     let consumer_path = root.join("consumer.c");
@@ -7406,6 +7427,10 @@ fn main() -> i64 {
         "qualified aggregate ABI symbol should be exported"
     );
     assert!(
+        symbols.contains(&roundtrip_symbol),
+        "qualified enum ABI symbol should be exported"
+    );
+    assert!(
         !symbols.contains("flux__fn_scale"),
         "the legacy unqualified linker symbol must not leak from package builds"
     );
@@ -7414,14 +7439,21 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_c_header_exports_with_ownership_sensitive_ffi_types() {
+fn emits_c_header_for_public_copy_enum_abi() {
     let source = r#"
-pub enum Choice {
-    First(i64)
-    Second(i64)
+pub struct Point {
+    x: i64
 }
 
-pub fn choose(value: Choice) -> Choice {
+pub enum Choice {
+    Empty
+    PointValue(Point)
+    Pair(i64, bool)
+}
+
+pub type PublicChoice = Choice
+
+pub fn choose(value: PublicChoice) -> Choice {
     return value
 }
 
@@ -7430,11 +7462,75 @@ fn main() -> i64 {
 }
 "#;
 
-    let error = compile_to_c_header(source).expect_err(
-        "enum FFI exports should remain rejected until their stable layout is explicit",
+    let header =
+        compile_to_c_header(source).expect("public Copy enums should cross the C ABI by value");
+    let generated = compile_to_c(source).expect("public Copy enums should lower with stable tags");
+    let point = header
+        .find("struct flux__type_Point {")
+        .expect("payload struct layout should be emitted");
+    let choice = header
+        .find("struct flux__type_Choice {")
+        .expect("enum layout should be emitted");
+    assert!(
+        point < choice,
+        "enum payload dependencies must be emitted first"
     );
+    assert!(header.contains("typedef int32_t flux__tag_Choice;"));
+    assert!(header.contains("#define flux__tag_Choice_Empty ((flux__tag_Choice)INT32_C(0))"));
+    assert!(header.contains("#define flux__tag_Choice_PointValue ((flux__tag_Choice)INT32_C(1))"));
+    assert!(header.contains("#define flux__tag_Choice_Pair ((flux__tag_Choice)INT32_C(2))"));
+    assert!(header.contains("flux__tag_Choice tag;"));
+    assert!(header.contains("struct flux__type_Point v0;"));
+    assert!(header.contains("int64_t v0;"));
+    assert!(header.contains("bool v1;"));
+    assert!(header.contains("typedef struct flux__type_Choice flux__alias_PublicChoice;"));
+    assert!(header.contains(
+        "struct flux__type_Choice flux__fn_choose(flux__alias_PublicChoice flux__local_value);"
+    ));
+    assert!(generated.contains("struct flux__type_Choice {\n    int32_t tag;"));
+
+    let root = std::env::temp_dir().join(format!("flux-c-enum-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary C enum header directory should be writable");
+    let header_path = root.join("flux_enum_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header).expect("generated enum header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_enum_api.h\"\nstruct flux__type_Choice probe(void) { struct flux__type_Choice value = { .tag = flux__tag_Choice_Pair, .payload.flux__payload_Pair = { .v0 = 7, .v1 = true } }; return value; }\n",
+    )
+    .expect("enum header consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the generated enum C header");
+    assert!(
+        output.status.success(),
+        "generated enum C header should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rejects_c_header_exports_with_ownership_sensitive_ffi_types() {
+    let source = r#"
+pub type Mapper = fn(i64) -> i64
+
+pub fn choose(value: Mapper) -> Mapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = compile_to_c_header(source)
+        .expect_err("ownership-sensitive function-value FFI exports must remain rejected");
     assert_eq!(error.stage, DiagnosticStage::Codegen);
-    assert!(error.message.contains("unsupported FFI type 'Choice'"));
+    assert!(error.message.contains("unsupported FFI type 'Mapper'"));
 }
 
 #[test]

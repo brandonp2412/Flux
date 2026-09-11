@@ -38,27 +38,22 @@ pub fn emit_c_header_with_module_names(
         .filter(|alias| alias.public && ffi_header_type_supported(&alias.target, signatures))
         .map(|alias| alias.name.clone())
         .collect::<HashSet<_>>();
-    let public_structs = value_type_emit_order(program, signatures)?
+    let public_value_defs = value_type_emit_order(program, signatures)?
         .into_iter()
-        .filter_map(|definition| match definition {
-            ValueDef::Struct(definition)
-                if definition.public
-                    && ffi_header_type_supported(
-                        &Type::Named(definition.name.clone()),
-                        signatures,
-                    ) =>
-            {
-                Some(definition)
-            }
-            _ => None,
+        .filter(|definition| match definition {
+            ValueDef::Struct(definition) => definition.public,
+            ValueDef::Enum(definition) => definition.public,
+        })
+        .filter(|definition| {
+            ffi_header_type_supported(&Type::Named(definition.name().to_string()), signatures)
         })
         .collect::<Vec<_>>();
-    let public_struct_names = public_structs
+    let public_value_names = public_value_defs
         .iter()
         .map(|definition| {
             (
-                definition.name.clone(),
-                c_header_struct_name(definition, source_modules),
+                definition.name().to_string(),
+                c_header_value_type_name(*definition, source_modules),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -111,18 +106,28 @@ pub fn emit_c_header_with_module_names(
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
     out.push_str(
-        "/* Public Copy structs cross the ABI by value; their field layout is emitted below. */\n",
+        "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
     );
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
 
-    for definition in &public_structs {
-        emit_c_header_struct_definition(
-            &mut out,
-            definition,
-            &public_ffi_aliases,
-            &public_struct_names,
-            signatures,
-        );
+    for definition in &public_value_defs {
+        match definition {
+            ValueDef::Struct(definition) => emit_c_header_struct_definition(
+                &mut out,
+                definition,
+                &public_ffi_aliases,
+                &public_value_names,
+                signatures,
+            ),
+            ValueDef::Enum(definition) => emit_c_header_enum_definition(
+                &mut out,
+                definition,
+                &public_ffi_aliases,
+                &public_value_names,
+                source_modules,
+                signatures,
+            ),
+        }
         out.push('\n');
     }
 
@@ -132,7 +137,7 @@ pub fn emit_c_header_with_module_names(
             c_header_type(
                 &alias.target,
                 &public_ffi_aliases,
-                &public_struct_names,
+                &public_value_names,
                 signatures,
             ),
             alias.name
@@ -152,7 +157,7 @@ pub fn emit_c_header_with_module_names(
             c_header_type(
                 &constant.ty,
                 &public_ffi_aliases,
-                &public_struct_names,
+                &public_value_names,
                 signatures,
             ),
             constant_c_value(&signature.value)
@@ -171,7 +176,7 @@ pub fn emit_c_header_with_module_names(
             for (index, ty) in function.returns.iter().enumerate() {
                 out.push_str(&format!(
                     "    {} v{index};\n",
-                    c_header_type(ty, &public_ffi_aliases, &public_struct_names, signatures,)
+                    c_header_type(ty, &public_ffi_aliases, &public_value_names, signatures,)
                 ));
             }
             out.push_str("};\n\n");
@@ -182,7 +187,7 @@ pub fn emit_c_header_with_module_names(
         out.push_str(&c_header_function_prototype(
             function,
             &public_ffi_aliases,
-            &public_struct_names,
+            &public_value_names,
             signatures,
             source_modules,
         ));
@@ -239,23 +244,58 @@ fn ordered_public_scalar_aliases<'a>(
 fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str | Type::Error => true,
-        Type::Named(name) => signatures.struct_type(&name).is_some() && signatures.is_copy_type(ty),
+        Type::Named(name) => {
+            (signatures.struct_type(&name).is_some() || signatures.enum_type(&name).is_some())
+                && signatures.is_copy_type(ty)
+        }
         _ => false,
     }
 }
 
-fn c_header_struct_name(
-    definition: &StructDef,
+fn c_header_value_type_name(
+    definition: ValueDef<'_>,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&definition.span().source_id) {
+        format!(
+            "flux__abi_{}__type_{}",
+            abi_module_component(module),
+            definition.name()
+        )
+    } else {
+        struct_c_name(definition.name())
+    }
+}
+
+fn c_header_enum_tag_name(
+    definition: &EnumDef,
     source_modules: &HashMap<SourceId, String>,
 ) -> String {
     if let Some(module) = source_modules.get(&definition.name_span.source_id) {
         format!(
-            "flux__abi_{}__type_{}",
+            "flux__abi_{}__tag_{}",
             abi_module_component(module),
             definition.name
         )
     } else {
-        struct_c_name(&definition.name)
+        enum_tag_type_name(&definition.name)
+    }
+}
+
+fn c_header_enum_tag_value_name(
+    definition: &EnumDef,
+    variant: &str,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&definition.name_span.source_id) {
+        format!(
+            "flux__abi_{}__tag_{}_{}",
+            abi_module_component(module),
+            definition.name,
+            variant
+        )
+    } else {
+        enum_tag_value_name(&definition.name, variant)
     }
 }
 
@@ -281,6 +321,59 @@ fn emit_c_header_struct_definition(
             ),
             field_c_name(&field.name)
         ));
+    }
+    out.push_str("};\n");
+}
+
+fn emit_c_header_enum_definition(
+    out: &mut String,
+    definition: &EnumDef,
+    public_ffi_aliases: &HashSet<String>,
+    public_value_names: &HashMap<String, String>,
+    source_modules: &HashMap<SourceId, String>,
+    signatures: &Signatures,
+) {
+    let name = public_value_names
+        .get(&definition.name)
+        .expect("public FFI enum has a header name");
+    let tag_name = c_header_enum_tag_name(definition, source_modules);
+    out.push_str(&format!("typedef int32_t {tag_name};\n"));
+    for (index, variant) in definition.variants.iter().enumerate() {
+        out.push_str(&format!(
+            "#define {} (({tag_name})INT32_C({index}))\n",
+            c_header_enum_tag_value_name(definition, &variant.name, source_modules)
+        ));
+    }
+    out.push_str(&format!("struct {name} {{\n"));
+    out.push_str(&format!("    {tag_name} tag;\n"));
+    if definition
+        .variants
+        .iter()
+        .any(|variant| !variant.payloads.is_empty())
+    {
+        out.push_str("    union {\n");
+        for variant in &definition.variants {
+            if variant.payloads.is_empty() {
+                continue;
+            }
+            out.push_str("        struct {\n");
+            for (index, payload) in variant.payloads.iter().enumerate() {
+                out.push_str(&format!(
+                    "            {} v{index};\n",
+                    c_header_type(
+                        &payload.ty,
+                        public_ffi_aliases,
+                        public_value_names,
+                        signatures,
+                    )
+                ));
+            }
+            out.push_str(&format!(
+                "        }} {};\n",
+                enum_payload_member_name(&variant.name)
+            ));
+        }
+        out.push_str("    } payload;\n");
     }
     out.push_str("};\n");
 }
@@ -15895,7 +15988,7 @@ fn emit_enum_definition(out: &mut String, definition: &EnumDef, signatures: &Sig
     }
     out.push_str("};\n");
     out.push_str(&format!("struct {} {{\n", struct_c_name(&definition.name)));
-    out.push_str(&format!("    enum {tag_type} tag;\n"));
+    out.push_str("    int32_t tag;\n");
     if definition
         .variants
         .iter()
