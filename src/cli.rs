@@ -3943,7 +3943,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -3956,6 +3956,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingStarts = new HashMap<>();
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
+    private final Map<Integer, float[]> dragStarts = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
     private final Set<String> shortcutFocusedOnly = new HashSet<>();
@@ -3981,6 +3982,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnTap(int viewId);
     private static native void nativeOnDoubleTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
+    private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
     private static native void nativeOnHover(int viewId, boolean hovered);
@@ -4109,6 +4111,32 @@ __FLUX_PICKER_METHODS__
     public boolean onLongClick(View view) {
         nativeOnLongPress(view.getId());
         return true;
+    }
+
+    @Override
+    public boolean onTouch(View view, MotionEvent event) {
+        int viewId = view.getId();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragStarts.put(viewId, new float[] { event.getX(), event.getY() });
+                break;
+            case MotionEvent.ACTION_MOVE:
+                float[] start = dragStarts.get(viewId);
+                if (start != null) {
+                    float density = getResources().getDisplayMetrics().density;
+                    long offsetX = Math.round((event.getX() - start[0]) / density);
+                    long offsetY = Math.round((event.getY() - start[1]) / density);
+                    nativeOnDrag(viewId, offsetX, offsetY);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                dragStarts.remove(viewId);
+                break;
+            default:
+                break;
+        }
+        return false;
     }
 
     @Override
@@ -6483,9 +6511,8 @@ mod tests {
         assert!(!picker_activity.contains("__FLUX_PICKER_"));
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
-            activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener")
+            activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener")
         );
-        assert!(!activity.contains("View.OnTouchListener"));
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
         assert!(activity.contains("private native int nativeThemeMode();"));
@@ -6518,6 +6545,9 @@ mod tests {
         assert!(activity.contains("return \"ArrowLeft\";"));
         assert!(activity.contains("nativeOnKey(view.getId(), fluxKeyName(keyCode, event));"));
         assert!(activity.contains("private static native void nativeOnLongPress(int viewId);"));
+        assert!(activity.contains(
+            "private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);"
+        ));
         assert!(activity.contains("nativeOnClick(viewId);"));
         assert!(!activity.contains("MethodChannel"));
         assert!(!activity.contains("PluginRegistry"));
@@ -6525,6 +6555,11 @@ mod tests {
         assert!(activity.contains("ViewConfiguration.getDoubleTapTimeout()"));
         assert!(activity.contains("nativeOnDoubleTap(viewId);"));
         assert!(activity.contains("nativeOnLongPress(view.getId());"));
+        assert!(
+            activity.contains("private final Map<Integer, float[]> dragStarts = new HashMap<>();")
+        );
+        assert!(activity.contains("nativeOnDrag(viewId, offsetX, offsetY);"));
+        assert!(activity.contains("Math.round((event.getX() - start[0]) / density)"));
         assert!(
             activity
                 .contains("private final Map<String, Integer> shortcutViewIds = new HashMap<>();")

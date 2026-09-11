@@ -16373,6 +16373,9 @@ fn tapped() -> void {
     print("tapped")
 }
 
+fn dragged(_offsetX: i64, _offsetY: i64) -> void {
+}
+
 view HoverCard {
     grid columns: 1fr
     grid rows: auto auto
@@ -16385,6 +16388,7 @@ view HoverCard {
         onTap: tapped
         onDoubleTap: tapped
         onLongPress: hovered => true
+        onDrag: dragged
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -16420,6 +16424,14 @@ app HoverCard
     assert!(!generated.contains("flux__ui_tap_key_title"));
     assert!(generated.contains("GtkGestureLongPress *gesture"));
     assert!(generated.contains("gtk_gesture_long_press_new()"));
+    assert!(generated.contains("GtkGestureDrag *gesture"));
+    assert!(generated.contains("gtk_gesture_drag_new()"));
+    assert!(generated.contains("\"drag-update\", G_CALLBACK(flux__ui_drag_title)"));
+    assert!(
+        generated.contains(
+            "flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh();"
+        )
+    );
     assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
     assert!(
         generated
@@ -18624,6 +18636,9 @@ fn key_pressed(key: str) -> void {
     print(key)
 }
 
+fn dragged(_offsetX: i64, _offsetY: i64) -> void {
+}
+
 view Settings {
     state enabled: bool = false
     state selected: i64 = 0
@@ -18669,6 +18684,7 @@ view Settings {
         onTap: enabled => true
         onDoubleTap: enabled => !enabled
         onLongPress: enabled => false
+        onDrag: dragged
         onKey: key_pressed
         on_change: changed
         on_submit: submitted
@@ -18804,10 +18820,14 @@ app Settings(theme: "dark")
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnDoubleTap"));
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("setFocusable"));
-    assert!(!generated.contains("setOnTouchListener"));
+    assert!(generated.contains("setOnTouchListener"));
     assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnLongPress"));
     assert!(generated.contains("setOnLongClickListener"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnDrag"));
+    assert!(generated.contains(&format!(
+        "case {query_id}: flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); break;"
+    )));
     assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnKey"));
     assert!(generated.contains("setOnKeyListener"));
@@ -19188,6 +19208,9 @@ fn handle_press() -> void {
     print("pressed")
 }
 
+fn handle_drag(_offsetX: i64, _offsetY: i64) -> void {
+}
+
 view App {
     grid columns: 1fr 1fr
     grid rows: auto 1fr
@@ -19200,6 +19223,7 @@ view App {
         onTap: handle_press
         onDoubleTap: handle_press
         onLongPress: handle_press
+        onDrag: handle_drag
         on_press: handle_press
     Chart chart at 2,1
         label: "Activity"
@@ -19222,6 +19246,18 @@ fn main() -> i64 { 0 }
         callback.ty,
         Some(fluxc::ast::Type::Function {
             params: vec![],
+            returns: vec![]
+        })
+    );
+    let drag_callback = database
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name == "onDrag")
+        .expect("common drag callback property should be indexed");
+    assert_eq!(
+        drag_callback.ty,
+        Some(fluxc::ast::Type::Function {
+            params: vec![fluxc::ast::Type::I64, fluxc::ast::Type::I64],
             returns: vec![]
         })
     );

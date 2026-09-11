@@ -5300,6 +5300,15 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_long_click_listener, activity);\n",
             );
         }
+        if view_property(element, "on_drag").is_some() {
+            out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_touch_listener = (*env)->GetMethodID(env, child_class, \"setOnTouchListener\", \"(Landroid/view/View$OnTouchListener;)V\");\n");
+            out.push_str("    if (set_id == NULL || set_touch_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_touch_listener, activity);\n");
+        }
         if view_property(element, "on_focus").is_some()
             || view_property(element, "on_blur").is_some()
         {
@@ -5588,6 +5597,25 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         let body = android_ui_zero_arg_event_body(action, view, signatures)?;
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDrag(JNIEnv *env, jclass activity_class, jint view_id, jlong offset_x, jlong offset_y) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
+    for element in &view.elements {
+        let Some(action) = view_property(element, "on_drag") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
+            ));
+        };
+        let element_id = stable_android_element_id(&view.name, &element.name);
+        out.push_str(&format!(
+            "        case {element_id}: {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); break;\n",
+            function_c_name(function)
+        ));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
 
@@ -6152,6 +6180,19 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static void flux__ui_long_press_{}(GtkGestureLongPress *gesture, double x, double y, gpointer data) {{ (void)gesture; (void)x; (void)y; (void)data; {body} }}\n",
                 element.name,
+            ));
+        }
+        if let Some(action) = view_property(element, "on_drag") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onDrag requires a named fn(i64, i64) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); }}\n",
+                element.name,
+                function_c_name(function),
             ));
         }
         if let Some(action) = view_property(element, "on_key") {
@@ -7227,6 +7268,19 @@ fn emit_linux_gtk_application(
             ));
             out.push_str(&format!(
                 "    g_signal_connect({controller}, \"pressed\", G_CALLBACK(flux__ui_long_press_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
+        if view_property(element, "on_drag").is_some() {
+            let controller = format!("flux__drag_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_drag_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"drag-update\", G_CALLBACK(flux__ui_drag_{}), NULL);\n",
                 element.name
             ));
             out.push_str(&format!(

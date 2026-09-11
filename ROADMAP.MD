@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 482
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 88 checkbox items
+- Current net scope growth after the baseline: 89 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -605,7 +605,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Gestures.
   - [x] Portable single-tap recognition is available through `onTap`.
   - [x] Portable double-tap recognition through typed `onDoubleTap: fn() -> void` callbacks or functional state transitions: Linux uses native multi-press `GtkGestureClick` recognition, while Android recognizes two native click activations within the platform double-tap timeout and dispatches directly into compiled Flux without exposing event objects or application bridge code. Single-tap/click behavior remains intact, including keyboard/accessibility activation through the native click path.
-  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Drag, scale, and velocity semantics remain pending.
+  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Scale and velocity semantics remain pending.
+  - [x] Portable drag-offset recognition through typed `onDrag: fn(i64, i64) -> void`: callbacks receive cumulative logical X/Y offsets from the gesture origin without an event/controller object, Linux lowers directly through native `GtkGestureDrag` `drag-update`, and Android reuses the native `View.OnTouchListener` path with density-normalized coordinates before direct compiled-Flux dispatch. Ordinary tap/long-press behavior remains native, callback delivery refreshes the existing view state in place, and drag-and-drop payload/target semantics remain a separate concern below.
 - [ ] Drag and drop.
 - [x] Keyboard shortcuts for the current native application surface: typed shortcuts are portable across Linux/Android, work on Buttons and other tappable built-ins, support explicit window/focused scope, and reject ambiguous app-window conflicts at compile time without introducing command/controller objects.
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions, while Android registers the same canonical shortcut on the generated Activity and dispatches matching non-repeating native `KeyEvent` key-downs through the button's existing typed `onPress` action. Both backends reject unsupported modifier/key forms rather than silently diverging.
