@@ -2528,6 +2528,76 @@ fn main() -> i64 {
 }
 
 #[test]
+fn form_query_parsing_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn field(name: str, value: str) -> void {
+    print(name)
+    print(value)
+}
+fn main() -> i64 {
+    print(url.parseFormQuery("?a=hello+world&empty=&bare&encoded=%2Fok&&", field))
+    print(url.parseFormQuery("bad=%GG", field))
+    return 0
+}
+"#;
+    check_source(source).expect("form query parsing should typecheck");
+    let generated = compile_to_c(source).expect("form query parsing should lower natively");
+    assert!(generated.contains("flux__url_parse_form_query("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn field(_name: str) -> void {\n}\nfn main() -> i64 {\n    print(url.parseFormQuery(\"a=1\", field))\n    return 0\n}\n",
+    )
+    .expect_err("form query callback shape must be exact");
+    assert!(
+        invalid_callback
+            .message
+            .contains("url.parseFormQuery callback")
+    );
+
+    let unused = r#"
+fn field(_name: str, _value: str) -> void {
+}
+fn hidden() -> void {
+    print(url.parseFormQuery("a=1", field))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead form query parser should tree-shake");
+    assert!(!unused_generated.contains("flux__url_parse_form_query("));
+
+    let root = std::env::temp_dir().join(format!("flux-url-query-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("form query fixture should be writable");
+    let source_path = root.join("query.flux");
+    fs::write(&source_path, source).expect("form query Flux source should be writable");
+    let binary = root.join("query");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("form query Flux binary should build");
+    assert!(
+        built.status.success(),
+        "form query fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("form query Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "a\nhello world\nempty\n\nbare\n\nencoded\n/ok\nnil\nForm URL query has invalid percent escape\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {

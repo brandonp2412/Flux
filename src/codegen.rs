@@ -3176,6 +3176,63 @@ fn emit_runtime_prelude(
 }
 "#);
     }
+    if runtime_usage.contains("flux__url_parse_form_query(") {
+        out.push_str(r#"static inline const char *flux__url_parse_form_query(const char *value, void (*callback)(const char *, const char *)) {
+    size_t length = strlen(value);
+    if (length > 65536) return "Form URL query exceeds 65536 bytes";
+    size_t cursor = value[0] == '?' ? 1 : 0;
+    while (cursor < length) {
+        size_t end = cursor;
+        while (end < length && value[end] != '&') end += 1;
+        if (end != cursor) {
+            size_t equals = cursor;
+            while (equals < end && value[equals] != '=') equals += 1;
+            size_t name_end = equals;
+            size_t value_start = equals < end ? equals + 1 : end;
+            char name[65537];
+            char decoded_value[65537];
+            size_t name_output = 0;
+            for (size_t input = cursor; input < name_end; input += 1) {
+                unsigned char byte = (unsigned char)value[input];
+                if (byte == '+') { name[name_output++] = ' '; continue; }
+                if (byte != '%') { name[name_output++] = (char)byte; continue; }
+                if (input + 2 >= name_end) return "Form URL query has incomplete percent escape";
+                unsigned char high = (unsigned char)value[input + 1];
+                unsigned char low = (unsigned char)value[input + 2];
+                int high_value = high >= '0' && high <= '9' ? high - '0' : high >= 'a' && high <= 'f' ? high - 'a' + 10 : high >= 'A' && high <= 'F' ? high - 'A' + 10 : -1;
+                int low_value = low >= '0' && low <= '9' ? low - '0' : low >= 'a' && low <= 'f' ? low - 'a' + 10 : low >= 'A' && low <= 'F' ? low - 'A' + 10 : -1;
+                if (high_value < 0 || low_value < 0) return "Form URL query has invalid percent escape";
+                unsigned char decoded = (unsigned char)((high_value << 4) | low_value);
+                if (decoded == 0) return "Form URL query cannot decode to NUL";
+                name[name_output++] = (char)decoded;
+                input += 2;
+            }
+            name[name_output] = '\0';
+            size_t value_output = 0;
+            for (size_t input = value_start; input < end; input += 1) {
+                unsigned char byte = (unsigned char)value[input];
+                if (byte == '+') { decoded_value[value_output++] = ' '; continue; }
+                if (byte != '%') { decoded_value[value_output++] = (char)byte; continue; }
+                if (input + 2 >= end) return "Form URL query has incomplete percent escape";
+                unsigned char high = (unsigned char)value[input + 1];
+                unsigned char low = (unsigned char)value[input + 2];
+                int high_value = high >= '0' && high <= '9' ? high - '0' : high >= 'a' && high <= 'f' ? high - 'a' + 10 : high >= 'A' && high <= 'F' ? high - 'A' + 10 : -1;
+                int low_value = low >= '0' && low <= '9' ? low - '0' : low >= 'a' && low <= 'f' ? low - 'a' + 10 : low >= 'A' && low <= 'F' ? low - 'A' + 10 : -1;
+                if (high_value < 0 || low_value < 0) return "Form URL query has invalid percent escape";
+                unsigned char decoded = (unsigned char)((high_value << 4) | low_value);
+                if (decoded == 0) return "Form URL query cannot decode to NUL";
+                decoded_value[value_output++] = (char)decoded;
+                input += 2;
+            }
+            decoded_value[value_output] = '\0';
+            callback(name, decoded_value);
+        }
+        cursor = end < length ? end + 1 : length;
+    }
+    return NULL;
+}
+"#);
+    }
 
     if runtime_usage.contains("flux__net_") {
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
@@ -17296,6 +17353,7 @@ fn emit_qualified_call(
             "encodeComponent" => "flux__url_encode_component",
             "decodeFormComponent" => "flux__url_decode_form_component",
             "encodeFormComponent" => "flux__url_encode_form_component",
+            "parseFormQuery" => "flux__url_parse_form_query",
             _ => return Err(diag(span, "unknown URL call reached code generation")),
         };
         return Ok((
