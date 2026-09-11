@@ -14233,6 +14233,61 @@ fn boolean_identity_c(
     let right_constant = typecheck::constant_primitive_value(right, signatures);
 
     if matches!(op, BinOp::Eq | BinOp::Ne) {
+        let complementary_binding = match (&left.kind, &right.kind) {
+            (
+                ExprKind::Var(left_name),
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: right_inner,
+                },
+            ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
+            (
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: left_inner,
+                },
+                ExprKind::Var(right_name),
+            ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
+            _ => false,
+        };
+        if complementary_binding {
+            return Some(
+                if matches!(op, BinOp::Eq) {
+                    "false"
+                } else {
+                    "true"
+                }
+                .to_string(),
+            );
+        }
+
+        let same_negated_binding = match (&left.kind, &right.kind) {
+            (
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: left_inner,
+                },
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: right_inner,
+                },
+            ) => matches!(
+                (&left_inner.kind, &right_inner.kind),
+                (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+            ),
+            _ => false,
+        };
+        if same_negated_binding {
+            return Some(
+                if matches!(op, BinOp::Eq) {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
+            );
+        }
+
         let negate = |code: &str| format!("(!({code}))");
         return match (op, left_constant, right_constant) {
             (BinOp::Eq, Some(ConstantValue::Bool(true)), _)
