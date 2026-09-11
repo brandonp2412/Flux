@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 486
+- Completed baseline units: 487
 - Reported overall progress: **66%**
 - Current net scope growth after the baseline: 98 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -678,7 +678,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Every built-in element accepts non-negative compile-time `transitionMs` plus optional `transitionDelayMs` / `transitionEasing`. Linux lowers these to standard GTK CSS transitions on `all` animatable properties; this already animates state-driven transform changes without an animation object model. Reduced-motion policy and selective transition-property syntax remain separate follow-up work.
 - [ ] Layout transitions.
 - [ ] Gesture-driven animation.
-- [ ] Frame synchronization.
+- [x] Frame synchronization through compiler-owned `frame.request(callback: fn() -> void)`: the callback is strictly typed, one-shot, application-only, and tree-shaken when unused; Linux schedules it on the active GTK widget frame clock with `gtk_widget_add_tick_callback`, while Android posts it for the next UI frame through `View.postOnAnimation` and compiler-generated JNI/Activity glue. No frame/controller object or application-authored platform bridge is exposed, and LSP completion/signature help surface the portable capability.
 - [x] Reduced-motion accessibility handling.
   - [x] Native property-transition styles include a `prefers-reduced-motion: reduce` override that removes transition duration/delay, and each transition CSS provider live-binds GTK's system `gtk-interface-reduced-motion` setting into its `prefers-reduced-motion` property. The application therefore follows the platform accessibility preference without a Flux-specific toggle.
 

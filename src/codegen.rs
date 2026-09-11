@@ -749,6 +749,12 @@ pub fn emit_c_for_target_with_source_metadata(
             "clipboard.* APIs require an application target",
         ));
     }
+    if runtime_usage.contains("flux__frame_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "frame.* APIs require an application target",
+        ));
+    }
     if runtime_usage.contains("flux__file_dialog_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1034,6 +1040,7 @@ fn emit_runtime_prelude(
     out.push('\n');
 
     let uses_locale = runtime_usage.contains("flux__locale_");
+    let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
@@ -1898,6 +1905,15 @@ fn emit_runtime_prelude(
         out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
+    }
+    if uses_frame_request && uses_gtk {
+        out.push_str("typedef struct { void (*callback)(void); } FluxFrameRequest;\n");
+        out.push_str("static gboolean flux__frame_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; (void)clock; FluxFrameRequest *request = (FluxFrameRequest *)data; if (request != NULL && request->callback != NULL) request->callback(); return G_SOURCE_REMOVE; }\n");
+        out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL) return; GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return; FluxFrameRequest *request = g_new0(FluxFrameRequest, 1); request->callback = callback; gtk_widget_add_tick_callback(GTK_WIDGET(window), flux__frame_tick, request, g_free); }\n");
+    }
+    if uses_frame_request && uses_android {
+        out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL || flux__android_activity == NULL) return; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity); if (activity_class != NULL) { jmethodID request_frame = (*env)->GetMethodID(env, activity_class, \"fluxRequestFrame\", \"(J)V\"); if (request_frame != NULL) (*env)->CallVoidMethod(env, activity, request_frame, (jlong)(intptr_t)callback); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); }\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer) { (void)env; (void)activity_class; void (*callback)(void) = (void (*)(void))(intptr_t)callback_pointer; if (callback != NULL) callback(); }\n");
     }
     if uses_portable_focus && uses_gtk {
         out.push_str("static GtkWindow *flux__focus_active_window(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; return gtk_application_get_active_window(GTK_APPLICATION(application)); }\n");
@@ -17001,6 +17017,17 @@ fn emit_qualified_call(
                 ));
             }
         }
+    }
+    if namespace == "frame" {
+        if !named_args.is_empty() || args.len() != 1 || name != "request" {
+            return Err(diag(span, "invalid frame call reached code generation"));
+        }
+        let callback = emit_expr(&args[0], env, signatures)?;
+        return Ok((
+            format!("flux__frame_request({})", callback.code),
+            Vec::new(),
+            None,
+        ));
     }
     if namespace == "clipboard" {
         if !named_args.is_empty() || args.len() != 1 {

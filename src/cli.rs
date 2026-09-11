@@ -4010,6 +4010,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnKey(int viewId, String key);
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
+__FLUX_FRAME_DECLARATIONS__
 __FLUX_PICKER_DECLARATIONS__
 
     private void applyFluxTheme() {
@@ -4057,6 +4058,7 @@ __FLUX_PICKER_DECLARATIONS__
         setIntent(intent);
         dispatchFluxUrl(intent);
     }
+__FLUX_FRAME_METHODS__
 __FLUX_PICKER_METHODS__
 
     @Override
@@ -4967,7 +4969,25 @@ __FLUX_PICKER_METHODS__
     } else {
         ""
     };
+    let frame_enabled = c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnFrame");
+    let frame_declarations = if frame_enabled {
+        "    private static native void nativeOnFrame(long callback);"
+    } else {
+        ""
+    };
+    let frame_methods = if frame_enabled {
+        r#"
+
+    public void fluxRequestFrame(long callback) {
+        View root = getWindow() == null ? null : getWindow().getDecorView();
+        if (root != null) root.postOnAnimation(() -> nativeOnFrame(callback));
+    }"#
+    } else {
+        ""
+    };
     source
+        .replace("__FLUX_FRAME_DECLARATIONS__", frame_declarations)
+        .replace("__FLUX_FRAME_METHODS__", frame_methods)
         .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations)
         .replace("__FLUX_PICKER_METHODS__", picker_methods)
 }
@@ -6613,6 +6633,17 @@ mod tests {
         let activity = android_activity_java_source("");
         assert!(!activity.contains("nativeOnPickerResult"));
         assert!(!activity.contains("ACTION_OPEN_DOCUMENT"));
+        assert!(!activity.contains("nativeOnFrame"));
+        assert!(!activity.contains("fluxRequestFrame"));
+        let frame_activity = android_activity_java_source(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer);",
+        );
+        assert!(
+            frame_activity.contains("private static native void nativeOnFrame(long callback);")
+        );
+        assert!(frame_activity.contains("public void fluxRequestFrame(long callback)"));
+        assert!(frame_activity.contains("root.postOnAnimation(() -> nativeOnFrame(callback));"));
+        assert!(!frame_activity.contains("__FLUX_FRAME_"));
         let picker_activity = android_activity_java_source(
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnPickerResult(JNIEnv *env, jobject activity, jint kind, jstring uri);",
         );

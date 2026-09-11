@@ -15527,6 +15527,96 @@ app Transformed
 }
 
 #[test]
+fn portable_frame_synchronization_is_typed_native_and_tree_shaken() {
+    let source = r#"
+fn drawFrame() -> void {
+    print("frame")
+}
+
+fn requestFrame() -> void {
+    frame.request(drawFrame)
+}
+
+view FrameScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Frame synced"
+}
+app FrameScreen(onStart: requestFrame)
+"#;
+    check_source(source).expect("frame.request should accept an exact zero-argument callback");
+
+    let linux = compile_to_c(source).expect("frame.request should lower to the GTK frame clock");
+    assert!(linux.contains("gtk_widget_add_tick_callback"));
+    assert!(linux.contains("GdkFrameClock"));
+    assert!(linux.contains("G_SOURCE_REMOVE"));
+    assert!(linux.contains("flux__frame_request("));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("frame synchronization fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("frame.request should lower through the generated Android activity");
+    assert!(android.contains("fluxRequestFrame"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnFrame"));
+    assert!(android.contains("(jlong)(intptr_t)callback"));
+    assert!(!android.contains("gtk_widget_add_tick_callback"));
+
+    let invalid = r#"
+fn wrong(_value: i64) -> void {
+}
+fn requestFrame() -> void {
+    frame.request(wrong)
+}
+view FrameScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+}
+app FrameScreen(onStart: requestFrame)
+"#;
+    let error = check_source(invalid).expect_err("frame callback signatures must be exact");
+    assert!(error.message.contains("frame.request callback"));
+
+    let headless = r#"
+fn drawFrame() -> void {
+    print("frame")
+}
+fn main() -> i64 {
+    frame.request(drawFrame)
+    return 0
+}
+"#;
+    check_source(headless).expect("frame capability typing is target-independent");
+    let error =
+        compile_to_c(headless).expect_err("frame scheduling requires an application target");
+    assert!(
+        error
+            .message
+            .contains("frame.* APIs require an application target")
+    );
+
+    let unused = r#"
+view StaticScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Static"
+}
+app StaticScreen
+"#;
+    let linux = compile_to_c(unused).expect("ordinary UI should still compile");
+    assert!(!linux.contains("flux__frame_tick"));
+    assert!(!linux.contains("FluxFrameRequest"));
+}
+
+#[test]
 fn view_environment_tracks_window_geometry_orientation_and_scale() {
     let source = r#"
 view Responsive {

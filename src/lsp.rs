@@ -1432,6 +1432,16 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "frame" {
+        push_completion_item(
+            items,
+            seen,
+            "request",
+            3,
+            "fn frame.request(callback: fn() -> void) -> void",
+        );
+        return true;
+    }
     if namespace == "clipboard" {
         push_completion_item(
             items,
@@ -3068,6 +3078,14 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "frame" && member == "request" {
+            return Some(signature_help_for_builtin(
+                "frame.request",
+                &["callback: fn() -> void"],
+                "void",
+                active_parameter,
+            ));
         }
         if namespace == "clipboard" {
             match member {
@@ -7931,6 +7949,46 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn frame_synchronization_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/frame-tooling.flux";
+        let completion_source = "fn main() -> i64 {\n    frame.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(uri.to_string(), completion_source.to_string())]);
+        let line = completion_source.lines().nth(1).unwrap();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            completion_source,
+            &completion_documents,
+            Some(1),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains("fn frame.request(callback: fn() -> void) -> void"));
+
+        let signature_source = "fn drawFrame() -> void {\n    print(\"frame\")\n}\nfn main() -> i64 {\n    frame.request(drawFrame)\n    return 0\n}\n";
+        let signature_documents = HashMap::from([(uri.to_string(), signature_source.to_string())]);
+        let needle = "frame.request(";
+        let line_index = signature_source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("frame request line should exist");
+        let line = signature_source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            signature_source,
+            &signature_documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("frame request should have signature help")
+        .to_json();
+        assert!(help.contains("fn frame.request(callback: fn() -> void) -> void"));
     }
 
     #[test]
