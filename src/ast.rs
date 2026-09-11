@@ -336,6 +336,8 @@ pub struct ViewDerived {
 pub struct GridLayout {
     pub columns: Vec<GridTrack>,
     pub rows: Vec<GridTrack>,
+    pub flow: Option<FlowDirection>,
+    pub flow_line: Option<usize>,
     pub gap: Option<u32>,
     pub padding: Option<u32>,
     pub padding_line: Option<usize>,
@@ -343,6 +345,12 @@ pub struct GridLayout {
     pub scroll_line: Option<usize>,
     pub overlay: Option<bool>,
     pub overlay_line: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowDirection {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

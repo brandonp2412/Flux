@@ -14433,6 +14433,107 @@ app Screen
 }
 
 #[test]
+fn flow_layout_auto_places_flat_siblings_on_linux_and_android() {
+    let source = r#"
+view Actions {
+    flow: horizontal
+    flow gap: 16
+    flow padding: 24
+    Text title
+        text: "Actions"
+    Button save
+        text: "Save"
+}
+app Actions
+"#;
+    check_source(source).expect("horizontal flow layout should typecheck");
+    let linux =
+        compile_to_c(source).expect("flow layout should lower through the native grid backend");
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_title, 0, 0, 1, 1)"));
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_save, 1, 0, 1, 1)"));
+    assert!(linux.contains("gtk_grid_set_column_spacing(GTK_GRID(grid), 16)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("flow layout should analyze for Android lowering");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("flow layout should lower on Android");
+    assert!(android.contains("(*env)->CallVoidMethod(env, grid, set_columns, (jint)2);"));
+    assert!(android.contains("(*env)->CallVoidMethod(env, grid, set_rows, (jint)1);"));
+    assert!(android.contains("jint grid_padding = (jint)(INT64_C(24) * flux__ui_density)"));
+
+    let vertical = r#"
+view Stack {
+    flow: vertical
+    Text first
+        text: "First"
+    Text second
+        text: "Second"
+}
+app Stack
+"#;
+    let vertical_linux = compile_to_c(vertical).expect("vertical flow should lower on Linux");
+    assert!(vertical_linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_first, 0, 0, 1, 1)"));
+    assert!(
+        vertical_linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_second, 0, 1, 1, 1)")
+    );
+    let vertical_database = fluxc::semantic::SemanticDatabase::analyze(vertical, SourceId::UNKNOWN)
+        .expect("vertical flow should analyze for Android lowering");
+    let vertical_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        vertical_database.program(),
+        vertical_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("vertical flow should lower on Android");
+    assert!(vertical_android.contains("(*env)->CallVoidMethod(env, grid, set_columns, (jint)1);"));
+    assert!(vertical_android.contains("(*env)->CallVoidMethod(env, grid, set_rows, (jint)2);"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("flow layout should format");
+    assert!(formatted.contains("    flow: horizontal\n"));
+    assert!(formatted.contains("    flow gap: 16\n"));
+    assert!(formatted.contains("    flow padding: 24\n"));
+    assert!(formatted.contains("    Text title\n"));
+    assert!(!formatted.contains("grid columns:"));
+    assert_eq!(
+        formatted,
+        fluxc::formatter::format_source(&formatted).expect("formatted flow should reparse")
+    );
+
+    let explicit_placement = r#"
+view Bad {
+    flow: vertical
+    Text title at 1,1
+        text: "Nope"
+}
+app Bad
+"#;
+    let error = check_source(explicit_placement).expect_err("flow placement must stay automatic");
+    assert!(error.message.contains("flow elements use 'Type name'"));
+
+    let mixed_layout = r#"
+view Bad {
+    flow: vertical
+    grid columns: 1fr
+    grid rows: auto
+    Text title
+        text: "Nope"
+}
+app Bad
+"#;
+    let error = check_source(mixed_layout).expect_err("flow and explicit grid tracks must not mix");
+    assert!(
+        error
+            .message
+            .contains("flow layout cannot also declare explicit grid columns or rows")
+    );
+}
+
+#[test]
 fn image_control_lowers_file_source_alt_text_fit_and_state_refresh() {
     let source = r#"
 view Gallery {

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, Function, GridTrack, ListMatchPattern, MatchPattern, ShellRedirectMode,
-    Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+    BinOp, Expr, ExprKind, FlowDirection, Function, GridTrack, ListMatchPattern, MatchPattern,
+    ShellRedirectMode, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -248,17 +248,30 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
         )
     };
     lines.insert(view.line, header);
-    lines.insert(
-        view.line + 1,
-        format!(
-            "    grid columns: {}",
-            format_grid_tracks(&view.grid.columns)
-        ),
-    );
-    lines.insert(
-        view.line + 2,
-        format!("    grid rows: {}", format_grid_tracks(&view.grid.rows)),
-    );
+    if let Some(flow) = view.grid.flow {
+        lines.insert(
+            view.grid.flow_line.unwrap_or(view.line + 1),
+            format!(
+                "    flow: {}",
+                match flow {
+                    FlowDirection::Horizontal => "horizontal",
+                    FlowDirection::Vertical => "vertical",
+                }
+            ),
+        );
+    } else {
+        lines.insert(
+            view.line + 1,
+            format!(
+                "    grid columns: {}",
+                format_grid_tracks(&view.grid.columns)
+            ),
+        );
+        lines.insert(
+            view.line + 2,
+            format!("    grid rows: {}", format_grid_tracks(&view.grid.rows)),
+        );
+    }
     if let Some(gap) = view.grid.gap {
         let gap_line = view
             .states
@@ -277,13 +290,43 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
             )
             .min()
             .unwrap_or(view.line + 3);
-        lines.insert(gap_line, format!("    grid gap: {gap}"));
+        lines.insert(
+            gap_line,
+            format!(
+                "    {} gap: {gap}",
+                if view.grid.flow.is_some() {
+                    "flow"
+                } else {
+                    "grid"
+                }
+            ),
+        );
     }
     if let (Some(padding), Some(line)) = (view.grid.padding, view.grid.padding_line) {
-        lines.insert(line, format!("    grid padding: {padding}"));
+        lines.insert(
+            line,
+            format!(
+                "    {} padding: {padding}",
+                if view.grid.flow.is_some() {
+                    "flow"
+                } else {
+                    "grid"
+                }
+            ),
+        );
     }
     if let (Some(scroll), Some(line)) = (view.grid.scroll, view.grid.scroll_line) {
-        lines.insert(line, format!("    grid scroll: {scroll}"));
+        lines.insert(
+            line,
+            format!(
+                "    {} scroll: {scroll}",
+                if view.grid.flow.is_some() {
+                    "flow"
+                } else {
+                    "grid"
+                }
+            ),
+        );
     }
     if let (Some(overlay), Some(line)) = (view.grid.overlay, view.grid.overlay_line) {
         lines.insert(line, format!("    grid overlay: {overlay}"));
@@ -311,14 +354,18 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
         );
     }
     for element in &view.elements {
-        let mut placement = format!(
-            "    {} {} at {},{}",
-            element.kind, element.name, element.row, element.column
-        );
-        if element.row_span != 1 {
+        let mut placement = if view.grid.flow.is_some() {
+            format!("    {} {}", element.kind, element.name)
+        } else {
+            format!(
+                "    {} {} at {},{}",
+                element.kind, element.name, element.row, element.column
+            )
+        };
+        if view.grid.flow.is_none() && element.row_span != 1 {
             placement.push_str(&format!(" span rows {}", element.row_span));
         }
-        if element.column_span != 1 {
+        if view.grid.flow.is_none() && element.column_span != 1 {
             placement.push_str(&format!(" span columns {}", element.column_span));
         }
         lines.insert(element.line, placement);

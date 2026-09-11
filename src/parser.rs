@@ -1,12 +1,12 @@
 use crate::ast::{
     ApplicationDef, ApplicationMetadataField, BinOp, Binding, ConstantDef, EnumDef, EnumPayload,
-    EnumVariant, Expr, ExprKind, Function, GridLayout, GridTrack, ImportDef, InterfaceDef,
-    InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent, ListMatchArm,
-    ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm, MatchPattern,
-    NamedArg, Param, PatternBinding, PatternLogicalOp, Program, RelationalPattern, ShellRedirect,
-    ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
-    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty,
-    ViewState, ViewStateTransition,
+    EnumVariant, Expr, ExprKind, FlowDirection, Function, GridLayout, GridTrack, ImportDef,
+    InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
+    ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm,
+    MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp, Program, RelationalPattern,
+    ShellRedirect, ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
+    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement,
+    ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -1951,6 +1951,22 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             continue;
         }
 
+        if let Some(value) = line.text.strip_prefix("flow:") {
+            if grid.flow.is_some() {
+                return Err(diag(line.number, "flow may only be declared once"));
+            }
+            grid.flow = Some(match value.trim() {
+                "horizontal" => FlowDirection::Horizontal,
+                "vertical" => FlowDirection::Vertical,
+                _ => {
+                    return Err(diag(line.number, "flow must be 'horizontal' or 'vertical'"));
+                }
+            });
+            grid.flow_line = Some(line.number);
+            *index += 1;
+            continue;
+        }
+
         if let Some(value) = line.text.strip_prefix("grid columns:") {
             if !grid.columns.is_empty() {
                 return Err(diag(line.number, "grid columns may only be declared once"));
@@ -1967,36 +1983,72 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             *index += 1;
             continue;
         }
-        if let Some(value) = line.text.strip_prefix("grid gap:") {
+        if let Some((value, label)) = line
+            .text
+            .strip_prefix("grid gap:")
+            .map(|value| (value, "grid gap"))
+            .or_else(|| {
+                line.text
+                    .strip_prefix("flow gap:")
+                    .map(|value| (value, "flow gap"))
+            })
+        {
             if grid.gap.is_some() {
-                return Err(diag(line.number, "grid gap may only be declared once"));
+                return Err(diag(
+                    line.number,
+                    &format!("{label} may only be declared once"),
+                ));
             }
             grid.gap = Some(parse_positive_or_zero_u32(
                 value.trim(),
                 line.number,
-                "grid gap",
+                label,
             )?);
             *index += 1;
             continue;
         }
 
-        if let Some(value) = line.text.strip_prefix("grid padding:") {
+        if let Some((value, label)) = line
+            .text
+            .strip_prefix("grid padding:")
+            .map(|value| (value, "grid padding"))
+            .or_else(|| {
+                line.text
+                    .strip_prefix("flow padding:")
+                    .map(|value| (value, "flow padding"))
+            })
+        {
             if grid.padding.is_some() {
-                return Err(diag(line.number, "grid padding may only be declared once"));
+                return Err(diag(
+                    line.number,
+                    &format!("{label} may only be declared once"),
+                ));
             }
             grid.padding = Some(parse_positive_or_zero_u32(
                 value.trim(),
                 line.number,
-                "grid padding",
+                label,
             )?);
             grid.padding_line = Some(line.number);
             *index += 1;
             continue;
         }
 
-        if let Some(value) = line.text.strip_prefix("grid scroll:") {
+        if let Some((value, label)) = line
+            .text
+            .strip_prefix("grid scroll:")
+            .map(|value| (value, "grid scroll"))
+            .or_else(|| {
+                line.text
+                    .strip_prefix("flow scroll:")
+                    .map(|value| (value, "flow scroll"))
+            })
+        {
             if grid.scroll.is_some() {
-                return Err(diag(line.number, "grid scroll may only be declared once"));
+                return Err(diag(
+                    line.number,
+                    &format!("{label} may only be declared once"),
+                ));
             }
             grid.scroll = Some(match value.trim() {
                 "true" => true,
@@ -2004,7 +2056,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 _ => {
                     return Err(diag(
                         line.number,
-                        "grid scroll must be the boolean literal true or false",
+                        &format!("{label} must be the boolean literal true or false"),
                     ));
                 }
             });
@@ -2032,7 +2084,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             continue;
         }
 
-        let mut element = parse_view_element(line)?;
+        let mut element = parse_view_element(line, grid.flow, elements.len())?;
         if elements
             .iter()
             .any(|existing: &ViewElement| existing.name == element.name)
@@ -2152,10 +2204,34 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
         elements.push(element);
     }
 
-    if grid.columns.is_empty() || grid.rows.is_empty() {
+    if let Some(flow) = grid.flow {
+        if !grid.columns.is_empty() || !grid.rows.is_empty() {
+            return Err(diag(
+                header.number,
+                "flow layout cannot also declare explicit grid columns or rows",
+            ));
+        }
+        if grid.overlay.is_some() {
+            return Err(diag(
+                header.number,
+                "flow layout does not support grid overlay; use explicit grid placement for overlays",
+            ));
+        }
+        let count = elements.len().max(1);
+        match flow {
+            FlowDirection::Horizontal => {
+                grid.columns = vec![GridTrack::Auto; count];
+                grid.rows = vec![GridTrack::Auto];
+            }
+            FlowDirection::Vertical => {
+                grid.columns = vec![GridTrack::Auto];
+                grid.rows = vec![GridTrack::Auto; count];
+            }
+        }
+    } else if grid.columns.is_empty() || grid.rows.is_empty() {
         return Err(diag(
             header.number,
-            "views require both 'grid columns:' and 'grid rows:' declarations",
+            "views require either 'flow: horizontal|vertical' or both 'grid columns:' and 'grid rows:' declarations",
         ));
     }
     if *index >= lines.len() || lines[*index].indent != 0 || lines[*index].text != "}" {
@@ -2204,12 +2280,49 @@ fn parse_grid_tracks(input: &str, line: usize) -> Result<Vec<GridTrack>, Diagnos
         .collect()
 }
 
-fn parse_view_element(line: &Line) -> Result<ViewElement, Diagnostic> {
+fn parse_view_element(
+    line: &Line,
+    flow: Option<FlowDirection>,
+    element_index: usize,
+) -> Result<ViewElement, Diagnostic> {
     let tokens = line.text.split_whitespace().collect::<Vec<_>>();
+    if let Some(flow) = flow {
+        if tokens.len() != 2 {
+            return Err(diag(
+                line.number,
+                "flow elements use 'Type name'; placement and spans are automatic",
+            ));
+        }
+        let kind = tokens[0];
+        let name = tokens[1];
+        validate_identifier(kind, line.number)?;
+        validate_identifier(name, line.number)?;
+        let position = u32::try_from(element_index + 1)
+            .map_err(|_| diag(line.number, "flow contains too many elements"))?;
+        let (row, column) = match flow {
+            FlowDirection::Horizontal => (1, position),
+            FlowDirection::Vertical => (position, 1),
+        };
+        let kind_offset = line.text.find(kind).unwrap_or(0);
+        let name_offset = line.text.find(name).unwrap_or(kind.len());
+        return Ok(ViewElement {
+            kind: kind.to_string(),
+            kind_span: SourceSpan::new(line.number, line.indent + 1 + kind_offset, kind.len()),
+            name: name.to_string(),
+            name_span: SourceSpan::new(line.number, line.indent + 1 + name_offset, name.len()),
+            row,
+            column,
+            row_span: 1,
+            column_span: 1,
+            properties: Vec::new(),
+            line: line.number,
+            span: line.span(),
+        });
+    }
     if tokens.len() < 4 || tokens[2] != "at" {
         return Err(diag(
             line.number,
-            "view elements use 'Type name at row,column' with optional 'span rows N'/'span columns N'",
+            "grid elements use 'Type name at row,column' with optional 'span rows N'/'span columns N'",
         ));
     }
     let kind = tokens[0];

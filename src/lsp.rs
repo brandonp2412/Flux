@@ -2062,6 +2062,15 @@ fn add_builtin_ui_context_completions(
         for grid in ["grid columns:", "grid rows:", "grid gap:"] {
             push_completion_item(items, seen, grid, 14, "flat-grid layout declaration");
         }
+        for flow in ["flow:", "flow gap:", "flow padding:", "flow scroll:"] {
+            push_completion_item(
+                items,
+                seen,
+                flow,
+                14,
+                "one-dimensional flow layout declaration",
+            );
+        }
         push_completion_item(items, seen, "state", 14, "mutable primitive view state");
         push_completion_item(items, seen, "derived", 14, "read-only derived view value");
     }
@@ -2226,6 +2235,9 @@ fn enclosing_view_element<'a>(lines: &'a [&str], line_index: usize) -> Option<(&
         }
         let tokens = line.split_whitespace().collect::<Vec<_>>();
         if tokens.len() >= 4 && tokens[2] == "at" {
+            return Some((tokens[0], index));
+        }
+        if tokens.len() == 2 && !tokens[0].ends_with(':') && !tokens[1].ends_with(':') {
             return Some((tokens[0], index));
         }
         return None;
@@ -4020,6 +4032,9 @@ fn is_flux_keyword(word: &str) -> bool {
             | "state"
             | "derived"
             | "grid"
+            | "flow"
+            | "horizontal"
+            | "vertical"
             | "at"
             | "span"
             | "rows"
@@ -6867,8 +6882,27 @@ mod tests {
         .to_json();
         assert!(layout.contains("\"label\":\"Button\""));
         assert!(layout.contains("\"label\":\"grid columns:\""));
+        assert!(layout.contains("\"label\":\"flow:\""));
+        assert!(layout.contains("\"label\":\"flow gap:\""));
         assert!(layout.contains("\"label\":\"state\""));
         assert!(layout.contains("\"label\":\"derived\""));
+    }
+
+    #[test]
+    fn completion_recognizes_auto_placed_flow_elements() {
+        let source = "view Screen {\n    flow: vertical\n    Text title\n        text: \"Flux\"\n        \n}\n";
+        let uri = "file:///tmp/flow-ui-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let properties = JsonValue::Array(completion_items_at_position(
+            uri,
+            source,
+            &documents,
+            Some(4),
+        ))
+        .to_json();
+        assert!(properties.contains("\"label\":\"selectable\""));
+        assert!(properties.contains("Text.selectable: bool"));
+        assert!(properties.contains("\"label\":\"color\""));
     }
 
     #[test]
