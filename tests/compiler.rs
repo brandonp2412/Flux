@@ -5635,6 +5635,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn chunked_views_keep_list_owner_borrowed_until_last_use() {
+    let live = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let chunks: i64[][] = chunked(values, 2)
+    let destination: i64[] = values
+    print(chunks[0][0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(live).expect_err("live chunk views must keep their list owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'chunks' is still live")
+    }));
+
+    let dead = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let chunks: i64[][] = chunked(values, 2)
+    print(chunks[0][0])
+    let destination: i64[] = values
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead).expect("dead chunk views must release their owner borrow");
+    compile_to_c(dead).expect("moving after a chunk view's last use should lower natively");
+}
+
+#[test]
 fn constant_cfg_edges_do_not_poison_ownership_from_unreachable_moves() {
     let source = r#"
 const NEVER: bool = 2 > 3
