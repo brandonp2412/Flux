@@ -4313,6 +4313,43 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_moving_list_owner_while_nested_comprehension_borrow_is_live() {
+    let live_comprehension = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    let projected: i64[][] = [row for row in rows]
+    let destination: i64[][] = rows
+    print(projected[0][0])
+    print(destination[0][0])
+    return 0
+}
+"#;
+
+    let errors = check_source_all(live_comprehension)
+        .expect_err("a live nested-list comprehension must keep its source owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'projected' is still live")
+    }));
+
+    let dead_comprehension = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    let projected: i64[][] = [row for row in rows]
+    print(projected[0][0])
+    let destination: i64[][] = rows
+    print(destination[0][0])
+    return 0
+}
+"#;
+    check_source(dead_comprehension)
+        .expect("a nested-list comprehension must release its borrow after its last use");
+    compile_to_c(dead_comprehension)
+        .expect("moving after the comprehension's last use should lower natively");
+}
+
+#[test]
 fn rejects_moving_list_owner_while_zero_copy_view_is_live() {
     let live_slice = r#"
 fn main() -> i64 {

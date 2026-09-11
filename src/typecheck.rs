@@ -4119,6 +4119,9 @@ fn definition_value_borrows_from(
                     value_depends_on_borrow_source(graph, value, source, visiting)
                 })
         }
+        ControlFlowValueKind::ListComprehension { value: body, .. } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+            value_depends_on_borrow_source(graph, *body, source, visiting)
+        }
         ControlFlowValueKind::Slice { base, .. } => {
             value_depends_on_borrow_source(graph, *base, source, visiting)
         }
@@ -4198,6 +4201,9 @@ fn value_depends_on_borrow_source(
                 || else_value.is_some_and(|value| {
                     value_depends_on_borrow_source(graph, value, source, visiting)
                 })
+        }
+        ControlFlowValueKind::ListComprehension { value: body, .. } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+            value_depends_on_borrow_source(graph, *body, source, visiting)
         }
         ControlFlowValueKind::NameRead { name, definitions } => {
             name == source
