@@ -18902,6 +18902,77 @@ app DynamicText
 }
 
 #[test]
+fn android_background_color_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicBackground {
+    state tone: str = "surfaceRaised"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        backgroundColor: tone
+        borderColor: "outline"
+        borderWidth: 2
+        radius: 14
+    Button danger at 2,1
+        text: "Danger"
+        onPress: tone => "danger"
+}
+app DynamicBackground
+"#;
+
+    check_source(source).expect("dynamic Android backgroundColor should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android backgroundColor should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android backgroundColor should lower");
+
+    assert!(android.contains("static bool flux__android_valid_ui_color"));
+    assert!(android.contains("const char *child_background_value = flux__ui_state_tone"));
+    assert!(android.contains("const char *refresh_background_value = flux__ui_state_tone"));
+    assert!(android.contains("styleViewBackground"));
+    assert!(android.contains("(Landroid/view/View;Ljava/lang/String;)V"));
+    assert!(android.contains(
+        "backgroundColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+    ));
+    let panel_id = android_stable_view_id("DynamicBackground", "panel");
+    assert!(android.contains(&format!("find_view, (jint){panel_id}")));
+    assert!(android.contains("flux__ui_state_tone = \"danger\""));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticBackground {
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Panel"
+        backgroundColor: "accent"
+        borderColor: "outline"
+        borderWidth: 2
+        radius: 14
+}
+app StaticBackground
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android backgroundColor should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android backgroundColor should lower");
+    assert!(!static_android.contains("styleViewBackground"));
+    assert!(!static_android.contains("flux__android_valid_ui_color"));
+}
+
+#[test]
 fn android_text_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicColor {

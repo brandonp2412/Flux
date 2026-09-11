@@ -4421,7 +4421,24 @@ fn emit_android_native_application(
             }
             Ok(Some(value))
         };
-        let mut background_color = static_color("background_color")?;
+        let background_property = view_property(element, "background_color");
+        let (mut background_color, dynamic_background_color) = if let Some(property) =
+            background_property
+        {
+            if let Some(value) = static_expr_str(&property.value, signatures) {
+                if !valid_ui_color(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        "background_color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                    ));
+                }
+                (Some(value), false)
+            } else {
+                (None, true)
+            }
+        } else {
+            (None, false)
+        };
         let border_color = static_color("border_color")?;
         let border_top_color = static_color("border_top_color")?;
         let border_bottom_color = static_color("border_bottom_color")?;
@@ -4525,13 +4542,14 @@ fn emit_android_native_application(
             || radius_bottom_left > 0
             || radius_bottom_right > 0
             || has_shadow;
-        if element.kind == "Button" && background_color.is_none() && has_shape_style {
+        if element.kind == "Button" && background_property.is_none() && has_shape_style {
             let primary = view_property(element, "primary")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false);
             background_color = Some(if primary { "accent" } else { "surfaceRaised" }.to_string());
         }
         if background_color.is_some()
+            || dynamic_background_color
             || border_top_color.is_some()
             || border_bottom_color.is_some()
             || border_start_color.is_some()
@@ -4553,7 +4571,20 @@ fn emit_android_native_application(
                     out.push_str(&format!("    jstring {name} = NULL;\n"));
                 }
             };
-            emit_optional_jstring(out, "child_background", &background_color);
+            if dynamic_background_color {
+                let value = ui_expr_c(
+                    &background_property
+                        .expect("dynamic background_color property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    const char *child_background_value = {value};\n    if (!flux__android_valid_ui_color(child_background_value)) {{ fputs(\"Flux runtime error: backgroundColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n    jstring child_background = flux__android_utf8_string(env, child_background_value);\n    if (child_background == NULL) return;\n"
+                ));
+            } else {
+                emit_optional_jstring(out, "child_background", &background_color);
+            }
             emit_optional_jstring(out, "child_border_top", &border_top_color);
             emit_optional_jstring(out, "child_border_end", &border_end_color);
             emit_optional_jstring(out, "child_border_bottom", &border_bottom_color);
@@ -7605,6 +7636,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
         "visible"
             | "enabled"
             | "clip"
+            | "background_color"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -7728,6 +7760,7 @@ fn android_ui_element_needs_refresh(
         "visible",
         "enabled",
         "focusable",
+        "background_color",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -7830,6 +7863,19 @@ fn emit_android_ui_refresh(
             out.push_str(&format!(
                 "                if (refresh_enabled != NULL) (*env)->CallVoidMethod(env, child, refresh_enabled, (jboolean)({value}));\n"
             ));
+        }
+        if android_ui_property_needs_refresh(element, "background_color", &runtime_names)
+            && let Some(property) = view_property(element, "background_color")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "                const char *refresh_background_value = {value};\n                if (!flux__android_valid_ui_color(refresh_background_value)) {{ fputs(\"Flux runtime error: backgroundColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n                jstring refresh_background = flux__android_utf8_string(env, refresh_background_value);\n"
+            ));
+            out.push_str("                if (refresh_background != NULL) {\n");
+            out.push_str("                    jmethodID refresh_background_style = (*env)->GetMethodID(env, activity_class, \"styleViewBackground\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+            out.push_str("                    if (refresh_background_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_background_style, child, refresh_background);\n");
+            out.push_str("                    (*env)->DeleteLocalRef(env, refresh_background);\n");
+            out.push_str("                }\n");
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
             && let Some(property) = view_property(element, "tooltip")

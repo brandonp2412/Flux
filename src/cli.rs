@@ -4351,7 +4351,7 @@ __FLUX_PICKER_METHODS__
     }
 
     private final class FluxStyleDrawable extends Drawable {
-        private final Integer background;
+        private Integer background;
         private final Integer borderTop;
         private final Integer borderEnd;
         private final Integer borderBottom;
@@ -4493,6 +4493,11 @@ __FLUX_PICKER_METHODS__
             canvas.restoreToCount(save);
         }
 
+        void setBackground(String background) {
+            this.background = background == null ? null : parseFluxColor(background);
+            invalidateSelf();
+        }
+
         @Override
         public void setAlpha(int alpha) {
             this.alpha = Math.max(0, Math.min(255, alpha));
@@ -4545,6 +4550,16 @@ __FLUX_PICKER_METHODS__
         }
         view.setBackgroundTintList(null);
         view.setBackground(drawable);
+    }
+
+    public void styleViewBackground(View view, String background) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setBackground(background);
+            return;
+        }
+        styleView(view, background, null, null, null, null, 0, 0, 0, 0,
+                0.0f, 0.0f, 0.0f, 0.0f, "none", null, 0.0f, 0.0f, 0.0f);
     }
 
 
