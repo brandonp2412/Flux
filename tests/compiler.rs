@@ -11896,7 +11896,7 @@ view Responsive {
         visible: window_is_portrait
     Button mode at 3,1
         text: "Responsive"
-        enabled: window_width >= 700 && window_height >= 300 && display_scale >= 1
+        enabled: window_width >= 700 && window_height >= 300 && display_scale >= 1 && window_is_medium && !window_is_compact && !window_is_expanded
 }
 app Responsive(width: 720, height: 480)
 "#;
@@ -11916,6 +11916,13 @@ app Responsive(width: 720, height: 480)
     assert!(generated.contains("flux__ui_window_height >= flux__ui_window_width"));
     assert!(generated.contains("flux__ui_window_width >= INT64_C(700)"));
     assert!(generated.contains("flux__ui_display_scale >= INT64_C(1)"));
+    assert!(generated.contains("flux__ui_window_width < INT64_C(600)"));
+    assert!(
+        generated.contains(
+            "flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840)"
+        )
+    );
+    assert!(generated.contains("flux__ui_window_width >= INT64_C(840)"));
 
     let collision = r#"
 view Invalid {
@@ -14127,7 +14134,7 @@ view Screen {
         onPress: expanded => !expanded
     Button action at 3,1
         text: "Press"
-        enabled: !expanded
+        enabled: !expanded && window_is_medium
         primary: true
         onPress: pressed
 }
@@ -14169,6 +14176,11 @@ app Screen
     assert!(generated.contains("static float flux__ui_density = 1.0f;"));
     assert!(generated.contains("(float)width / flux__ui_density"));
     assert!(generated.contains("(float)height / flux__ui_density"));
+    assert!(
+        generated.contains(
+            "flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840)"
+        )
+    );
     assert!(generated.contains("setVisibility"));
     assert!(generated.contains("setEnabled"));
     assert!(generated.contains("flux__ui_state_expanded = (!(flux__ui_state_expanded))"));

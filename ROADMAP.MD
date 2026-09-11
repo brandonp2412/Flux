@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 462
 - Reported overall progress: **62%**
-- Current net scope growth after the baseline: 47 checkbox items
+- Current net scope growth after the baseline: 48 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -491,6 +491,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap common `minWidth: i64` / `minHeight: i64` element constraints lower to native size requests (combined with fixed grid tracks) and reject non-positive/non-compile-time values. Max/intrinsic/content measurement semantics remain pending.
   - [x] Common `visible: bool` can derive from view state on native Text/Button/Toggle controls and refreshes the existing control without adding wrapper elements to the flat layout.
 - [ ] Responsive breakpoints/container queries.
+  - [x] Compiler-owned portable window breakpoints are exposed as read-only `windowIsCompact`, `windowIsMedium`, and `windowIsExpanded` boolean view-environment bindings derived from logical width (`<600`, `600..<840`, `>=840`). They type-check like the existing window/orientation environment, participate in LSP completion, update through the existing native environment-refresh path on Linux and Android, and add no runtime layout object or framework dependency. Per-container queries remain pending.
 - [x] Text.
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, `bold: bool`, font family/slant/decoration, letter spacing, line height, and hexadecimal foreground color, including grid placement and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [ ] Rich text.

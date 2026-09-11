@@ -19,8 +19,8 @@ view ResponsiveDemo {
         visible: displayScale > 1
 
     Button widthMode at 4,1
-        text: "Responsive window"
-        enabled: windowWidth >= 700 && windowHeight >= 300
+        text: "Medium window"
+        enabled: windowIsMedium && windowHeight >= 300
 }
 
 app ResponsiveDemo(title: "Flux responsive view", width: 760, height: 420, resizable: true)

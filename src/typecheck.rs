@@ -1228,6 +1228,9 @@ pub const VIEW_ENVIRONMENT_BINDINGS: &[(&str, Type)] = &[
     ("windowHeight", Type::I64),
     ("windowIsLandscape", Type::Bool),
     ("windowIsPortrait", Type::Bool),
+    ("windowIsCompact", Type::Bool),
+    ("windowIsMedium", Type::Bool),
+    ("windowIsExpanded", Type::Bool),
     ("displayScale", Type::I64),
 ];
 

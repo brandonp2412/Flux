@@ -6077,6 +6077,12 @@ mod tests {
         assert!(text_properties.contains("read-only view environment windowWidth: i64"));
         assert!(text_properties.contains("\"label\":\"windowIsLandscape\""));
         assert!(text_properties.contains("read-only view environment windowIsLandscape: bool"));
+        assert!(text_properties.contains("\"label\":\"windowIsCompact\""));
+        assert!(text_properties.contains("read-only view environment windowIsCompact: bool"));
+        assert!(text_properties.contains("\"label\":\"windowIsMedium\""));
+        assert!(text_properties.contains("read-only view environment windowIsMedium: bool"));
+        assert!(text_properties.contains("\"label\":\"windowIsExpanded\""));
+        assert!(text_properties.contains("read-only view environment windowIsExpanded: bool"));
         assert!(text_properties.contains("\"label\":\"displayScale\""));
         assert!(text_properties.contains("\"label\":\"spaceMd\""));
         assert!(text_properties.contains("semantic Flux UI token spaceMd: i64 = 12"));

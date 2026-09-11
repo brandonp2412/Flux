@@ -6105,6 +6105,15 @@ fn ui_expr_c(
                 "windowIsPortrait" | "window_is_portrait" => {
                     Some("(flux__ui_window_height >= flux__ui_window_width)")
                 }
+                "windowIsCompact" | "window_is_compact" => {
+                    Some("(flux__ui_window_width < INT64_C(600))")
+                }
+                "windowIsMedium" | "window_is_medium" => Some(
+                    "(flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840))",
+                ),
+                "windowIsExpanded" | "window_is_expanded" => {
+                    Some("(flux__ui_window_width >= INT64_C(840))")
+                }
                 "displayScale" | "display_scale" => Some("flux__ui_display_scale"),
                 _ => None,
             };
