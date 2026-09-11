@@ -18720,6 +18720,57 @@ app DynamicFont
 }
 
 #[test]
+fn android_text_layout_metrics_refresh_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicLayout {
+    state spacing: i64 = 1
+    state leading: i64 = 120
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text label at 1,1
+        text: "Metrics"
+        letter_spacing: spacing
+        line_height_percent: leading
+    Button space at 2,1
+        text: "Space"
+        onPress: spacing => spacing + 1
+    Button lead at 3,1
+        text: "Lead"
+        onPress: leading => leading + 10
+}
+app DynamicLayout
+"#;
+
+    check_source(source).expect("dynamic Android text layout metrics should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android text layout metrics should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android text layout metrics should lower");
+
+    assert!(android.contains("int64_t child_letter_spacing_value = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t child_line_height_percent_value = flux__ui_state_leading"));
+    assert!(android.contains("int64_t refresh_letter_spacing_value = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t refresh_line_height_percent_value = flux__ui_state_leading"));
+    assert!(
+        android.contains(
+            "(jint)refresh_letter_spacing_value, (jint)refresh_line_height_percent_value"
+        )
+    );
+    assert!(android.contains("Text.letter_spacing is outside the supported native range"));
+    assert!(android.contains(
+        "Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer"
+    ));
+    let label_id = android_stable_view_id("DynamicLayout", "label");
+    assert!(android.contains(&format!("find_view, (jint){label_id}")));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+}
+
+#[test]
 fn app_entry_rejects_unknown_parameterized_or_competing_main_roots() {
     let unknown = r#"
 view Screen {

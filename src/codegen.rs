@@ -4757,41 +4757,42 @@ fn emit_android_native_application(
             } else {
                 (None, None)
             };
-            let letter_spacing = view_property(element, "letter_spacing")
-                .map(|property| {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.letter_spacing must be a compile-time i64 value",
-                        ));
-                    };
+            let letter_spacing_property = view_property(element, "letter_spacing");
+            let (letter_spacing, dynamic_letter_spacing) = if let Some(property) =
+                letter_spacing_property
+            {
+                if let Some(value) = static_expr_i64(&property.value, signatures) {
                     if !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value) {
                         return Err(diag(
                             property.value.span,
                             "Text.letter_spacing is outside the supported native range",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
-            let line_height_percent = view_property(element, "line_height_percent")
-                .map(|property| {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.line_height_percent must be a compile-time i64 value",
-                        ));
-                    };
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
+            let line_height_percent_property = view_property(element, "line_height_percent");
+            let (line_height_percent, dynamic_line_height_percent) = if let Some(property) =
+                line_height_percent_property
+            {
+                if let Some(value) = static_expr_i64(&property.value, signatures) {
                     if value <= 0 || value > i64::from(i32::MAX) {
                         return Err(diag(
                             property.value.span,
                             "Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?
-                .or(Some(default_line_height_percent));
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (Some(default_line_height_percent), None)
+            };
             let text_align = view_property(element, "text_align")
                 .map(|property| {
                     let Some(value) = static_expr_str(&property.value, signatures) else {
@@ -4881,7 +4882,9 @@ fn emit_android_native_application(
             if font_family.is_some()
                 || dynamic_font_family.is_some()
                 || letter_spacing.is_some()
+                || dynamic_letter_spacing.is_some()
                 || line_height_percent.is_some()
+                || dynamic_line_height_percent.is_some()
                 || text_align.is_some()
                 || wrap_mode.is_some()
                 || ellipsize.is_some()
@@ -4908,6 +4911,24 @@ fn emit_android_native_application(
                 } else {
                     emit_optional_text(out, "child_font_family", font_family.as_ref());
                 }
+                let letter_spacing_call = if let Some(value) = dynamic_letter_spacing.as_ref() {
+                    out.push_str(&format!(
+                        "    int64_t child_letter_spacing_value = {value};\n    if (child_letter_spacing_value < INT32_MIN / 1024 || child_letter_spacing_value > INT32_MAX / 1024) {{ fputs(\"Flux runtime error: Text.letter_spacing is outside the supported native range\\n\", stderr); abort(); }}\n"
+                    ));
+                    "child_letter_spacing_value".to_string()
+                } else {
+                    letter_spacing.unwrap_or(i64::from(i32::MIN)).to_string()
+                };
+                let line_height_percent_call = if let Some(value) =
+                    dynamic_line_height_percent.as_ref()
+                {
+                    out.push_str(&format!(
+                            "    int64_t child_line_height_percent_value = {value};\n    if (child_line_height_percent_value <= 0 || child_line_height_percent_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                        ));
+                    "child_line_height_percent_value".to_string()
+                } else {
+                    line_height_percent.unwrap_or(0).to_string()
+                };
                 emit_optional_text(out, "child_text_align", text_align.as_ref());
                 emit_optional_text(out, "child_wrap_mode", wrap_mode.as_ref());
                 emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
@@ -4916,9 +4937,7 @@ fn emit_android_native_application(
                 out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                 out.push_str("    if (style_text_layout == NULL) return;\n");
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){}, (jint){}, child_text_align, child_wrap_mode, child_ellipsize, (jint){}, (jint){});\n",
-                    letter_spacing.unwrap_or(i64::from(i32::MIN)),
-                    line_height_percent.unwrap_or(0),
+                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){letter_spacing_call}, (jint){line_height_percent_call}, child_text_align, child_wrap_mode, child_ellipsize, (jint){}, (jint){});\n",
                     max_lines.unwrap_or(0),
                     max_width_chars,
                 ));
@@ -7453,6 +7472,8 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Text", "selectable")
             | ("Text", "wrap")
             | ("Text", "font_family")
+            | ("Text", "letter_spacing")
+            | ("Text", "line_height_percent")
             | ("Button", "text")
             | ("TextInput", "placeholder")
             | ("Image", "source")
@@ -7575,6 +7596,8 @@ fn android_ui_element_needs_refresh(
             "underline",
             "strikethrough",
             "font_family",
+            "letter_spacing",
+            "line_height_percent",
         ],
         "Button" => &["text"],
         "TextInput" => &["placeholder"],
@@ -7784,18 +7807,57 @@ fn emit_android_ui_refresh(
                             "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat){refresh_size}, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
                         ));
                     }
-                    if android_ui_property_needs_refresh(element, "font_family", &runtime_names)
-                        && let Some(property) = view_property(element, "font_family")
+                    let refresh_font_family =
+                        android_ui_property_needs_refresh(element, "font_family", &runtime_names);
+                    let refresh_letter_spacing = android_ui_property_needs_refresh(
+                        element,
+                        "letter_spacing",
+                        &runtime_names,
+                    );
+                    let refresh_line_height_percent = android_ui_property_needs_refresh(
+                        element,
+                        "line_height_percent",
+                        &runtime_names,
+                    );
+                    if refresh_font_family || refresh_letter_spacing || refresh_line_height_percent
                     {
-                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        if refresh_font_family {
+                            let property = view_property(element, "font_family")
+                                .expect("dynamic Text.font_family property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                const char *refresh_font_family_value = {value};\n                if (refresh_font_family_value == NULL || refresh_font_family_value[0] == '\\0') {{ fputs(\"Flux runtime error: Text.font_family cannot be empty\\n\", stderr); abort(); }}\n                jstring refresh_font_family = flux__android_utf8_string(env, refresh_font_family_value);\n"
+                            ));
+                        } else {
+                            out.push_str("                jstring refresh_font_family = NULL;\n");
+                        }
+                        let refresh_letter_spacing_call = if refresh_letter_spacing {
+                            let property = view_property(element, "letter_spacing")
+                                .expect("dynamic Text.letter_spacing property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                int64_t refresh_letter_spacing_value = {value};\n                if (refresh_letter_spacing_value < INT32_MIN / 1024 || refresh_letter_spacing_value > INT32_MAX / 1024) {{ fputs(\"Flux runtime error: Text.letter_spacing is outside the supported native range\\n\", stderr); abort(); }}\n"
+                            ));
+                            "refresh_letter_spacing_value"
+                        } else {
+                            "INT32_MIN"
+                        };
+                        let refresh_line_height_percent_call = if refresh_line_height_percent {
+                            let property = view_property(element, "line_height_percent")
+                                .expect("dynamic Text.line_height_percent property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                int64_t refresh_line_height_percent_value = {value};\n                if (refresh_line_height_percent_value <= 0 || refresh_line_height_percent_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                            ));
+                            "refresh_line_height_percent_value"
+                        } else {
+                            "0"
+                        };
+                        out.push_str("                jmethodID refresh_text_layout = (*env)->GetMethodID(env, activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                         out.push_str(&format!(
-                            "                const char *refresh_font_family_value = {value};\n                if (refresh_font_family_value == NULL || refresh_font_family_value[0] == '\\0') {{ fputs(\"Flux runtime error: Text.font_family cannot be empty\\n\", stderr); abort(); }}\n                jstring refresh_font_family = flux__android_utf8_string(env, refresh_font_family_value);\n"
+                            "                if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint){refresh_letter_spacing_call}, (jint){refresh_line_height_percent_call}, NULL, NULL, NULL, (jint)0, (jint)0);\n"
                         ));
-                        out.push_str("                if (refresh_font_family != NULL) {\n");
-                        out.push_str("                    jmethodID refresh_text_layout = (*env)->GetMethodID(env, activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
-                        out.push_str("                    if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint)INT32_MIN, (jint)0, NULL, NULL, NULL, (jint)0, (jint)0);\n");
-                        out.push_str("                    (*env)->DeleteLocalRef(env, refresh_font_family);\n");
-                        out.push_str("                }\n");
+                        out.push_str("                if (refresh_font_family != NULL) (*env)->DeleteLocalRef(env, refresh_font_family);\n");
                     }
                 }
                 if matches!(element.kind.as_str(), "Toggle" | "Radio") {
