@@ -10873,6 +10873,22 @@ fn falseOr(value: bool) -> bool {
     return false || value
 }
 
+fn andComplement(value: bool) -> bool {
+    return value && !value
+}
+
+fn orComplement(value: bool) -> bool {
+    return value || !value
+}
+
+fn complementAnd(value: bool) -> bool {
+    return !value && value
+}
+
+fn complementOr(value: bool) -> bool {
+    return !value || value
+}
+
 fn andFalse(value: bool) -> bool {
     return observe(value) && false
 }
@@ -10894,6 +10910,10 @@ fn main() -> i64 {
     print(orFalse(false))
     print(trueAnd(true))
     print(falseOr(false))
+    print(andComplement(true))
+    print(orComplement(false))
+    print(complementAnd(false))
+    print(complementOr(true))
     print(andFalse(true))
     print(orTrue(false))
     print(skipAnd(true))
@@ -10905,6 +10925,10 @@ fn main() -> i64 {
     check_source(source).expect("boolean identity reductions should typecheck");
     let generated = compile_to_c(source).expect("boolean identities should lower natively");
     assert_eq!(generated.matches("return flux__local_value;").count(), 5);
+    assert!(generated.contains("return ((void)(flux__local_value), false);"));
+    assert!(generated.contains("return ((void)(flux__local_value), true);"));
+    assert!(generated.contains("return ((void)((!flux__local_value)), false);"));
+    assert!(generated.contains("return ((void)((!flux__local_value)), true);"));
     assert!(generated.contains("return ((void)(flux__fn_observe(flux__local_value)), false);"));
     assert!(generated.contains("return ((void)(flux__fn_observe(flux__local_value)), true);"));
     assert_eq!(
@@ -10921,7 +10945,7 @@ fn main() -> i64 {
     let ui = r#"
 view Status {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto auto
     state active: bool = true
     Text first at 1,1
         text: "One"
@@ -10929,12 +10953,22 @@ view Status {
     Text second at 2,1
         text: "Two"
         visible: active || false
+    Text third at 3,1
+        text: "Three"
+        visible: active && !active
+    Text fourth at 4,1
+        text: "Four"
+        visible: !active || active
 }
 app Status
 "#;
     let ui_generated = compile_to_c(ui).expect("UI boolean identities should share lowering");
     assert!(!ui_generated.contains("flux__ui_state_active && true"));
     assert!(!ui_generated.contains("flux__ui_state_active || false"));
+    assert!(!ui_generated.contains("flux__ui_state_active && (!(flux__ui_state_active))"));
+    assert!(!ui_generated.contains("(!(flux__ui_state_active)) && flux__ui_state_active"));
+    assert!(ui_generated.contains("((void)(flux__ui_state_active), false)"));
+    assert!(ui_generated.contains("((void)((!(flux__ui_state_active))), true)"));
 }
 
 #[test]

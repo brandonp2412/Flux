@@ -13724,6 +13724,32 @@ fn boolean_identity_c(
         return Some(left_code.to_string());
     }
 
+    let complementary_binding = match (&left.kind, &right.kind) {
+        (
+            ExprKind::Var(left_name),
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Var(right_name),
+        ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
+        _ => false,
+    };
+    if complementary_binding {
+        let result = if matches!(op, BinOp::And) {
+            "false"
+        } else {
+            "true"
+        };
+        return Some(format!("((void)({left_code}), {result})"));
+    }
+
     let left_constant = typecheck::constant_primitive_value(left, signatures);
     let right_constant = typecheck::constant_primitive_value(right, signatures);
     match (op, left_constant, right_constant) {
