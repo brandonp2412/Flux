@@ -3059,6 +3059,37 @@ fn emit_runtime_prelude(
 }
 "#);
     }
+    if runtime_usage.contains("flux__url_encode_component(") {
+        out.push_str(r#"static inline const char *flux__url_encode_component(const char *value, void (*callback)(const char *)) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t length = strlen(value);
+    if (length > 65536) return "URL component exceeds 65536 bytes";
+    size_t encoded_length = 0;
+    for (size_t input = 0; input < length; input += 1) {
+        unsigned char byte = (unsigned char)value[input];
+        bool unreserved = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') || (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' || byte == '_' || byte == '~';
+        encoded_length += unreserved ? 1 : 3;
+        if (encoded_length > 65536) return "Encoded URL component exceeds 65536 bytes";
+    }
+    char encoded[65537];
+    size_t output = 0;
+    for (size_t input = 0; input < length; input += 1) {
+        unsigned char byte = (unsigned char)value[input];
+        bool unreserved = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') || (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' || byte == '_' || byte == '~';
+        if (unreserved) {
+            encoded[output++] = (char)byte;
+        } else {
+            encoded[output++] = '%';
+            encoded[output++] = hex[byte >> 4];
+            encoded[output++] = hex[byte & 15];
+        }
+    }
+    encoded[output] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
+    }
 
     if runtime_usage.contains("flux__net_") {
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
@@ -16762,6 +16793,7 @@ fn emit_qualified_call(
         let helper = match name {
             "parseHttp" => "flux__url_parse_http",
             "decodeComponent" => "flux__url_decode_component",
+            "encodeComponent" => "flux__url_encode_component",
             _ => return Err(diag(span, "unknown URL call reached code generation")),
         };
         return Ok((

@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 486
 - Reported overall progress: **66%**
-- Current net scope growth after the baseline: 97 checkbox items
+- Current net scope growth after the baseline: 98 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -392,6 +392,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] URI/URL support.
   - [x] Bootstrap allocation-free HTTP(S) URL decomposition through compiler-owned `url.parseHttp(url, callback)`: the parser accepts `http://` / `https://`, derives default or explicit `1..=65535` ports, handles bracketed IPv6 literals, produces an origin-form path/query target with fragments excluded, rejects userinfo plus malformed hosts/ports/control characters, and lends normalized scheme/host/target strings only for the exact `fn(str, str, i64, str) -> void` callback scope. Input and request-target size are bounded to 65536 bytes, the native helper tree-shakes when unreachable without pulling in socket support, and LSP completion/signature help expose the typed API. General URI schemes/components, owned URL values, and IDNA remain pending; this gives the future `fetch` layer a sound parser without pretending callback-scoped strings are owned response state.
   - [x] Bootstrap bounded borrowed URL-component percent decoding through compiler-owned `url.decodeComponent(value, callback)`: inputs are capped at 65536 bytes, valid `%HH` escapes decode without treating `+` as form-space syntax, malformed/incomplete escapes and decoded NUL fail explicitly, decoded text is lent only to the exact `fn(str) -> void` callback scope, unreachable support tree-shakes completely, and LSP completion/signature help expose the typed API. Owned decoded strings, component parsing/normalization, query/form semantics, and broader URI schemes remain pending with the owned-string/collection track.
+  - [x] Bootstrap bounded borrowed URL-component percent encoding through compiler-owned `url.encodeComponent(value, callback)`: input and encoded output are capped at 65536 bytes, RFC 3986 unreserved ASCII is preserved, every other UTF-8 byte is emitted as uppercase `%HH` without form-style `+` substitution, the encoded result is lent only to the exact `fn(str) -> void` callback scope, unreachable support tree-shakes completely, and LSP completion/signature help expose the typed API. Owned encoded strings, whole-query/form builders, component-aware normalization, and broader URI schemes remain pending with the owned-string/collection track.
 - [ ] HTTP primitives.
 - [ ] TLS integration.
 - [ ] WebSocket support.

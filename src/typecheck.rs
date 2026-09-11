@@ -6696,14 +6696,11 @@ fn check_qualified_call(
                 require_type(args[1].span, &expected, &callback, "url.parseHttp callback")?;
                 return Ok(vec![Type::Error]);
             }
-            "decodeComponent" => {
+            "decodeComponent" | "encodeComponent" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!(
-                            "url.decodeComponent expects 2 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("url.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let value = type_of_expr(&args[0], env, signatures)?;
@@ -6711,7 +6708,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &value,
-                    "url.decodeComponent value",
+                    &format!("url.{name} value"),
                 )?;
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
                 let expected = Type::Function {
@@ -6722,7 +6719,7 @@ fn check_qualified_call(
                     args[1].span,
                     &expected,
                     &callback,
-                    "url.decodeComponent callback",
+                    &format!("url.{name} callback"),
                 )?;
                 return Ok(vec![Type::Error]);
             }

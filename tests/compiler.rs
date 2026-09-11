@@ -2385,6 +2385,76 @@ fn main() -> i64 {
 }
 
 #[test]
+fn url_component_percent_encoding_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(url.encodeComponent("hello world/ok", encoded))
+    print(url.encodeComponent("AZaz09-._~", encoded))
+    print(url.encodeComponent("café", encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("URL component encoding should typecheck");
+    let generated = compile_to_c(source).expect("URL component encoding should lower natively");
+    assert!(generated.contains("flux__url_encode_component("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn encoded(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(url.encodeComponent(\"a b\", encoded))\n    return 0\n}\n",
+    )
+    .expect_err("URL component callback shape must be exact");
+    assert!(
+        invalid_callback
+            .message
+            .contains("url.encodeComponent callback")
+    );
+
+    let unused = r#"
+fn encoded(_value: str) -> void {
+}
+fn hidden() -> void {
+    print(url.encodeComponent("a b", encoded))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead URL encoder should tree-shake");
+    assert!(!unused_generated.contains("flux__url_encode_component("));
+
+    let root = std::env::temp_dir().join(format!("flux-url-encode-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URL encode fixture should be writable");
+    let source_path = root.join("encode.flux");
+    fs::write(&source_path, source).expect("URL encode Flux source should be writable");
+    let binary = root.join("encode");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URL encode Flux binary should build");
+    assert!(
+        built.status.success(),
+        "URL encode fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URL encode Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "hello%20world%2Fok\nnil\nAZaz09-._~\nnil\ncaf%C3%A9\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
