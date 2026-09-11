@@ -3842,7 +3842,9 @@ fn symbol_for_position<'a>(
             {
                 return Some(local);
             }
-            let mut matches = database.symbols_named(name);
+            let mut matches = database
+                .symbols_named(name)
+                .filter(|symbol| !is_local_symbol_kind(symbol.kind));
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
@@ -4147,6 +4149,26 @@ fn local_symbol_occurrences(
         .collect()
 }
 
+fn project_symbol_occurrences(
+    source: &str,
+    source_id: SourceId,
+    target: &crate::semantic::SemanticSymbol,
+    database: &crate::semantic::SemanticDatabase,
+) -> Vec<SourceSpan> {
+    identifier_occurrences(source, &target.name)
+        .into_iter()
+        .filter(|span| {
+            if let Some(declared) = database.symbol_at(source_id, span.line, span.column)
+                && declared.span != target.span
+            {
+                return false;
+            }
+            visible_local_symbol_for_position(database, source, source_id, span.line, &target.name)
+                .is_none()
+        })
+        .collect()
+}
+
 fn local_symbol_name_conflicts(
     source: &str,
     target: &crate::semantic::SemanticSymbol,
@@ -4211,15 +4233,20 @@ fn references_for_document_cached(
         return sources
             .iter()
             .flat_map(|project_source| {
-                identifier_occurrences(&project_source.text, &symbol.name)
-                    .into_iter()
-                    .map(|span| {
-                        object([
-                            ("uri", JsonValue::String(project_source_uri(project_source))),
-                            ("range", lsp_range(span, &project_source.text, encoding)),
-                        ])
-                    })
-                    .collect::<Vec<_>>()
+                project_symbol_occurrences(
+                    &project_source.text,
+                    project_source.source_id,
+                    symbol,
+                    &database,
+                )
+                .into_iter()
+                .map(|span| {
+                    object([
+                        ("uri", JsonValue::String(project_source_uri(project_source))),
+                        ("range", lsp_range(span, &project_source.text, encoding)),
+                    ])
+                })
+                .collect::<Vec<_>>()
             })
             .collect();
     }
@@ -4315,15 +4342,20 @@ fn rename_for_document_cached(
         }
         let mut changes = BTreeMap::new();
         for project_source in &sources {
-            let edits = identifier_occurrences(&project_source.text, &symbol.name)
-                .into_iter()
-                .map(|span| {
-                    object([
-                        ("range", lsp_range(span, &project_source.text, encoding)),
-                        ("newText", JsonValue::String(new_name.to_string())),
-                    ])
-                })
-                .collect::<Vec<_>>();
+            let edits = project_symbol_occurrences(
+                &project_source.text,
+                project_source.source_id,
+                symbol,
+                &database,
+            )
+            .into_iter()
+            .map(|span| {
+                object([
+                    ("range", lsp_range(span, &project_source.text, encoding)),
+                    ("newText", JsonValue::String(new_name.to_string())),
+                ])
+            })
+            .collect::<Vec<_>>();
             if !edits.is_empty() {
                 changes.insert(project_source_uri(project_source), JsonValue::Array(edits));
             }
@@ -7436,6 +7468,57 @@ mod tests {
         assert!(rename.contains("dep.flux"));
         assert!(rename.contains("main.flux"));
         assert!(rename.contains("answer"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imported_references_and_rename_exclude_local_shadows() {
+        let root =
+            std::env::temp_dir().join(format!("flux-lsp-project-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 42 }\n")
+            .expect("dependency should be writable");
+        let main_source = "import \"dep.flux\"\nfn shadow() -> i64 {\n    let value: i64 = 7\n    return value\n}\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let main_uri = file_uri_from_path(&main);
+        let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+
+        let references = references_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            5,
+            20,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(references.len(), 2);
+        let references_json = JsonValue::Array(references).to_json();
+        assert!(references_json.contains("dep.flux"));
+        assert!(references_json.contains("\"line\":5"));
+        assert!(!references_json.contains("\"line\":2"));
+        assert!(!references_json.contains("\"line\":3"));
+
+        let rename = rename_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            5,
+            20,
+            "answer",
+            PositionEncoding::Utf8,
+        )
+        .expect("global rename should ignore a function-local shadow")
+        .to_json();
+        assert_eq!(rename.matches("newText").count(), 2);
+        assert!(rename.contains("dep.flux"));
+        assert!(rename.contains("\"line\":5"));
+        assert!(!rename.contains("\"line\":2"));
+        assert!(!rename.contains("\"line\":3"));
 
         let _ = std::fs::remove_dir_all(root);
     }
