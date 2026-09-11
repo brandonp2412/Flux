@@ -744,6 +744,18 @@ pub fn emit_c_for_target_with_source_metadata(
             "clipboard.* APIs require an application target",
         ));
     }
+    if runtime_usage.contains("flux__file_dialog_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "fileDialog.* APIs require an application target",
+        ));
+    }
+    if target == NativeTarget::Android && runtime_usage.contains("flux__file_dialog_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "fileDialog.* APIs currently require the Linux desktop target",
+        ));
+    }
     if runtime_usage.contains("flux__focus_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -991,6 +1003,13 @@ fn emit_runtime_prelude(
     let uses_locale = runtime_usage.contains("flux__locale_");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
+    let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
+    let uses_file_dialog_save_file = runtime_usage.contains("flux__file_dialog_save_file(");
+    let uses_file_dialog_select_directory =
+        runtime_usage.contains("flux__file_dialog_select_directory(");
+    let uses_file_dialog = uses_file_dialog_open_file
+        || uses_file_dialog_save_file
+        || uses_file_dialog_select_directory;
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
     let uses_focus_next_in = runtime_usage.contains("flux__focus_next_in(");
@@ -1864,6 +1883,52 @@ fn emit_runtime_prelude(
         out.push_str("    context->callback = callback;\n");
         out.push_str("    gdk_clipboard_read_text_async(clipboard, NULL, flux__clipboard_read_text_finished, context);\n");
         out.push_str("}\n");
+    }
+    if uses_file_dialog && uses_gtk {
+        out.push_str(
+            "typedef struct { void (*callback)(const char *); } flux__file_dialog_context;\n",
+        );
+        out.push_str("static void flux__file_dialog_response(GtkNativeDialog *native, gint response, gpointer user_data) {\n");
+        out.push_str(
+            "    flux__file_dialog_context *context = (flux__file_dialog_context *)user_data;\n",
+        );
+        out.push_str("    if (response == GTK_RESPONSE_ACCEPT && context != NULL && context->callback != NULL) {\n");
+        out.push_str(
+            "        GFile *file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(native));\n",
+        );
+        out.push_str("        if (file != NULL) {\n");
+        out.push_str("            char *path = g_file_get_path(file);\n");
+        out.push_str("            if (path != NULL) context->callback(path);\n");
+        out.push_str("            g_free(path);\n");
+        out.push_str("            g_object_unref(file);\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+        out.push_str("    g_object_unref(native);\n");
+        out.push_str("    g_free(context);\n");
+        out.push_str("}\n");
+        out.push_str("static void flux__file_dialog_show(GtkFileChooserAction action, const char *title, const char *accept_label, void (*callback)(const char *)) {\n");
+        out.push_str("    if (callback == NULL) return;\n");
+        out.push_str("    GApplication *application = g_application_get_default();\n");
+        out.push_str("    if (application == NULL || !GTK_IS_APPLICATION(application)) return;\n");
+        out.push_str("    GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application));\n");
+        out.push_str("    GtkFileChooserNative *dialog = gtk_file_chooser_native_new(title, parent, action, accept_label, \"_Cancel\");\n");
+        out.push_str("    if (dialog == NULL) return;\n");
+        out.push_str(
+            "    flux__file_dialog_context *context = g_new0(flux__file_dialog_context, 1);\n",
+        );
+        out.push_str("    context->callback = callback;\n");
+        out.push_str("    g_signal_connect(dialog, \"response\", G_CALLBACK(flux__file_dialog_response), context);\n");
+        out.push_str("    gtk_native_dialog_show(GTK_NATIVE_DIALOG(dialog));\n");
+        out.push_str("}\n");
+        if uses_file_dialog_open_file {
+            out.push_str("static inline void flux__file_dialog_open_file(void (*callback)(const char *)) { flux__file_dialog_show(GTK_FILE_CHOOSER_ACTION_OPEN, \"Open File\", \"_Open\", callback); }\n");
+        }
+        if uses_file_dialog_save_file {
+            out.push_str("static inline void flux__file_dialog_save_file(void (*callback)(const char *)) { flux__file_dialog_show(GTK_FILE_CHOOSER_ACTION_SAVE, \"Save File\", \"_Save\", callback); }\n");
+        }
+        if uses_file_dialog_select_directory {
+            out.push_str("static inline void flux__file_dialog_select_directory(void (*callback)(const char *)) { flux__file_dialog_show(GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, \"Select Folder\", \"_Select\", callback); }\n");
+        }
     }
     if uses_android_set_clipboard_text {
         out.push_str("static void flux__android_set_clipboard_text(const char *text) {\n");
@@ -9727,11 +9792,10 @@ fn collect_function_reachability_from_ir(
     let Some(cfg) = function_ir.get(&function.name) else {
         return;
     };
-    for value in cfg
-        .values()
-        .iter()
-        .filter(|value| cfg.is_value_reachable(value.id))
-    {
+    for value in cfg.values().iter().filter(|value| {
+        cfg.is_value_reachable(value.id)
+            || (cfg.is_reachable(value.producer) && cfg.uses_of(value.id).next().is_none())
+    }) {
         match &value.kind {
             crate::ir::ControlFlowValueKind::NameRead { name, definitions }
                 if definitions.is_empty() && known_functions.contains(name) =>
@@ -14868,6 +14932,27 @@ fn emit_qualified_call(
             _ => return Err(diag(span, "invalid clipboard call reached code generation")),
         };
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
+    }
+    if namespace == "fileDialog" {
+        if !named_args.is_empty() || args.len() != 1 {
+            return Err(diag(
+                span,
+                "invalid fileDialog call reached code generation",
+            ));
+        }
+        let callback = emit_expr(&args[0], env, signatures)?;
+        let helper = match name {
+            "openFile" => "flux__file_dialog_open_file",
+            "saveFile" => "flux__file_dialog_save_file",
+            "selectDirectory" => "flux__file_dialog_select_directory",
+            _ => {
+                return Err(diag(
+                    span,
+                    "invalid fileDialog call reached code generation",
+                ));
+            }
+        };
+        return Ok((format!("{helper}({})", callback.code), Vec::new(), None));
     }
     if namespace == "focus" {
         if !named_args.is_empty() {

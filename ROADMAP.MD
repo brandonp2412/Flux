@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 476
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 77 checkbox items
+- Current net scope growth after the baseline: 78 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -764,7 +764,8 @@ Android is the first application-platform target. Android integration must feel 
   - [x] Bootstrap GUI was built and launched end-to-end on a real `wayland-0` compositor (`GDK_BACKEND=wayland`); GTK4 supplies the native Wayland integration while the eventual lower-level backend remains open.
   - [x] Linux GUI startup now prefers GDK's Wayland backend before X11/other available backends when the user has not selected a backend explicitly, while preserving `GDK_BACKEND` as the authoritative opt-in override for debugging, compatibility, and non-Wayland sessions.
 - [ ] Menus/tray/clipboard/file dialogs.
-  - [x] Portable application clipboard writes through typed `clipboard.setText(text)`: Linux lowers directly to the native GDK clipboard on the current GTK application backend, Android reuses the compiler-owned direct `ClipboardManager`/`ClipData` JNI boundary, LSP completion/signature help expose the shared API, unreachable use tree-shakes completely, and headless use is rejected rather than silently depending on GUI state. A native Linux debug build verified the GDK lowering; clipboard reads remain sequenced behind owned string semantics.
+  - [x] Clipboard for the current native application backends: portable `clipboard.setText(text)` writes native plain text on Linux/Android, while `clipboard.readText(callback)` safely lends clipboard text only for the duration of an exact `fn(str) -> void` callback instead of returning ownership-ambiguous GUI storage. Linux uses GDK's asynchronous text-read API, Android reads/coerces the primary `ClipData` item through compiler-owned JNI, LSP completion/signature help expose both operations, unreachable helpers tree-shake, and headless use is rejected.
+  - [x] Native Linux file dialogs for the current desktop backend: typed `fileDialog.openFile`, `fileDialog.saveFile`, and `fileDialog.selectDirectory` accept exact `fn(str) -> void` callbacks and lower to `GtkFileChooserNative`, lending the selected local path only for callback scope before compiler-owned native storage is released. The helpers attach to the active GTK application window, tree-shake when unreachable, reject headless use, and fail Android target lowering explicitly until a native Android picker implementation exists; applications write no GTK bridge code.
 - [ ] Multi-window.
 - [x] Packaging formats/integration guidance for the current Linux target: `flux package` produces either the existing host-labelled directory bundle or a directly distributable `--format tar.gz` archive with normalized ordering/timestamps/ownership metadata; same-host identical archives are byte-reproducibility tested, extracted archives execute successfully, and distro-specific deb/rpm/Arch/AppImage/Flatpak integration remains documented as an explicit downstream layer rather than hidden compiler behavior.
 

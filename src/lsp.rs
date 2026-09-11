@@ -1411,6 +1411,25 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "fileDialog" {
+        for (label, detail) in [
+            (
+                "openFile",
+                "fn fileDialog.openFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "saveFile",
+                "fn fileDialog.saveFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "selectDirectory",
+                "fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "focus" {
         for (label, detail) in [
             ("next", "fn focus.next(wrap: bool = false) -> void"),
@@ -2933,6 +2952,19 @@ fn signature_help_for_document_cached(
                 "readText" => {
                     return Some(signature_help_for_builtin(
                         "clipboard.readText",
+                        &["callback: fn(str) -> void"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "fileDialog" {
+            match member {
+                "openFile" | "saveFile" | "selectDirectory" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("fileDialog.{member}"),
                         &["callback: fn(str) -> void"],
                         "void",
                         active_parameter,
@@ -6201,7 +6233,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -6387,6 +6419,31 @@ mod tests {
         assert!(clipboard_items.contains("fn clipboard.setText(text: str) -> void"));
         assert!(
             clipboard_items.contains("fn clipboard.readText(callback: fn(str) -> void) -> void")
+        );
+
+        let file_dialog_line = source
+            .lines()
+            .position(|line| line.trim() == "fileDialog.")
+            .expect("file dialog completion line should exist");
+        let file_dialog_source = source.lines().nth(file_dialog_line).unwrap();
+        let file_dialog_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(file_dialog_line),
+            Some(file_dialog_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(
+            file_dialog_items.contains("fn fileDialog.openFile(callback: fn(str) -> void) -> void")
+        );
+        assert!(
+            file_dialog_items.contains("fn fileDialog.saveFile(callback: fn(str) -> void) -> void")
+        );
+        assert!(
+            file_dialog_items
+                .contains("fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void")
         );
 
         let focus_line = source
@@ -7534,6 +7591,45 @@ mod tests {
         .expect("notification settings call should have signature help")
         .to_json();
         assert!(help.contains("fn android.openNotificationSettings() -> void"));
+    }
+
+    #[test]
+    fn signature_help_supports_file_dialogs() {
+        let uri = "file:///tmp/file-dialog-signature.flux";
+        let source = "fn selected(path: str) -> void {\n    print(path)\n}\nfn main() -> i64 {\n    fileDialog.openFile(selected)\n    fileDialog.saveFile(selected)\n    fileDialog.selectDirectory(selected)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "fileDialog.openFile(",
+                "fn fileDialog.openFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "fileDialog.saveFile(",
+                "fn fileDialog.saveFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "fileDialog.selectDirectory(",
+                "fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("file dialog call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("file dialog call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

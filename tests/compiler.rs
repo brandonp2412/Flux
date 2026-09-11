@@ -16394,6 +16394,118 @@ fn main() -> i64 {
 }
 
 #[test]
+fn linux_file_dialogs_are_typed_native_tree_shaken_and_target_checked() {
+    let source = r#"
+fn selected(path: str) -> void {
+    print(path)
+}
+fn started() -> void {
+    fileDialog.openFile(selected)
+    fileDialog.saveFile(selected)
+    fileDialog.selectDirectory(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("file dialog APIs should typecheck");
+    let linux = compile_to_c(source).expect("file dialogs should lower on Linux");
+    assert!(linux.contains("GtkFileChooserNative *dialog = gtk_file_chooser_native_new"));
+    assert!(linux.contains("gtk_file_chooser_get_file(GTK_FILE_CHOOSER(native))"));
+    assert!(linux.contains("g_file_get_path(file)"));
+    assert!(linux.contains("context->callback(path)"));
+    assert!(linux.contains("GTK_FILE_CHOOSER_ACTION_OPEN"));
+    assert!(linux.contains("GTK_FILE_CHOOSER_ACTION_SAVE"));
+    assert!(linux.contains("GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER"));
+    assert!(linux.matches("flux__file_dialog_open_file(").count() >= 2);
+    assert!(linux.matches("flux__file_dialog_save_file(").count() >= 2);
+    assert!(linux.matches("flux__file_dialog_select_directory(").count() >= 2);
+    assert!(linux.matches("flux__fn_selected").count() >= 2);
+    assert!(!linux.contains("flux__android_"));
+
+    let unused = r#"
+fn selected(path: str) -> void {
+    print(path)
+}
+fn unused() -> void {
+    fileDialog.openFile(selected)
+    fileDialog.saveFile(selected)
+    fileDialog.selectDirectory(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable file dialogs should tree-shake");
+    assert!(!tree_shaken.contains("flux__file_dialog_"));
+    assert!(!tree_shaken.contains("gtk_file_chooser_native_new"));
+
+    let headless = r#"
+fn selected(path: str) -> void {
+    print(path)
+}
+fn main() -> i64 {
+    fileDialog.openFile(selected)
+    return 0
+}
+"#;
+    check_source(headless).expect("file dialog typing should be target-independent");
+    let error = compile_to_c(headless).expect_err("file dialogs require an application target");
+    assert!(
+        error
+            .message
+            .contains("fileDialog.* APIs require an application target")
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("file dialog app should analyze");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("Linux file dialogs should reject the Android target");
+    assert!(
+        error
+            .message
+            .contains("fileDialog.* APIs currently require the Linux desktop target")
+    );
+
+    let invalid = r#"
+fn wrong(value: i64) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    fileDialog.openFile(wrong)
+    fileDialog.saveFile(42)
+    fileDialog.selectDirectory()
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("file dialog callbacks must be statically typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("fileDialog.openFile callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("fileDialog.saveFile callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("fileDialog.selectDirectory expects 1 argument, got 0")
+    }));
+}
+
+#[test]
 fn portable_focus_navigation_lowers_to_native_application_backends() {
     let source = r#"
 fn started() -> void {
