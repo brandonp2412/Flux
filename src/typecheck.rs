@@ -5190,7 +5190,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "pid" | "parentPid" => {
+            "pid" | "parentPid" | "cpuMillis" | "peakResidentMemoryBytes" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,

@@ -1275,6 +1275,8 @@ fn process_environment_capabilities_are_typed_native_and_tree_shaken() {
 fn main() -> i64 {
     print(process.pid())
     print(process.parentPid())
+    print(process.cpuMillis())
+    print(process.peakResidentMemoryBytes())
     print(process.hasEnv("FLUX_PROCESS_TEST"))
     print(process.env("FLUX_PROCESS_TEST", "missing"))
     print(process.env("FLUX_PROCESS_MISSING", "fallback"))
@@ -1286,12 +1288,18 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("process capabilities should lower on Linux");
     assert!(generated.contains("static inline int64_t flux__process_pid(void)"));
     assert!(generated.contains("static inline int64_t flux__process_parent_pid(void)"));
+    assert!(generated.contains("static inline int64_t flux__process_cpu_millis(void)"));
+    assert!(
+        generated.contains("static inline int64_t flux__process_peak_resident_memory_bytes(void)")
+    );
     assert!(generated.contains("static inline bool flux__process_has_env(const char *name)"));
     assert!(generated.contains(
         "static inline const char *flux__process_env(const char *name, const char *fallback)"
     ));
     assert!(generated.contains("flux__process_pid()"));
     assert!(generated.contains("flux__process_parent_pid()"));
+    assert!(generated.contains("flux__process_cpu_millis()"));
+    assert!(generated.contains("flux__process_peak_resident_memory_bytes()"));
     assert!(generated.contains("flux__process_has_env(\"FLUX_PROCESS_TEST\")"));
     assert!(generated.contains("flux__process_env(\"FLUX_PROCESS_TEST\", \"missing\")"));
 
@@ -1322,14 +1330,18 @@ fn main() -> i64 {
         .lines()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    assert_eq!(lines.len(), 5);
+    assert_eq!(lines.len(), 7);
     assert!(lines[0].parse::<i64>().is_ok());
     assert!(lines[1].parse::<i64>().is_ok());
-    assert_eq!(&lines[2..], &["true", "native-value", "fallback"]);
+    assert!(lines[2].parse::<i64>().is_ok_and(|value| value >= 0));
+    assert!(lines[3].parse::<i64>().is_ok_and(|value| value > 0));
+    assert_eq!(&lines[4..], &["true", "native-value", "fallback"]);
 
     let unused = r#"
 fn hidden() -> void {
     print(process.pid())
+    print(process.cpuMillis())
+    print(process.peakResidentMemoryBytes())
     print(process.env("HOME", ""))
     print(process.terminationRequested())
     process.exit(0)
@@ -1341,6 +1353,8 @@ fn main() -> i64 {
     let unused_generated =
         compile_to_c(unused).expect("dead process calls should not poison Linux");
     assert!(!unused_generated.contains("flux__process_pid(void)"));
+    assert!(!unused_generated.contains("flux__process_cpu_millis(void)"));
+    assert!(!unused_generated.contains("flux__process_peak_resident_memory_bytes(void)"));
     assert!(!unused_generated.contains("flux__process_env(const char"));
     assert!(!unused_generated.contains("flux__process_termination_requested(void)"));
     assert!(!unused_generated.contains("flux__process_exit(int64_t code)"));
@@ -1349,6 +1363,8 @@ fn main() -> i64 {
 fn main() -> i64 {
     process.pid(1)
     process.parentPid(false)
+    process.cpuMillis(1)
+    process.peakResidentMemoryBytes(1)
     process.terminationRequested(1)
     process.exit(false)
     process.exit(256)
@@ -1369,6 +1385,16 @@ fn main() -> i64 {
         error
             .message
             .contains("process.parentPid expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.cpuMillis expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("process.peakResidentMemoryBytes expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error

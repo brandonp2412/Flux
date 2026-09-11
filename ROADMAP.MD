@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 451
+- Completed baseline units: 452
 - Reported overall progress: **61%**
 - Current net scope growth after the baseline: 32 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -983,7 +983,7 @@ Flux must remain equally credible for headless native binaries.
 - [ ] Database connectivity.
 - [x] Static/self-contained deployment where platform permits: `flux package --format static` emits one statically linked optimized executable for headless packages, keeps static/dynamic native cache identities separate, rejects GUI applications rather than pretending GTK is self-contained, supports the existing explicit Clang target/sysroot path, and fails clearly when the selected toolchain lacks a static C runtime. Compiler E2E coverage executes the artifact and verifies the Linux ELF has no dynamic interpreter when `readelf` is available.
 - [x] Container-friendly builds: `flux package --format container` emits a headless-only native container build context containing the optimized Flux executable plus a minimal `Containerfile`, without requiring Docker/Podman during compilation or conflating this with the separate static/self-contained deployment goal. Compiler regression coverage verifies the generated context and executable, while GUI `app` packages are rejected from this server-oriented format.
-- [ ] Profiling/observability hooks.
+- [x] Bootstrap server observability hooks: compiler-owned `process.cpuMillis()` reports current-process user+system CPU time and `process.peakResidentMemoryBytes()` reports Linux peak RSS in bytes through direct `getrusage` lowering. Both are allocation-free `i64` scalar reads, participate in LSP completion/signature help, reject Android lowering with the existing desktop/server process capability boundary, and tree-shake completely when unreachable; richer request-level metrics/tracing can build on ordinary Flux code as the server I/O/concurrency model lands.
 
 # Milestone 29 — Flux 1.0 stability
 

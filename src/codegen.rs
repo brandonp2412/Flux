@@ -287,6 +287,8 @@ fn emit_runtime_prelude(
 ) {
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__process_termination_requested(")
+        || runtime_usage.contains("flux__process_cpu_millis(")
+        || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -311,6 +313,11 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_termination_requested(") {
         out.push_str("#include <signal.h>\n");
+    }
+    if runtime_usage.contains("flux__process_cpu_millis(")
+        || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
+    {
+        out.push_str("#include <sys/resource.h>\n");
     }
     if uses_background
         || runtime_usage.contains("flux__process_pid(")
@@ -1480,6 +1487,17 @@ fn emit_runtime_prelude(
         out.push_str(
             "static inline int64_t flux__process_parent_pid(void) { return (int64_t)getppid(); }\n",
         );
+    }
+    if runtime_usage.contains("flux__process_cpu_millis(")
+        || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
+    {
+        out.push_str("static inline struct rusage flux__process_usage(void) { struct rusage usage; if (getrusage(RUSAGE_SELF, &usage) != 0) { fputs(\"Flux runtime error: failed to read process resource usage\\n\", stderr); abort(); } return usage; }\n");
+    }
+    if runtime_usage.contains("flux__process_cpu_millis(") {
+        out.push_str("static inline int64_t flux__process_cpu_millis(void) { struct rusage usage = flux__process_usage(); uint64_t user_ms = (uint64_t)usage.ru_utime.tv_sec * UINT64_C(1000) + (uint64_t)usage.ru_utime.tv_usec / UINT64_C(1000); uint64_t system_ms = (uint64_t)usage.ru_stime.tv_sec * UINT64_C(1000) + (uint64_t)usage.ru_stime.tv_usec / UINT64_C(1000); if (user_ms > (uint64_t)INT64_MAX || system_ms > (uint64_t)INT64_MAX || user_ms > (uint64_t)INT64_MAX - system_ms) { fputs(\"Flux runtime error: process CPU time exceeds i64 range\\n\", stderr); abort(); } return (int64_t)(user_ms + system_ms); }\n");
+    }
+    if runtime_usage.contains("flux__process_peak_resident_memory_bytes(") {
+        out.push_str("static inline int64_t flux__process_peak_resident_memory_bytes(void) { struct rusage usage = flux__process_usage(); if (usage.ru_maxrss < 0 || (uint64_t)usage.ru_maxrss > (uint64_t)INT64_MAX / UINT64_C(1024)) { fputs(\"Flux runtime error: process peak RSS exceeds i64 range\\n\", stderr); abort(); } return (int64_t)((uint64_t)usage.ru_maxrss * UINT64_C(1024)); }\n");
     }
     if runtime_usage.contains("flux__process_has_env(") {
         out.push_str("static inline bool flux__process_has_env(const char *name) { return getenv(name) != NULL; }\n");
@@ -12608,14 +12626,16 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid process call reached code generation"));
         }
         match name {
-            "pid" | "parentPid" => {
+            "pid" | "parentPid" | "cpuMillis" | "peakResidentMemoryBytes" => {
                 if !args.is_empty() {
                     return Err(diag(span, "invalid process call reached code generation"));
                 }
-                let helper = if name == "pid" {
-                    "flux__process_pid"
-                } else {
-                    "flux__process_parent_pid"
+                let helper = match name {
+                    "pid" => "flux__process_pid",
+                    "parentPid" => "flux__process_parent_pid",
+                    "cpuMillis" => "flux__process_cpu_millis",
+                    "peakResidentMemoryBytes" => "flux__process_peak_resident_memory_bytes",
+                    _ => unreachable!(),
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
             }

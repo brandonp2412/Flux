@@ -1140,6 +1140,14 @@ fn add_qualified_namespace_completions(
     if namespace == "process" {
         push_completion_item(items, seen, "pid", 3, "fn process.pid() -> i64");
         push_completion_item(items, seen, "parentPid", 3, "fn process.parentPid() -> i64");
+        push_completion_item(items, seen, "cpuMillis", 3, "fn process.cpuMillis() -> i64");
+        push_completion_item(
+            items,
+            seen,
+            "peakResidentMemoryBytes",
+            3,
+            "fn process.peakResidentMemoryBytes() -> i64",
+        );
         push_completion_item(
             items,
             seen,
@@ -2299,7 +2307,7 @@ fn signature_help_for_document_cached(
     if let Some((namespace, member)) = call_name.split_once('.') {
         if namespace == "process" {
             match member {
-                "pid" | "parentPid" => {
+                "pid" | "parentPid" | "cpuMillis" | "peakResidentMemoryBytes" => {
                     return Some(signature_help_for_builtin(
                         &format!("process.{member}"),
                         &[],
@@ -5429,6 +5437,8 @@ mod tests {
         .to_json();
         assert!(process_items.contains("fn process.pid() -> i64"));
         assert!(process_items.contains("fn process.parentPid() -> i64"));
+        assert!(process_items.contains("fn process.cpuMillis() -> i64"));
+        assert!(process_items.contains("fn process.peakResidentMemoryBytes() -> i64"));
         assert!(process_items.contains("fn process.terminationRequested() -> bool"));
         assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
@@ -6099,11 +6109,16 @@ mod tests {
     #[test]
     fn signature_help_supports_process_capabilities() {
         let uri = "file:///tmp/process-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.terminationRequested())\n    process.exit(0)\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.cpuMillis())\n    print(process.peakResidentMemoryBytes())\n    print(process.terminationRequested())\n    process.exit(0)\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("process.pid(", "fn process.pid() -> i64"),
             ("process.parentPid(", "fn process.parentPid() -> i64"),
+            ("process.cpuMillis(", "fn process.cpuMillis() -> i64"),
+            (
+                "process.peakResidentMemoryBytes(",
+                "fn process.peakResidentMemoryBytes() -> i64",
+            ),
             (
                 "process.terminationRequested(",
                 "fn process.terminationRequested() -> bool",
