@@ -19400,6 +19400,80 @@ app StaticBackground
 }
 
 #[test]
+fn android_border_color_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicBorder {
+    state stroke: str = "outline"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: stroke
+        borderTopColor: "accent"
+        borderWidth: 2
+        radius: 14
+    Button danger at 2,1
+        text: "Danger"
+        onPress: stroke => "danger"
+}
+app DynamicBorder
+"#;
+
+    check_source(source).expect("dynamic Android borderColor should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android borderColor should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android borderColor should lower");
+
+    assert!(android.contains("static bool flux__android_valid_ui_color"));
+    assert!(android.contains("const char *child_border_value = flux__ui_state_stroke"));
+    assert!(android.contains("const char *refresh_border_value = flux__ui_state_stroke"));
+    assert!(android.contains("styleViewBorderColors"));
+    assert!(android.contains(
+        "(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
+    ));
+    assert!(
+        android.contains(
+            "borderColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+        )
+    );
+    assert!(android.contains("flux__android_utf8_string(env, \"accent\")"));
+    let panel_id = android_stable_view_id("DynamicBorder", "panel");
+    assert!(android.contains(&format!("find_view, (jint){panel_id}")));
+    assert!(android.contains("flux__ui_state_stroke = \"danger\""));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticBorder {
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "outline"
+        borderWidth: 2
+}
+app StaticBorder
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android borderColor should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android borderColor should lower");
+    assert!(!static_android.contains("styleViewBorderColors"));
+    assert!(!static_android.contains("flux__android_valid_ui_color"));
+}
+
+#[test]
 fn android_text_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicColor {

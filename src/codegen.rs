@@ -4607,7 +4607,22 @@ fn emit_android_native_application(
         } else {
             (None, false)
         };
-        let border_color = static_color("border_color")?;
+        let border_color_property = view_property(element, "border_color");
+        let (border_color, dynamic_border_color) = if let Some(property) = border_color_property {
+            if let Some(value) = static_expr_str(&property.value, signatures) {
+                if !valid_ui_color(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        "border_color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                    ));
+                }
+                (Some(value), false)
+            } else {
+                (None, true)
+            }
+        } else {
+            (None, false)
+        };
         let border_top_color = static_color("border_top_color")?;
         let border_bottom_color = static_color("border_bottom_color")?;
         let border_start_color = static_color("border_start_color")?;
@@ -4668,11 +4683,12 @@ fn emit_android_native_application(
         let resolve_border_color = |width: i64, side_color: &Option<String>| {
             if width <= 0 || border_style == "none" {
                 None
+            } else if side_color.is_some() {
+                side_color.clone()
+            } else if dynamic_border_color {
+                None
             } else {
-                side_color
-                    .clone()
-                    .or_else(|| border_color.clone())
-                    .or_else(|| Some("outline".to_string()))
+                border_color.clone().or_else(|| Some("outline".to_string()))
             }
         };
         let border_top_color = resolve_border_color(border_top_width, &border_top_color);
@@ -4705,6 +4721,11 @@ fn emit_android_native_application(
             || border_bottom_color.is_some()
             || border_start_color.is_some()
             || border_end_color.is_some()
+            || (dynamic_border_color
+                && (border_top_width > 0
+                    || border_bottom_width > 0
+                    || border_start_width > 0
+                    || border_end_width > 0))
             || radius_top_left > 0
             || radius_top_right > 0
             || radius_bottom_left > 0
@@ -4718,6 +4739,7 @@ fn emit_android_native_application(
         }
         if background_color.is_some()
             || dynamic_background_color
+            || dynamic_border_color
             || border_top_color.is_some()
             || border_bottom_color.is_some()
             || border_start_color.is_some()
@@ -4753,10 +4775,32 @@ fn emit_android_native_application(
             } else {
                 emit_optional_jstring(out, "child_background", &background_color);
             }
-            emit_optional_jstring(out, "child_border_top", &border_top_color);
-            emit_optional_jstring(out, "child_border_end", &border_end_color);
-            emit_optional_jstring(out, "child_border_bottom", &border_bottom_color);
-            emit_optional_jstring(out, "child_border_start", &border_start_color);
+            if dynamic_border_color {
+                let value = ui_expr_c(
+                    &border_color_property
+                        .expect("dynamic border_color property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    const char *child_border_value = {value};\n    if (!flux__android_valid_ui_color(child_border_value)) {{ fputs(\"Flux runtime error: borderColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let emit_border_jstring = |out: &mut String, name: &str, value: &Option<String>| {
+                if value.is_some() || !dynamic_border_color {
+                    emit_optional_jstring(out, name, value);
+                } else {
+                    out.push_str(&format!(
+                        "    jstring {name} = flux__android_utf8_string(env, child_border_value);\n"
+                    ));
+                    out.push_str(&format!("    if ({name} == NULL) return;\n"));
+                }
+            };
+            emit_border_jstring(out, "child_border_top", &border_top_color);
+            emit_border_jstring(out, "child_border_end", &border_end_color);
+            emit_border_jstring(out, "child_border_bottom", &border_bottom_color);
+            emit_border_jstring(out, "child_border_start", &border_start_color);
             let border_style_value = Some(border_style.clone());
             emit_optional_jstring(out, "child_border_style", &border_style_value);
             emit_optional_jstring(out, "child_shadow", &shadow_color);
@@ -8081,6 +8125,7 @@ fn android_ui_element_needs_refresh(
         "enabled",
         "focusable",
         "background_color",
+        "border_color",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -8201,6 +8246,47 @@ fn emit_android_ui_refresh(
             out.push_str("                    if (refresh_background_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_background_style, child, refresh_background);\n");
             out.push_str("                    (*env)->DeleteLocalRef(env, refresh_background);\n");
             out.push_str("                }\n");
+        }
+        if android_ui_property_needs_refresh(element, "border_color", &runtime_names)
+            && let Some(property) = view_property(element, "border_color")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "                const char *refresh_border_value = {value};\n                if (!flux__android_valid_ui_color(refresh_border_value)) {{ fputs(\"Flux runtime error: borderColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n"
+            ));
+            for (jni_name, property_name) in [
+                ("refresh_border_top", "border_top_color"),
+                ("refresh_border_end", "border_end_color"),
+                ("refresh_border_bottom", "border_bottom_color"),
+                ("refresh_border_start", "border_start_color"),
+            ] {
+                if let Some(side_value) = view_property(element, property_name)
+                    .and_then(|side| static_expr_str(&side.value, signatures))
+                {
+                    out.push_str(&format!(
+                        "                jstring {jni_name} = flux__android_utf8_string(env, {});\n",
+                        c_string(&side_value)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "                jstring {jni_name} = flux__android_utf8_string(env, refresh_border_value);\n"
+                    ));
+                }
+            }
+            out.push_str("                if (refresh_border_top != NULL && refresh_border_end != NULL && refresh_border_bottom != NULL && refresh_border_start != NULL) {\n");
+            out.push_str("                    jmethodID refresh_border_style = (*env)->GetMethodID(env, activity_class, \"styleViewBorderColors\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+            out.push_str("                    if (refresh_border_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_style, child, refresh_border_top, refresh_border_end, refresh_border_bottom, refresh_border_start);\n");
+            out.push_str("                }\n");
+            for jni_name in [
+                "refresh_border_top",
+                "refresh_border_end",
+                "refresh_border_bottom",
+                "refresh_border_start",
+            ] {
+                out.push_str(&format!(
+                    "                if ({jni_name} != NULL) (*env)->DeleteLocalRef(env, {jni_name});\n"
+                ));
+            }
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
             && let Some(property) = view_property(element, "tooltip")

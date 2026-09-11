@@ -4436,10 +4436,10 @@ __FLUX_PICKER_METHODS__
 
     private final class FluxStyleDrawable extends Drawable {
         private Integer background;
-        private final Integer borderTop;
-        private final Integer borderEnd;
-        private final Integer borderBottom;
-        private final Integer borderStart;
+        private Integer borderTop;
+        private Integer borderEnd;
+        private Integer borderBottom;
+        private Integer borderStart;
         private final int borderTopWidth;
         private final int borderEndWidth;
         private final int borderBottomWidth;
@@ -4582,6 +4582,14 @@ __FLUX_PICKER_METHODS__
             invalidateSelf();
         }
 
+        void setBorderColors(String top, String end, String bottom, String start) {
+            this.borderTop = top == null ? null : parseFluxColor(top);
+            this.borderEnd = end == null ? null : parseFluxColor(end);
+            this.borderBottom = bottom == null ? null : parseFluxColor(bottom);
+            this.borderStart = start == null ? null : parseFluxColor(start);
+            invalidateSelf();
+        }
+
         @Override
         public void setAlpha(int alpha) {
             this.alpha = Math.max(0, Math.min(255, alpha));
@@ -4644,6 +4652,13 @@ __FLUX_PICKER_METHODS__
         }
         styleView(view, background, null, null, null, null, 0, 0, 0, 0,
                 0.0f, 0.0f, 0.0f, 0.0f, "none", null, 0.0f, 0.0f, 0.0f);
+    }
+
+    public void styleViewBorderColors(View view, String top, String end, String bottom, String start) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setBorderColors(top, end, bottom, start);
+        }
     }
 
 
