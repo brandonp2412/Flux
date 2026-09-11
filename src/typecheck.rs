@@ -5851,21 +5851,26 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "waitReadable" => {
+            "waitReadable" | "waitWritable" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!("net.waitReadable expects 2 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.waitReadable socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    &format!("net.{name} socket"),
+                )?;
                 let timeout = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &timeout,
-                    "net.waitReadable timeoutMillis",
+                    &format!("net.{name} timeoutMillis"),
                 )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
@@ -5873,7 +5878,7 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "net.waitReadable timeoutMillis must be -1 or between 0 and 2147483647",
+                        &format!("net.{name} timeoutMillis must be -1 or between 0 and 2147483647"),
                     ));
                 }
                 return Ok(vec![Type::Bool, Type::Error]);

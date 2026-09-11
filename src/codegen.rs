@@ -1872,7 +1872,9 @@ fn emit_runtime_prelude(
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
-    if runtime_usage.contains("flux__net_wait_readable(") {
+    if runtime_usage.contains("flux__net_wait_readable(")
+        || runtime_usage.contains("flux__net_wait_writable(")
+    {
         out.push_str("struct flux__net_bool_error { bool v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
@@ -1915,6 +1917,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__net_wait_readable(") {
         out.push_str("static inline struct flux__net_bool_error flux__net_wait_readable(int64_t socket_handle, int64_t timeout_millis) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_bool_result(false, \"invalid socket handle\"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_bool_result(false, \"waitReadable timeoutMillis must be -1 or between 0 and 2147483647\"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLIN, .revents = 0 }; int result; do { descriptor.revents = 0; result = poll(&descriptor, 1, (int)timeout_millis); } while (result < 0 && errno == EINTR); if (result < 0) return flux__net_bool_result(false, \"failed to wait for socket readability\"); if (result == 0) return flux__net_bool_result(false, NULL); if ((descriptor.revents & POLLNVAL) != 0) return flux__net_bool_result(false, \"invalid socket handle\"); if ((descriptor.revents & POLLERR) != 0) return flux__net_bool_result(false, \"socket readiness failed\"); return flux__net_bool_result((descriptor.revents & (POLLIN | POLLHUP)) != 0, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__net_wait_writable(") {
+        out.push_str("static inline struct flux__net_bool_error flux__net_wait_writable(int64_t socket_handle, int64_t timeout_millis) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_bool_result(false, \"invalid socket handle\"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_bool_result(false, \"waitWritable timeoutMillis must be -1 or between 0 and 2147483647\"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 }; int result; do { descriptor.revents = 0; result = poll(&descriptor, 1, (int)timeout_millis); } while (result < 0 && errno == EINTR); if (result < 0) return flux__net_bool_result(false, \"failed to wait for socket writability\"); if (result == 0) return flux__net_bool_result(false, NULL); if ((descriptor.revents & POLLNVAL) != 0) return flux__net_bool_result(false, \"invalid socket handle\"); if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_bool_result(false, \"socket readiness failed\"); return flux__net_bool_result((descriptor.revents & POLLOUT) != 0, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_close(") {
         out.push_str("static inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; return close((int)socket_handle) == 0 ? NULL : \"failed to close socket\"; }\n");
@@ -13360,17 +13365,19 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "waitReadable" => {
+            "waitReadable" | "waitWritable" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
                 let timeout = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "waitReadable" {
+                    "flux__net_wait_readable"
+                } else {
+                    "flux__net_wait_writable"
+                };
                 return Ok((
-                    format!(
-                        "flux__net_wait_readable({}, {})",
-                        socket_handle.code, timeout.code
-                    ),
+                    format!("{helper}({}, {})", socket_handle.code, timeout.code),
                     vec![Type::Bool, Type::Error],
                     Some("flux__net_bool_error".to_string()),
                 ));

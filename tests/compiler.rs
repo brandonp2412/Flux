@@ -1651,6 +1651,9 @@ fn main() -> i64 {{
     print(connectError)
     print(net.sendText(socket, "ping"))
     print(net.setNonblocking(socket, true))
+    let (writable, writableError) = net.waitWritable(socket, 1000)
+    print(writable)
+    print(writableError)
     let (ready, readyError) = net.waitReadable(socket, 1000)
     print(ready)
     print(readyError)
@@ -1669,6 +1672,7 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__net_receive_text("));
     assert!(generated.contains("flux__net_set_nonblocking("));
     assert!(generated.contains("flux__net_wait_readable("));
+    assert!(generated.contains("flux__net_wait_writable("));
     assert!(generated.contains("void (*callback)(int64_t, const char *)"));
     assert!(generated.contains("O_NONBLOCK"));
     assert!(generated.contains("poll(&descriptor"));
@@ -1711,7 +1715,7 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "nil\nnil\nnil\ntrue\nnil\nnil\npong\n4\nnil\nnil\n"
+        "nil\nnil\nnil\ntrue\nnil\ntrue\nnil\nnil\npong\n4\nnil\nnil\n"
     );
 
     let udp_server = UdpSocket::bind("127.0.0.1:0").expect("loopback text UDP socket should bind");
@@ -1791,6 +1795,15 @@ fn main() -> i64 {{
             .message
             .contains("net.waitReadable timeoutMillis must be -1 or between 0 and 2147483647")
     );
+    let writable_timeout_error = check_source(
+        "fn main() -> i64 {\n    let (ready, failure) = net.waitWritable(1, -2)\n    print(ready)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("invalid constant writable timeout must fail statically");
+    assert!(
+        writable_timeout_error
+            .message
+            .contains("net.waitWritable timeoutMillis must be -1 or between 0 and 2147483647")
+    );
 
     let unused = r#"
 fn consume(_socket: i64, _text: str) -> void {
@@ -1801,6 +1814,9 @@ fn hidden(socket: i64) -> void {
     let (ready, readyFailure) = net.waitReadable(socket, 0)
     print(ready)
     print(readyFailure)
+    let (writable, writableFailure) = net.waitWritable(socket, 0)
+    print(writable)
+    print(writableFailure)
     let (received, failure) = net.receiveText(socket, 64, consume)
     print(received)
     print(failure)
@@ -1814,6 +1830,7 @@ fn main() -> i64 {
     assert!(!unused_generated.contains("flux__net_receive_text("));
     assert!(!unused_generated.contains("flux__net_set_nonblocking("));
     assert!(!unused_generated.contains("flux__net_wait_readable("));
+    assert!(!unused_generated.contains("flux__net_wait_writable("));
     let _ = fs::remove_dir_all(&root);
 }
 
