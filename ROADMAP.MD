@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 469
-- Reported overall progress: **63%**
+- Completed baseline units: 470
+- Reported overall progress: **64%**
 - Current net scope growth after the baseline: 59 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -705,7 +705,7 @@ Android is the first application-platform target. Android integration must feel 
     - [x] Android parity now covers native translate/rotate/scale transforms with configurable transform origin, per-corner radii, richer Text layout (`fontFamily`, letter spacing, line-height percentage, alignment, wrapping strategy, ellipsize, max lines), and direct tap/focus/blur/hover/leave callbacks through generated listener glue.
     - [x] Ordinary Android functional transitions use generated in-place native refresh rather than full `setContentView` reconstruction: every flat element receives a stable compiler-owned ID, refresh looks up the existing native control and reapplies refreshable dynamic properties, and programmatic Toggle/Radio selection is listener-suppressed so refresh cannot recursively dispatch Flux events.
     - [ ] Finish higher-level composition controls, dynamic styling, and remaining production-grade focus/selection/text-composition/input edge cases. Portable `onTap` now uses Android's native click-listener path instead of raw touch-up dispatch, so pointer, keyboard, and accessibility `performClick` activation converge on one platform action; tappable views are explicitly focusable and native long-click consumption prevents a completed long press from also firing tap.
-- [ ] Accessibility/semantics bridge.
+- [x] Accessibility/semantics bridge for the current Android/native-control surface: Flux accessibility labels/descriptions, hidden state, semantic roles, and explicit assistive traversal order lower onto the real platform controls through compiler-owned glue, with integrated Linux/Android regression coverage proving the native bridge rather than a parallel semantics tree. Richer named/custom accessibility actions remain tracked separately in Milestone 20.
   - [x] Bootstrap semantic text lands on native Android Views: canonical `accessibilityLabel` and `accessibilityDescription` lower to compiler-owned `contentDescription` generation, while `tooltip` uses the platform tooltip API when available. Android refresh recomputes both label and description together when either becomes dynamic so a state-driven half cannot erase its static counterpart.
   - [x] Common typed `accessibilityHidden: bool` explicitly removes native elements and descendants from the accessibility tree without changing visual visibility: Linux lowers to `GTK_ACCESSIBLE_STATE_HIDDEN`, Android to `IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS`, and state-driven Android values refresh in place. Roles/actions/richer state semantics remain pending.
 - [x] Notifications callable directly from Flux, including channels/actions where supported, with compiler-generated framework interop where required.

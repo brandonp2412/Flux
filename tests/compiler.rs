@@ -13485,21 +13485,34 @@ view Screen {
     Text title at 1,1
         text: "Title"
         accessibilityLabel: "Screen title"
+        accessibilityRole: "heading"
+        accessibilityOrder: 10
     Button action at 2,1
         text: "Continue"
         accessibilityDescription: "Continue to the next step"
+        accessibilityRole: "button"
+        accessibilityOrder: 20
     TextInput input at 3,1
         accessibilityLabel: "Name"
+        accessibilityRole: "textBox"
+        accessibilityOrder: 30
     Toggle toggle at 4,1
         label: "Enabled"
         accessibilityLabel: "Enabled setting"
+        accessibilityRole: "switch"
+        accessibilityOrder: 40
     Radio radio at 5,1
         label: "Choice"
         accessibilityLabel: "Choice option"
+        accessibilityRole: "radio"
+        accessibilityOrder: 50
     Image image at 6,1
         source: ""
         alt: "Preview"
         accessibilityLabel: "Preview image"
+        accessibilityRole: "image"
+        accessibilityHidden: false
+        accessibilityOrder: 60
 }
 app Screen
 "#;
@@ -13514,6 +13527,9 @@ app Screen
     assert!(linux.contains("gtk_picture_new"));
     assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_LABEL"));
     assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION"));
+    assert!(linux.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION"));
+    assert!(linux.contains("GTK_ACCESSIBLE_STATE_HIDDEN"));
+    assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO"));
 
     let program = fluxc::parser::parse(source).expect("screen-reader bridge app should parse");
     let signatures =
@@ -13539,6 +13555,9 @@ app Screen
         );
     }
     assert!(android.contains("setAccessibility"));
+    assert!(android.contains("setAccessibilityRole"));
+    assert!(android.contains("setAccessibilityHidden"));
+    assert!(android.contains("setAccessibilityTraversalAfter"));
 }
 
 #[test]
