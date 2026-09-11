@@ -3985,6 +3985,33 @@ fn source_id_for_uri(uri: &str) -> SourceId {
         .unwrap_or_else(|| SourceId::from_name(uri))
 }
 
+fn source_reaches_source(program: &crate::ast::Program, from: SourceId, target: SourceId) -> bool {
+    if from == SourceId::UNKNOWN || target == SourceId::UNKNOWN || from == target {
+        return true;
+    }
+    let mut pending = vec![from];
+    let mut visited = HashSet::new();
+    while let Some(source_id) = pending.pop() {
+        if !visited.insert(source_id) {
+            continue;
+        }
+        for import in program
+            .imports
+            .iter()
+            .filter(|import| import.span.source_id == source_id)
+        {
+            let Some(imported) = import.resolved_source_id else {
+                continue;
+            };
+            if imported == target {
+                return true;
+            }
+            pending.push(imported);
+        }
+    }
+    false
+}
+
 fn analyzed_document(uri: &str, source: &str) -> Option<crate::semantic::SemanticDatabase> {
     let source_id = source_id_for_uri(uri);
     let program = crate::parser::parse_all_with_source(source, source_id).ok()?;
@@ -4019,7 +4046,7 @@ fn symbol_for_position<'a>(
             }
             let mut matches = database
                 .symbols_named(name)
-                .filter(|symbol| !is_local_symbol_kind(symbol.kind));
+                .filter(|symbol| is_unqualified_symbol_kind(symbol.kind));
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
@@ -4034,6 +4061,20 @@ fn is_local_symbol_kind(kind: crate::semantic::SymbolKind) -> bool {
             | SymbolKind::MutableBinding
             | SymbolKind::PatternBinding
             | SymbolKind::LoopVariable
+    )
+}
+
+fn is_unqualified_symbol_kind(kind: crate::semantic::SymbolKind) -> bool {
+    use crate::semantic::SymbolKind;
+    matches!(
+        kind,
+        SymbolKind::TypeAlias
+            | SymbolKind::Interface
+            | SymbolKind::Constant
+            | SymbolKind::Enum
+            | SymbolKind::Struct
+            | SymbolKind::View
+            | SymbolKind::Function
     )
 }
 
@@ -4356,6 +4397,9 @@ fn project_symbol_occurrences(
     target: &crate::semantic::SemanticSymbol,
     database: &crate::semantic::SemanticDatabase,
 ) -> Vec<SourceSpan> {
+    if !source_reaches_source(database.program(), source_id, target.span.source_id) {
+        return Vec::new();
+    }
     identifier_occurrences(source, &target.name)
         .into_iter()
         .filter(|span| {
@@ -7987,6 +8031,61 @@ mod tests {
         assert!(rename.contains("dep.flux"));
         assert!(rename.contains("first.flux"));
         assert!(rename.contains("second.flux"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imported_references_and_rename_ignore_same_named_sibling_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-lsp-project-module-scope-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary LSP project should be writable");
+        let dependency = root.join("dep.flux");
+        let sibling = root.join("sibling.flux");
+        let main = root.join("main.flux");
+        std::fs::write(&dependency, "pub fn value() -> i64 { 42 }\n")
+            .expect("dependency should be writable");
+        std::fs::write(
+            &sibling,
+            "pub struct Item {\n    value: i64\n}\npub fn sibling(item: Item) -> i64 { item.value }\n",
+        )
+        .expect("sibling should be writable");
+        let main_source = "import \"sibling.flux\"\nimport \"dep.flux\"\nfn main() -> i64 { value() }\n";
+        std::fs::write(&main, main_source).expect("entry should be writable");
+        let main = std::fs::canonicalize(main).unwrap();
+        let main_uri = file_uri_from_path(&main);
+        let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+
+        let references = references_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            2,
+            21,
+            PositionEncoding::Utf8,
+        );
+        assert_eq!(references.len(), 2);
+        let references_json = JsonValue::Array(references).to_json();
+        assert!(references_json.contains("dep.flux"));
+        assert!(references_json.contains("main.flux"));
+        assert!(!references_json.contains("sibling.flux"));
+
+        let rename = rename_for_document(
+            &main_uri,
+            main_source,
+            &documents,
+            2,
+            21,
+            "answer",
+            PositionEncoding::Utf8,
+        )
+        .expect("function rename should ignore the sibling field")
+        .to_json();
+        assert_eq!(rename.matches("newText").count(), 2);
+        assert!(!rename.contains("sibling.flux"));
 
         let _ = std::fs::remove_dir_all(root);
     }
