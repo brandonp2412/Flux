@@ -7256,6 +7256,35 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "dialog" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("dialog.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "alert" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("dialog.alert expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let title = type_of_expr(&args[0], env, signatures)?;
+                let message = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &title, "dialog.alert title")?;
+                require_type(args[1].span, &Type::Str, &message, "dialog.alert message")?;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("dialog module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "fileDialog" {
         if !named_args.is_empty() {
             return Err(diag(

@@ -755,6 +755,12 @@ pub fn emit_c_for_target_with_source_metadata(
             "frame.* APIs require an application target",
         ));
     }
+    if runtime_usage.contains("flux__dialog_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "dialog.* APIs require an application target",
+        ));
+    }
     if runtime_usage.contains("flux__file_dialog_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1047,6 +1053,7 @@ fn emit_runtime_prelude(
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
+    let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
     let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
     let uses_file_dialog_save_file = runtime_usage.contains("flux__file_dialog_save_file(");
     let uses_file_dialog_select_directory =
@@ -1200,6 +1207,7 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_read_clipboard_text
+        || (uses_android && uses_dialog_alert)
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -1286,6 +1294,7 @@ fn emit_runtime_prelude(
     if uses_android_open_url
         || uses_android_share
         || uses_android_set_clipboard_text
+        || (uses_android && uses_dialog_alert)
         || uses_android_notifications
         || uses_android_has_system_feature
         || uses_android_permission_granted
@@ -2036,6 +2045,10 @@ fn emit_runtime_prelude(
         out.push_str("    if (clipboard != NULL) gdk_clipboard_set_text(clipboard, text);\n");
         out.push_str("}\n");
     }
+    if uses_dialog_alert && uses_gtk {
+        out.push_str("static void flux__dialog_alert_response(GtkDialog *dialog, gint response, gpointer data) { (void)response; (void)data; gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
+        out.push_str("static void flux__dialog_alert(const char *title, const char *message) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_alert_response), NULL); gtk_window_present(GTK_WINDOW(dialog)); }\n");
+    }
     if uses_clipboard_read_text && uses_gtk {
         out.push_str(
             "typedef struct { void (*callback)(const char *); } flux__clipboard_read_context;\n",
@@ -2243,6 +2256,21 @@ fn emit_runtime_prelude(
     }
     if uses_clipboard_read_text && uses_android {
         out.push_str("static inline void flux__clipboard_read_text(void (*callback)(const char *)) { flux__android_read_clipboard_text(callback); }\n");
+    }
+    if uses_dialog_alert && uses_android {
+        out.push_str("static void flux__dialog_alert(const char *title, const char *message) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+        out.push_str("    jclass builder_class = NULL; jobject builder = NULL; jobject dialog = NULL; jstring title_string = NULL; jstring message_string = NULL; jstring ok_string = NULL;\n");
+        out.push_str("    builder_class = (*env)->FindClass(env, \"android/app/AlertDialog$Builder\"); if (builder_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, builder_class, \"<init>\", \"(Landroid/content/Context;)V\"); if (ctor == NULL) goto done;\n");
+        out.push_str("    builder = (*env)->NewObject(env, builder_class, ctor, flux__android_activity->clazz); if ((*env)->ExceptionCheck(env) || builder == NULL) goto done;\n");
+        out.push_str("    title_string = flux__android_utf8_string(env, title == NULL ? \"\" : title); message_string = flux__android_utf8_string(env, message == NULL ? \"\" : message); ok_string = (*env)->NewStringUTF(env, \"OK\"); if (title_string == NULL || message_string == NULL || ok_string == NULL) goto done;\n");
+        out.push_str("    jmethodID set_title = (*env)->GetMethodID(env, builder_class, \"setTitle\", \"(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;\"); jmethodID set_message = (*env)->GetMethodID(env, builder_class, \"setMessage\", \"(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;\"); jmethodID set_positive = (*env)->GetMethodID(env, builder_class, \"setPositiveButton\", \"(Ljava/lang/CharSequence;Landroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;\"); jmethodID show = (*env)->GetMethodID(env, builder_class, \"show\", \"()Landroid/app/AlertDialog;\"); if (set_title == NULL || set_message == NULL || set_positive == NULL || show == NULL) goto done;\n");
+        out.push_str("    (*env)->CallObjectMethod(env, builder, set_title, title_string); (*env)->CallObjectMethod(env, builder, set_message, message_string); (*env)->CallObjectMethod(env, builder, set_positive, ok_string, NULL); if ((*env)->ExceptionCheck(env)) goto done; dialog = (*env)->CallObjectMethod(env, builder, show);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (dialog != NULL) (*env)->DeleteLocalRef(env, dialog); if (ok_string != NULL) (*env)->DeleteLocalRef(env, ok_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (builder != NULL) (*env)->DeleteLocalRef(env, builder); if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class); flux__android_release_env(detach);\n");
+        out.push_str("}\n");
     }
     if uses_android_open_url {
         out.push_str("static void flux__android_open_url(const char *url) {\n");
@@ -18051,6 +18079,18 @@ fn emit_qualified_call(
             _ => return Err(diag(span, "invalid clipboard call reached code generation")),
         };
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
+    }
+    if namespace == "dialog" {
+        if !named_args.is_empty() || args.len() != 2 || name != "alert" {
+            return Err(diag(span, "invalid dialog call reached code generation"));
+        }
+        let title = emit_expr(&args[0], env, signatures)?;
+        let message = emit_expr(&args[1], env, signatures)?;
+        return Ok((
+            format!("flux__dialog_alert({}, {})", title.code, message.code),
+            Vec::new(),
+            None,
+        ));
     }
     if namespace == "fileDialog" {
         if !named_args.is_empty() || args.len() != 1 {

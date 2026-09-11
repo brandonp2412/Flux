@@ -18561,6 +18561,93 @@ fn main() -> i64 {
 }
 
 #[test]
+fn portable_alert_dialogs_are_typed_native_tree_shaken_and_target_checked() {
+    let source = r#"
+fn started() -> void {
+    dialog.alert("Flux", "Native alert")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable alert dialog should typecheck");
+    let linux = compile_to_c(source).expect("portable alert dialog should lower on Linux");
+    assert!(
+        linux.contains("static void flux__dialog_alert(const char *title, const char *message)")
+    );
+    assert!(linux.contains("gtk_message_dialog_new"));
+    assert!(linux.contains("GTK_BUTTONS_OK"));
+    assert!(linux.contains("gtk_window_present(GTK_WINDOW(dialog))"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable alert app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable alert dialog should lower on Android");
+    assert!(android.contains("android/app/AlertDialog$Builder"));
+    assert!(android.contains("setPositiveButton"));
+    assert!(android.contains("flux__dialog_alert(\"Flux\", \"Native alert\")"));
+    assert!(!android.contains("gtk_message_dialog_new"));
+
+    let unused = r#"
+fn unused() -> void {
+    dialog.alert("Unused", "Hidden")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable alert code should tree-shake");
+    assert!(!tree_shaken.contains("flux__dialog_alert"));
+    assert!(!tree_shaken.contains("gtk_message_dialog_new"));
+
+    let headless = r#"
+fn main() -> i64 {
+    dialog.alert("Nope", "Headless")
+    return 0
+}
+"#;
+    check_source(headless).expect("dialog API should retain target-independent static typing");
+    let error = compile_to_c(headless).expect_err("dialog requires an application backend");
+    assert!(
+        error
+            .message
+            .contains("dialog.* APIs require an application target")
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    dialog.alert(42, "message")
+    dialog.alert("Title", false)
+    dialog.alert("missing")
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("dialog alert arguments must be statically typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.alert title") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.alert message") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dialog.alert expects 2 arguments, got 1")
+    }));
+}
+
+#[test]
 fn linux_file_dialogs_are_typed_native_tree_shaken_and_target_checked() {
     let source = r#"
 fn selected(path: str) -> void {
