@@ -5706,6 +5706,12 @@ fn emit_linux_gtk_application(
             "static GtkWidget *{} = NULL;\n",
             ui_widget_c_name(&element.name)
         ));
+        if linux_passive_action_host(element) {
+            out.push_str(&format!(
+                "static GtkWidget *{} = NULL;\n",
+                linux_ui_host_c_name(element)
+            ));
+        }
         if element_has_dynamic_transform(element, signatures) {
             out.push_str(&format!(
                 "static GtkCssProvider *{} = NULL;\n",
@@ -5837,16 +5843,15 @@ fn emit_linux_gtk_application(
     for element in &view.elements {
         if let Some(action) = view_property(element, "on_tap") {
             let body = ui_zero_arg_event_body(action, view, signatures)?;
-            out.push_str(&format!(
-                "static void flux__ui_tap_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)gesture; (void)n_press; (void)x; (void)y; (void)data; {body} }}\n",
-                element.name,
-            ));
-            if matches!(element.kind.as_str(), "Text" | "Image")
-                && view_property(element, "on_key").is_none()
-            {
+            if linux_passive_action_host(element) {
                 out.push_str(&format!(
-                    "static gboolean flux__ui_tap_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter || keyval == GDK_KEY_space) {{ flux__ui_tap_{}(NULL, 0, 0, 0, NULL); return TRUE; }} return FALSE; }}\n",
-                    element.name, element.name
+                    "static void flux__ui_activate_{}(GtkButton *button, gpointer data) {{ (void)button; (void)data; {body} }}\n",
+                    element.name,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "static void flux__ui_tap_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)gesture; (void)n_press; (void)x; (void)y; (void)data; {body} }}\n",
+                    element.name,
                 ));
             }
         }
@@ -5871,8 +5876,13 @@ fn emit_linux_gtk_application(
                     "bootstrap native onKey requires a named fn(str) -> void callback",
                 ));
             };
+            let consume_native_activation = if linux_passive_action_host(element) {
+                " if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter || keyval == GDK_KEY_space) return TRUE;"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "static gboolean flux__ui_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; char utf8[8] = {{0}}; const char *key = flux__ui_key_name(keyval, utf8); {}(key); flux__ui_refresh(); return FALSE; }}\n",
+                "static gboolean flux__ui_key_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)controller; (void)keycode; (void)state; (void)data; char utf8[8] = {{0}}; const char *key = flux__ui_key_name(keyval, utf8); {}(key); flux__ui_refresh();{consume_native_activation} return FALSE; }}\n",
                 element.name,
                 function_c_name(function),
             ));
@@ -6691,6 +6701,16 @@ fn emit_linux_gtk_application(
             }
             _ => unreachable!("unsupported app element rejected before lowering"),
         }
+        let variable = if linux_passive_action_host(element) {
+            let host = linux_ui_host_c_name(element);
+            out.push_str(&format!(
+                "    {host} = gtk_button_new();\n    gtk_button_set_has_frame(GTK_BUTTON({host}), FALSE);\n    gtk_button_set_child(GTK_BUTTON({host}), {variable});\n    g_signal_connect({host}, \"clicked\", G_CALLBACK(flux__ui_activate_{}), NULL);\n",
+                element.name
+            ));
+            host
+        } else {
+            variable
+        };
         if let Some(property) = view_property(element, "shortcut") {
             let Some(shortcut) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -6855,7 +6875,7 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_set_overflow({variable}, ({clip}) ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);\n"
             ));
         }
-        if view_property(element, "on_tap").is_some() {
+        if view_property(element, "on_tap").is_some() && !linux_passive_action_host(element) {
             let controller = format!("flux__tap_{}", element.name);
             out.push_str(&format!(
                 "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_click_new());\n"
@@ -6867,15 +6887,6 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
-            if matches!(element.kind.as_str(), "Text" | "Image")
-                && view_property(element, "on_key").is_none()
-            {
-                let key_controller = format!("flux__tap_key_{}", element.name);
-                out.push_str(&format!(
-                    "    gtk_widget_set_focusable({variable}, TRUE);\n    GtkEventController *{key_controller} = gtk_event_controller_key_new();\n    g_signal_connect({key_controller}, \"key-pressed\", G_CALLBACK(flux__ui_tap_key_{}), NULL);\n    gtk_widget_add_controller({variable}, {key_controller});\n",
-                    element.name
-                ));
-            }
         }
         if view_property(element, "on_double_tap").is_some() {
             let controller = format!("flux__double_tap_{}", element.name);
@@ -6972,8 +6983,8 @@ fn emit_linux_gtk_application(
     }
     let accessibility_order = ordered_accessibility_elements(view, signatures)?;
     for pair in accessibility_order.windows(2) {
-        let current = ui_widget_c_name(&pair[0].name);
-        let next = ui_widget_c_name(&pair[1].name);
+        let current = linux_ui_host_c_name(pair[0]);
+        let next = linux_ui_host_c_name(pair[1]);
         out.push_str(&format!(
             "    gtk_accessible_update_relation(GTK_ACCESSIBLE({current}), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE({next}), -1);\n"
         ));
@@ -7785,6 +7796,18 @@ fn ui_widget_c_name(name: &str) -> String {
     format!("flux__ui_{name}")
 }
 
+fn linux_passive_action_host(element: &crate::ast::ViewElement) -> bool {
+    matches!(element.kind.as_str(), "Text" | "Image") && view_property(element, "on_tap").is_some()
+}
+
+fn linux_ui_host_c_name(element: &crate::ast::ViewElement) -> String {
+    if linux_passive_action_host(element) {
+        format!("flux__ui_action_{}", element.name)
+    } else {
+        ui_widget_c_name(&element.name)
+    }
+}
+
 fn fold_ui_primitive_expr(
     expr: &Expr,
     signatures: &Signatures,
@@ -8113,7 +8136,8 @@ fn emit_ui_refresh(
         let dependencies = ui_element_refresh_dependencies(element, &runtime_dependencies);
         let condition = ui_refresh_condition(&dependencies);
         out.push_str(&format!("    if ({condition}) {{\n"));
-        let widget = ui_widget_c_name(&element.name);
+        let content_widget = ui_widget_c_name(&element.name);
+        let widget = linux_ui_host_c_name(element);
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
@@ -8157,6 +8181,7 @@ fn emit_ui_refresh(
             ));
         }
         emit_dynamic_transform_refresh(out, element, view, signatures)?;
+        let widget = content_widget;
         match element.kind.as_str() {
             "Text" => {
                 if let Some(property) = view_property(element, "text") {

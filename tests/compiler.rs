@@ -15858,40 +15858,91 @@ app HoverCard
     assert!(generated.contains("GtkEventControllerMotion *controller"));
     assert!(generated.contains("GtkGestureClick *gesture"));
     assert!(generated.contains("flux__fn_tapped(); flux__ui_refresh();"));
-    assert!(generated.contains("gtk_gesture_click_new()"));
-    assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_tap_title)"));
-    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_title)"));
+    assert!(generated.contains("gtk_button_new()"));
+    assert!(generated.contains("gtk_button_set_has_frame(GTK_BUTTON(flux__ui_action_title), FALSE)"));
+    assert!(generated.contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)"));
+    assert!(generated.contains("g_signal_connect(flux__ui_action_title, \"clicked\", G_CALLBACK(flux__ui_activate_title), NULL)"));
     assert!(generated.contains("flux__ui_double_tap_title"));
     assert!(generated.contains("if (n_press != 2) return; flux__fn_tapped(); flux__ui_refresh();"));
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_double_tap_title)"));
-    assert!(
-        generated.contains("gtk_widget_add_controller(flux__ui_title, flux__double_tap_title)")
-    );
-    assert!(generated.contains("flux__ui_tap_key_title"));
-    assert!(generated.contains("GDK_KEY_Return"));
-    assert!(generated.contains("GDK_KEY_KP_Enter"));
-    assert!(generated.contains("GDK_KEY_space"));
-    assert!(generated.contains("gtk_widget_set_focusable(flux__ui_title, TRUE)"));
-    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_key_title)"));
+    assert!(generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__double_tap_title)"));
+    assert!(!generated.contains("flux__ui_tap_key_title"));
     assert!(generated.contains("GtkGestureLongPress *gesture"));
     assert!(generated.contains("gtk_gesture_long_press_new()"));
     assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
     assert!(
-        generated.contains("gtk_widget_add_controller(flux__ui_title, flux__long_press_title)")
+        generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__long_press_title)")
     );
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
-    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_title, \"Hover me\")"));
-    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
-    assert!(generated.contains("gtk_widget_set_visible(flux__ui_title, flux__ui_state_hovered)"));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_action_title, \"Hover me\")"));
+    assert!(generated.contains("GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_action_title, flux__ui_state_hovered)"));
     assert!(generated.contains("gtk_event_controller_motion_new()"));
     assert!(generated.contains("gtk_event_controller_focus_new()"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_focus_action)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_blur_action)"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_hover_title)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_leave_title)"));
-    assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__motion_title)"));
+    assert!(generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__motion_title)"));
+}
+
+#[test]
+fn passive_tap_actions_use_native_accessible_activation() {
+    let source = r#"
+fn tapped() -> void {
+    print("tapped")
+}
+
+fn keyed(key: str) -> void {
+    print(key)
+}
+
+view Actions {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Open details"
+        accessibilityLabel: "Open details"
+        onTap: tapped
+        onKey: keyed
+    Image artwork at 2,1
+        source: ""
+        alt: "Preview"
+        accessibilityLabel: "Open preview"
+        onTap: tapped
+}
+app Actions
+"#;
+
+    check_source(source).expect("portable passive activation should typecheck");
+    let linux = compile_to_c(source).expect("passive activation should lower to native GTK actions");
+    for (host, child, callback) in [
+        ("flux__ui_action_title", "flux__ui_title", "flux__ui_activate_title"),
+        ("flux__ui_action_artwork", "flux__ui_artwork", "flux__ui_activate_artwork"),
+    ] {
+        assert!(linux.contains(&format!("{host} = gtk_button_new()")));
+        assert!(linux.contains(&format!("gtk_button_set_has_frame(GTK_BUTTON({host}), FALSE)")));
+        assert!(linux.contains(&format!("gtk_button_set_child(GTK_BUTTON({host}), {child})")));
+        assert!(linux.contains(&format!("g_signal_connect({host}, \"clicked\", G_CALLBACK({callback}), NULL)")));
+    }
+    assert!(linux.contains("GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Open details\", -1"));
+    assert!(linux.contains("GTK_ACCESSIBLE(flux__ui_action_artwork), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Open preview\", -1"));
+    assert!(!linux.contains("flux__ui_tap_key_title"));
+    assert!(linux.contains("if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter || keyval == GDK_KEY_space) return TRUE;"));
+
+    let program = fluxc::parser::parse(source).expect("passive action app should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("passive action app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("passive actions should lower to Android native click actions");
+    assert!(android.contains("setOnClickListener"));
+    assert!(android.contains("setFocusable"));
 }
 
 #[test]
@@ -16158,7 +16209,8 @@ app NativeLinux(title: "Native Linux")
     assert!(generated.contains("gtk_label_new("));
     assert!(generated.contains("gtk_entry_new()"));
     assert!(generated.contains("gtk_button_new_with_label("));
-    assert!(generated.contains("GtkGestureClick *gesture"));
+    assert!(generated.contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)"));
+    assert!(generated.contains("\"clicked\", G_CALLBACK(flux__ui_activate_title)"));
     assert!(generated.contains("gtk_event_controller_key_new()"));
     assert!(generated.contains("\"changed\", G_CALLBACK(flux__ui_change_query)"));
     assert!(generated.contains("\"clicked\", G_CALLBACK(flux__ui_click_action)"));
