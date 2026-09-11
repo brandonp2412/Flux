@@ -2187,6 +2187,17 @@ fn emit_runtime_prelude(
         out.push_str("static inline int64_t flux_slice_bound(size_t len, bool present, int64_t value, bool end, int64_t step) { if (step > 0) { if (!present) return end ? (int64_t)len : 0; int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return 0; if ((uint64_t)resolved > (uint64_t)len) return (int64_t)len; return resolved; } if (!present) return end ? -1 : (len == 0 ? -1 : (int64_t)len - 1); int64_t resolved = value; if (resolved < 0) resolved += (int64_t)len; if (resolved < 0) return -1; if ((uint64_t)resolved >= (uint64_t)len) return len == 0 ? -1 : (int64_t)len - 1; return resolved; }\n");
         out.push_str("static inline struct flux__list flux_list_slice(struct flux__list list, bool has_start, int64_t start, bool has_end, int64_t end, int64_t step, size_t elem_size) { if (step == 0) { fputs(\"Flux runtime error: list slice step cannot be zero\\n\", stderr); abort(); } if (step > (int64_t)PTRDIFF_MAX || step < (int64_t)PTRDIFF_MIN) { fputs(\"Flux runtime error: list slice step is too large\\n\", stderr); abort(); } int64_t first = flux_slice_bound(list.len, has_start, start, false, step); int64_t last = flux_slice_bound(list.len, has_end, end, true, step); size_t count = 0; if (step > 0 && first < last) { count = (size_t)(1 + (uint64_t)(last - 1 - first) / (uint64_t)step); } else if (step < 0 && first > last) { uint64_t magnitude = (uint64_t)(-(step + 1)) + 1; count = (size_t)(1 + (uint64_t)(first - 1 - last) / magnitude); } ptrdiff_t base_stride = flux_list_stride(list, elem_size); ptrdiff_t next_stride = 0; if (__builtin_mul_overflow(base_stride, (ptrdiff_t)step, &next_stride)) { fputs(\"Flux runtime error: list slice stride overflow\\n\", stderr); abort(); } void *data = list.data; if (count != 0) data = (void *)((char *)list.data + (ptrdiff_t)first * base_stride); struct flux__list result = { .data = data, .len = count, .stride = next_stride }; return result; }\n");
     }
+    if runtime_usage.contains("flux__net_wait_readable_many(")
+        || runtime_usage.contains("flux__net_wait_writable_many(")
+    {
+        out.push_str("static inline struct flux__net_i64_error flux__net_wait_many(struct flux__list sockets, int64_t timeout_millis, short events, void (*callback)(int64_t), const char *timeout_error, const char *wait_error) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, timeout_error); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > (size_t)INT64_MAX) return flux__net_result(-1, \"too many socket handles\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[sockets.len]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = events, .revents = 0 }; } int result; do { for (size_t index = 0; index < sockets.len; ++index) descriptors[index].revents = 0; result = poll(descriptors, (nfds_t)sockets.len, (int)timeout_millis); } while (result < 0 && errno == EINTR); if (result < 0) return flux__net_result(-1, wait_error); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0 || (events == POLLOUT && (revents & POLLHUP) != 0)) return flux__net_result(-1, \"socket readiness failed\"); bool is_ready = events == POLLIN ? (revents & (POLLIN | POLLHUP)) != 0 : (revents & POLLOUT) != 0; if (is_ready) { callback((int64_t)descriptors[index].fd); ready += 1; } } return flux__net_result(ready, NULL); }\n");
+        if runtime_usage.contains("flux__net_wait_readable_many(") {
+            out.push_str("static inline struct flux__net_i64_error flux__net_wait_readable_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t)) { return flux__net_wait_many(sockets, timeout_millis, POLLIN, callback, \"waitReadableMany timeoutMillis must be -1 or between 0 and 2147483647\", \"failed to wait for socket readability\"); }\n");
+        }
+        if runtime_usage.contains("flux__net_wait_writable_many(") {
+            out.push_str("static inline struct flux__net_i64_error flux__net_wait_writable_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t)) { return flux__net_wait_many(sockets, timeout_millis, POLLOUT, callback, \"waitWritableMany timeoutMillis must be -1 or between 0 and 2147483647\", \"failed to wait for socket writability\"); }\n");
+        }
+    }
 
     if runtime_usage.contains("flux_add_i64(") {
         out.push_str("static inline int64_t flux_add_i64(int64_t a, int64_t b) { int64_t result; if (__builtin_add_overflow(a, b, &result)) { fputs(\"Flux runtime error: integer addition overflow\\n\", stderr); abort(); } return result; }\n");
@@ -13465,6 +13476,27 @@ fn emit_qualified_call(
                     format!("{helper}({}, {})", socket_handle.code, timeout.code),
                     vec![Type::Bool, Type::Error],
                     Some("flux__net_bool_error".to_string()),
+                ));
+            }
+            "waitReadableMany" | "waitWritableMany" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let sockets = emit_expr(&args[0], env, signatures)?;
+                let timeout = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                let helper = if name == "waitReadableMany" {
+                    "flux__net_wait_readable_many"
+                } else {
+                    "flux__net_wait_writable_many"
+                };
+                return Ok((
+                    format!(
+                        "{helper}({}, {}, {})",
+                        sockets.code, timeout.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "close" => {

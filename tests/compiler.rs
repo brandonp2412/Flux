@@ -1835,6 +1835,131 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_multi_readiness_is_typed_native_tree_shaken_and_runnable() {
+    let first_listener =
+        TcpListener::bind("127.0.0.1:0").expect("first loopback readiness listener should bind");
+    let first_port = first_listener.local_addr().unwrap().port();
+    let second_listener =
+        TcpListener::bind("127.0.0.1:0").expect("second loopback readiness listener should bind");
+    let second_port = second_listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn ready(_socket: i64) -> void {{
+    print("ready")
+}}
+fn main() -> i64 {{
+    let (first, _firstError) = net.tcpConnect("127.0.0.1", {first_port})
+    let (second, _secondError) = net.tcpConnect("127.0.0.1", {second_port})
+    let (readable, readableError) = net.waitReadableMany([first, second], 1000, ready)
+    print(readable)
+    print(readableError)
+    let (writable, writableError) = net.waitWritableMany([first, second], 1000, ready)
+    print(writable)
+    print(writableError)
+    print(net.close(first))
+    print(net.close(second))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("multi-socket readiness should typecheck");
+    let generated = compile_to_c(&source).expect("multi-socket readiness should lower on Linux");
+    assert!(generated.contains("flux__net_wait_readable_many("));
+    assert!(generated.contains("flux__net_wait_writable_many("));
+    assert!(generated.contains("poll(descriptors, (nfds_t)sockets.len"));
+    assert!(generated.contains("void (*callback)(int64_t)"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("multi-readiness fixture should be writable");
+    let source_path = root.join("many.flux");
+    fs::write(&source_path, &source).expect("multi-readiness source should be writable");
+    let binary = root.join("many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("multi-readiness binary should build");
+    assert!(
+        built.status.success(),
+        "multi-readiness build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut first, _) = first_listener
+            .accept()
+            .expect("first Flux client should connect");
+        let (mut second, _) = second_listener
+            .accept()
+            .expect("second Flux client should connect");
+        first
+            .write_all(b"a")
+            .expect("first readiness peer should send data");
+        second
+            .write_all(b"b")
+            .expect("second readiness peer should send data");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("multi-readiness binary should run");
+    server.join().expect("multi-readiness server should finish");
+    assert!(run.status.success());
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout == "ready\n1\nnil\nready\nready\n2\nnil\nnil\nnil\n"
+            || stdout == "ready\nready\n2\nnil\nready\nready\n2\nnil\nnil\nnil\n",
+        "unexpected multi-readiness output: {stdout:?}"
+    );
+
+    let sockets_error = check_source(
+        "fn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.waitReadableMany([true], 0, ready)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("multi-readiness sockets must be i64 handles");
+    assert!(
+        sockets_error
+            .message
+            .contains("net.waitReadableMany sockets")
+    );
+    let timeout_error = check_source(
+        "fn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.waitWritableMany([1], -2, ready)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("multi-readiness timeout must be statically bounded");
+    assert!(
+        timeout_error
+            .message
+            .contains("net.waitWritableMany timeoutMillis must be -1 or between 0 and 2147483647")
+    );
+    let callback_error = check_source(
+        "fn ready(_socket: str) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.waitReadableMany([1], 0, ready)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("multi-readiness callback shape must be exact");
+    assert!(
+        callback_error
+            .message
+            .contains("net.waitReadableMany callback")
+    );
+
+    let unused = r#"
+fn ready(_socket: i64) -> void {
+}
+fn hidden(socket: i64) -> void {
+    let (count, failure) = net.waitReadableMany([socket], 0, ready)
+    print(count)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead multi-readiness calls should tree-shake");
+    assert!(!unused_generated.contains("flux__net_wait_readable_many("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
