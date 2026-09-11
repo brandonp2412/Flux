@@ -381,13 +381,21 @@ fn emit_runtime_prelude(
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
+    let uses_focus_next_in = runtime_usage.contains("flux__focus_next_in(");
+    let uses_focus_previous_in = runtime_usage.contains("flux__focus_previous_in(");
     let uses_focus_first = runtime_usage.contains("flux__focus_first(");
     let uses_focus_last = runtime_usage.contains("flux__focus_last(");
+    let uses_focus_first_in = runtime_usage.contains("flux__focus_first_in(");
+    let uses_focus_last_in = runtime_usage.contains("flux__focus_last_in(");
     let uses_focus_clear = runtime_usage.contains("flux__focus_clear(");
     let uses_portable_focus = uses_focus_next
         || uses_focus_previous
+        || uses_focus_next_in
+        || uses_focus_previous_in
         || uses_focus_first
         || uses_focus_last
+        || uses_focus_first_in
+        || uses_focus_last_in
         || uses_focus_clear;
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
@@ -422,12 +430,18 @@ fn emit_runtime_prelude(
         || uses_android_focus_previous_wrap;
     let uses_android_clear_focus =
         uses_android && (runtime_usage.contains("flux__android_clear_focus(") || uses_focus_clear);
+    let uses_android_focus_scoped = uses_android
+        && (uses_focus_next_in
+            || uses_focus_previous_in
+            || uses_focus_first_in
+            || uses_focus_last_in);
     let uses_android_focus_navigation = uses_android_focus_next
         || uses_android_focus_previous
         || uses_android_focus_next_wrap
         || uses_android_focus_previous_wrap
         || uses_android_focus_edges
-        || uses_android_clear_focus;
+        || uses_android_clear_focus
+        || uses_android_focus_scoped;
     let uses_android_selection_start =
         uses_android && runtime_usage.contains("flux__android_selection_start(");
     let uses_android_selection_end =
@@ -684,6 +698,79 @@ fn emit_runtime_prelude(
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("    return focused;\n");
         out.push_str("}\n");
+        if uses_android_focus_scoped {
+            out.push_str("static void flux__android_focus_in(int64_t scope, bool forward, bool wrap, int edge) {\n");
+            out.push_str("    if (flux__android_activity == NULL || scope < 0 || scope > INT32_MAX) return;\n");
+            out.push_str("    bool detach = false;\n");
+            out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+            out.push_str("    if (env == NULL) return;\n");
+            out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+            out.push_str("    jclass activity_class = NULL; jclass view_class = NULL; jclass list_class = NULL; jclass integer_class = NULL; jclass target_class = NULL;\n");
+            out.push_str("    jobject root = NULL; jobject current = NULL; jobject focusables = NULL; jobject first = NULL; jobject last = NULL; jobject before = NULL; jobject after = NULL;\n");
+            out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (activity_class == NULL) goto done;\n");
+            out.push_str("    jmethodID find_view = (*env)->GetMethodID(env, activity_class, \"findViewById\", \"(I)Landroid/view/View;\");\n");
+            out.push_str("    jmethodID get_focus = (*env)->GetMethodID(env, activity_class, \"getCurrentFocus\", \"()Landroid/view/View;\");\n");
+            out.push_str("    if (find_view == NULL || get_focus == NULL) goto done;\n");
+            out.push_str(
+                "    root = (*env)->CallObjectMethod(env, activity, find_view, (jint)16908290);\n",
+            );
+            out.push_str("    current = (*env)->CallObjectMethod(env, activity, get_focus);\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env) || root == NULL) goto done;\n");
+            out.push_str("    view_class = (*env)->FindClass(env, \"android/view/View\");\n");
+            out.push_str("    list_class = (*env)->FindClass(env, \"java/util/ArrayList\");\n");
+            out.push_str("    integer_class = (*env)->FindClass(env, \"java/lang/Integer\");\n");
+            out.push_str("    if (view_class == NULL || list_class == NULL || integer_class == NULL) goto done;\n");
+            out.push_str("    jmethodID get_focusables = (*env)->GetMethodID(env, view_class, \"getFocusables\", \"(I)Ljava/util/ArrayList;\");\n");
+            out.push_str("    jmethodID get_tag = (*env)->GetMethodID(env, view_class, \"getTag\", \"()Ljava/lang/Object;\");\n");
+            out.push_str("    jmethodID list_size = (*env)->GetMethodID(env, list_class, \"size\", \"()I\");\n");
+            out.push_str("    jmethodID list_get = (*env)->GetMethodID(env, list_class, \"get\", \"(I)Ljava/lang/Object;\");\n");
+            out.push_str("    jmethodID int_value = (*env)->GetMethodID(env, integer_class, \"intValue\", \"()I\");\n");
+            out.push_str("    if (get_focusables == NULL || get_tag == NULL || list_size == NULL || list_get == NULL || int_value == NULL) goto done;\n");
+            out.push_str(
+                "    focusables = (*env)->CallObjectMethod(env, root, get_focusables, (jint)2);\n",
+            );
+            out.push_str("    if ((*env)->ExceptionCheck(env) || focusables == NULL) goto done;\n");
+            out.push_str("    jint count = (*env)->CallIntMethod(env, focusables, list_size);\n");
+            out.push_str("    bool seen_current = current == NULL;\n");
+            out.push_str("    for (jint index = 0; index < count; index++) {\n");
+            out.push_str("        jobject candidate = (*env)->CallObjectMethod(env, focusables, list_get, index);\n");
+            out.push_str("        if ((*env)->ExceptionCheck(env) || candidate == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (candidate != NULL) (*env)->DeleteLocalRef(env, candidate); continue; }\n");
+            out.push_str("        bool is_current = current != NULL && (*env)->IsSameObject(env, candidate, current);\n");
+            out.push_str("        if (is_current) seen_current = true;\n");
+            out.push_str(
+                "        jobject tag = (*env)->CallObjectMethod(env, candidate, get_tag);\n",
+            );
+            out.push_str("        bool in_scope = tag != NULL && (*env)->IsInstanceOf(env, tag, integer_class) && (*env)->CallIntMethod(env, tag, int_value) == (jint)scope;\n");
+            out.push_str("        if (tag != NULL) (*env)->DeleteLocalRef(env, tag);\n");
+            out.push_str("        if (in_scope) {\n");
+            out.push_str(
+                "            if (first == NULL) first = (*env)->NewLocalRef(env, candidate);\n",
+            );
+            out.push_str("            if (last != NULL) (*env)->DeleteLocalRef(env, last);\n");
+            out.push_str("            last = (*env)->NewLocalRef(env, candidate);\n");
+            out.push_str("            if (!seen_current) { if (before != NULL) (*env)->DeleteLocalRef(env, before); before = (*env)->NewLocalRef(env, candidate); }\n");
+            out.push_str("            else if (!is_current && after == NULL) after = (*env)->NewLocalRef(env, candidate);\n");
+            out.push_str("        }\n");
+            out.push_str("        (*env)->DeleteLocalRef(env, candidate);\n");
+            out.push_str("    }\n");
+            out.push_str("    jobject target = NULL;\n");
+            out.push_str("    if (edge > 0) target = first; else if (edge < 0) target = last; else if (current == NULL) target = forward ? first : last; else target = forward ? after : before;\n");
+            out.push_str(
+                "    if (target == NULL && wrap && edge == 0) target = forward ? first : last;\n",
+            );
+            out.push_str("    if (target != NULL) { target_class = (*env)->GetObjectClass(env, target); if (target_class != NULL) { jmethodID request_focus = (*env)->GetMethodID(env, target_class, \"requestFocus\", \"()Z\"); if (request_focus != NULL) (*env)->CallBooleanMethod(env, target, request_focus); } }\n");
+            out.push_str("done:\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+            out.push_str(
+                "    if (target_class != NULL) (*env)->DeleteLocalRef(env, target_class);\n",
+            );
+            out.push_str("    if (after != NULL) (*env)->DeleteLocalRef(env, after); if (before != NULL) (*env)->DeleteLocalRef(env, before); if (last != NULL) (*env)->DeleteLocalRef(env, last); if (first != NULL) (*env)->DeleteLocalRef(env, first);\n");
+            out.push_str("    if (focusables != NULL) (*env)->DeleteLocalRef(env, focusables); if (current != NULL) (*env)->DeleteLocalRef(env, current); if (root != NULL) (*env)->DeleteLocalRef(env, root);\n");
+            out.push_str("    if (integer_class != NULL) (*env)->DeleteLocalRef(env, integer_class); if (list_class != NULL) (*env)->DeleteLocalRef(env, list_class); if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n");
+            out.push_str("    flux__android_release_env(detach);\n");
+            out.push_str("}\n");
+        }
         if uses_android_focus_next {
             out.push_str("static inline void flux__android_focus_next(void) { (void)flux__android_change_focus(2); }\n");
         }
@@ -916,6 +1003,26 @@ fn emit_runtime_prelude(
     }
     if uses_portable_focus && uses_gtk {
         out.push_str("static GtkWindow *flux__focus_active_window(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; return gtk_application_get_active_window(GTK_APPLICATION(application)); }\n");
+        if uses_focus_next_in || uses_focus_previous_in || uses_focus_first_in || uses_focus_last_in
+        {
+            out.push_str("typedef struct { GtkWidget *current; GtkWidget *first; GtkWidget *last; GtkWidget *before; GtkWidget *after; bool seen_current; int64_t scope; } FluxFocusScopeScan;\n");
+            out.push_str("static int64_t flux__focus_scope_of(GtkWidget *widget) { gpointer raw = g_object_get_data(G_OBJECT(widget), \"flux-focus-scope\"); return raw == NULL ? INT64_C(-1) : (int64_t)(intptr_t)raw - INT64_C(1); }\n");
+            out.push_str("static bool flux__focus_scope_eligible(GtkWidget *widget, int64_t scope) { return flux__focus_scope_of(widget) == scope && gtk_widget_get_focusable(widget) && gtk_widget_get_sensitive(widget) && gtk_widget_get_visible(widget); }\n");
+            out.push_str("static void flux__focus_scope_scan(GtkWidget *widget, FluxFocusScopeScan *scan) { if (widget == NULL) return; bool is_current = widget == scan->current; if (is_current) scan->seen_current = true; if (flux__focus_scope_eligible(widget, scan->scope)) { if (scan->first == NULL) scan->first = widget; scan->last = widget; if (!scan->seen_current) scan->before = widget; else if (!is_current && scan->after == NULL) scan->after = widget; } for (GtkWidget *child = gtk_widget_get_first_child(widget); child != NULL; child = gtk_widget_get_next_sibling(child)) flux__focus_scope_scan(child, scan); }\n");
+            out.push_str("static void flux__focus_in(int64_t scope, bool forward, bool wrap, int edge) { if (scope < 0 || scope > INT32_MAX) return; GtkWindow *window = flux__focus_active_window(); if (window == NULL) return; FluxFocusScopeScan scan = { .current = gtk_window_get_focus(window), .scope = scope }; scan.seen_current = scan.current == NULL; flux__focus_scope_scan(GTK_WIDGET(window), &scan); GtkWidget *target = edge > 0 ? scan.first : edge < 0 ? scan.last : scan.current == NULL ? (forward ? scan.first : scan.last) : (forward ? scan.after : scan.before); if (target == NULL && wrap && edge == 0) target = forward ? scan.first : scan.last; if (target != NULL) gtk_widget_grab_focus(target); }\n");
+            if uses_focus_next_in {
+                out.push_str("static inline void flux__focus_next_in(int64_t scope, bool wrap) { flux__focus_in(scope, true, wrap, 0); }\n");
+            }
+            if uses_focus_previous_in {
+                out.push_str("static inline void flux__focus_previous_in(int64_t scope, bool wrap) { flux__focus_in(scope, false, wrap, 0); }\n");
+            }
+            if uses_focus_first_in {
+                out.push_str("static inline void flux__focus_first_in(int64_t scope) { flux__focus_in(scope, true, false, 1); }\n");
+            }
+            if uses_focus_last_in {
+                out.push_str("static inline void flux__focus_last_in(int64_t scope) { flux__focus_in(scope, false, false, -1); }\n");
+            }
+        }
         if uses_focus_next || uses_focus_previous {
             out.push_str("static void flux__focus_move(GtkDirectionType direction, bool wrap) { GtkWindow *window = flux__focus_active_window(); if (window == NULL) return; if (gtk_widget_child_focus(GTK_WIDGET(window), direction)) return; if (!wrap) return; gtk_window_set_focus(window, NULL); (void)gtk_widget_child_focus(GTK_WIDGET(window), direction); }\n");
         }
@@ -936,6 +1043,18 @@ fn emit_runtime_prelude(
         }
     }
     if uses_portable_focus && uses_android {
+        if uses_focus_next_in {
+            out.push_str("static inline void flux__focus_next_in(int64_t scope, bool wrap) { flux__android_focus_in(scope, true, wrap, 0); }\n");
+        }
+        if uses_focus_previous_in {
+            out.push_str("static inline void flux__focus_previous_in(int64_t scope, bool wrap) { flux__android_focus_in(scope, false, wrap, 0); }\n");
+        }
+        if uses_focus_first_in {
+            out.push_str("static inline void flux__focus_first_in(int64_t scope) { flux__android_focus_in(scope, true, false, 1); }\n");
+        }
+        if uses_focus_last_in {
+            out.push_str("static inline void flux__focus_last_in(int64_t scope) { flux__android_focus_in(scope, false, false, -1); }\n");
+        }
         if uses_focus_next {
             out.push_str("static inline void flux__focus_next(bool wrap) { flux__android_focus_next_wrap(wrap); }\n");
         }
@@ -2210,6 +2329,38 @@ fn emit_android_native_application(
         out.push_str(&format!(
             "    (*env)->CallVoidMethod(env, child, set_stable_id, (jint){element_id});\n"
         ));
+        if let Some(property) = view_property(element, "focus_scope") {
+            let Some(scope) = static_expr_i64(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "focusScope must be a compile-time i64 value",
+                ));
+            };
+            if !(0..=i64::from(i32::MAX)).contains(&scope) {
+                return Err(diag(
+                    property.value.span,
+                    "focusScope must be between 0 and 2147483647",
+                ));
+            }
+            out.push_str(
+                "    jclass focus_scope_class = (*env)->FindClass(env, \"java/lang/Integer\");\n",
+            );
+            out.push_str("    if (focus_scope_class == NULL) return;\n");
+            out.push_str("    jmethodID focus_scope_value_of = (*env)->GetStaticMethodID(env, focus_scope_class, \"valueOf\", \"(I)Ljava/lang/Integer;\");\n");
+            out.push_str("    jmethodID focus_scope_set_tag = (*env)->GetMethodID(env, child_class, \"setTag\", \"(Ljava/lang/Object;)V\");\n");
+            out.push_str(
+                "    if (focus_scope_value_of == NULL || focus_scope_set_tag == NULL) return;\n",
+            );
+            out.push_str(&format!("    jobject focus_scope_value = (*env)->CallStaticObjectMethod(env, focus_scope_class, focus_scope_value_of, (jint){scope});\n"));
+            out.push_str(
+                "    if (focus_scope_value == NULL || (*env)->ExceptionCheck(env)) return;\n",
+            );
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, child, focus_scope_set_tag, focus_scope_value);\n",
+            );
+            out.push_str("    (*env)->DeleteLocalRef(env, focus_scope_value);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, focus_scope_class);\n");
+        }
         if let Some(order_index) = accessibility_order
             .iter()
             .position(|candidate| candidate.name == element.name)
@@ -5043,6 +5194,23 @@ fn emit_linux_gtk_application(
             let hidden = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    gtk_accessible_update_state(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_STATE_HIDDEN, {hidden}, -1);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "focus_scope") {
+            let Some(scope) = static_expr_i64(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "focusScope must be a compile-time i64 value",
+                ));
+            };
+            if !(0..=i64::from(i32::MAX)).contains(&scope) {
+                return Err(diag(
+                    property.value.span,
+                    "focusScope must be between 0 and 2147483647",
+                ));
+            }
+            out.push_str(&format!(
+                "    g_object_set_data(G_OBJECT({variable}), \"flux-focus-scope\", (gpointer)(intptr_t)({scope} + 1));\n"
             ));
         }
         if let Some(property) = view_property(element, "focusable") {
@@ -13297,6 +13465,43 @@ fn emit_qualified_call(
                     "false".to_string()
                 };
                 return Ok((format!("flux__focus_{name}({wrap})"), Vec::new(), None));
+            }
+            "nextIn" | "previousIn" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err(diag(span, "invalid focus call reached code generation"));
+                }
+                let scope = emit_expr(&args[0], env, signatures)?.code;
+                let wrap = if let Some(wrap) = args.get(1) {
+                    emit_expr(wrap, env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
+                let runtime_name = if name == "nextIn" {
+                    "next_in"
+                } else {
+                    "previous_in"
+                };
+                return Ok((
+                    format!("flux__focus_{runtime_name}({scope}, {wrap})"),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "firstIn" | "lastIn" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid focus call reached code generation"));
+                }
+                let scope = emit_expr(&args[0], env, signatures)?.code;
+                let runtime_name = if name == "firstIn" {
+                    "first_in"
+                } else {
+                    "last_in"
+                };
+                return Ok((
+                    format!("flux__focus_{runtime_name}({scope})"),
+                    Vec::new(),
+                    None,
+                ));
             }
             "first" | "last" | "clear" => {
                 if !args.is_empty() {

@@ -1259,6 +1259,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "min_width"
             | "min_height"
+            | "focus_scope"
             | "accessibility_order"
             | "margin"
             | "margin_top"
@@ -1509,6 +1510,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "clip",
     "focusable",
     "autofocus",
+    "focus_scope",
     "status",
     "tooltip",
     "accessibility_label",
@@ -2141,6 +2143,28 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 Err(_) => diagnostics.push(diag(
                     property.value.span,
                     "autofocus must be a compile-time bool value",
+                )),
+            }
+        }
+
+        for element in &view.elements {
+            let Some(property) = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "focus_scope")
+            else {
+                continue;
+            };
+            match evaluate_default_expr(&property.value, signatures) {
+                Ok(ConstantValue::I64(scope)) if (0..=i64::from(i32::MAX)).contains(&scope) => {}
+                Ok(ConstantValue::I64(_)) => diagnostics.push(diag(
+                    property.value.span,
+                    "focusScope must be between 0 and 2147483647",
+                )),
+                Ok(_) => {}
+                Err(_) => diagnostics.push(diag(
+                    property.value.span,
+                    "focusScope must be a compile-time i64 value",
                 )),
             }
         }
@@ -5971,6 +5995,47 @@ fn check_qualified_call(
                         &format!("focus.{name} wrap"),
                     )?;
                 }
+                return Ok(Vec::new());
+            }
+            "nextIn" | "previousIn" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err(diag(
+                        span,
+                        &format!("focus.{name} expects 1 or 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let scope_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &scope_type,
+                    &format!("focus.{name} scope"),
+                )?;
+                if let Some(wrap) = args.get(1) {
+                    let actual = type_of_expr(wrap, env, signatures)?;
+                    require_type(
+                        wrap.span,
+                        &Type::Bool,
+                        &actual,
+                        &format!("focus.{name} wrap"),
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
+            "firstIn" | "lastIn" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("focus.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let scope_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &scope_type,
+                    &format!("focus.{name} scope"),
+                )?;
                 return Ok(Vec::new());
             }
             "first" | "last" | "clear" => {

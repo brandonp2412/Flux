@@ -1314,8 +1314,18 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("next", "fn focus.next(wrap: bool = false) -> void"),
             ("previous", "fn focus.previous(wrap: bool = false) -> void"),
+            (
+                "nextIn",
+                "fn focus.nextIn(scope: i64, wrap: bool = false) -> void",
+            ),
+            (
+                "previousIn",
+                "fn focus.previousIn(scope: i64, wrap: bool = false) -> void",
+            ),
             ("first", "fn focus.first() -> void"),
             ("last", "fn focus.last() -> void"),
+            ("firstIn", "fn focus.firstIn(scope: i64) -> void"),
+            ("lastIn", "fn focus.lastIn(scope: i64) -> void"),
             ("clear", "fn focus.clear() -> void"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -2587,6 +2597,22 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("focus.{member}"),
                         &["wrap: bool = false"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "nextIn" | "previousIn" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("focus.{member}"),
+                        &["scope: i64", "wrap: bool = false"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "firstIn" | "lastIn" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("focus.{member}"),
+                        &["scope: i64"],
                         "void",
                         active_parameter,
                     ));
@@ -5482,6 +5508,7 @@ mod tests {
         );
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("accessibilityOrder: i64"));
+        assert!(element.contains("focusScope: i64"));
         assert!(element.contains("focusable: bool"));
         assert!(element.contains("autofocus: bool"));
         assert!(element.contains("onHover: fn() -> void"));
@@ -6689,7 +6716,7 @@ mod tests {
     #[test]
     fn signature_help_supports_portable_focus_navigation() {
         let uri = "file:///tmp/focus-signatures.flux";
-        let source = "fn main() -> i64 {\n    focus.next()\n    focus.previous(true)\n    focus.first()\n    focus.last()\n    focus.clear()\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    focus.next()\n    focus.previous(true)\n    focus.nextIn(1)\n    focus.previousIn(1, true)\n    focus.first()\n    focus.last()\n    focus.firstIn(1)\n    focus.lastIn(1)\n    focus.clear()\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("focus.next(", "fn focus.next(wrap: bool = false) -> void"),
@@ -6697,8 +6724,18 @@ mod tests {
                 "focus.previous(",
                 "fn focus.previous(wrap: bool = false) -> void",
             ),
+            (
+                "focus.nextIn(",
+                "fn focus.nextIn(scope: i64, wrap: bool = false) -> void",
+            ),
+            (
+                "focus.previousIn(",
+                "fn focus.previousIn(scope: i64, wrap: bool = false) -> void",
+            ),
             ("focus.first(", "fn focus.first() -> void"),
             ("focus.last(", "fn focus.last() -> void"),
+            ("focus.firstIn(", "fn focus.firstIn(scope: i64) -> void"),
+            ("focus.lastIn(", "fn focus.lastIn(scope: i64) -> void"),
             ("focus.clear(", "fn focus.clear() -> void"),
         ] {
             let line_index = source

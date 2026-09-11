@@ -13780,8 +13780,14 @@ fn started() -> void {
     focus.next(true)
     focus.previous()
     focus.previous(true)
+    focus.nextIn(7)
+    focus.nextIn(7, true)
+    focus.previousIn(7)
+    focus.previousIn(7, true)
     focus.first()
     focus.last()
+    focus.firstIn(7)
+    focus.lastIn(7)
     focus.clear()
 }
 view Screen {
@@ -13790,9 +13796,11 @@ view Screen {
     Button first at 1,1
         text: "First"
         focusable: true
+        focusScope: 7
     Button second at 2,1
         text: "Second"
         focusable: true
+        focusScope: 7
 }
 app Screen(onStart: started)
 "#;
@@ -13805,6 +13813,14 @@ app Screen(onStart: started)
     assert!(linux.contains("GTK_DIR_TAB_FORWARD"));
     assert!(linux.contains("GTK_DIR_TAB_BACKWARD"));
     assert!(linux.contains("gtk_window_set_focus"));
+    assert!(linux.contains("static inline void flux__focus_next_in(int64_t scope, bool wrap)"));
+    assert!(linux.contains("static inline void flux__focus_previous_in(int64_t scope, bool wrap)"));
+    assert!(linux.contains("static inline void flux__focus_first_in(int64_t scope)"));
+    assert!(linux.contains("static inline void flux__focus_last_in(int64_t scope)"));
+    assert!(linux.contains("\"flux-focus-scope\""));
+    assert!(linux.contains("gtk_widget_get_first_child"));
+    assert!(linux.contains("gtk_widget_get_next_sibling"));
+    assert!(linux.contains("gtk_widget_grab_focus"));
     assert!(!linux.contains("flux__android_focus_"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
@@ -13822,10 +13838,24 @@ app Screen(onStart: started)
     assert!(android.contains("flux__android_focus_first()"));
     assert!(android.contains("flux__android_focus_last()"));
     assert!(android.contains("flux__android_clear_focus()"));
+    assert!(android.contains("static inline void flux__focus_next_in(int64_t scope, bool wrap)"));
+    assert!(
+        android.contains("static inline void flux__focus_previous_in(int64_t scope, bool wrap)")
+    );
+    assert!(android.contains("static inline void flux__focus_first_in(int64_t scope)"));
+    assert!(android.contains("static inline void flux__focus_last_in(int64_t scope)"));
+    assert!(android.contains(
+        "static void flux__android_focus_in(int64_t scope, bool forward, bool wrap, int edge)"
+    ));
+    assert!(android.contains("\"getFocusables\", \"(I)Ljava/util/ArrayList;\""));
+    assert!(android.contains("\"getTag\", \"()Ljava/lang/Object;\""));
+    assert!(android.contains("\"setTag\", \"(Ljava/lang/Object;)V\""));
+    assert!(android.contains("\"java/lang/Integer\""));
+    assert!(android.contains("\"requestFocus\", \"()Z\""));
 
     let unused = r#"
 fn unused() -> void {
-    focus.next(true)
+    focus.nextIn(7, true)
 }
 view Screen {
     grid columns: 1fr
@@ -13834,7 +13864,8 @@ view Screen {
 app Screen
 "#;
     let tree_shaken = compile_to_c(unused).expect("unreachable focus code should tree-shake");
-    assert!(!tree_shaken.contains("flux__focus_next"));
+    assert!(!tree_shaken.contains("flux__focus_next_in"));
+    assert!(!tree_shaken.contains("flux__focus_scope_scan"));
     assert!(!tree_shaken.contains("gtk_widget_child_focus"));
 
     let headless = r#"
@@ -13856,6 +13887,8 @@ fn main() -> i64 {
 fn main() -> i64 {
     focus.next(1)
     focus.first(true)
+    focus.nextIn("scope")
+    focus.firstIn(true)
     return 0
 }
 "#;
@@ -13868,6 +13901,29 @@ fn main() -> i64 {
             .iter()
             .any(|error| error.message.contains("focus.first expects 0 arguments"))
     );
+    assert!(errors.iter().any(|error| {
+        error.message.contains("focus.nextIn scope") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("focus.firstIn scope") && error.message.contains("expected i64")
+    }));
+
+    let invalid_scope = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button first at 1,1
+        text: "First"
+        focusScope: -1
+}
+app Screen
+"#;
+    let errors = check_source_all(invalid_scope).expect_err("negative focus scopes must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("focusScope must be between 0 and 2147483647")
+    }));
 }
 
 #[test]
