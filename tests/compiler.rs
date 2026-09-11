@@ -1639,6 +1639,106 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_request_head_is_typed_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {
+    print(socket >= 0)
+    print(method)
+    print(target)
+    print(version)
+}
+fn main() -> i64 {
+    let (received, receiveError) = http.receiveRequestHead(1, 4096, handleRequest)
+    print(received)
+    print(receiveError)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP request-head receive should typecheck");
+    let generated = compile_to_c(source).expect("HTTP request-head receive should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_request_head("));
+    assert!(generated.contains("HTTP/1.1"));
+    assert!(generated.contains("HTTP request head exceeds maxBytes"));
+    assert!(generated.contains("#include <sys/socket.h>"));
+
+    let invalid_limit = check_source(
+        "fn handle(socket: i64, method: str, target: str, version: str) -> void {\n    print(socket)\n    print(method)\n    print(target)\n    print(version)\n}\nfn main() -> i64 {\n    let (_, receiveError) = http.receiveRequestHead(1, 0, handle)\n    print(receiveError)\n    return 0\n}\n",
+    )
+    .expect_err("constant HTTP request limit outside the valid range must fail");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.receiveRequestHead maxBytes must be between 1 and 65536")
+    );
+
+    let unused = r#"
+fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {
+    print(socket)
+    print(method)
+    print(target)
+    print(version)
+}
+fn hidden() -> void {
+    let (received, receiveError) = http.receiveRequestHead(1, 4096, handleRequest)
+    print(received)
+    print(receiveError)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead HTTP request helper should tree-shake");
+    assert!(!unused_generated.contains("flux__net_http_receive_request_head("));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP request listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!("flux-http-request-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP request fixture should be writable");
+    let source_path = root.join("request.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {{\n    print(socket >= 0)\n    print(method)\n    print(target)\n    print(version)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveRequestHead(socket, 4096, handleRequest)\n    print(received > 0)\n    print(receiveError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP request Flux source should be writable");
+    let binary = root.join("request");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP request Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP request fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP request Flux binary should start");
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP request connection should accept");
+    stream
+        .write_all(b"GET /hello?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\nBODY")
+        .expect("HTTP request should be writable");
+    let output = child
+        .wait_with_output()
+        .expect("HTTP request Flux binary should finish");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\ntrue\nGET\n/hello?x=1\nHTTP/1.1\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {

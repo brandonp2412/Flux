@@ -1241,6 +1241,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "receiveRequestHead",
+            3,
+            "fn http.receiveRequestHead(socket: i64, maxBytes: i64, callback: fn(i64, str, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "sendTextResponse",
             3,
             "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str) -> error",
@@ -2584,18 +2591,35 @@ fn signature_help_for_document_cached(
                 _ => {}
             }
         }
-        if namespace == "http" && member == "sendTextResponse" {
-            return Some(signature_help_for_builtin(
-                "http.sendTextResponse",
-                &[
-                    "socket: i64",
-                    "status: i64",
-                    "contentType: str",
-                    "body: str",
-                ],
-                "error",
-                active_parameter,
-            ));
+        if namespace == "http" {
+            match member {
+                "receiveRequestHead" => {
+                    return Some(signature_help_for_builtin(
+                        "http.receiveRequestHead",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "callback: fn(i64, str, str, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendTextResponse" => {
+                    return Some(signature_help_for_builtin(
+                        "http.sendTextResponse",
+                        &[
+                            "socket: i64",
+                            "status: i64",
+                            "contentType: str",
+                            "body: str",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
         }
         if namespace == "process" {
             match member {

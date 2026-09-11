@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 470
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 60 checkbox items
+- Current net scope growth after the baseline: 61 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -1009,7 +1009,8 @@ The first Flux package ecosystem must require **no Flux-operated hosting bill or
 Flux must remain equally credible for headless native binaries.
 
 - [ ] HTTP server.
-  - [x] Bootstrap HTTP/1.1 text responses through compiler-owned `http.sendTextResponse(socket, status, contentType, body)`: status and argument types are checked statically, dynamic status values retain a runtime `100..=599` guard, response framing emits `Content-Length`, `Content-Type`, and `Connection: close`, header injection through CR/LF content types is rejected, stream writes are EINTR/partial-write safe with `MSG_NOSIGNAL`, the helper tree-shakes when unreachable, LSP completion/signature help expose the typed call, and native loopback coverage validates exact response bytes. Request parsing, persistent connections, streaming/binary bodies, routing, TLS, and task-integrated request handling remain pending.
+  - [x] Bootstrap bounded HTTP/1.0/1.1 request-head parsing through compiler-owned `http.receiveRequestHead(socket, maxBytes, callback)`: the API requires a TCP socket, validates a `1..=65536` byte cap statically where possible and again at runtime, reads exactly through `\r\n\r\n` without consuming request-body bytes, rejects NUL/malformed request lines and unsupported HTTP versions, and lends method/target/version only for the exact `fn(i64, str, str, str) -> void` callback scope before returning `(receivedBytes, error)`. The helper is allocation-free, EINTR-safe, tree-shakes when unreachable, participates in LSP completion/signature help, and native loopback coverage validates real request parsing. Header-field parsing, request bodies, persistent connections, routing, TLS, and task-integrated request handling remain pending.
+  - [x] Bootstrap HTTP/1.1 text responses through compiler-owned `http.sendTextResponse(socket, status, contentType, body)`: status and argument types are checked statically, dynamic status values retain a runtime `100..=599` guard, response framing emits `Content-Length`, `Content-Type`, and `Connection: close`, header injection through CR/LF content types is rejected, stream writes are EINTR/partial-write safe with `MSG_NOSIGNAL`, the helper tree-shakes when unreachable, LSP completion/signature help expose the typed call, and native loopback coverage validates exact response bytes. Request header fields/bodies, persistent connections, streaming/binary bodies, routing, TLS, and task-integrated request handling remain pending.
 - [ ] TLS server.
 - [ ] WebSocket server.
 - [ ] TCP/UDP sockets.

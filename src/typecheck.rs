@@ -6141,6 +6141,52 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "receiveRequestHead" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "http.receiveRequestHead expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "http.receiveRequestHead socket",
+                )?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "http.receiveRequestHead maxBytes",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "http.receiveRequestHead maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::Str, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "http.receiveRequestHead callback",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "sendTextResponse" => {
                 if args.len() != 4 {
                     return Err(diag(
