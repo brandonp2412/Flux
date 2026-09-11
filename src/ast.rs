@@ -9,6 +9,7 @@ pub enum Type {
     Void,
     Named(String),
     List(Box<Type>),
+    Optional(Box<Type>),
     Function {
         params: Vec<Type>,
         returns: Vec<Type>,
@@ -18,6 +19,13 @@ pub enum Type {
 impl Type {
     pub fn parse(input: &str) -> Option<Self> {
         let input = input.trim();
+        if let Some(inner) = input.strip_suffix('?') {
+            let inner = Self::parse(inner)?;
+            if matches!(inner, Self::Void | Self::Optional(_)) {
+                return None;
+            }
+            return Some(Self::Optional(Box::new(inner)));
+        }
         if let Some(inner) = input.strip_suffix("[]") {
             return Some(Self::List(Box::new(Self::parse(inner)?)));
         }
@@ -73,6 +81,7 @@ impl Type {
             Self::Void => "void".to_string(),
             Self::Named(name) => name.clone(),
             Self::List(element) => format!("{}[]", element.name()),
+            Self::Optional(inner) => format!("{}?", inner.name()),
             Self::Function { params, returns } => {
                 let params = params.iter().map(Type::name).collect::<Vec<_>>().join(", ");
                 let returns = match returns.as_slice() {
@@ -673,6 +682,7 @@ pub enum ExprKind {
     Bool(bool),
     Str(String),
     Nil,
+    None,
     Var(String),
     AnonymousFunction {
         params: Vec<Param>,

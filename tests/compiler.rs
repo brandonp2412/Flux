@@ -21037,6 +21037,84 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_primitives_are_explicit_typed_and_native() {
+    let source = r#"
+fn maybe(flag: bool) -> i64? {
+    if flag:
+        return 7
+    return none
+}
+
+fn accept(_value: i64?) -> i64 {
+    return 1
+}
+
+fn main() -> i64 {
+    let missing: i64? = none
+    let present: i64? = 42
+    print(accept(missing))
+    print(accept(present))
+    print(accept(maybe(true)))
+    print(accept(maybe(false)))
+    return 0
+}
+"#;
+
+    check_source(source).expect("primitive optional values should typecheck explicitly");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("primitive optional syntax should format canonically");
+    assert!(formatted.contains("fn maybe(flag: bool) -> i64? {"));
+    assert!(formatted.contains("let missing: i64? = none"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional source should reparse"),
+        formatted
+    );
+    let generated = compile_to_c(source).expect("primitive optional values should lower natively");
+    assert!(generated.contains("struct flux__optional_i64 { bool has_value; int64_t value; };"));
+    assert!(generated.contains(".has_value = false"));
+    assert!(generated.contains(".has_value = true, .value = INT64_C(42)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optionals-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional test directory should be writable");
+    let c_path = root.join("optional.c");
+    let exe_path = root.join("optional");
+    fs::write(&c_path, generated).expect("generated optional C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile native optional values");
+    assert!(
+        compile.status.success(),
+        "optional-value C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-value program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n1\n1\n1\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let invalid = r#"
+fn main() -> i64 {
+    let value: i64 = none
+    return value
+}
+"#;
+    let error = check_source(invalid).expect_err("none must not inhabit non-optional values");
+    assert!(error.message.contains("binding: expected i64, got void?"));
+}
+
+#[test]
 fn rejects_error_comparison_with_string() {
     let source = r#"
 fn main() -> i64 {

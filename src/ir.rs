@@ -1567,9 +1567,11 @@ impl<'a> ControlFlowBuilder<'a> {
         is_result: bool,
     ) -> Vec<ControlFlowValueId> {
         let kind = match &expr.kind {
-            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {
-                ControlFlowValueKind::Literal
-            }
+            ExprKind::Int(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::Nil
+            | ExprKind::None => ControlFlowValueKind::Literal,
             ExprKind::Var(name) => ControlFlowValueKind::NameRead {
                 name: name.clone(),
                 definitions: self.scoped_definition_for(name).into_iter().collect(),
@@ -2398,6 +2400,7 @@ fn record_expr_types(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
         ExprKind::AnonymousFunction { params, body, .. } => {
             let mut nested = env.clone();

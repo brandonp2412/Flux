@@ -216,6 +216,7 @@ Reference set (current Dart language documentation):
 Flux currently reserves `nil` specifically for `error`; a general optional-value design must therefore be explicit and must not weaken type safety.
 
 - [ ] Optional value types, likely `T?`, with non-optional types remaining the default.
+  - [x] Bootstrap explicit primitive optionals: `i64?`, `bool?`, `str?`, and `error?` are distinct static types; `none` is separate from error-only `nil`; ordinary inner values inject at typed optional bindings/assignments/calls/returns; native lowering uses allocation-free tagged structs; formatter/IR/semantic traversal preserve the syntax; optional aggregates, pattern unwrapping, flow promotion, and optional-aware operators remain pending.
 - [ ] Null/optional-aware access analogous to Dart `?.`.
 - [ ] Optional-aware indexing analogous to Dart `?[]`.
 - [ ] Coalescing analogous to Dart `??`.

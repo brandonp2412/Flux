@@ -301,7 +301,7 @@ fn ffi_header_type_supported_inner(
                     .chain(&returns)
                     .all(|ty| ffi_header_callback_value_supported(ty, signatures))
         }
-        Type::Void | Type::List(_) | Type::Function { .. } => false,
+        Type::Void | Type::List(_) | Type::Optional(_) | Type::Function { .. } => false,
     }
 }
 
@@ -940,6 +940,18 @@ fn emit_runtime_prelude(
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
+    if runtime_usage.contains("struct flux__optional_i64") {
+        out.push_str("struct flux__optional_i64 { bool has_value; int64_t value; };\n");
+    }
+    if runtime_usage.contains("struct flux__optional_bool") {
+        out.push_str("struct flux__optional_bool { bool has_value; bool value; };\n");
+    }
+    if runtime_usage.contains("struct flux__optional_str") {
+        out.push_str("struct flux__optional_str { bool has_value; const char *value; };\n");
+    }
+    if runtime_usage.contains("struct flux__optional_error") {
+        out.push_str("struct flux__optional_error { bool has_value; const char *value; };\n");
+    }
     if uses_background
         || runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
@@ -10213,7 +10225,7 @@ fn collect_interface_names_from_type(
         Type::Named(name) => {
             enqueue_interface_name(&name, signatures, reachable, pending);
         }
-        Type::List(element) => {
+        Type::List(element) | Type::Optional(element) => {
             collect_interface_names_from_type(&element, signatures, reachable, pending);
         }
         Type::Function { params, returns } => {
@@ -10372,6 +10384,7 @@ fn collect_interface_names_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -10574,6 +10587,7 @@ fn collect_enum_variant_refs_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -10841,7 +10855,7 @@ fn collect_value_type_names_from_type(
 ) {
     match signatures.canonical_type(ty) {
         Type::Named(name) => enqueue_value_type_name(&name, known, reachable, pending),
-        Type::List(element) => {
+        Type::List(element) | Type::Optional(element) => {
             collect_value_type_names_from_type(&element, signatures, known, reachable, pending)
         }
         Type::Function { params, returns } => {
@@ -11054,6 +11068,7 @@ fn collect_value_type_names_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -11174,7 +11189,9 @@ impl InterfacePackFacts {
             Type::Named(name) if signatures.interface(&name).is_some() => {
                 self.open_interfaces.insert(name);
             }
-            Type::List(element) => self.mark_open_type(&element, signatures),
+            Type::List(element) | Type::Optional(element) => {
+                self.mark_open_type(&element, signatures)
+            }
             Type::Function { params, returns } => {
                 for ty in params.iter().chain(&returns) {
                     self.mark_open_type(ty, signatures);
@@ -11363,6 +11380,7 @@ fn collect_interface_pack_facts_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -11928,6 +11946,7 @@ fn collect_interface_dispatch_refs_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -12085,7 +12104,11 @@ fn collect_named_function_refs_from_expr(
             collect_named_function_refs_from_expr(left, known, references);
             collect_named_function_refs_from_expr(right, known, references);
         }
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {}
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::None => {}
     }
 }
 
@@ -12354,6 +12377,7 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -12828,18 +12852,24 @@ fn emit_block(
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let value = emit_expr_for_expected(expr, ty, env, signatures)?;
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
                     c_type(ty, signatures),
                     local_c_name(name),
-                    value.code
+                    value
                 ));
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Assign { name, expr, .. } => {
-                let value = emit_expr(expr, env, signatures)?;
-                out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value.code));
+                let expected = env.get(name).ok_or_else(|| {
+                    diag(
+                        expr.span,
+                        "assignment target missing from code generation environment",
+                    )
+                })?;
+                let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
                 let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
@@ -13199,8 +13229,9 @@ fn emit_block(
                 out.push_str(&format!("{pad}return {target};\n"));
             }
             StmtKind::Return(values) if values.len() == 1 => {
-                let value = emit_expr(&values[0], env, signatures)?;
-                out.push_str(&format!("{pad}return {};\n", value.code));
+                let expected = &context.current_function.returns[0];
+                let value = emit_expr_for_expected(&values[0], expected, env, signatures)?;
+                out.push_str(&format!("{pad}return {value};\n"));
             }
             StmtKind::Return(values) => {
                 let tag = multi_return_struct_name(&context.current_function.name);
@@ -13208,8 +13239,9 @@ fn emit_block(
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp};\n"));
                 for (index, expr) in values.iter().enumerate() {
-                    let value = emit_expr(expr, env, signatures)?;
-                    out.push_str(&format!("{pad}{temp}.v{index} = {};\n", value.code));
+                    let expected = &context.current_function.returns[index];
+                    let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                    out.push_str(&format!("{pad}{temp}.v{index} = {value};\n"));
                 }
                 out.push_str(&format!("{pad}return {temp};\n"));
             }
@@ -15500,6 +15532,10 @@ fn emit_expr(
             code: "NULL".to_string(),
             ty: Type::Error,
         },
+        ExprKind::None => EmittedExpr {
+            code: "0".to_string(),
+            ty: Type::Optional(Box::new(Type::Void)),
+        },
         ExprKind::Var(name) => {
             if let Some(ty) = env.get(name) {
                 EmittedExpr {
@@ -15776,6 +15812,12 @@ fn emit_expr(
                     ));
                 }
                 Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
+                Type::Optional(_) => {
+                    return Err(diag(
+                        expr.span,
+                        "cannot print an optional value directly; unwrap it explicitly first",
+                    ));
+                }
                 Type::Function { .. } => {
                     return Err(diag(expr.span, "cannot print a function value directly"));
                 }
@@ -17430,6 +17472,31 @@ fn emit_qualified_call(
     ))
 }
 
+fn emit_expr_for_expected(
+    expr: &Expr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    let emitted = emit_expr(expr, env, signatures)?;
+    let expected = signatures.canonical_type(expected);
+    let actual = signatures.canonical_type(&emitted.ty);
+    let Type::Optional(inner) = &expected else {
+        return Ok(emitted.code);
+    };
+    let optional_c = c_type(&expected, signatures);
+    if matches!(actual, Type::Optional(ref actual_inner) if **actual_inner == Type::Void) {
+        return Ok(format!("({optional_c}){{ .has_value = false }}"));
+    }
+    if actual == **inner {
+        return Ok(format!(
+            "({optional_c}){{ .has_value = true, .value = {} }}",
+            emitted.code
+        ));
+    }
+    Ok(emitted.code)
+}
+
 fn emit_call_arguments(
     signature: &Signature,
     args: &[Expr],
@@ -17441,12 +17508,22 @@ fn emit_call_arguments(
     let mut positional_index = 0usize;
     for param in &signature.param_details {
         if !param.named_only && positional_index < args.len() {
-            rendered.push(emit_expr(&args[positional_index], env, signatures)?.code);
+            rendered.push(emit_expr_for_expected(
+                &args[positional_index],
+                &param.ty,
+                env,
+                signatures,
+            )?);
             positional_index += 1;
             continue;
         }
         if let Some(named) = named_args.iter().find(|arg| arg.name == param.name) {
-            rendered.push(emit_expr(&named.value, env, signatures)?.code);
+            rendered.push(emit_expr_for_expected(
+                &named.value,
+                &param.ty,
+                env,
+                signatures,
+            )?);
             continue;
         }
         if let Some(default) = &param.default {
@@ -17927,6 +18004,9 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
         Type::List(_) => "struct flux__list".to_string(),
+        Type::Optional(inner) => {
+            format!("struct flux__optional_{}", type_mangle(&inner, signatures))
+        }
         Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
     }
 }
@@ -17962,6 +18042,7 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Void => "void".to_string(),
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
+        Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
         Type::Function { params, returns } => {
             let name = function_type_name(&params, &returns, signatures);
             name.trim_start_matches("flux__fn_").to_string()
@@ -18500,6 +18581,7 @@ fn collect_update_helpers_from_expr(
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }

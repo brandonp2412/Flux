@@ -843,6 +843,7 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -1143,6 +1144,7 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Nil
+        | ExprKind::None
         | ExprKind::Var(_) => {}
     }
 }
@@ -4657,6 +4659,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "true"
             | "false"
             | "nil"
+            | "none"
             | "error"
     ) {
         return Err(diag(line, &format!("'{input}' is reserved")));
@@ -4672,6 +4675,7 @@ enum TokenKind {
     True,
     False,
     Nil,
+    None,
     Fn,
     If,
     Else,
@@ -4700,6 +4704,7 @@ enum TokenKind {
     Colon,
     Dot,
     Comma,
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5259,6 +5264,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "true" => TokenKind::True,
                 "false" => TokenKind::False,
                 "nil" => TokenKind::Nil,
+                "none" => TokenKind::None,
                 "fn" => TokenKind::Fn,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
@@ -5282,6 +5288,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b':' => (TokenKind::Colon, 1),
                 b'.' => (TokenKind::Dot, 1),
                 b',' => (TokenKind::Comma, 1),
+                b'?' => (TokenKind::Question, 1),
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
                 b'=' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::EqEq, 2),
@@ -5757,15 +5764,35 @@ impl ExprParser<'_> {
             }
         };
 
-        while matches!(
-            self.tokens.get(self.index).map(|token| &token.kind),
-            Some(TokenKind::LBracket)
-        ) && matches!(
-            self.tokens.get(self.index + 1).map(|token| &token.kind),
-            Some(TokenKind::RBracket)
-        ) {
-            self.index += 2;
-            ty = Type::List(Box::new(ty));
+        loop {
+            if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::LBracket)
+            ) && matches!(
+                self.tokens.get(self.index + 1).map(|token| &token.kind),
+                Some(TokenKind::RBracket)
+            ) {
+                self.index += 2;
+                ty = Type::List(Box::new(ty));
+                continue;
+            }
+            if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Question)
+            ) {
+                let question = self.tokens[self.index].span;
+                if matches!(ty, Type::Void | Type::Optional(_)) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        question,
+                        "optional types require a non-optional value type",
+                    ));
+                }
+                self.index += 1;
+                ty = Type::Optional(Box::new(ty));
+                continue;
+            }
+            break;
         }
         let end = self.tokens[self.index.saturating_sub(1)].span;
         Ok((
@@ -5975,6 +6002,11 @@ impl ExprParser<'_> {
                 line: self.line,
                 span: token_span,
                 kind: ExprKind::Nil,
+            }),
+            TokenKind::None => Ok(Expr {
+                line: self.line,
+                span: token_span,
+                kind: ExprKind::None,
             }),
             TokenKind::Fn => self.parse_anonymous_function(token_span),
             TokenKind::LBracket => self.parse_list_literal(token_span),

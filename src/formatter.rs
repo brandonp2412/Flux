@@ -983,6 +983,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Bool(value) => value.to_string(),
         ExprKind::Str(value) => format_string(value),
         ExprKind::Nil => "nil".to_string(),
+        ExprKind::None => "none".to_string(),
         ExprKind::Var(name) => name.clone(),
         ExprKind::AnonymousFunction {
             params,

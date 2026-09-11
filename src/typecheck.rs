@@ -180,6 +180,7 @@ impl Signatures {
                 .map(|target| self.canonical_type(target))
                 .unwrap_or_else(|| ty.clone()),
             Type::List(element) => Type::List(Box::new(self.canonical_type(element))),
+            Type::Optional(inner) => Type::Optional(Box::new(self.canonical_type(inner))),
             Type::Function { params, returns } => Type::Function {
                 params: params.iter().map(|ty| self.canonical_type(ty)).collect(),
                 returns: returns.iter().map(|ty| self.canonical_type(ty)).collect(),
@@ -196,6 +197,7 @@ impl Signatures {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
             Type::Void | Type::List(_) => false,
+            Type::Optional(inner) => self.is_copy_type_inner(&inner, visiting),
             Type::Function { .. } => true,
             Type::Named(name) => {
                 if self.interface(&name).is_some() {
@@ -3049,7 +3051,11 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             collect_expr_reads(left, reads);
             collect_expr_reads(right, reads);
         }
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Nil => {}
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::None => {}
     }
 }
 
@@ -4531,6 +4537,7 @@ pub fn type_of_expr(
         ExprKind::Bool(_) => Ok(Type::Bool),
         ExprKind::Str(_) => Ok(Type::Str),
         ExprKind::Nil => Ok(Type::Error),
+        ExprKind::None => Ok(Type::Optional(Box::new(Type::Void))),
         ExprKind::Var(name) => {
             if let Some(ty) = env.get(name) {
                 return Ok(ty.clone());
@@ -8046,6 +8053,7 @@ fn evaluate_default_expr(
             evaluate_constant_binary(expr.span, *op, left, right)
         }
         ExprKind::Nil
+        | ExprKind::None
         | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
@@ -8194,6 +8202,7 @@ fn evaluate_constant_expr(
             evaluate_constant_binary(expr.span, *op, left, right)
         }
         ExprKind::Nil
+        | ExprKind::None
         | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
@@ -8824,7 +8833,7 @@ fn require_known_type(
     if let Type::Named(name) = ty {
         require_visible_named_type(span, name, signatures)?;
     }
-    if let Type::List(element) = ty {
+    if let Type::List(element) | Type::Optional(element) = ty {
         require_known_type(span, element, signatures)?;
     }
     match signatures.canonical_type(ty) {
@@ -8836,6 +8845,19 @@ fn require_known_type(
             Err(diag(span, &format!("unknown type '{name}'")))
         }
         Type::List(element) => require_known_type(span, &element, signatures),
+        Type::Optional(inner) => {
+            require_known_type(span, &inner, signatures)?;
+            match signatures.canonical_type(&inner) {
+                Type::I64 | Type::Bool | Type::Str | Type::Error => Ok(()),
+                actual => Err(diag(
+                    span,
+                    &format!(
+                        "bootstrap optional values currently support i64, bool, str, and error; got {}?",
+                        actual.name()
+                    ),
+                )),
+            }
+        }
         Type::Function { params, returns } => {
             if returns.len() > 1 {
                 return Err(diag(
@@ -8861,7 +8883,10 @@ fn require_type(
     actual: &Type,
     context: &str,
 ) -> Result<(), Diagnostic> {
-    if expected == actual {
+    if expected == actual
+        || matches!((expected, actual), (Type::Optional(_), Type::Optional(inner)) if **inner == Type::Void)
+        || matches!((expected, actual), (Type::Optional(inner), actual) if inner.as_ref() == actual)
+    {
         Ok(())
     } else {
         Err(diag(
