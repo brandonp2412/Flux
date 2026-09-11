@@ -17,8 +17,8 @@ jobs:
       - name: Install native benchmark toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libgtk-4-dev pkg-config
+          sudo apt-get install -y at-spi2-core clang gir1.2-atspi-2.0 libgtk-4-dev pkg-config python3-gi xauth xvfb
       - name: Validate compiler
         run: cargo test --all-targets
       - name: Enforce native performance gate
-        run: ./tools/flux-bench --runs 7 --batch 3
+        run: dbus-run-session -- xvfb-run -a env NO_AT_BRIDGE=0 ./tools/flux-bench --runs 7 --batch 3 --ui-timing

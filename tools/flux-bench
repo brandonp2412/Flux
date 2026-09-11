@@ -70,7 +70,7 @@ def compile_workload(name, flux):
     if name == "native_ui":
         gtk_flags = run(["pkg-config", "--cflags", "--libs", "gtk4"], capture=True).stdout.split()
         c_command.extend(gtk_flags)
-        rust_command.extend(["-l", "gtk-4"])
+        rust_command.extend(["-l", "gtk-4", "-l", "gobject-2.0", "-l", "glib-2.0"])
 
     run(c_command)
     run(rust_command)
@@ -141,6 +141,167 @@ def benchmark_artifact(paths):
     }
 
 
+def load_atspi():
+    try:
+        import gi
+
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+    except (ImportError, ValueError) as error:
+        raise RuntimeError(
+            "native-UI timing requires Python GObject introspection and Atspi 2.0"
+        ) from error
+    return Atspi
+
+
+def accessible_nodes(root):
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        try:
+            children = [node.get_child_at_index(index) for index in range(node.get_child_count())]
+        except Exception:
+            continue
+        stack.extend(reversed(children))
+
+
+def accessible_is_showing(node, atspi):
+    try:
+        return node.get_state_set().contains(atspi.StateType.SHOWING)
+    except Exception:
+        return False
+
+
+def find_accessible_application(atspi, process_id):
+    desktop = atspi.get_desktop(0)
+    try:
+        children = [desktop.get_child_at_index(index) for index in range(desktop.get_child_count())]
+    except Exception:
+        return None
+    for child in children:
+        try:
+            if child.get_process_id() == process_id:
+                return child
+        except Exception:
+            continue
+    return None
+
+
+def find_showing_accessible(root, atspi, role, name):
+    for node in accessible_nodes(root):
+        try:
+            if (
+                node.get_role_name() == role
+                and node.get_name() == name
+                and accessible_is_showing(node, atspi)
+            ):
+                return node
+        except Exception:
+            continue
+    return None
+
+
+def wait_for_ui(process, atspi, timeout, state):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"{process.args[0]} exited before native UI reached '{state}'"
+            )
+        application = find_accessible_application(atspi, process.pid)
+        if application is not None:
+            frame = find_showing_accessible(
+                application, atspi, "frame", "Flux Native UI Benchmark"
+            )
+            button = find_showing_accessible(application, atspi, "button", "Toggle")
+            label = find_showing_accessible(application, atspi, "label", state)
+            if frame is not None and button is not None and label is not None:
+                return button
+        time.sleep(0.005)
+    raise RuntimeError(
+        f"timed out after {timeout:.1f}s waiting for {process.args[0]} native UI '{state}'"
+    )
+
+
+def stop_ui_process(process):
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1.0)
+
+
+def measure_ui_once(path, atspi, timeout):
+    started = time.perf_counter_ns()
+    process = subprocess.Popen(
+        [str(path)],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        button = wait_for_ui(process, atspi, timeout, "Ready")
+        ready = time.perf_counter_ns()
+        interaction_started = time.perf_counter_ns()
+        if not button.do_action(0):
+            raise RuntimeError(f"{path.name}: native accessibility click was rejected")
+        wait_for_ui(process, atspi, timeout, "Toggled")
+        interacted = time.perf_counter_ns()
+        return (
+            (ready - started) / 1_000_000_000,
+            (interacted - interaction_started) / 1_000_000_000,
+        )
+    finally:
+        stop_ui_process(process)
+
+
+def benchmark_ui(paths, runs, timeout):
+    atspi = load_atspi()
+    for path in paths.values():
+        measure_ui_once(path, atspi, timeout)
+
+    startup_samples = {language: [] for language in paths}
+    interaction_samples = {language: [] for language in paths}
+    languages = tuple(paths)
+    for iteration in range(runs):
+        shift = iteration % len(languages)
+        order = languages[shift:] + languages[:shift]
+        for language in order:
+            startup, interaction = measure_ui_once(paths[language], atspi, timeout)
+            startup_samples[language].append(startup)
+            interaction_samples[language].append(interaction)
+
+    startups = {
+        language: statistics.median(values) for language, values in startup_samples.items()
+    }
+    interactions = {
+        language: statistics.median(values) for language, values in interaction_samples.items()
+    }
+    sizes = {language: path.stat().st_size for language, path in paths.items()}
+    best_startup = min(startups["c"], startups["rust"])
+    best_interaction = min(interactions["c"], interactions["rust"])
+    best_size = min(sizes["c"], sizes["rust"])
+    return {
+        "kind": "ui_runtime",
+        "startup_render_seconds": startups,
+        "interaction_seconds": interactions,
+        "binary_bytes": sizes,
+        "flux_startup_vs_c": startups["flux"] / startups["c"],
+        "flux_startup_vs_rust": startups["flux"] / startups["rust"],
+        "flux_startup_vs_best_native": startups["flux"] / best_startup,
+        "flux_interaction_vs_c": interactions["flux"] / interactions["c"],
+        "flux_interaction_vs_rust": interactions["flux"] / interactions["rust"],
+        "flux_interaction_vs_best_native": interactions["flux"] / best_interaction,
+        "flux_size_vs_c": sizes["flux"] / sizes["c"],
+        "flux_size_vs_rust": sizes["flux"] / sizes["rust"],
+        "flux_size_vs_best_native": sizes["flux"] / best_size,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark optimized Flux against safe C and Rust baselines")
     parser.add_argument(
@@ -167,6 +328,23 @@ def main():
         default=float(os.environ.get("FLUX_PERF_MAX_UI_SIZE_RATIO", "2.0")),
         help="maximum Flux native-UI binary size / best native baseline before failure (default: 2.0)",
     )
+    parser.add_argument(
+        "--max-ui-runtime-ratio",
+        type=float,
+        default=float(os.environ.get("FLUX_PERF_MAX_UI_RUNTIME_RATIO", "2.0")),
+        help="maximum Flux native-UI startup/render or interaction median / best native baseline before failure (default: 2.0)",
+    )
+    parser.add_argument(
+        "--ui-timing",
+        action="store_true",
+        help="measure display-backed native-UI startup/render and accessibility-driven interaction timing",
+    )
+    parser.add_argument(
+        "--ui-timeout",
+        type=float,
+        default=5.0,
+        help="seconds to wait for each native-UI accessibility state (default: 5.0)",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-fail", action="store_true")
     args = parser.parse_args()
@@ -178,6 +356,10 @@ def main():
         parser.error("--max-ratio must be positive")
     if args.max_ui_size_ratio <= 0:
         parser.error("--max-ui-size-ratio must be positive")
+    if args.max_ui_runtime_ratio <= 0:
+        parser.error("--max-ui-runtime-ratio must be positive")
+    if args.ui_timeout <= 0:
+        parser.error("--ui-timeout must be positive")
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
     run(["cargo", "build", "--release", "--bin", "flux"])
@@ -188,8 +370,17 @@ def main():
     for name in WORKLOADS:
         paths = compile_workload(name, flux)
         if name in ARTIFACT_WORKLOADS:
-            result = benchmark_artifact(paths)
+            result = (
+                benchmark_ui(paths, args.runs, args.ui_timeout)
+                if args.ui_timing
+                else benchmark_artifact(paths)
+            )
             if result["flux_size_vs_best_native"] > args.max_ui_size_ratio:
+                failures.append(name)
+            if result["kind"] == "ui_runtime" and (
+                result["flux_startup_vs_best_native"] > args.max_ui_runtime_ratio
+                or result["flux_interaction_vs_best_native"] > args.max_ui_runtime_ratio
+            ):
                 failures.append(name)
         else:
             result = benchmark(name, paths, args.runs, args.batch)
@@ -202,6 +393,8 @@ def main():
         "batch": args.batch,
         "max_ratio": args.max_ratio,
         "max_ui_size_ratio": args.max_ui_size_ratio,
+        "max_ui_runtime_ratio": args.max_ui_runtime_ratio,
+        "ui_timing": args.ui_timing,
         "workloads": results,
         "passed": not failures,
         "failures": failures,
@@ -212,7 +405,8 @@ def main():
         print(
             f"Flux performance gate: {args.runs} rounds x {args.batch} executions, "
             f"max checked-Rust ratio {args.max_ratio:.2f}x, "
-            f"max native-UI size ratio {args.max_ui_size_ratio:.2f}x"
+            f"max native-UI size ratio {args.max_ui_size_ratio:.2f}x, "
+            f"max native-UI runtime ratio {args.max_ui_runtime_ratio:.2f}x"
         )
         for name, result in results.items():
             sizes = result["binary_bytes"]
@@ -220,6 +414,22 @@ def main():
                 print(
                     f"{name:12} release-artifact size flux {sizes['flux']}  rust {sizes['rust']}  "
                     f"c {sizes['c']} bytes  best-ratio {result['flux_size_vs_best_native']:.3f}x"
+                )
+                continue
+            if result["kind"] == "ui_runtime":
+                startups = result["startup_render_seconds"]
+                interactions = result["interaction_seconds"]
+                print(
+                    f"{name:12} startup/render flux {startups['flux']:.6f}s  rust {startups['rust']:.6f}s  "
+                    f"c {startups['c']:.6f}s  best-ratio {result['flux_startup_vs_best_native']:.3f}x"
+                )
+                print(
+                    f"{'':12} interaction   flux {interactions['flux']:.6f}s  rust {interactions['rust']:.6f}s  "
+                    f"c {interactions['c']:.6f}s  best-ratio {result['flux_interaction_vs_best_native']:.3f}x"
+                )
+                print(
+                    f"{'':12} size flux {sizes['flux']}  rust {sizes['rust']}  c {sizes['c']} bytes  "
+                    f"best-ratio {result['flux_size_vs_best_native']:.3f}x"
                 )
                 continue
             seconds = result["seconds"]
@@ -233,7 +443,7 @@ def main():
             )
         if failures:
             print(
-                f"FAILED: {', '.join(failures)} exceeded a configured runtime or native-UI size gate"
+                f"FAILED: {', '.join(dict.fromkeys(failures))} exceeded a configured runtime or native-UI gate"
             )
         else:
             print("PASS")
