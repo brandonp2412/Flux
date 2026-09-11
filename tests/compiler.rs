@@ -4575,8 +4575,8 @@ fn main() -> i64 {
     let generated =
         compile_to_c(source).expect("function values should lower to function pointers");
     assert!(generated.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
-    assert!(generated.contains("int64_t flux__fn_double(int64_t flux__local_value);"));
-    assert!(generated.contains("int64_t flux__fn_increment(int64_t flux__local_value);"));
+    assert!(generated.contains("static int64_t flux__fn_double(int64_t flux__local_value);"));
+    assert!(generated.contains("static int64_t flux__fn_increment(int64_t flux__local_value);"));
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_mapper = flux__fn_double;"));
     assert!(generated.contains("return flux__local_transform(flux__local_value);"));
     assert!(generated.contains("return flux__fn_increment;"));
@@ -4635,7 +4635,7 @@ fn main() -> i64 {
 
     check_source(source).expect("capture-free anonymous functions should typecheck");
     let generated = compile_to_c(source).expect("anonymous functions should lower natively");
-    assert!(generated.contains("flux__lambda_0_"));
+    assert!(generated.contains("static int64_t flux__lambda_0_"));
     assert!(generated.contains("return flux_mul_i64(flux__local_value, INT64_C(2));"));
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_double = flux__lambda_0_"));
     assert!(generated.contains("return flux__fn_apply(flux__lambda_0_"));
@@ -6151,9 +6151,12 @@ fn main() -> i64 {
 
     check_source(source).expect("tree-shaking fixture should typecheck");
     let generated = compile_to_c(source).expect("tree-shaking fixture should lower natively");
-    assert!(generated.contains("flux__fn_helper"));
-    assert!(generated.contains("flux__fn_leaf"));
-    assert!(generated.contains("flux__fn_exported"));
+    assert!(generated.contains("static int64_t flux__fn_helper(int64_t flux__local_value);"));
+    assert!(generated.contains("static int64_t flux__fn_leaf(int64_t flux__local_value);"));
+    assert!(generated.contains("int64_t flux__fn_exported(int64_t flux__local_value);"));
+    assert!(!generated.contains("static int64_t flux__fn_exported"));
+    assert!(generated.contains("int main(void);"));
+    assert!(!generated.contains("static int main(void)"));
     assert!(!generated.contains("flux__fn_mappedApply"));
     assert!(!generated.contains("flux__interface_Operation"));
     assert!(!generated.contains("flux__type_Offset"));
@@ -9656,6 +9659,60 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
             "{mode} builds of identical Flux source should be byte-identical"
         );
     }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn release_build_internalizes_and_eliminates_private_leaf_helpers() {
+    if Command::new("nm").arg("--version").output().is_err() {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("flux-private-inline-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("private inlining fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn privateHelper(value: i64) -> i64 {\n    return value + 1\n}\n\nfn main() -> i64 {\n    print(privateHelper(41))\n    return 0\n}\n",
+    )
+    .expect("private inlining source should be writable");
+    let binary = root.join("app");
+    let cache = root.join("cache");
+
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .arg("--mode")
+        .arg("release")
+        .env("FLUX_CACHE_DIR", cache)
+        .output()
+        .expect("release inlining build should run");
+    assert!(
+        built.status.success(),
+        "release inlining build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let ran = Command::new(&binary)
+        .output()
+        .expect("release inlining binary should run");
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "42\n");
+
+    let symbols = Command::new("nm")
+        .arg("-a")
+        .arg(&binary)
+        .output()
+        .expect("nm should inspect release binary");
+    assert!(symbols.status.success());
+    assert!(
+        !String::from_utf8_lossy(&symbols.stdout).contains("flux__fn_privateHelper"),
+        "private leaf helper should be internalized/inlined out of the optimized native artifact"
+    );
+
     let _ = fs::remove_dir_all(&root);
 }
 

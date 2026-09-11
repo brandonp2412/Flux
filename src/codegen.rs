@@ -6964,7 +6964,15 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("{ret} {}({params})", function_c_name(&function.name))
+    let linkage = if function.name != "main" && !function.public {
+        "static "
+    } else {
+        ""
+    };
+    format!(
+        "{linkage}{ret} {}({params})",
+        function_c_name(&function.name)
+    )
 }
 
 fn anonymous_function_c_name(span: SourceSpan) -> String {
@@ -7018,7 +7026,7 @@ fn anonymous_function_prototype(
             .join(", ")
     };
     Ok(format!(
-        "{ret} {}({params_text})",
+        "static {ret} {}({params_text})",
         anonymous_function_c_name(expr.span)
     ))
 }
