@@ -10454,6 +10454,14 @@ fn divideByNegativeConstant(value: i64) -> i64 {
     return value / -2
 }
 
+fn cancelWithNegatedRight(value: i64) -> i64 {
+    return value + -value
+}
+
+fn cancelWithNegatedLeft(value: i64) -> i64 {
+    return -value + value
+}
+
 fn equalSelf(value: i64) -> bool {
     return value == value
 }
@@ -10483,6 +10491,8 @@ fn main() -> i64 {
     print(divideSelf(13))
     print(divideByConstant(9))
     print(divideByNegativeConstant(-9))
+    print(cancelWithNegatedRight(10))
+    print(cancelWithNegatedLeft(11))
     print(equalSelf(4))
     print(lessSelf(4))
     print(equalTextSelf("flux"))
@@ -10511,6 +10521,12 @@ fn main() -> i64 {
     );
     assert!(generated.contains("return ((flux__local_value) / INT64_C(2));"));
     assert!(generated.contains("return ((flux__local_value) / INT64_C(-2));"));
+    assert_eq!(
+        generated
+            .matches("return ((void)(flux_neg_i64(flux__local_value)), INT64_C(0));")
+            .count(),
+        2
+    );
     assert!(generated.contains("static inline bool flux__fn_equalSelf"));
     assert!(generated.contains("static inline bool flux__fn_lessSelf"));
     assert!(generated.contains("static inline bool flux__fn_equalTextSelf"));

@@ -13312,6 +13312,30 @@ fn checked_i64_reduction(
         }
     }
 
+    if matches!(op, BinOp::Add) {
+        match (&left.kind, &right.kind) {
+            (
+                ExprKind::Var(left_name),
+                ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: negated,
+                },
+            ) if matches!(&negated.kind, ExprKind::Var(right_name) if left_name == right_name) => {
+                return Some(CheckedI64Reduction::ZeroAfterRight);
+            }
+            (
+                ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: negated,
+                },
+                ExprKind::Var(right_name),
+            ) if matches!(&negated.kind, ExprKind::Var(left_name) if left_name == right_name) => {
+                return Some(CheckedI64Reduction::ZeroAfterLeft);
+            }
+            _ => {}
+        }
+    }
+
     let left_constant = typecheck::constant_primitive_value(left, signatures);
     let right_constant = typecheck::constant_primitive_value(right, signatures);
     match (op, left_constant, right_constant) {
