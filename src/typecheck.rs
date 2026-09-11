@@ -1329,6 +1329,12 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                     returns: Vec::new(),
                 });
             }
+            "on_scale" => {
+                return Some(Type::Function {
+                    params: vec![Type::I64],
+                    returns: Vec::new(),
+                });
+            }
             "on_key" => {
                 return Some(Type::Function {
                     params: vec![Type::Str],
@@ -1563,6 +1569,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_double_tap",
     "on_long_press",
     "on_drag",
+    "on_scale",
     "on_hover",
     "on_leave",
     "on_focus",

@@ -3964,6 +3964,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private final Map<Integer, float[]> dragStarts = new HashMap<>();
+    private final Map<Integer, Float> scaleStarts = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
     private final Set<String> shortcutFocusedOnly = new HashSet<>();
@@ -3990,6 +3991,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnDoubleTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
+    private static native void nativeOnScale(int viewId, long scalePercent);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
     private static native void nativeOnHover(int viewId, boolean hovered);
@@ -4120,12 +4122,23 @@ __FLUX_PICKER_METHODS__
         return true;
     }
 
+    private static float fluxPointerDistance(MotionEvent event) {
+        if (event.getPointerCount() < 2) return 0.0f;
+        float dx = event.getX(1) - event.getX(0);
+        float dy = event.getY(1) - event.getY(0);
+        return (float) Math.hypot(dx, dy);
+    }
+
     @Override
     public boolean onTouch(View view, MotionEvent event) {
         int viewId = view.getId();
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 dragStarts.put(viewId, new float[] { event.getX(), event.getY() });
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                float initialDistance = fluxPointerDistance(event);
+                if (initialDistance > 0.0f) scaleStarts.put(viewId, initialDistance);
                 break;
             case MotionEvent.ACTION_MOVE:
                 float[] start = dragStarts.get(viewId);
@@ -4135,10 +4148,20 @@ __FLUX_PICKER_METHODS__
                     long offsetY = Math.round((event.getY() - start[1]) / density);
                     nativeOnDrag(viewId, offsetX, offsetY);
                 }
+                Float scaleStart = scaleStarts.get(viewId);
+                if (scaleStart != null && scaleStart > 0.0f && event.getPointerCount() >= 2) {
+                    float distance = fluxPointerDistance(event);
+                    long scalePercent = Math.round((distance / scaleStart) * 100.0f);
+                    nativeOnScale(viewId, scalePercent);
+                }
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                scaleStarts.remove(viewId);
                 break;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 dragStarts.remove(viewId);
+                scaleStarts.remove(viewId);
                 break;
             default:
                 break;
@@ -6570,6 +6593,11 @@ mod tests {
         assert!(activity.contains(
             "private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);"
         ));
+        assert!(
+            activity.contains(
+                "private static native void nativeOnScale(int viewId, long scalePercent);"
+            )
+        );
         assert!(activity.contains("nativeOnClick(viewId);"));
         assert!(!activity.contains("MethodChannel"));
         assert!(!activity.contains("PluginRegistry"));
@@ -6582,6 +6610,11 @@ mod tests {
         );
         assert!(activity.contains("nativeOnDrag(viewId, offsetX, offsetY);"));
         assert!(activity.contains("Math.round((event.getX() - start[0]) / density)"));
+        assert!(
+            activity.contains("private final Map<Integer, Float> scaleStarts = new HashMap<>();")
+        );
+        assert!(activity.contains("Math.hypot(dx, dy)"));
+        assert!(activity.contains("nativeOnScale(viewId, scalePercent);"));
         assert!(
             activity
                 .contains("private final Map<String, Integer> shortcutViewIds = new HashMap<>();")

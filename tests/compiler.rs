@@ -16503,6 +16503,9 @@ fn tapped() -> void {
 fn dragged(_offsetX: i64, _offsetY: i64) -> void {
 }
 
+fn scaled(_scalePercent: i64) -> void {
+}
+
 view HoverCard {
     grid columns: 1fr
     grid rows: auto auto
@@ -16516,6 +16519,7 @@ view HoverCard {
         onDoubleTap: tapped
         onLongPress: hovered => true
         onDrag: dragged
+        onScale: scaled
         on_hover: hovered => true
         on_leave: hovered => false
     Button action at 2,1
@@ -16554,6 +16558,12 @@ app HoverCard
     assert!(generated.contains("GtkGestureDrag *gesture"));
     assert!(generated.contains("gtk_gesture_drag_new()"));
     assert!(generated.contains("\"drag-update\", G_CALLBACK(flux__ui_drag_title)"));
+    assert!(generated.contains("GtkGestureZoom *gesture"));
+    assert!(generated.contains("gtk_gesture_zoom_new()"));
+    assert!(generated.contains("\"scale-changed\", G_CALLBACK(flux__ui_scale_title)"));
+    assert!(
+        generated.contains("flux__fn_scaled((int64_t)(scale * 100.0 + 0.5)); flux__ui_refresh();")
+    );
     assert!(
         generated.contains(
             "flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh();"
@@ -18766,6 +18776,9 @@ fn key_pressed(key: str) -> void {
 fn dragged(_offsetX: i64, _offsetY: i64) -> void {
 }
 
+fn scaled(_scalePercent: i64) -> void {
+}
+
 view Settings {
     state enabled: bool = false
     state selected: i64 = 0
@@ -18812,6 +18825,7 @@ view Settings {
         onDoubleTap: enabled => !enabled
         onLongPress: enabled => false
         onDrag: dragged
+        onScale: scaled
         onKey: key_pressed
         on_change: changed
         on_submit: submitted
@@ -18954,6 +18968,10 @@ app Settings(theme: "dark")
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnDrag"));
     assert!(generated.contains(&format!(
         "case {query_id}: flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); break;"
+    )));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnScale"));
+    assert!(generated.contains(&format!(
+        "case {query_id}: flux__fn_scaled((int64_t)scale_percent); flux__ui_refresh(); break;"
     )));
     assert!(generated.contains(&format!("case {query_id}: flux__ui_state_enabled = false; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 0); break;")));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnKey"));
@@ -19409,6 +19427,9 @@ fn handle_press() -> void {
 fn handle_drag(_offsetX: i64, _offsetY: i64) -> void {
 }
 
+fn handle_scale(_scalePercent: i64) -> void {
+}
+
 view App {
     grid columns: 1fr 1fr
     grid rows: auto 1fr
@@ -19422,6 +19443,7 @@ view App {
         onDoubleTap: handle_press
         onLongPress: handle_press
         onDrag: handle_drag
+        onScale: handle_scale
         on_press: handle_press
     Chart chart at 2,1
         label: "Activity"
@@ -19456,6 +19478,18 @@ fn main() -> i64 { 0 }
         drag_callback.ty,
         Some(fluxc::ast::Type::Function {
             params: vec![fluxc::ast::Type::I64, fluxc::ast::Type::I64],
+            returns: vec![]
+        })
+    );
+    let scale_callback = database
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name == "onScale")
+        .expect("common scale callback property should be indexed");
+    assert_eq!(
+        scale_callback.ty,
+        Some(fluxc::ast::Type::Function {
+            params: vec![fluxc::ast::Type::I64],
             returns: vec![]
         })
     );
