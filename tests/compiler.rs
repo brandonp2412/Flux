@@ -21075,6 +21075,77 @@ app DynamicBorderWidth
 }
 
 #[test]
+fn android_border_style_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicBorderStyle {
+    state strokeStyle: str = "solid"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "outline"
+        borderWidth: 3
+        borderStyle: strokeStyle
+    Button toggle at 2,1
+        text: "Toggle"
+        onPress: strokeStyle => "dashed"
+}
+app DynamicBorderStyle
+"#;
+
+    check_source(source).expect("dynamic Android borderStyle should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android borderStyle should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android borderStyle should lower");
+
+    assert!(android.contains("const char *child_border_style_value = flux__ui_state_strokeStyle"));
+    assert!(
+        android.contains("const char *refresh_border_style_value = flux__ui_state_strokeStyle")
+    );
+    assert!(android.contains("styleViewBorderStyle"));
+    assert!(android.contains("(Landroid/view/View;Ljava/lang/String;)V"));
+    assert!(
+        android.contains(
+            "borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'"
+        )
+    );
+    assert!(android.contains("flux__ui_state_strokeStyle = \"dashed\""));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticBorderStyle {
+    grid columns: 1fr
+    grid rows: auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "outline"
+        borderWidth: 3
+        borderStyle: "dotted"
+}
+app StaticBorderStyle
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android borderStyle should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android borderStyle should lower");
+    assert!(!static_android.contains("styleViewBorderStyle"));
+    assert!(!static_android.contains("refresh_border_style_value"));
+}
+
+#[test]
 fn android_radius_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicRadius {

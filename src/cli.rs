@@ -4471,7 +4471,7 @@ __FLUX_PICKER_METHODS__
         private int borderBottomWidth;
         private int borderStartWidth;
         private final float[] radii;
-        private final String borderStyle;
+        private String borderStyle;
         private Integer shadowColor;
         private float shadowBlur;
         private float shadowOffsetX;
@@ -4624,6 +4624,11 @@ __FLUX_PICKER_METHODS__
             invalidateSelf();
         }
 
+        void setBorderStyle(String style) {
+            this.borderStyle = style == null ? "solid" : style;
+            invalidateSelf();
+        }
+
         void setRadii(float topLeft, float topRight, float bottomRight, float bottomLeft) {
             radii[0] = radii[1] = Math.max(0.0f, topLeft);
             radii[2] = radii[3] = Math.max(0.0f, topRight);
@@ -4715,6 +4720,13 @@ __FLUX_PICKER_METHODS__
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setBorderWidths(top, end, bottom, start);
+        }
+    }
+
+    public void styleViewBorderStyle(View view, String style) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setBorderStyle(style);
         }
     }
 
@@ -6934,6 +6946,8 @@ mod tests {
         assert!(activity.contains(
             "public void styleViewBorderWidths(View view, int top, int end, int bottom, int start)"
         ));
+        assert!(activity.contains("void setBorderStyle(String style)"));
+        assert!(activity.contains("public void styleViewBorderStyle(View view, String style)"));
         assert!(
             activity
                 .contains("void setShadow(String color, float blur, float offsetX, float offsetY)")

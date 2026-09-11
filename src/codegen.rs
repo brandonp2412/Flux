@@ -4992,23 +4992,22 @@ fn emit_android_native_application(
         let dynamic_radius_top_right = dynamic_radius && radius_top_right_static.is_none();
         let dynamic_radius_bottom_left = dynamic_radius && radius_bottom_left_static.is_none();
         let dynamic_radius_bottom_right = dynamic_radius && radius_bottom_right_static.is_none();
-        let border_style = if let Some(property) = view_property(element, "border_style") {
-            let Some(style) = static_expr_str(&property.value, signatures) else {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Android border_style must be a compile-time string",
-                ));
-            };
-            if !matches!(
-                style.as_str(),
-                "none" | "solid" | "dashed" | "dotted" | "double"
-            ) {
-                return Err(diag(
-                    property.value.span,
-                    "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
-                ));
+        let border_style_property = view_property(element, "border_style");
+        let (border_style, dynamic_border_style) = if let Some(property) = border_style_property {
+            if let Some(style) = static_expr_str(&property.value, signatures) {
+                if !matches!(
+                    style.as_str(),
+                    "none" | "solid" | "dashed" | "dotted" | "double"
+                ) {
+                    return Err(diag(
+                        property.value.span,
+                        "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
+                    ));
+                }
+                (style, false)
+            } else {
+                ("solid".to_string(), true)
             }
-            style
         } else if border_top_width > 0
             || border_bottom_width > 0
             || border_start_width > 0
@@ -5018,13 +5017,15 @@ fn emit_android_native_application(
             || dynamic_border_start_width
             || dynamic_border_end_width
         {
-            "solid".to_string()
+            ("solid".to_string(), false)
         } else {
-            "none".to_string()
+            ("none".to_string(), false)
         };
         let resolve_border_color =
             |width: i64, dynamic_width: bool, side_color: &Option<String>| {
-                if (!dynamic_width && width <= 0) || border_style == "none" {
+                if (!dynamic_width && width <= 0)
+                    || (!dynamic_border_style && border_style == "none")
+                {
                     None
                 } else if side_color.is_some() {
                     side_color.clone()
@@ -5217,8 +5218,21 @@ fn emit_android_native_application(
             emit_border_jstring(out, "child_border_end", &border_end_color);
             emit_border_jstring(out, "child_border_bottom", &border_bottom_color);
             emit_border_jstring(out, "child_border_start", &border_start_color);
-            let border_style_value = Some(border_style.clone());
-            emit_optional_jstring(out, "child_border_style", &border_style_value);
+            if dynamic_border_style {
+                let value = ui_expr_c(
+                    &border_style_property
+                        .expect("dynamic border_style property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    const char *child_border_style_value = {value};\n    if (strcmp(child_border_style_value, \"none\") != 0 && strcmp(child_border_style_value, \"solid\") != 0 && strcmp(child_border_style_value, \"dashed\") != 0 && strcmp(child_border_style_value, \"dotted\") != 0 && strcmp(child_border_style_value, \"double\") != 0) {{ fputs(\"Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\\n\", stderr); abort(); }}\n    jstring child_border_style = flux__android_utf8_string(env, child_border_style_value);\n    if (child_border_style == NULL) return;\n"
+                ));
+            } else {
+                let border_style_value = Some(border_style.clone());
+                emit_optional_jstring(out, "child_border_style", &border_style_value);
+            }
             if dynamic_shadow_color {
                 let value = ui_expr_c(
                     &shadow_color_property
@@ -8846,6 +8860,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "background_color"
             | "border_color"
             | "border_width"
+            | "border_style"
             | "radius"
             | "padding"
             | "margin"
@@ -8986,6 +9001,7 @@ fn android_ui_element_needs_refresh(
         "background_color",
         "border_color",
         "border_width",
+        "border_style",
         "radius",
         "shadow_color",
         "shadow_blur",
@@ -9182,6 +9198,14 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_border_widths = (*env)->GetMethodID(env, activity_class, \"styleViewBorderWidths\", \"(Landroid/view/View;IIII)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_border_widths != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_widths, child, (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density), (jint)({start} * flux__ui_density));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "border_style", &runtime_names)
+            && let Some(property) = view_property(element, "border_style")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "                const char *refresh_border_style_value = {value};\n                if (strcmp(refresh_border_style_value, \"none\") != 0 && strcmp(refresh_border_style_value, \"solid\") != 0 && strcmp(refresh_border_style_value, \"dashed\") != 0 && strcmp(refresh_border_style_value, \"dotted\") != 0 && strcmp(refresh_border_style_value, \"double\") != 0) {{ fputs(\"Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\\n\", stderr); abort(); }}\n                jstring refresh_border_style = flux__android_utf8_string(env, refresh_border_style_value);\n                if (refresh_border_style != NULL) {{\n                    jmethodID refresh_border_style_method = (*env)->GetMethodID(env, activity_class, \"styleViewBorderStyle\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n                    if (refresh_border_style_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_style_method, child, refresh_border_style);\n                    (*env)->DeleteLocalRef(env, refresh_border_style);\n                }}\n"
             ));
         }
         if android_ui_property_needs_refresh(element, "radius", &runtime_names)
