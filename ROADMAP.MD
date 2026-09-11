@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 472
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 69 checkbox items
+- Current net scope growth after the baseline: 71 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -610,6 +610,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Tabs.
 - [ ] Nested navigation where genuinely needed.
 - [ ] Deep links.
+  - [x] Bootstrap native deep-link/open-URL delivery now shares the typed application `onOpenUrl: fn(str) -> void` callback across current application backends: Android declared deep links deliver launch and subsequent `singleTop` intents through the compiler-owned Activity/JNI path, while Linux opts its native `GtkApplication` into `G_APPLICATION_HANDLES_OPEN`, converts each `GFile` activation to a URI, activates the existing app window only when needed, and dispatches the borrowed URI synchronously without a user bridge or routing object.
+  - [ ] Desktop package URI-scheme/file-association declarations and generated launcher metadata, plus typed route decoding layered above raw URL delivery.
 - [ ] Dialog/sheet navigation semantics.
 - [ ] Browser history integration.
 - [ ] Android predictive back.
