@@ -6113,12 +6113,28 @@ fn emit_linux_gtk_application(
     }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
+    let on_open_url = application_metadata_function(application, "on_open_url");
+    if let Some(function) = on_open_url {
+        out.push_str("static void flux__ui_open(GApplication *application, GFile **files, gint file_count, const gchar *hint, gpointer data) {\n    (void)hint;\n    (void)data;\n    if (gtk_application_get_windows(GTK_APPLICATION(application)) == NULL) flux__ui_activate(GTK_APPLICATION(application), NULL);\n    for (gint index = 0; index < file_count; index++) {\n        char *uri = g_file_get_uri(files[index]);\n        if (uri == NULL) continue;\n");
+        out.push_str(&format!("        {}(uri);\n", function_c_name(function)));
+        out.push_str("        g_free(uri);\n    }\n}\n\n");
+    }
     let application_id = application_metadata_string(application, "id", signatures)
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
+    let application_flags = if on_open_url.is_some() {
+        "G_APPLICATION_HANDLES_OPEN"
+    } else {
+        "G_APPLICATION_DEFAULT_FLAGS"
+    };
     out.push_str(&format!(
-        "int main(int argc, char **argv) {{\n    const char *flux__gdk_backend = g_getenv(\"GDK_BACKEND\");\n    if (flux__gdk_backend == NULL || flux__gdk_backend[0] == '\\0') {{\n        gdk_set_allowed_backends(\"wayland,x11,*\");\n    }}\n    GtkApplication *application = gtk_application_new({}, G_APPLICATION_DEFAULT_FLAGS);\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
+        "int main(int argc, char **argv) {{\n    const char *flux__gdk_backend = g_getenv(\"GDK_BACKEND\");\n    if (flux__gdk_backend == NULL || flux__gdk_backend[0] == '\\0') {{\n        gdk_set_allowed_backends(\"wayland,x11,*\");\n    }}\n    GtkApplication *application = gtk_application_new({}, {application_flags});\n    g_signal_connect(application, \"activate\", G_CALLBACK(flux__ui_activate), NULL);\n",
         c_string(&application_id)
     ));
+    if on_open_url.is_some() {
+        out.push_str(
+            "    g_signal_connect(application, \"open\", G_CALLBACK(flux__ui_open), NULL);\n",
+        );
+    }
     if on_stop.is_some() || on_exit.is_some() {
         out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
     }

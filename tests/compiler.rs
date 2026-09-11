@@ -15413,11 +15413,14 @@ fn stopped() -> void {
 fn exiting() -> void {
     print("exiting")
 }
+fn openUrl(value: str) -> void {
+    print(value)
+}
 view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting)
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting, onOpenUrl: openUrl)
 "#;
     check_source(source)
         .expect("lifecycle callbacks should typecheck as named fn() -> void values");
@@ -15431,6 +15434,19 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("flux__fn_stopped();"));
     assert!(generated.contains("flux__fn_exiting();"));
     assert!(generated.contains("\"shutdown\", G_CALLBACK(flux__ui_shutdown)"));
+    assert!(
+        generated.contains("static void flux__ui_open(GApplication *application, GFile **files")
+    );
+    assert!(
+        generated.contains("gtk_application_get_windows(GTK_APPLICATION(application)) == NULL")
+    );
+    assert!(generated.contains("g_file_get_uri(files[index])"));
+    assert!(generated.contains("flux__fn_openUrl(uri);"));
+    assert!(
+        generated
+            .contains("gtk_application_new(\"app.flux.bootstrap\", G_APPLICATION_HANDLES_OPEN)")
+    );
+    assert!(generated.contains("\"open\", G_CALLBACK(flux__ui_open)"));
 
     let wrong = r#"
 fn bad(value: i64) -> void {
