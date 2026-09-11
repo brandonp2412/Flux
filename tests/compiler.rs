@@ -19238,6 +19238,7 @@ app DynamicText
     );
     let label_id = android_stable_view_id("DynamicText", "label");
     assert!(android.contains(&format!("find_view, (jint){label_id}")));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
 }
 
@@ -19352,6 +19353,7 @@ app DynamicColor
     );
     let label_id = android_stable_view_id("DynamicColor", "label");
     assert!(android.contains(&format!("find_view, (jint){label_id}")));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
     assert!(android.contains("flux__ui_state_tone = \"danger\""));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
 
@@ -19424,18 +19426,29 @@ fn android_text_layout_metrics_refresh_from_view_state_without_rebuilding() {
 view DynamicLayout {
     state spacing: i64 = 1
     state leading: i64 = 120
+    state alignment: str = "left"
+    state wrapping: str = "word"
+    state truncation: str = "none"
+    state lines: i64 = 3
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto
     Text label at 1,1
         text: "Metrics"
         letter_spacing: spacing
         line_height_percent: leading
+        text_align: alignment
+        wrap_mode: wrapping
+        ellipsize: truncation
+        max_lines: lines
     Button space at 2,1
         text: "Space"
         onPress: spacing => spacing + 1
     Button lead at 3,1
         text: "Lead"
         onPress: leading => leading + 10
+    Button align at 4,1
+        text: "Align"
+        onPress: alignment => "center"
 }
 app DynamicLayout
 "#;
@@ -19455,6 +19468,17 @@ app DynamicLayout
     assert!(android.contains("int64_t child_line_height_percent_value = flux__ui_state_leading"));
     assert!(android.contains("int64_t refresh_letter_spacing_value = flux__ui_state_spacing"));
     assert!(android.contains("int64_t refresh_line_height_percent_value = flux__ui_state_leading"));
+    assert!(android.contains("const char *child_text_align_value = flux__ui_state_alignment"));
+    assert!(android.contains("const char *refresh_text_align_value = flux__ui_state_alignment"));
+    assert!(android.contains("const char *child_wrap_mode_value = flux__ui_state_wrapping"));
+    assert!(android.contains("const char *refresh_wrap_mode_value = flux__ui_state_wrapping"));
+    assert!(android.contains("const char *child_ellipsize_value = flux__ui_state_truncation"));
+    assert!(android.contains("const char *refresh_ellipsize_value = flux__ui_state_truncation"));
+    assert!(android.contains("int64_t child_max_lines_value = flux__ui_state_lines"));
+    assert!(android.contains("int64_t refresh_max_lines_value = flux__ui_state_lines"));
+    assert!(android.contains(
+        "refresh_text_align, refresh_wrap_mode, refresh_ellipsize, (jint)refresh_max_lines_value"
+    ));
     assert!(
         android.contains(
             "(jint)refresh_letter_spacing_value, (jint)refresh_line_height_percent_value"
@@ -19464,6 +19488,12 @@ app DynamicLayout
     assert!(android.contains(
         "Text.line_height_percent must be greater than zero and fit within a 32-bit signed integer"
     ));
+    assert!(
+        android.contains("Text.text_align must be one of 'left', 'center', 'right', or 'fill'")
+    );
+    assert!(android.contains("Text.wrapMode must be one of 'word', 'char', or 'wordChar'"));
+    assert!(android.contains("Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'"));
+    assert!(android.contains("Text.max_lines must be between 1 and 2147483647"));
     let label_id = android_stable_view_id("DynamicLayout", "label");
     assert!(android.contains(&format!("find_view, (jint){label_id}")));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));

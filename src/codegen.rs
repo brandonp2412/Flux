@@ -5062,74 +5062,70 @@ fn emit_android_native_application(
             } else {
                 (Some(default_line_height_percent), None)
             };
-            let text_align = view_property(element, "text_align")
-                .map(|property| {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.text_align must be a compile-time str value",
-                        ));
-                    };
+            let text_align_property = view_property(element, "text_align");
+            let (text_align, dynamic_text_align) = if let Some(property) = text_align_property {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
                     if !matches!(value.as_str(), "left" | "center" | "right" | "fill") {
                         return Err(diag(
                             property.value.span,
                             "Text.text_align must be one of 'left', 'center', 'right', or 'fill'",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
-            let wrap_mode = view_property(element, "wrap_mode")
-                .map(|property| {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.wrap_mode must be a compile-time str value",
-                        ));
-                    };
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
+            let wrap_mode_property = view_property(element, "wrap_mode");
+            let (wrap_mode, dynamic_wrap_mode) = if let Some(property) = wrap_mode_property {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
                     if !matches!(value.as_str(), "word" | "char" | "wordChar" | "word_char") {
                         return Err(diag(
                             property.value.span,
                             "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
-            let ellipsize = view_property(element, "ellipsize")
-                .map(|property| {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.ellipsize must be a compile-time str value",
-                        ));
-                    };
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
+            let ellipsize_property = view_property(element, "ellipsize");
+            let (ellipsize, dynamic_ellipsize) = if let Some(property) = ellipsize_property {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
                     if !matches!(value.as_str(), "none" | "start" | "middle" | "end") {
                         return Err(diag(
                             property.value.span,
                             "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
-            let max_lines = view_property(element, "max_lines")
-                .map(|property| {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.max_lines must be a compile-time i64 value",
-                        ));
-                    };
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
+            let max_lines_property = view_property(element, "max_lines");
+            let (max_lines, dynamic_max_lines) = if let Some(property) = max_lines_property {
+                if let Some(value) = static_expr_i64(&property.value, signatures) {
                     if !(1..=i64::from(i32::MAX)).contains(&value) {
                         return Err(diag(
                             property.value.span,
                             "Text.max_lines must be between 1 and 2147483647",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
+                    (Some(value), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
             let max_width_chars = view_property(element, "max_width_chars")
                 .map(|property| {
                     let Some(value) = static_expr_i64(&property.value, signatures) else {
@@ -5155,9 +5151,13 @@ fn emit_android_native_application(
                 || line_height_percent.is_some()
                 || dynamic_line_height_percent.is_some()
                 || text_align.is_some()
+                || dynamic_text_align.is_some()
                 || wrap_mode.is_some()
+                || dynamic_wrap_mode.is_some()
                 || ellipsize.is_some()
+                || dynamic_ellipsize.is_some()
                 || max_lines.is_some()
+                || dynamic_max_lines.is_some()
                 || max_width_chars >= 0
             {
                 let emit_optional_text =
@@ -5198,16 +5198,44 @@ fn emit_android_native_application(
                 } else {
                     line_height_percent.unwrap_or(0).to_string()
                 };
-                emit_optional_text(out, "child_text_align", text_align.as_ref());
-                emit_optional_text(out, "child_wrap_mode", wrap_mode.as_ref());
-                emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
+                if let Some(value) = dynamic_text_align.as_ref() {
+                    out.push_str(&format!(
+                        "    const char *child_text_align_value = {value};\n    if (child_text_align_value == NULL || (strcmp(child_text_align_value, \"left\") != 0 && strcmp(child_text_align_value, \"center\") != 0 && strcmp(child_text_align_value, \"right\") != 0 && strcmp(child_text_align_value, \"fill\") != 0)) {{ fputs(\"Flux runtime error: Text.text_align must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); }}\n    jstring child_text_align = flux__android_utf8_string(env, child_text_align_value);\n"
+                    ));
+                    out.push_str("    if (child_text_align == NULL) return;\n");
+                } else {
+                    emit_optional_text(out, "child_text_align", text_align.as_ref());
+                }
+                if let Some(value) = dynamic_wrap_mode.as_ref() {
+                    out.push_str(&format!(
+                        "    const char *child_wrap_mode_value = {value};\n    if (child_wrap_mode_value == NULL || (strcmp(child_wrap_mode_value, \"word\") != 0 && strcmp(child_wrap_mode_value, \"char\") != 0 && strcmp(child_wrap_mode_value, \"wordChar\") != 0 && strcmp(child_wrap_mode_value, \"word_char\") != 0)) {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }}\n    jstring child_wrap_mode = flux__android_utf8_string(env, child_wrap_mode_value);\n"
+                    ));
+                    out.push_str("    if (child_wrap_mode == NULL) return;\n");
+                } else {
+                    emit_optional_text(out, "child_wrap_mode", wrap_mode.as_ref());
+                }
+                if let Some(value) = dynamic_ellipsize.as_ref() {
+                    out.push_str(&format!(
+                        "    const char *child_ellipsize_value = {value};\n    if (child_ellipsize_value == NULL || (strcmp(child_ellipsize_value, \"none\") != 0 && strcmp(child_ellipsize_value, \"start\") != 0 && strcmp(child_ellipsize_value, \"middle\") != 0 && strcmp(child_ellipsize_value, \"end\") != 0)) {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }}\n    jstring child_ellipsize = flux__android_utf8_string(env, child_ellipsize_value);\n"
+                    ));
+                    out.push_str("    if (child_ellipsize == NULL) return;\n");
+                } else {
+                    emit_optional_text(out, "child_ellipsize", ellipsize.as_ref());
+                }
+                let max_lines_call = if let Some(value) = dynamic_max_lines.as_ref() {
+                    out.push_str(&format!(
+                        "    int64_t child_max_lines_value = {value};\n    if (child_max_lines_value <= 0 || child_max_lines_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.max_lines must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                    ));
+                    "child_max_lines_value".to_string()
+                } else {
+                    max_lines.unwrap_or(0).to_string()
+                };
                 out.push_str("    jclass text_layout_activity_class = (*env)->GetObjectClass(env, activity);\n");
                 out.push_str("    if (text_layout_activity_class == NULL) return;\n");
                 out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                 out.push_str("    if (style_text_layout == NULL) return;\n");
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){letter_spacing_call}, (jint){line_height_percent_call}, child_text_align, child_wrap_mode, child_ellipsize, (jint){}, (jint){});\n",
-                    max_lines.unwrap_or(0),
+                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){letter_spacing_call}, (jint){line_height_percent_call}, child_text_align, child_wrap_mode, child_ellipsize, (jint){max_lines_call}, (jint){});\n",
                     max_width_chars,
                 ));
                 out.push_str("    (*env)->DeleteLocalRef(env, text_layout_activity_class);\n");
@@ -7895,9 +7923,19 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
         ("Text", "text")
             | ("Text", "selectable")
             | ("Text", "wrap")
+            | ("Text", "color")
+            | ("Text", "size")
+            | ("Text", "bold")
+            | ("Text", "italic")
+            | ("Text", "underline")
+            | ("Text", "strikethrough")
             | ("Text", "font_family")
             | ("Text", "letter_spacing")
             | ("Text", "line_height_percent")
+            | ("Text", "text_align")
+            | ("Text", "wrap_mode")
+            | ("Text", "ellipsize")
+            | ("Text", "max_lines")
             | ("Button", "text")
             | ("TextInput", "placeholder")
             | ("Image", "source")
@@ -8025,6 +8063,10 @@ fn android_ui_element_needs_refresh(
             "font_family",
             "letter_spacing",
             "line_height_percent",
+            "text_align",
+            "wrap_mode",
+            "ellipsize",
+            "max_lines",
         ],
         "Button" => &["text"],
         "TextInput" => &["placeholder"],
@@ -8276,7 +8318,21 @@ fn emit_android_ui_refresh(
                         "line_height_percent",
                         &runtime_names,
                     );
-                    if refresh_font_family || refresh_letter_spacing || refresh_line_height_percent
+                    let refresh_text_align =
+                        android_ui_property_needs_refresh(element, "text_align", &runtime_names);
+                    let refresh_wrap_mode =
+                        android_ui_property_needs_refresh(element, "wrap_mode", &runtime_names);
+                    let refresh_ellipsize =
+                        android_ui_property_needs_refresh(element, "ellipsize", &runtime_names);
+                    let refresh_max_lines =
+                        android_ui_property_needs_refresh(element, "max_lines", &runtime_names);
+                    if refresh_font_family
+                        || refresh_letter_spacing
+                        || refresh_line_height_percent
+                        || refresh_text_align
+                        || refresh_wrap_mode
+                        || refresh_ellipsize
+                        || refresh_max_lines
                     {
                         if refresh_font_family {
                             let property = view_property(element, "font_family")
@@ -8310,11 +8366,55 @@ fn emit_android_ui_refresh(
                         } else {
                             "0"
                         };
+                        if refresh_text_align {
+                            let property = view_property(element, "text_align")
+                                .expect("dynamic Text.text_align property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                const char *refresh_text_align_value = {value};\n                if (refresh_text_align_value == NULL || (strcmp(refresh_text_align_value, \"left\") != 0 && strcmp(refresh_text_align_value, \"center\") != 0 && strcmp(refresh_text_align_value, \"right\") != 0 && strcmp(refresh_text_align_value, \"fill\") != 0)) {{ fputs(\"Flux runtime error: Text.text_align must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); }}\n                jstring refresh_text_align = flux__android_utf8_string(env, refresh_text_align_value);\n"
+                            ));
+                        } else {
+                            out.push_str("                jstring refresh_text_align = NULL;\n");
+                        }
+                        if refresh_wrap_mode {
+                            let property = view_property(element, "wrap_mode")
+                                .expect("dynamic Text.wrap_mode property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                const char *refresh_wrap_mode_value = {value};\n                if (refresh_wrap_mode_value == NULL || (strcmp(refresh_wrap_mode_value, \"word\") != 0 && strcmp(refresh_wrap_mode_value, \"char\") != 0 && strcmp(refresh_wrap_mode_value, \"wordChar\") != 0 && strcmp(refresh_wrap_mode_value, \"word_char\") != 0)) {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }}\n                jstring refresh_wrap_mode = flux__android_utf8_string(env, refresh_wrap_mode_value);\n"
+                            ));
+                        } else {
+                            out.push_str("                jstring refresh_wrap_mode = NULL;\n");
+                        }
+                        if refresh_ellipsize {
+                            let property = view_property(element, "ellipsize")
+                                .expect("dynamic Text.ellipsize property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                const char *refresh_ellipsize_value = {value};\n                if (refresh_ellipsize_value == NULL || (strcmp(refresh_ellipsize_value, \"none\") != 0 && strcmp(refresh_ellipsize_value, \"start\") != 0 && strcmp(refresh_ellipsize_value, \"middle\") != 0 && strcmp(refresh_ellipsize_value, \"end\") != 0)) {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }}\n                jstring refresh_ellipsize = flux__android_utf8_string(env, refresh_ellipsize_value);\n"
+                            ));
+                        } else {
+                            out.push_str("                jstring refresh_ellipsize = NULL;\n");
+                        }
+                        let refresh_max_lines_call = if refresh_max_lines {
+                            let property = view_property(element, "max_lines")
+                                .expect("dynamic Text.max_lines property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                int64_t refresh_max_lines_value = {value};\n                if (refresh_max_lines_value <= 0 || refresh_max_lines_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.max_lines must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                            ));
+                            "refresh_max_lines_value"
+                        } else {
+                            "0"
+                        };
                         out.push_str("                jmethodID refresh_text_layout = (*env)->GetMethodID(env, activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                         out.push_str(&format!(
-                            "                if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint){refresh_letter_spacing_call}, (jint){refresh_line_height_percent_call}, NULL, NULL, NULL, (jint)0, (jint)0);\n"
+                            "                if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint){refresh_letter_spacing_call}, (jint){refresh_line_height_percent_call}, refresh_text_align, refresh_wrap_mode, refresh_ellipsize, (jint){refresh_max_lines_call}, (jint)0);\n"
                         ));
                         out.push_str("                if (refresh_font_family != NULL) (*env)->DeleteLocalRef(env, refresh_font_family);\n");
+                        out.push_str("                if (refresh_text_align != NULL) (*env)->DeleteLocalRef(env, refresh_text_align);\n");
+                        out.push_str("                if (refresh_wrap_mode != NULL) (*env)->DeleteLocalRef(env, refresh_wrap_mode);\n");
+                        out.push_str("                if (refresh_ellipsize != NULL) (*env)->DeleteLocalRef(env, refresh_ellipsize);\n");
                     }
                 }
                 if matches!(element.kind.as_str(), "Toggle" | "Radio") {
