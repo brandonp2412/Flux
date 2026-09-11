@@ -1710,6 +1710,39 @@ fn main() -> i64 {{
     );
     server.join().expect("loopback server should complete");
 
+    let listener_source = r#"fn main() -> i64 {
+    let (listener, listenError) = net.tcpListen("127.0.0.1", 0, 1)
+    print(listenError)
+    print(net.shutdownRead(listener))
+    print(net.close(listener))
+    return 0
+}
+"#;
+    let listener_path = root.join("listener.flux");
+    fs::write(&listener_path, listener_source)
+        .expect("listener shutdown source should be writable");
+    let listener_binary = root.join("listener");
+    let listener_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&listener_path)
+        .arg("-o")
+        .arg(&listener_binary)
+        .output()
+        .expect("listener shutdown binary should build");
+    assert!(
+        listener_built.status.success(),
+        "listener shutdown build failed: {}",
+        String::from_utf8_lossy(&listener_built.stderr)
+    );
+    let listener_run = Command::new(&listener_binary)
+        .output()
+        .expect("listener shutdown binary should run");
+    assert!(listener_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&listener_run.stdout),
+        "nil\nsocket shutdown requires a connected TCP socket\nnil\n"
+    );
+
     let socket_error = check_source(
         "fn main() -> i64 {\n    print(net.shutdownWrite(\"bad\"))\n    return 0\n}\n",
     )
