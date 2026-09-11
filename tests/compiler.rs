@@ -22002,6 +22002,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_aware_field_access_is_typed_flattened_and_native() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+struct Wrapper {
+    point: Point?
+}
+
+fn missingPoint() -> Point? {
+    return none
+}
+
+fn maybeWrapper(flag: bool) -> Wrapper? {
+    print(90)
+    if flag:
+        return Wrapper { point: Point { x: 7 } }
+    return none
+}
+
+fn emptyWrapper() -> Wrapper? {
+    return Wrapper { point: missingPoint() }
+}
+
+fn main() -> i64 {
+    print(maybeWrapper(true)?.point?.x ?? -1)
+    print(emptyWrapper()?.point?.x ?? -1)
+    print(maybeWrapper(false)?.point?.x ?? -1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional-aware struct field access should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("optional-aware field access should format canonically");
+    assert!(formatted.contains("maybeWrapper(true)?.point?.x ?? -1"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional-aware access should reparse"),
+        formatted
+    );
+
+    let generated =
+        compile_to_c(source).expect("optional-aware field access should lower natively");
+    assert!(generated.contains("flux__optional_access_value.has_value"));
+    assert!(generated.contains(".value.flux__field_point"));
+    assert!(generated.contains(".value.flux__field_x"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-aware-field-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional-aware field directory should be writable");
+    let c_path = root.join("optional_aware_field.c");
+    let exe_path = root.join("optional_aware_field");
+    fs::write(&c_path, generated).expect("generated optional-aware field C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional-aware field access");
+    assert!(
+        compile.status.success(),
+        "optional-aware field C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-aware field program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "90\n7\n-1\n90\n-1\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+struct Point {
+    x: i64
+}
+
+fn main() -> i64 {
+    let point: Point = Point { x: 1 }
+    return point?.x ?? 0
+}
+"#;
+    let error = check_source(non_optional)
+        .expect_err("optional-aware field access requires an optional receiver");
+    assert!(
+        error
+            .message
+            .contains("optional-aware '?.' access requires an optional receiver, got Point"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let untyped_none = r#"
+fn main() -> i64 {
+    return none?.x ?? 0
+}
+"#;
+    let error = check_source(untyped_none)
+        .expect_err("bare none cannot establish an optional receiver type");
+    assert!(
+        error.message.contains(
+            "optional-aware '?.' access on 'none' needs a concrete optional receiver type"
+        ),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn optional_coalescing_is_lazy_typed_and_native() {
     let source = r#"
 fn present() -> i64? {

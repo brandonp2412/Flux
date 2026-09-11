@@ -753,6 +753,7 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: String,
         name_span: SourceSpan,
+        optional: bool,
     },
     Match {
         value: Box<Expr>,

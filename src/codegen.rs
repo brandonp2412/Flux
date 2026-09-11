@@ -16761,12 +16761,24 @@ fn emit_expr(
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {
+            let definition = signatures
+                .struct_type(name)
+                .expect("checked struct literal has a definition");
             if let Some(base) = base {
                 let base = emit_expr(base, env, signatures)?;
                 let mut args = Vec::with_capacity(fields.len() + 1);
                 args.push(base.code);
                 for field in fields {
-                    args.push(emit_expr(&field.value, env, signatures)?.code);
+                    let expected = &definition
+                        .field(&field.name)
+                        .expect("checked struct update field exists")
+                        .ty;
+                    args.push(emit_expr_for_expected(
+                        &field.value,
+                        expected,
+                        env,
+                        signatures,
+                    )?);
                 }
                 EmittedExpr {
                     code: format!(
@@ -16779,8 +16791,12 @@ fn emit_expr(
             } else {
                 let mut rendered = Vec::with_capacity(fields.len());
                 for field in fields {
-                    let value = emit_expr(&field.value, env, signatures)?;
-                    rendered.push(format!(".{} = {}", field_c_name(&field.name), value.code));
+                    let expected = &definition
+                        .field(&field.name)
+                        .expect("checked struct literal field exists")
+                        .ty;
+                    let value = emit_expr_for_expected(&field.value, expected, env, signatures)?;
+                    rendered.push(format!(".{} = {}", field_c_name(&field.name), value));
                 }
                 EmittedExpr {
                     code: format!(
@@ -16816,38 +16832,91 @@ fn emit_expr(
                 ty: then_expr.ty,
             }
         }
-        ExprKind::Field { base, name, .. } => {
-            let static_len = static_list_length(base, env, signatures)?;
-            let base = emit_expr(base, env, signatures)?;
+        ExprKind::Field {
+            base,
+            name,
+            optional,
+            ..
+        } => {
+            let static_len = if *optional {
+                None
+            } else {
+                static_list_length(base, env, signatures)?
+            };
+            let emitted_base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let code = if let Type::List(element) = &base.ty {
+            let code = if *optional {
+                let base_ty = signatures.canonical_type(&emitted_base.ty);
+                let Type::Optional(inner) = &base_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "non-optional receiver reached optional-aware field code generation",
+                    ));
+                };
+                let inner_ty = signatures.canonical_type(inner);
+                let Type::Named(struct_name) = &inner_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "optional-aware field code generation currently requires a struct receiver",
+                    ));
+                };
+                let Some(definition) = signatures.struct_type(struct_name) else {
+                    return Err(diag(
+                        expr.span,
+                        "unknown optional struct receiver during code generation",
+                    ));
+                };
+                let Some(field) = definition.field(name) else {
+                    return Err(diag(
+                        expr.span,
+                        "unknown optional struct field during code generation",
+                    ));
+                };
+                let field_ty = signatures.canonical_type(&field.ty);
+                let result_c = c_type(&result_ty, signatures);
+                let base_c = c_type(&base_ty, signatures);
+                let field_code =
+                    format!("flux__optional_access_value.value.{}", field_c_name(name));
+                let present = if matches!(field_ty, Type::Optional(_)) {
+                    field_code
+                } else {
+                    format!("({result_c}){{ .has_value = true, .value = {field_code} }}")
+                };
+                format!(
+                    "__extension__ ({{ {base_c} flux__optional_access_value = {}; flux__optional_access_value.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})",
+                    emitted_base.code
+                )
+            } else if let Type::List(element) = &emitted_base.ty {
                 let element_c = c_type(element, signatures);
                 match name.as_str() {
-                    "length" => format!("({}).len", base.code),
-                    "isEmpty" => format!("(({}).len == 0)", base.code),
-                    "isNotEmpty" => format!("(({}).len != 0)", base.code),
+                    "length" => format!("({}).len", emitted_base.code),
+                    "isEmpty" => format!("(({}).len == 0)", emitted_base.code),
+                    "isNotEmpty" => format!("(({}).len != 0)", emitted_base.code),
                     "first" if static_len.is_some_and(|len| len > 0) => format!(
                         "(*(({element_c} *)flux_list_at_unchecked({}, 0, sizeof({element_c}))))",
-                        base.code
+                        emitted_base.code
                     ),
                     "last" if static_len.is_some_and(|len| len > 0) => format!(
                         "(*(({element_c} *)flux_list_at_unchecked({}, {}, sizeof({element_c}))))",
-                        base.code,
+                        emitted_base.code,
                         static_len.expect("non-empty static list length") - 1
                     ),
                     "single" if static_len == Some(1) => format!(
                         "(*(({element_c} *)flux_list_at_unchecked({}, 0, sizeof({element_c}))))",
-                        base.code
+                        emitted_base.code
                     ),
                     "first" => format!(
                         "(*(({element_c} *)flux_list_at({}, INT64_C(0), sizeof({element_c}))))",
-                        base.code
+                        emitted_base.code
                     ),
                     "last" => format!(
                         "(*(({element_c} *)flux_list_at({}, INT64_C(-1), sizeof({element_c}))))",
-                        base.code
+                        emitted_base.code
                     ),
-                    "single" => format!("(*(({element_c} *)flux_list_single({})))", base.code),
+                    "single" => format!(
+                        "(*(({element_c} *)flux_list_single({})))",
+                        emitted_base.code
+                    ),
                     _ => {
                         return Err(diag(
                             expr.span,
@@ -16856,7 +16925,7 @@ fn emit_expr(
                     }
                 }
             } else {
-                format!("({}).{}", base.code, field_c_name(name))
+                format!("({}).{}", emitted_base.code, field_c_name(name))
             };
             EmittedExpr {
                 code,

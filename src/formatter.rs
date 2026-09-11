@@ -1186,7 +1186,16 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 text
             }
         }
-        ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 8)),
+        ExprKind::Field {
+            base,
+            name,
+            optional,
+            ..
+        } => format!(
+            "{}{}{name}",
+            format_expr(base, 8),
+            if *optional { "?." } else { "." }
+        ),
         ExprKind::Unary { op, expr } => {
             let operator = match op {
                 UnaryOp::Neg => "-",

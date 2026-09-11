@@ -5503,41 +5503,75 @@ pub fn type_of_expr(
             base,
             name,
             name_span,
+            optional,
         } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
-            if let Type::List(element) = &base_ty {
-                return match name.as_str() {
-                    "length" => Ok(Type::I64),
-                    "isEmpty" | "isNotEmpty" => Ok(Type::Bool),
-                    "first" | "last" | "single" => Ok((**element).clone()),
-                    _ => Err(diag(
-                        *name_span,
-                        &format!("list type '{}' has no property '{name}'", base_ty.name()),
-                    )),
+            let (base_ty, optional_result) = if *optional {
+                let Type::Optional(inner) = base_ty else {
+                    return Err(diag(
+                        base.span,
+                        &format!(
+                            "optional-aware '?.' access requires an optional receiver, got {}",
+                            base_ty.name()
+                        ),
+                    ));
                 };
-            }
-            let Type::Named(struct_name) = base_ty else {
-                return Err(diag(
-                    *name_span,
-                    &format!(
-                        "field access requires a struct or list value, got {}",
-                        base_ty.name()
-                    ),
-                ));
+                if *inner == Type::Void {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware '?.' access on 'none' needs a concrete optional receiver type",
+                    ));
+                }
+                (*inner, true)
+            } else {
+                (base_ty, false)
             };
-            let Some(definition) = signatures.struct_type(&struct_name) else {
-                return Err(diag(base.span, &format!("unknown struct '{struct_name}'")));
-            };
-            definition
-                .field(name)
-                .map(|field| field.ty.clone())
-                .ok_or_else(|| {
-                    diag(
+            let field_ty = if let Type::List(element) = &base_ty {
+                match name.as_str() {
+                    "length" => Type::I64,
+                    "isEmpty" | "isNotEmpty" => Type::Bool,
+                    "first" | "last" | "single" => (**element).clone(),
+                    _ => {
+                        return Err(diag(
+                            *name_span,
+                            &format!("list type '{}' has no property '{name}'", base_ty.name()),
+                        ));
+                    }
+                }
+            } else {
+                let Type::Named(struct_name) = base_ty else {
+                    return Err(diag(
                         *name_span,
-                        &format!("struct '{struct_name}' has no field '{name}'"),
-                    )
-                    .with_label(definition.span, format!("'{struct_name}' is declared here"))
-                })
+                        &format!(
+                            "field access requires a struct or list value, got {}",
+                            base_ty.name()
+                        ),
+                    ));
+                };
+                let Some(definition) = signatures.struct_type(&struct_name) else {
+                    return Err(diag(base.span, &format!("unknown struct '{struct_name}'")));
+                };
+                definition
+                    .field(name)
+                    .map(|field| field.ty.clone())
+                    .ok_or_else(|| {
+                        diag(
+                            *name_span,
+                            &format!("struct '{struct_name}' has no field '{name}'"),
+                        )
+                        .with_label(definition.span, format!("'{struct_name}' is declared here"))
+                    })?
+            };
+            if optional_result {
+                let field_ty = signatures.canonical_type(&field_ty);
+                if matches!(field_ty, Type::Optional(_)) {
+                    Ok(field_ty)
+                } else {
+                    Ok(Type::Optional(Box::new(field_ty)))
+                }
+            } else {
+                Ok(field_ty)
+            }
         }
         ExprKind::Unary { op, expr: inner } => {
             let ty = type_of_expr(inner, env, signatures)?;

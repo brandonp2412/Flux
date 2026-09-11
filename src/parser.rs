@@ -4724,6 +4724,7 @@ enum TokenKind {
     RBracket,
     Colon,
     Dot,
+    QuestionDot,
     Comma,
     QuestionQuestion,
     Question,
@@ -5311,6 +5312,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b'.' => (TokenKind::Dot, 1),
                 b',' => (TokenKind::Comma, 1),
                 b'?' if bytes.get(index + 1) == Some(&b'?') => (TokenKind::QuestionQuestion, 2),
+                b'?' if bytes.get(index + 1) == Some(&b'.') => (TokenKind::QuestionDot, 2),
                 b'?' => (TokenKind::Question, 1),
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
@@ -5444,8 +5446,9 @@ impl ExprParser<'_> {
         let mut expr = self.parse_atom()?;
         while matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
-            Some(TokenKind::Dot)
+            Some(TokenKind::Dot | TokenKind::QuestionDot)
         ) {
+            let optional = matches!(self.tokens[self.index].kind, TokenKind::QuestionDot);
             self.index += 1;
             let Some(field) = self.tokens.get(self.index).cloned() else {
                 return Err(diag(self.line, "expected field name after '.'"));
@@ -5462,6 +5465,13 @@ impl ExprParser<'_> {
                 self.tokens.get(self.index).map(|token| &token.kind),
                 Some(TokenKind::LParen)
             ) {
+                if optional {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        field.span,
+                        "optional-aware '?.' access currently applies to value fields, not qualified calls",
+                    ));
+                }
                 let ExprKind::Var(namespace) = &expr.kind else {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Parse,
@@ -5581,6 +5591,7 @@ impl ExprParser<'_> {
                     base: Box::new(expr),
                     name,
                     name_span: field.span,
+                    optional,
                 },
             };
         }
