@@ -2709,8 +2709,20 @@ fn collect_binding_declarations(
                 collect_binding_declarations(body, declarations);
             }
             StmtKind::If {
-                body, else_body, ..
+                binding,
+                body,
+                else_body,
+                ..
             } => {
+                if let Some(binding) = binding
+                    && binding.name != "_"
+                {
+                    declarations.push((
+                        binding.name.clone(),
+                        binding.span,
+                        "optional pattern binding",
+                    ));
+                }
                 collect_binding_declarations(body, declarations);
                 collect_binding_declarations(else_body, declarations);
             }
@@ -3738,21 +3750,64 @@ fn check_block_all(
             },
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 ..
             } => {
-                match type_of_expr(cond, env, signatures) {
-                    Ok(cond_type) => {
-                        if let Err(diagnostic) =
-                            require_type(cond.span, &Type::Bool, &cond_type, "if condition")
-                        {
-                            diagnostics.push(diagnostic);
-                        }
-                    }
-                    Err(diagnostic) => diagnostics.push(diagnostic),
-                }
                 let mut then_env = env.clone();
+                if let Some(binding) = binding {
+                    match type_of_expr(cond, env, signatures) {
+                        Ok(cond_type) => {
+                            let cond_type = signatures.canonical_type(&cond_type);
+                            match cond_type {
+                                Type::Optional(inner) if *inner != Type::Void => {
+                                    if binding.name != "_" {
+                                        if env.contains_key(&binding.name) {
+                                            diagnostics.push(diag(
+                                                binding.span,
+                                                &format!(
+                                                    "optional pattern binding '{}' shadows an existing binding",
+                                                    binding.name
+                                                ),
+                                            ));
+                                        } else {
+                                            then_env.insert(
+                                                binding.name.clone(),
+                                                signatures.canonical_type(&inner),
+                                            );
+                                        }
+                                    }
+                                }
+                                Type::Optional(inner) if *inner == Type::Void => {
+                                    diagnostics.push(diag(
+                                        cond.span,
+                                        "optional pattern binding on 'none' needs a concrete optional value type",
+                                    ));
+                                }
+                                other => diagnostics.push(diag(
+                                    cond.span,
+                                    &format!(
+                                        "optional pattern binding requires an optional value, got {}",
+                                        other.name()
+                                    ),
+                                )),
+                            }
+                        }
+                        Err(diagnostic) => diagnostics.push(diagnostic),
+                    }
+                } else {
+                    match type_of_expr(cond, env, signatures) {
+                        Ok(cond_type) => {
+                            if let Err(diagnostic) =
+                                require_type(cond.span, &Type::Bool, &cond_type, "if condition")
+                            {
+                                diagnostics.push(diagnostic);
+                            }
+                        }
+                        Err(diagnostic) => diagnostics.push(diagnostic),
+                    }
+                }
                 let mut then_mutable = mutable.clone();
                 check_block_all(
                     body,

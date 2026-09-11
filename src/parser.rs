@@ -590,10 +590,14 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
             }
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 else_keyword_span,
             } => {
+                if let Some(binding) = binding {
+                    binding.span = binding.span.with_source(source_id);
+                }
                 if let Some(span) = else_keyword_span {
                     *span = span.with_source(source_id);
                 }
@@ -3542,21 +3546,57 @@ fn parse_match_arm_header(line: &Line) -> Result<MatchArm, Diagnostic> {
     })
 }
 
+fn parse_if_condition(
+    line: &Line,
+    keyword: &str,
+) -> Result<(Option<PatternBinding>, Expr), Diagnostic> {
+    let prefix_len = keyword.len() + 1;
+    let raw = &line.text[prefix_len..line.text.len() - 1];
+    let (cond_src, cond_column) = trim_with_column(raw, line.indent + 1 + prefix_len);
+    if cond_src.is_empty() {
+        return Err(diag(
+            line.number,
+            &format!("{keyword} requires a condition"),
+        ));
+    }
+    if let Some(pattern_src) = cond_src.strip_prefix("let ") {
+        let Some(split) = pattern_src.find(" = ") else {
+            return Err(diag(
+                line.number,
+                "optional binding conditions use 'if let name = optionalValue:'",
+            ));
+        };
+        let (name, name_column) = trim_with_column(&pattern_src[..split], cond_column + 4);
+        validate_identifier(name, line.number)?;
+        let (value_src, value_column) =
+            trim_with_column(&pattern_src[split + 3..], cond_column + 4 + split + 3);
+        if value_src.is_empty() {
+            return Err(diag(
+                line.number,
+                "optional binding condition requires a value expression",
+            ));
+        }
+        return Ok((
+            Some(PatternBinding {
+                name: name.to_string(),
+                span: SourceSpan::new(line.number, name_column, name.len()),
+            }),
+            parse_expression_at(value_src, line.number, value_column)?,
+        ));
+    }
+    Ok((
+        None,
+        parse_expression_at(cond_src, line.number, cond_column)?,
+    ))
+}
+
 fn parse_if_statement(
     lines: &[Line],
     index: &mut usize,
     indent: usize,
 ) -> Result<Stmt, Diagnostic> {
     let line = &lines[*index];
-    let cond_src = line.text[3..line.text.len() - 1].trim();
-    if cond_src.is_empty() {
-        return Err(diag(line.number, "if requires a condition"));
-    }
-    let cond = parse_expression_at(
-        cond_src,
-        line.number,
-        expression_column(&line.text, cond_src, line.indent + 1),
-    )?;
+    let (binding, cond) = parse_if_condition(line, "if")?;
     let stmt_line = line.number;
     let stmt_span = line.span();
     *index += 1;
@@ -3569,6 +3609,7 @@ fn parse_if_statement(
         keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 2),
         kind: StmtKind::If {
             cond,
+            binding,
             body,
             else_body,
             else_keyword_span,
@@ -3587,15 +3628,7 @@ fn parse_if_tail(
 
     let line = &lines[*index];
     if line.text.starts_with("elif ") && line.text.ends_with(':') {
-        let cond_src = line.text[5..line.text.len() - 1].trim();
-        if cond_src.is_empty() {
-            return Err(diag(line.number, "elif requires a condition"));
-        }
-        let cond = parse_expression_at(
-            cond_src,
-            line.number,
-            expression_column(&line.text, cond_src, line.indent + 1),
-        )?;
+        let (binding, cond) = parse_if_condition(line, "elif")?;
         let stmt_line = line.number;
         let stmt_span = line.span();
         *index += 1;
@@ -3608,6 +3641,7 @@ fn parse_if_tail(
                 keyword_span: SourceSpan::new(stmt_line, line.indent + 1, 4),
                 kind: StmtKind::If {
                     cond,
+                    binding,
                     body,
                     else_body,
                     else_keyword_span,
@@ -4738,13 +4772,6 @@ enum TokenKind {
 struct Token {
     kind: TokenKind,
     span: SourceSpan,
-}
-
-fn expression_column(haystack: &str, needle: &str, base_column: usize) -> usize {
-    haystack
-        .find(needle)
-        .map(|offset| base_column + offset)
-        .unwrap_or(base_column)
 }
 
 fn parse_expression_at(input: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {

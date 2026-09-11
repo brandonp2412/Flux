@@ -22565,6 +22565,114 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_if_let_patterns_unwrap_copy_values_safely_and_natively() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+fn maybePoint(value: i64) -> Point? {
+    if value > 0:
+        return Point { x: value }
+    return none
+}
+
+fn main() -> i64 {
+    if let point = maybePoint(7):
+        print(point.x)
+    else:
+        print(-1)
+    if let missing = maybePoint(0):
+        print(missing.x)
+    elif let fallback = maybePoint(4):
+        print(fallback.x)
+    else:
+        print(-2)
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional if-let patterns should typecheck");
+    let formatted =
+        fluxc::formatter::format_source(source).expect("optional if-let should format canonically");
+    assert!(formatted.contains("if let point = maybePoint(7):"));
+    assert!(formatted.contains("elif let fallback = maybePoint(4):"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional if-let should reparse"),
+        formatted
+    );
+
+    let generated = compile_to_c(source).expect("optional if-let should lower natively");
+    assert!(generated.contains("flux__optional_pattern_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(".value;"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-if-let-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional if-let directory should be writable");
+    let c_path = root.join("optional_if_let.c");
+    let exe_path = root.join("optional_if_let");
+    fs::write(&c_path, generated).expect("generated optional if-let C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile native optional if-let");
+    assert!(
+        compile.status.success(),
+        "optional if-let C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional if-let program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n4\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    if let value = 1:
+        print(value)
+    return 0
+}
+"#;
+    let error =
+        check_source(non_optional).expect_err("optional binding must reject non-optional values");
+    assert!(
+        error
+            .message
+            .contains("optional pattern binding requires an optional value, got i64"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let untyped_none = r#"
+fn main() -> i64 {
+    if let value = none:
+        print(value)
+    return 0
+}
+"#;
+    let error = check_source(untyped_none)
+        .expect_err("optional binding on bare none needs a concrete optional type");
+    assert!(
+        error
+            .message
+            .contains("optional pattern binding on 'none' needs a concrete optional value type"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn rejects_error_comparison_with_string() {
     let source = r#"
 fn main() -> i64 {

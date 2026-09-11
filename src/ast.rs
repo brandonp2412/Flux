@@ -515,6 +515,7 @@ pub enum StmtKind {
     },
     If {
         cond: Expr,
+        binding: Option<PatternBinding>,
         body: Vec<Stmt>,
         else_body: Vec<Stmt>,
         else_keyword_span: Option<SourceSpan>,

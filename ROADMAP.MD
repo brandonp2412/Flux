@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 491
-- Reported overall progress: **66%**
+- Completed baseline units: 492
+- Reported overall progress: **67%**
 - Current net scope growth after the baseline: 107 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -216,12 +216,12 @@ Reference set (current Dart language documentation):
 Flux currently reserves `nil` specifically for `error`; a general optional-value design must therefore be explicit and must not weaken type safety.
 
 - [ ] Optional value types, likely `T?`, with non-optional types remaining the default.
-  - [x] Bootstrap explicit Copy optionals: `i64?`, `bool?`, `str?`, `error?`, and recursively Copy struct/enum values are distinct static types; `none` is separate from error-only `nil`; ordinary inner values inject at typed optional bindings/assignments/calls/returns; aggregate optionals lower by value through allocation-free tagged structs in dependency-safe native type order; non-Copy list/resource-shaped optionals remain rejected until owned transfer/borrow semantics exist; formatter/IR/semantic traversal preserve the syntax; pattern unwrapping, flow promotion, and optional-aware operators remain pending.
+  - [x] Bootstrap explicit Copy optionals: `i64?`, `bool?`, `str?`, `error?`, and recursively Copy struct/enum values are distinct static types; `none` is separate from error-only `nil`; ordinary inner values inject at typed optional bindings/assignments/calls/returns; aggregate optionals lower by value through allocation-free tagged structs in dependency-safe native type order; non-Copy list/resource-shaped optionals remain rejected until owned transfer/borrow semantics exist; formatter/IR/semantic traversal preserve the syntax; flow promotion and remaining optional-aware operators remain pending.
 - [x] Null/optional-aware access analogous to Dart `?.`: optional Copy-struct receivers support safe field access with single receiver evaluation, absence propagation, chained access, and flattened optional field results; non-optional receivers and untyped bare `none` are rejected. Struct literal/update fields now also lower ordinary Copy values into optional fields through the same explicit tagged representation instead of relying on invalid implicit C conversion. Non-Copy optional receivers remain sequenced behind owned-value transfer/borrow semantics.
 - [ ] Optional-aware indexing analogous to Dart `?[]`.
 - [x] Coalescing analogous to Dart `??`: the optional left operand is evaluated exactly once, present values bypass the fallback, absent values lazily evaluate a type-compatible fallback, optional fallback chains preserve optionality, formatter/IR tooling preserve the operator, and native lowering remains allocation-free.
 - [x] Coalescing assignment analogous to Dart `??=` where mutation is valid: mutable optional locals accept `value ??= fallback`, preserve the canonical ergonomic spelling through formatting, reuse the allocation-free optional/coalescing lowering, evaluate the fallback lazily only when the current value is absent, and retain ordinary static assignment/mutability checks.
-- [ ] Safe optional unwrapping via patterns/flow analysis.
+- [x] Safe optional unwrapping via binding patterns: `if let value = optionalValue:` and `elif let ...` evaluate a Copy optional exactly once, enter the branch only when present, infer and bind the concrete inner type only in that branch, support `_` ignores, reject bare `none`, non-optional values, and binding shadowing, preserve formatter/semantic/CFG facts, and lower directly through the optional tag without assertions or allocation. General flow-sensitive promotion remains tracked separately below.
 - [ ] Avoid routine runtime null assertions; any force-unwrap equivalent must be explicit and discouraged.
 - [ ] Flow-sensitive promotion after optional/type checks.
 

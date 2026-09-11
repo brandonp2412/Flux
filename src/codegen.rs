@@ -14289,11 +14289,64 @@ fn emit_block(
             }
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 ..
             } => {
-                if let Some(ConstantValue::Bool(condition)) =
+                if let Some(binding) = binding {
+                    let optional = emit_expr(cond, env, signatures)?;
+                    let optional_ty = signatures.canonical_type(&optional.ty);
+                    let Type::Optional(inner) = optional_ty else {
+                        return Err(diag(
+                            cond.span,
+                            "non-optional value reached optional pattern code generation",
+                        ));
+                    };
+                    let inner = signatures.canonical_type(&inner);
+                    let temp = format!("flux__optional_pattern_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {temp} = {};\n",
+                        c_type(&Type::Optional(Box::new(inner.clone())), signatures),
+                        optional.code
+                    ));
+                    out.push_str(&format!("{pad}if ({temp}.has_value) {{\n"));
+                    let mut then_env = env.clone();
+                    if binding.name != "_" {
+                        out.push_str(&format!(
+                            "{pad}    {} {} = {temp}.value;\n",
+                            c_type(&inner, signatures),
+                            local_c_name(&binding.name)
+                        ));
+                        then_env.insert(binding.name.clone(), inner);
+                    }
+                    emit_block(
+                        out,
+                        body,
+                        depth + 1,
+                        &mut then_env,
+                        signatures,
+                        temp_counter,
+                        context,
+                    )?;
+                    if else_body.is_empty() {
+                        out.push_str(&format!("{pad}}}\n"));
+                    } else {
+                        out.push_str(&format!("{pad}}} else {{\n"));
+                        let mut else_env = env.clone();
+                        emit_block(
+                            out,
+                            else_body,
+                            depth + 1,
+                            &mut else_env,
+                            signatures,
+                            temp_counter,
+                            context,
+                        )?;
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
+                } else if let Some(ConstantValue::Bool(condition)) =
                     fold_primitive_expr(cond, env, signatures)?
                 {
                     let selected = if condition { body } else { else_body };

@@ -738,6 +738,7 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
             }
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 else_keyword_span,
@@ -747,10 +748,12 @@ fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>)
                 } else {
                     "if"
                 };
-                lines.insert(
-                    stmt.line,
-                    format!("{pad}{keyword} {}:", format_expr(cond, 0)),
-                );
+                let condition = if let Some(binding) = binding {
+                    format!("let {} = {}", binding.name, format_expr(cond, 0))
+                } else {
+                    format_expr(cond, 0)
+                };
+                lines.insert(stmt.line, format!("{pad}{keyword} {condition}:"));
                 format_block(body, depth + 1, lines);
                 if !else_body.is_empty() {
                     let nested_elif = else_keyword_span.is_some_and(|span| {

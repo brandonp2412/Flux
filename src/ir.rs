@@ -1247,23 +1247,48 @@ impl<'a> ControlFlowBuilder<'a> {
             }
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 ..
             } => {
                 let node = self.node(ControlFlowNodeKind::Conditional, stmt.span);
                 let then_entry = self.build_block(body, successor, loop_targets);
+                let then_entry = if let Some(binding) = binding {
+                    let binding_node = self.linear_node(
+                        ControlFlowNodeKind::PatternBindings,
+                        binding.span,
+                        then_entry,
+                        ControlFlowOwnership::default(),
+                    );
+                    if binding.name != "_"
+                        && let Some(Type::Optional(inner)) = self.scalar_expression_type(cond)
+                    {
+                        self.set_definitions(
+                            binding_node,
+                            vec![self.definition(&binding.name, &inner, binding.span)],
+                        );
+                    }
+                    binding_node
+                } else {
+                    then_entry
+                };
                 let else_entry = self.build_block(else_body, successor, loop_targets);
-                match typecheck::constant_primitive_value(cond, self.signatures) {
-                    Some(typecheck::ConstantValue::Bool(true)) => {
-                        self.edge(node, then_entry, ControlFlowEdgeKind::True);
-                    }
-                    Some(typecheck::ConstantValue::Bool(false)) => {
-                        self.edge(node, else_entry, ControlFlowEdgeKind::False);
-                    }
-                    _ => {
-                        self.edge(node, then_entry, ControlFlowEdgeKind::True);
-                        self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                if binding.is_some() {
+                    self.edge(node, then_entry, ControlFlowEdgeKind::True);
+                    self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                } else {
+                    match typecheck::constant_primitive_value(cond, self.signatures) {
+                        Some(typecheck::ConstantValue::Bool(true)) => {
+                            self.edge(node, then_entry, ControlFlowEdgeKind::True);
+                        }
+                        Some(typecheck::ConstantValue::Bool(false)) => {
+                            self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                        }
+                        _ => {
+                            self.edge(node, then_entry, ControlFlowEdgeKind::True);
+                            self.edge(node, else_entry, ControlFlowEdgeKind::False);
+                        }
                     }
                 }
                 self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node)

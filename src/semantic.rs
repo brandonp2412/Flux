@@ -751,8 +751,33 @@ fn collect_block_symbols(
                 }
             }
             StmtKind::If {
-                body, else_body, ..
+                cond,
+                binding,
+                body,
+                else_body,
+                ..
             } => {
+                let binding_ty = binding.as_ref().and_then(|_| {
+                    let env = semantic_env(symbols);
+                    typecheck::type_of_expr(cond, &env, signatures)
+                        .ok()
+                        .map(|ty| signatures.canonical_type(&ty))
+                        .and_then(|ty| match ty {
+                            Type::Optional(inner) if *inner != Type::Void => Some(*inner),
+                            _ => None,
+                        })
+                });
+                collect_expr_pattern_symbols(cond, symbols, signatures);
+                if let Some(binding) = binding
+                    && binding.name != "_"
+                {
+                    symbols.push(SemanticSymbol {
+                        name: binding.name.clone(),
+                        kind: SymbolKind::PatternBinding,
+                        ty: binding_ty,
+                        span: binding.span,
+                    });
+                }
                 collect_block_symbols(body, symbols, signatures);
                 collect_block_symbols(else_body, symbols, signatures);
             }
