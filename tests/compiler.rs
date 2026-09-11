@@ -7137,6 +7137,67 @@ fn main() -> i64 {
 }
 
 #[test]
+fn emits_c_header_for_public_copy_struct_abi() {
+    let source = r#"
+pub struct Point {
+    x: i64
+    y: i64
+}
+
+pub struct Segment {
+    start: Point
+    end: Point
+}
+
+pub type PublicSegment = Segment
+
+pub fn shift(segment: PublicSegment, delta: i64) -> Segment {
+    return Segment { start: Point { x: segment.start.x + delta, y: segment.start.y }, end: Point { x: segment.end.x + delta, y: segment.end.y } }
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header =
+        compile_to_c_header(source).expect("public Copy structs should cross the C ABI by value");
+    let point = header
+        .find("struct flux__type_Point {")
+        .expect("Point layout should be emitted");
+    let segment = header
+        .find("struct flux__type_Segment {")
+        .expect("Segment layout should be emitted");
+    assert!(
+        point < segment,
+        "nested struct dependencies must be emitted first"
+    );
+    assert!(header.contains("int64_t flux__field_x;"));
+    assert!(header.contains("struct flux__type_Point flux__field_start;"));
+    assert!(header.contains("typedef struct flux__type_Segment flux__alias_PublicSegment;"));
+    assert!(header.contains(
+        "struct flux__type_Segment flux__fn_shift(flux__alias_PublicSegment flux__local_segment, int64_t flux__local_delta);"
+    ));
+
+    let root = std::env::temp_dir().join(format!("flux-c-struct-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary C struct header directory should be writable");
+    let header_path = root.join("flux_struct_api.h");
+    fs::write(&header_path, &header).expect("generated struct header should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&header_path)
+        .output()
+        .expect("clang should validate the generated struct C header");
+    assert!(
+        output.status.success(),
+        "generated struct C header should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_c_abi_exports_use_module_qualified_linker_symbols() {
     let root =
         std::env::temp_dir().join(format!("flux-module-qualified-abi-{}", std::process::id()));
@@ -7149,8 +7210,16 @@ fn package_c_abi_exports_use_module_qualified_linker_symbols() {
     .expect("ABI package manifest should be writable");
     fs::write(
         root.join("main.flux"),
-        r#"pub fn scale(value: i64) -> i64 {
+        r#"pub struct Point {
+    value: i64
+}
+
+pub fn scale(value: i64) -> i64 {
     return value * 2
+}
+
+pub fn identity(point: Point) -> Point {
+    return point
 }
 
 fn main() -> i64 {
@@ -7170,10 +7239,41 @@ fn main() -> i64 {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let symbol = format!("flux__abi_{module_component}__fn_scale");
+    let identity_symbol = format!("flux__abi_{module_component}__fn_identity");
+    let point_type = format!("flux__abi_{module_component}__type_Point");
 
     assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
+    assert!(header.contains(&format!("struct {point_type} {{")));
     assert!(header.contains(&format!("int64_t {symbol}(int64_t flux__local_value);")));
+    assert!(header.contains(&format!(
+        "struct {point_type} {identity_symbol}(struct {point_type} flux__local_point);"
+    )));
     assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{identity_symbol}\")")));
+
+    let header_path = root.join("package.h");
+    let consumer_path = root.join("consumer.c");
+    let consumer_object = root.join("consumer.o");
+    fs::write(&header_path, &header).expect("package ABI header should be writable");
+    fs::write(
+        &consumer_path,
+        format!(
+            "#include \"package.h\"\nint64_t probe(void) {{ struct {point_type} point = {{ .flux__field_value = 7 }}; return {identity_symbol}(point).flux__field_value; }}\n"
+        ),
+    )
+    .expect("package ABI C consumer should be writable");
+    let consumer_compile = Command::new("clang")
+        .args(["-std=c11", "-c"])
+        .arg(&consumer_path)
+        .arg("-o")
+        .arg(&consumer_object)
+        .output()
+        .expect("clang should compile a consumer of the package ABI header");
+    assert!(
+        consumer_compile.status.success(),
+        "package ABI header consumer should compile: {}",
+        String::from_utf8_lossy(&consumer_compile.stderr)
+    );
 
     let c_path = root.join("package.c");
     let object_path = root.join("package.o");
@@ -7202,6 +7302,10 @@ fn main() -> i64 {
         "qualified ABI symbol should be exported"
     );
     assert!(
+        symbols.contains(&identity_symbol),
+        "qualified aggregate ABI symbol should be exported"
+    );
+    assert!(
         !symbols.contains("flux__fn_scale"),
         "the legacy unqualified linker symbol must not leak from package builds"
     );
@@ -7210,14 +7314,15 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_c_header_exports_with_non_scalar_ffi_types() {
+fn rejects_c_header_exports_with_ownership_sensitive_ffi_types() {
     let source = r#"
-pub struct Point {
-    x: i64
+pub enum Choice {
+    First(i64)
+    Second(i64)
 }
 
-pub fn shift(point: Point) -> Point {
-    return point
+pub fn choose(value: Choice) -> Choice {
+    return value
 }
 
 fn main() -> i64 {
@@ -7225,9 +7330,11 @@ fn main() -> i64 {
 }
 "#;
 
-    let error = compile_to_c_header(source).expect_err("non-scalar FFI export should be rejected");
+    let error = compile_to_c_header(source).expect_err(
+        "enum FFI exports should remain rejected until their stable layout is explicit",
+    );
     assert_eq!(error.stage, DiagnosticStage::Codegen);
-    assert!(error.message.contains("unsupported FFI type 'Point'"));
+    assert!(error.message.contains("unsupported FFI type 'Choice'"));
 }
 
 #[test]

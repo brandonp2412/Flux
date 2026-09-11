@@ -32,12 +32,36 @@ pub fn emit_c_header_with_module_names(
         .iter()
         .filter(|function| function.public && function.name != "main")
         .collect::<Vec<_>>();
-    let public_scalar_aliases = program
+    let public_ffi_aliases = program
         .aliases
         .iter()
         .filter(|alias| alias.public && ffi_header_type_supported(&alias.target, signatures))
         .map(|alias| alias.name.clone())
         .collect::<HashSet<_>>();
+    let public_structs = value_type_emit_order(program, signatures)?
+        .into_iter()
+        .filter_map(|definition| match definition {
+            ValueDef::Struct(definition)
+                if definition.public
+                    && ffi_header_type_supported(
+                        &Type::Named(definition.name.clone()),
+                        signatures,
+                    ) =>
+            {
+                Some(definition)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let public_struct_names = public_structs
+        .iter()
+        .map(|definition| {
+            (
+                definition.name.clone(),
+                c_header_struct_name(definition, source_modules),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let public_constants = program
         .constants
         .iter()
@@ -86,16 +110,35 @@ pub fn emit_c_header_with_module_names(
     });
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
+    out.push_str(
+        "/* Public Copy structs cross the ABI by value; their field layout is emitted below. */\n",
+    );
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
 
-    for alias in ordered_public_scalar_aliases(program, &public_scalar_aliases) {
+    for definition in &public_structs {
+        emit_c_header_struct_definition(
+            &mut out,
+            definition,
+            &public_ffi_aliases,
+            &public_struct_names,
+            signatures,
+        );
+        out.push('\n');
+    }
+
+    for alias in ordered_public_scalar_aliases(program, &public_ffi_aliases) {
         out.push_str(&format!(
             "typedef {} flux__alias_{};\n",
-            c_header_type(&alias.target, &public_scalar_aliases, signatures),
+            c_header_type(
+                &alias.target,
+                &public_ffi_aliases,
+                &public_struct_names,
+                signatures,
+            ),
             alias.name
         ));
     }
-    if !public_scalar_aliases.is_empty() {
+    if !public_ffi_aliases.is_empty() {
         out.push('\n');
     }
 
@@ -106,7 +149,12 @@ pub fn emit_c_header_with_module_names(
         out.push_str(&format!(
             "#define flux__const_{} (({}){})\n",
             constant.name,
-            c_header_type(&constant.ty, &public_scalar_aliases, signatures),
+            c_header_type(
+                &constant.ty,
+                &public_ffi_aliases,
+                &public_struct_names,
+                signatures,
+            ),
             constant_c_value(&signature.value)
         ));
     }
@@ -123,7 +171,7 @@ pub fn emit_c_header_with_module_names(
             for (index, ty) in function.returns.iter().enumerate() {
                 out.push_str(&format!(
                     "    {} v{index};\n",
-                    c_header_type(ty, &public_scalar_aliases, signatures)
+                    c_header_type(ty, &public_ffi_aliases, &public_struct_names, signatures,)
                 ));
             }
             out.push_str("};\n\n");
@@ -133,7 +181,8 @@ pub fn emit_c_header_with_module_names(
     for function in public_functions {
         out.push_str(&c_header_function_prototype(
             function,
-            &public_scalar_aliases,
+            &public_ffi_aliases,
+            &public_struct_names,
             signatures,
             source_modules,
         ));
@@ -188,34 +237,81 @@ fn ordered_public_scalar_aliases<'a>(
 }
 
 fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
-    matches!(
-        signatures.canonical_type(ty),
-        Type::I64 | Type::Bool | Type::Str | Type::Error
-    )
+    match signatures.canonical_type(ty) {
+        Type::I64 | Type::Bool | Type::Str | Type::Error => true,
+        Type::Named(name) => signatures.struct_type(&name).is_some() && signatures.is_copy_type(ty),
+        _ => false,
+    }
+}
+
+fn c_header_struct_name(
+    definition: &StructDef,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&definition.name_span.source_id) {
+        format!(
+            "flux__abi_{}__type_{}",
+            abi_module_component(module),
+            definition.name
+        )
+    } else {
+        struct_c_name(&definition.name)
+    }
+}
+
+fn emit_c_header_struct_definition(
+    out: &mut String,
+    definition: &StructDef,
+    public_ffi_aliases: &HashSet<String>,
+    public_struct_names: &HashMap<String, String>,
+    signatures: &Signatures,
+) {
+    let name = public_struct_names
+        .get(&definition.name)
+        .expect("public FFI struct has a header name");
+    out.push_str(&format!("struct {name} {{\n"));
+    for field in &definition.fields {
+        out.push_str(&format!(
+            "    {} {};\n",
+            c_header_type(
+                &field.ty,
+                public_ffi_aliases,
+                public_struct_names,
+                signatures,
+            ),
+            field_c_name(&field.name)
+        ));
+    }
+    out.push_str("};\n");
 }
 
 fn c_header_type(
     ty: &Type,
-    public_scalar_aliases: &HashSet<String>,
+    public_ffi_aliases: &HashSet<String>,
+    public_struct_names: &HashMap<String, String>,
     signatures: &Signatures,
 ) -> String {
-    if let Type::Named(name) = ty
-        && public_scalar_aliases.contains(name)
-    {
-        return format!("flux__alias_{name}");
+    if let Type::Named(name) = ty {
+        if public_ffi_aliases.contains(name) {
+            return format!("flux__alias_{name}");
+        }
+        if let Some(struct_name) = public_struct_names.get(name) {
+            return format!("struct {struct_name}");
+        }
     }
     c_type(ty, signatures)
 }
 
 fn c_header_function_prototype(
     function: &Function,
-    public_scalar_aliases: &HashSet<String>,
+    public_ffi_aliases: &HashSet<String>,
+    public_struct_names: &HashMap<String, String>,
     signatures: &Signatures,
     source_modules: &HashMap<SourceId, String>,
 ) -> String {
     let ret = match function.returns.as_slice() {
         [] => "void".to_string(),
-        [ty] => c_header_type(ty, public_scalar_aliases, signatures),
+        [ty] => c_header_type(ty, public_ffi_aliases, public_struct_names, signatures),
         _ => format!(
             "struct {}",
             c_header_multi_return_struct_name(function, source_modules)
@@ -230,7 +326,12 @@ fn c_header_function_prototype(
             .map(|param| {
                 format!(
                     "{} {}",
-                    c_header_type(&param.ty, public_scalar_aliases, signatures),
+                    c_header_type(
+                        &param.ty,
+                        public_ffi_aliases,
+                        public_struct_names,
+                        signatures,
+                    ),
                     local_c_name(&param.name)
                 )
             })
