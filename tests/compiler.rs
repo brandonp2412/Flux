@@ -23016,6 +23016,35 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_force_unwrap_syntax_in_favor_of_safe_optional_handling() {
+    let source = r#"
+fn main() -> i64 {
+    let value: i64? = 7
+    return value!
+}
+"#;
+
+    let error = check_source(source).expect_err("postfix force unwrap must stay unavailable");
+    assert!(
+        error.message.contains(
+            "postfix '!' force-unwrapping is intentionally unsupported; use 'if let' to unwrap safely or '??' to provide a fallback"
+        ),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let safe = r#"
+fn main() -> i64 {
+    let value: i64? = 7
+    if let present = value:
+        return present
+    return value ?? 0
+}
+"#;
+    check_source(safe).expect("safe optional handling should remain available");
+}
+
+#[test]
 fn rejects_error_comparison_with_string() {
     let source = r#"
 fn main() -> i64 {

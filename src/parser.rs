@@ -5729,6 +5729,15 @@ impl ExprParser<'_> {
                 };
             }
         }
+        if let Some(token) = self.tokens.get(self.index) {
+            if matches!(token.kind, TokenKind::Bang) {
+                return Err(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    token.span,
+                    "postfix '!' force-unwrapping is intentionally unsupported; use 'if let' to unwrap safely or '??' to provide a fallback",
+                ));
+            }
+        }
         Ok(expr)
     }
 
