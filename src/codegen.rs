@@ -1185,6 +1185,23 @@ fn emit_runtime_prelude(
     if uses_android {
         out.push_str("static ANativeActivity *flux__android_activity = NULL;\n");
     }
+    if uses_android && runtime_usage.contains("flux__android_valid_ui_color(") {
+        out.push_str("static bool flux__android_valid_ui_color(const char *value) {\n");
+        out.push_str("    if (value == NULL) return false;\n");
+        out.push_str("    size_t length = strlen(value);\n");
+        out.push_str("    if ((length == 7 || length == 9) && value[0] == '#') return strspn(value + 1, \"0123456789abcdefABCDEF\") == length - 1;\n");
+        out.push_str("    return ");
+        for (index, token) in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS
+            .iter()
+            .enumerate()
+        {
+            if index > 0 {
+                out.push_str(" || ");
+            }
+            out.push_str(&format!("strcmp(value, {}) == 0", c_string(token)));
+        }
+        out.push_str(";\n}\n");
+    }
     if uses_android_generated_ui {
         out.push_str("static ANativeActivity flux__android_activity_compat = {0};\n");
     }
@@ -4709,23 +4726,22 @@ fn emit_android_native_application(
         if element.kind == "Text" {
             let (default_size, default_bold, default_line_height_percent, default_max_width_chars) =
                 text_semantic_typography(element, signatures)?;
-            let text_color = view_property(element, "color")
-                .map(|property| {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.color must be a compile-time string",
-                        ));
-                    };
+            let text_color_property = view_property(element, "color");
+            let (text_color, dynamic_text_color) = if let Some(property) = text_color_property {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
                     if !valid_ui_color(&value) {
                         return Err(diag(
                             property.value.span,
                             "Text.color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
                         ));
                     }
-                    Ok(value)
-                })
-                .transpose()?;
+                    (Some(c_string(&value)), false)
+                } else {
+                    (Some(ui_expr_c(&property.value, view, signatures)?), true)
+                }
+            } else {
+                (None, false)
+            };
             let text_size_property = view_property(element, "size");
             let (text_size, dynamic_text_size) = if let Some(property) = text_size_property {
                 if let Some(value) = static_expr_i64(&property.value, signatures) {
@@ -4756,10 +4772,15 @@ fn emit_android_native_application(
             let underline = text_flag("underline", false)?;
             let strikethrough = text_flag("strikethrough", false)?;
             if let Some(value) = text_color.as_ref() {
-                out.push_str(&format!(
-                    "    jstring child_text_color = flux__android_utf8_string(env, {});\n",
-                    c_string(value)
-                ));
+                if dynamic_text_color {
+                    out.push_str(&format!(
+                        "    const char *child_text_color_value = {value};\n    if (!flux__android_valid_ui_color(child_text_color_value)) {{ fputs(\"Flux runtime error: Text.color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n    jstring child_text_color = flux__android_utf8_string(env, child_text_color_value);\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    jstring child_text_color = flux__android_utf8_string(env, {value});\n"
+                    ));
+                }
                 out.push_str("    if (child_text_color == NULL) return;\n");
             } else {
                 out.push_str("    jstring child_text_color = NULL;\n");
@@ -7632,6 +7653,7 @@ fn android_ui_element_needs_refresh(
             "text",
             "selectable",
             "wrap",
+            "color",
             "size",
             "bold",
             "italic",
@@ -7809,6 +7831,8 @@ fn emit_android_ui_refresh(
                             "                if (refresh_single_line != NULL) (*env)->CallVoidMethod(env, child, refresh_single_line, (jboolean)(!({value})));\n"
                         ));
                     }
+                    let dynamic_color =
+                        android_ui_property_needs_refresh(element, "color", &runtime_names);
                     let dynamic_size =
                         android_ui_property_needs_refresh(element, "size", &runtime_names);
                     let dynamic_emphasis = ["bold", "italic", "underline", "strikethrough"]
@@ -7816,7 +7840,7 @@ fn emit_android_ui_refresh(
                         .any(|name| {
                             android_ui_property_needs_refresh(element, name, &runtime_names)
                         });
-                    if dynamic_size || dynamic_emphasis {
+                    if dynamic_color || dynamic_size || dynamic_emphasis {
                         let (_, default_bold, _, _) =
                             text_semantic_typography(element, signatures)?;
                         let emphasis_value =
@@ -7829,6 +7853,20 @@ fn emit_android_ui_refresh(
                         let italic = emphasis_value("italic", false)?;
                         let underline = emphasis_value("underline", false)?;
                         let strikethrough = emphasis_value("strikethrough", false)?;
+                        if dynamic_color {
+                            let value = ui_expr_c(
+                                &view_property(element, "color")
+                                    .expect("dynamic Text.color property exists")
+                                    .value,
+                                view,
+                                signatures,
+                            )?;
+                            out.push_str(&format!(
+                                "                const char *refresh_text_color_value = {value};\n                if (!flux__android_valid_ui_color(refresh_text_color_value)) {{ fputs(\"Flux runtime error: Text.color must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n                jstring refresh_text_color = flux__android_utf8_string(env, refresh_text_color_value);\n"
+                            ));
+                        } else {
+                            out.push_str("                jstring refresh_text_color = NULL;\n");
+                        }
                         let refresh_size = if dynamic_size {
                             let value = ui_expr_c(
                                 &view_property(element, "size")
@@ -7846,8 +7884,9 @@ fn emit_android_ui_refresh(
                         };
                         out.push_str("                jmethodID refresh_text_style = (*env)->GetMethodID(env, activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
                         out.push_str(&format!(
-                            "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, NULL, (jfloat){refresh_size}, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
+                            "                if (refresh_text_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_style, child, refresh_text_color, (jfloat){refresh_size}, (jboolean)({bold}), (jboolean)({italic}), (jboolean)({underline}), (jboolean)({strikethrough}));\n"
                         ));
+                        out.push_str("                if (refresh_text_color != NULL) (*env)->DeleteLocalRef(env, refresh_text_color);\n");
                     }
                     let refresh_font_family =
                         android_ui_property_needs_refresh(element, "font_family", &runtime_names);
