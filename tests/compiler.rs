@@ -1667,8 +1667,13 @@ fn main() -> i64 {
     let rust_listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let connect_port = rust_listener.local_addr().unwrap().port();
     let connect_source = format!(
-        "fn main() -> i64 {{\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.close(socket))\n    return 0\n}}\n"
+        "fn main() -> i64 {{\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.setNoDelay(socket, true))\n    print(net.setNoDelay(socket, false))\n    print(net.close(socket))\n    return 0\n}}\n"
     );
+    let connect_generated =
+        compile_to_c(&connect_source).expect("TCP no-delay should lower on Linux");
+    assert!(connect_generated.contains("flux__net_set_no_delay("));
+    assert!(connect_generated.contains("#include <netinet/tcp.h>"));
+    assert!(connect_generated.contains("TCP_NODELAY"));
     let connect_path = root.join("connect.flux");
     fs::write(&connect_path, connect_source).expect("TCP connect source should be writable");
     let connect_binary = root.join("connect");
@@ -1688,7 +1693,7 @@ fn main() -> i64 {
         .output()
         .expect("TCP connect binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\n");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\nnil\nnil\n");
     drop(rust_listener);
 
     let invalid = r#"
@@ -1703,6 +1708,8 @@ fn main() -> i64 {
     print(accepted)
     print(acceptFailure)
     print(net.close(false))
+    print(net.setNoDelay("bad", true))
+    print(net.setNoDelay(1, 1))
     net.unknown()
     return 0
 }
@@ -1749,6 +1756,12 @@ fn main() -> i64 {
                 && error.message.contains("expected i64"))
     );
     assert!(errors.iter().any(|error| {
+        error.message.contains("net.setNoDelay socket") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("net.setNoDelay enabled") && error.message.contains("expected bool")
+    }));
+    assert!(errors.iter().any(|error| {
         error
             .message
             .contains("net module has no function 'unknown'")
@@ -1759,6 +1772,7 @@ fn hidden() -> void {
     let (listener, failure) = net.tcpListen("127.0.0.1", 0, 8)
     print(listener)
     print(failure)
+    print(net.setNoDelay(listener, true))
 }
 fn main() -> i64 {
     return 0
@@ -1766,6 +1780,8 @@ fn main() -> i64 {
 "#;
     let unused_generated = compile_to_c(unused).expect("dead network calls should tree-shake");
     assert!(!unused_generated.contains("flux__net_tcp_listen("));
+    assert!(!unused_generated.contains("flux__net_set_no_delay("));
+    assert!(!unused_generated.contains("#include <netinet/tcp.h>"));
     assert!(!unused_generated.contains("#include <sys/socket.h>"));
 
     let android_root = root.join("android");

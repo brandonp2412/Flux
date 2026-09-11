@@ -1230,6 +1230,10 @@ fn add_qualified_namespace_completions(
                 "fn net.setNonblocking(socket: i64, enabled: bool) -> error",
             ),
             (
+                "setNoDelay",
+                "fn net.setNoDelay(socket: i64, enabled: bool) -> error",
+            ),
+            (
                 "waitReadable",
                 "fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
@@ -2808,9 +2812,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "setNonblocking" => {
+                "setNonblocking" | "setNoDelay" => {
                     return Some(signature_help_for_builtin(
-                        "net.setNonblocking",
+                        &format!("net.{member}"),
                         &["socket: i64", "enabled: bool"],
                         "error",
                         active_parameter,
@@ -6649,6 +6653,7 @@ mod tests {
             "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains("fn net.setNonblocking(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.setNoDelay(socket: i64, enabled: bool) -> error"));
         assert!(
             net_items
                 .contains("fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)")
@@ -7675,6 +7680,31 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_tcp_no_delay() {
+        let uri = "file:///tmp/network-no-delay.flux";
+        let source = "fn main() -> i64 {\n    print(net.setNoDelay(1, true))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.setNoDelay("))
+            .expect("setNoDelay call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.setNoDelay(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("setNoDelay call should have signature help")
+        .to_json();
+        assert!(help.contains("fn net.setNoDelay(socket: i64, enabled: bool) -> error"));
     }
 
     #[test]

@@ -1027,6 +1027,9 @@ fn emit_runtime_prelude(
         out.push_str("#include <sys/socket.h>\n");
         out.push_str("#include <netdb.h>\n");
         out.push_str("#include <netinet/in.h>\n");
+        if runtime_usage.contains("flux__net_set_no_delay(") {
+            out.push_str("#include <netinet/tcp.h>\n");
+        }
         out.push_str("#include <arpa/inet.h>\n");
         out.push_str("#include <unistd.h>\n");
     }
@@ -3945,6 +3948,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__net_set_nonblocking(") {
         out.push_str("static inline const char *flux__net_set_nonblocking(int64_t socket_handle, bool enabled) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0) return \"failed to read socket flags\"; int updated = enabled ? flags | O_NONBLOCK : flags & ~O_NONBLOCK; if (updated == flags) return NULL; return fcntl((int)socket_handle, F_SETFL, updated) == 0 ? NULL : \"failed to update socket flags\"; }\n");
+    }
+    if runtime_usage.contains("flux__net_set_no_delay(") {
+        out.push_str("static inline const char *flux__net_set_no_delay(int64_t socket_handle, bool enabled) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_STREAM) return \"setNoDelay requires a TCP socket\"; int value = enabled ? 1 : 0; return setsockopt((int)socket_handle, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value)) == 0 ? NULL : \"failed to update TCP no-delay mode\"; }\n");
     }
     if runtime_usage.contains("flux__net_shutdown_read(")
         || runtime_usage.contains("flux__net_shutdown_write(")
@@ -18299,17 +18305,19 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "setNonblocking" => {
+            "setNonblocking" | "setNoDelay" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
                 let enabled = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "setNonblocking" {
+                    "flux__net_set_nonblocking"
+                } else {
+                    "flux__net_set_no_delay"
+                };
                 return Ok((
-                    format!(
-                        "flux__net_set_nonblocking({}, {})",
-                        socket_handle.code, enabled.code
-                    ),
+                    format!("{helper}({}, {})", socket_handle.code, enabled.code),
                     vec![Type::Error],
                     None,
                 ));

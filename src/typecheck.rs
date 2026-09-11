@@ -6278,11 +6278,11 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "setNonblocking" => {
+            "setNonblocking" | "setNoDelay" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!("net.setNonblocking expects 2 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
@@ -6290,14 +6290,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &handle,
-                    "net.setNonblocking socket",
+                    &format!("net.{name} socket"),
                 )?;
                 let enabled = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::Bool,
                     &enabled,
-                    "net.setNonblocking enabled",
+                    &format!("net.{name} enabled"),
                 )?;
                 return Ok(vec![Type::Error]);
             }
