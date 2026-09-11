@@ -3013,6 +3013,35 @@ fn emit_runtime_prelude(
 }
 "#);
     }
+    if runtime_usage.contains("flux__url_decode_component(") {
+        out.push_str(r#"static inline const char *flux__url_decode_component(const char *value, void (*callback)(const char *)) {
+    size_t length = strlen(value);
+    if (length > 65536) return "URL component exceeds 65536 bytes";
+    char decoded[65537];
+    size_t output = 0;
+    for (size_t input = 0; input < length; input += 1) {
+        unsigned char byte = (unsigned char)value[input];
+        if (byte != '%') {
+            decoded[output++] = (char)byte;
+            continue;
+        }
+        if (input + 2 >= length) return "URL component has incomplete percent escape";
+        unsigned char high = (unsigned char)value[input + 1];
+        unsigned char low = (unsigned char)value[input + 2];
+        int high_value = high >= '0' && high <= '9' ? high - '0' : high >= 'a' && high <= 'f' ? high - 'a' + 10 : high >= 'A' && high <= 'F' ? high - 'A' + 10 : -1;
+        int low_value = low >= '0' && low <= '9' ? low - '0' : low >= 'a' && low <= 'f' ? low - 'a' + 10 : low >= 'A' && low <= 'F' ? low - 'A' + 10 : -1;
+        if (high_value < 0 || low_value < 0) return "URL component has invalid percent escape";
+        unsigned char decoded_byte = (unsigned char)((high_value << 4) | low_value);
+        if (decoded_byte == 0) return "URL component cannot decode to NUL";
+        decoded[output++] = (char)decoded_byte;
+        input += 2;
+    }
+    decoded[output] = '\0';
+    callback(decoded);
+    return NULL;
+}
+"#);
+    }
 
     if runtime_usage.contains("flux__net_") {
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
@@ -16559,13 +16588,18 @@ fn emit_qualified_call(
         }
     }
     if namespace == "url" {
-        if !named_args.is_empty() || args.len() != 2 || name != "parseHttp" {
+        if !named_args.is_empty() || args.len() != 2 {
             return Err(diag(span, "invalid URL call reached code generation"));
         }
         let value = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[1], env, signatures)?;
+        let helper = match name {
+            "parseHttp" => "flux__url_parse_http",
+            "decodeComponent" => "flux__url_decode_component",
+            _ => return Err(diag(span, "unknown URL call reached code generation")),
+        };
         return Ok((
-            format!("flux__url_parse_http({}, {})", value.code, callback.code),
+            format!("{helper}({}, {})", value.code, callback.code),
             vec![Type::Error],
             None,
         ));

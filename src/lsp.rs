@@ -1251,6 +1251,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn url.parseHttp(url: str, callback: fn(str, str, i64, str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "decodeComponent",
+            3,
+            "fn url.decodeComponent(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "http" {
@@ -2750,13 +2757,24 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "url" {
-            if member == "parseHttp" {
-                return Some(signature_help_for_builtin(
-                    "url.parseHttp",
-                    &["url: str", "callback: fn(str, str, i64, str) -> void"],
-                    "error",
-                    active_parameter,
-                ));
+            match member {
+                "parseHttp" => {
+                    return Some(signature_help_for_builtin(
+                        "url.parseHttp",
+                        &["url: str", "callback: fn(str, str, i64, str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "decodeComponent" => {
+                    return Some(signature_help_for_builtin(
+                        "url.decodeComponent",
+                        &["value: str", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
             }
         }
         if namespace == "http" {
@@ -7479,6 +7497,33 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_url_component_decoding() {
+        let uri = "file:///tmp/url-decode-signature.flux";
+        let source = "fn decoded(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", decoded))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let needle = "url.decodeComponent(";
+        let line_index = source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("URL decode call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("URL decode call should have signature help")
+        .to_json();
+        assert!(
+            help.contains("fn url.decodeComponent(value: str, callback: fn(str) -> void) -> error")
+        );
     }
 
     #[test]

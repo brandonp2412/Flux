@@ -2313,6 +2313,78 @@ fn main() -> i64 {
 }
 
 #[test]
+fn url_component_percent_decoding_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn decoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(url.decodeComponent("hello%20world%2Fok", decoded))
+    print(url.decodeComponent("plus+stays", decoded))
+    print(url.decodeComponent("%", decoded))
+    print(url.decodeComponent("%GG", decoded))
+    print(url.decodeComponent("%00", decoded))
+    return 0
+}
+"#;
+    check_source(source).expect("URL component decoding should typecheck");
+    let generated = compile_to_c(source).expect("URL component decoding should lower natively");
+    assert!(generated.contains("flux__url_decode_component("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn decoded(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", decoded))\n    return 0\n}\n",
+    )
+    .expect_err("URL component callback shape must be exact");
+    assert!(
+        invalid_callback
+            .message
+            .contains("url.decodeComponent callback")
+    );
+
+    let unused = r#"
+fn decoded(_value: str) -> void {
+}
+fn hidden() -> void {
+    print(url.decodeComponent("a%20b", decoded))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead URL decoder should tree-shake");
+    assert!(!unused_generated.contains("flux__url_decode_component("));
+
+    let root = std::env::temp_dir().join(format!("flux-url-decode-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URL decode fixture should be writable");
+    let source_path = root.join("decode.flux");
+    fs::write(&source_path, source).expect("URL decode Flux source should be writable");
+    let binary = root.join("decode");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URL decode Flux binary should build");
+    assert!(
+        built.status.success(),
+        "URL decode fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URL decode Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "hello world/ok\nnil\nplus+stays\nnil\nURL component has incomplete percent escape\nURL component has invalid percent escape\nURL component cannot decode to NUL\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_body_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
