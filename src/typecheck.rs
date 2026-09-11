@@ -1324,7 +1324,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                     returns: Vec::new(),
                 });
             }
-            "on_drag" => {
+            "on_drag" | "on_swipe" => {
                 return Some(Type::Function {
                     params: vec![Type::I64, Type::I64],
                     returns: Vec::new(),
@@ -1571,6 +1571,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_double_tap",
     "on_long_press",
     "on_drag",
+    "on_swipe",
     "on_scale",
     "on_hover",
     "on_leave",

@@ -5468,6 +5468,7 @@ fn emit_android_native_application(
             );
         }
         if view_property(element, "on_drag").is_some()
+            || view_property(element, "on_swipe").is_some()
             || view_property(element, "on_scale").is_some()
         {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
@@ -5783,6 +5784,25 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str(&format!(
             "        case {element_id}: {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); break;\n",
+            function_c_name(function)
+        ));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnSwipe(JNIEnv *env, jclass activity_class, jint view_id, jlong velocity_x, jlong velocity_y) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
+    for element in &view.elements {
+        let Some(action) = view_property(element, "on_swipe") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap native onSwipe requires a named fn(i64, i64) -> void callback",
+            ));
+        };
+        let element_id = stable_android_element_id(&view.name, &element.name);
+        out.push_str(&format!(
+            "        case {element_id}: {}((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh(); break;\n",
             function_c_name(function)
         ));
     }
@@ -6379,6 +6399,19 @@ fn emit_linux_gtk_application(
             };
             out.push_str(&format!(
                 "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh(); }}\n",
+                element.name,
+                function_c_name(function),
+            ));
+        }
+        if let Some(action) = view_property(element, "on_swipe") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onSwipe requires a named fn(i64, i64) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static void flux__ui_swipe_{}(GtkGestureSwipe *gesture, double velocity_x, double velocity_y, gpointer data) {{ (void)gesture; (void)data; {}((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh(); }}\n",
                 element.name,
                 function_c_name(function),
             ));
@@ -7488,6 +7521,19 @@ fn emit_linux_gtk_application(
             ));
             out.push_str(&format!(
                 "    g_signal_connect({controller}, \"drag-update\", G_CALLBACK(flux__ui_drag_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
+        if view_property(element, "on_swipe").is_some() {
+            let controller = format!("flux__swipe_{}", element.name);
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_swipe_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"swipe\", G_CALLBACK(flux__ui_swipe_{}), NULL);\n",
                 element.name
             ));
             out.push_str(&format!(

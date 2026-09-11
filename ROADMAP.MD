@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 483
+- Completed baseline units: 484
 - Reported overall progress: **65%**
 - Current net scope growth after the baseline: 93 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -605,11 +605,12 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Portable programmatic focus navigation remains compiler-owned and object-free: `focus.next(wrap: bool = false)`, `focus.previous(wrap: bool = false)`, `focus.first()`, `focus.last()`, and `focus.clear()` lower to native GTK focus traversal on Linux and reuse direct native View focus traversal on Android, with LSP completion/signature help and no focus/controller object exposed to Flux source.
 - [x] Hover.
   - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
-- [ ] Gestures.
+- [x] Gestures.
   - [x] Portable single-tap recognition is available through `onTap`.
   - [x] Portable double-tap recognition through typed `onDoubleTap: fn() -> void` callbacks or functional state transitions: Linux uses native multi-press `GtkGestureClick` recognition, while Android recognizes two native click activations within the platform double-tap timeout and dispatches directly into compiled Flux without exposing event objects or application bridge code. Single-tap/click behavior remains intact, including keyboard/accessibility activation through the native click path.
-  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Velocity semantics remain pending.
+  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer.
   - [x] Portable drag-offset recognition through typed `onDrag: fn(i64, i64) -> void`: callbacks receive cumulative logical X/Y offsets from the gesture origin without an event/controller object, Linux lowers directly through native `GtkGestureDrag` `drag-update`, and Android reuses the native `View.OnTouchListener` path with density-normalized coordinates before direct compiled-Flux dispatch. Ordinary tap/long-press behavior remains native, callback delivery refreshes the existing view state in place, and drag-and-drop payload/target semantics remain a separate concern below.
+  - [x] Portable swipe-velocity recognition through typed `onSwipe: fn(i64, i64) -> void`: callbacks receive logical X/Y velocity units per second without an event/controller object; Linux lowers through native `GtkGestureSwipe`, while Android uses the platform `VelocityTracker` plus touch-slop/minimum-fling thresholds and density-normalizes velocity before direct compiled-Flux dispatch. Taps therefore do not spuriously become swipes, callback delivery refreshes the current view state, and no application-authored platform bridge is introduced.
   - [x] Portable pinch-scale recognition through typed `onScale: fn(i64) -> void`: callbacks receive cumulative scale percent from the gesture origin (`100` = unchanged), Linux lowers through native `GtkGestureZoom` scale updates, and Android tracks the native two-pointer distance through the existing touch-listener boundary before dispatching directly into compiled Flux. No event/controller object or application-authored platform bridge is exposed.
 - [ ] Drag and drop.
 - [x] Keyboard shortcuts for the current native application surface: typed shortcuts are portable across Linux/Android, work on Buttons and other tappable built-ins, support explicit window/focused scope, and reject ambiguous app-window conflicts at compile time without introducing command/controller objects.

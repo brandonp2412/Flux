@@ -3934,6 +3934,7 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inputmethod.BaseInputConnection;
@@ -3965,6 +3966,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private final Map<Integer, float[]> dragStarts = new HashMap<>();
     private final Map<Integer, Float> scaleStarts = new HashMap<>();
+    private final Map<Integer, VelocityTracker> swipeTrackers = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
     private final Set<String> shortcutFocusedOnly = new HashSet<>();
@@ -3991,6 +3993,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnDoubleTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
+    private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);
     private static native void nativeOnScale(int viewId, long scalePercent);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
@@ -4129,18 +4132,55 @@ __FLUX_PICKER_METHODS__
         return (float) Math.hypot(dx, dy);
     }
 
+    private void fluxStartSwipe(int viewId, MotionEvent event) {
+        VelocityTracker previous = swipeTrackers.remove(viewId);
+        if (previous != null) previous.recycle();
+        VelocityTracker tracker = VelocityTracker.obtain();
+        tracker.addMovement(event);
+        swipeTrackers.put(viewId, tracker);
+    }
+
+    private void fluxTrackSwipe(int viewId, MotionEvent event) {
+        VelocityTracker tracker = swipeTrackers.get(viewId);
+        if (tracker != null) tracker.addMovement(event);
+    }
+
+    private void fluxFinishSwipe(int viewId, MotionEvent event, boolean dispatch) {
+        VelocityTracker tracker = swipeTrackers.remove(viewId);
+        if (tracker == null) return;
+        tracker.addMovement(event);
+        float[] start = dragStarts.get(viewId);
+        if (dispatch && start != null) {
+            tracker.computeCurrentVelocity(1000);
+            float velocityXpx = tracker.getXVelocity();
+            float velocityYpx = tracker.getYVelocity();
+            float distancePx = (float) Math.hypot(event.getX() - start[0], event.getY() - start[1]);
+            android.view.ViewConfiguration config = android.view.ViewConfiguration.get(this);
+            if (distancePx >= config.getScaledTouchSlop()
+                    && Math.hypot(velocityXpx, velocityYpx) >= config.getScaledMinimumFlingVelocity()) {
+                float density = getResources().getDisplayMetrics().density;
+                long velocityX = Math.round(velocityXpx / density);
+                long velocityY = Math.round(velocityYpx / density);
+                nativeOnSwipe(viewId, velocityX, velocityY);
+            }
+        }
+        tracker.recycle();
+    }
+
     @Override
     public boolean onTouch(View view, MotionEvent event) {
         int viewId = view.getId();
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 dragStarts.put(viewId, new float[] { event.getX(), event.getY() });
+                fluxStartSwipe(viewId, event);
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
                 float initialDistance = fluxPointerDistance(event);
                 if (initialDistance > 0.0f) scaleStarts.put(viewId, initialDistance);
                 break;
             case MotionEvent.ACTION_MOVE:
+                fluxTrackSwipe(viewId, event);
                 float[] start = dragStarts.get(viewId);
                 if (start != null) {
                     float density = getResources().getDisplayMetrics().density;
@@ -4159,7 +4199,12 @@ __FLUX_PICKER_METHODS__
                 scaleStarts.remove(viewId);
                 break;
             case MotionEvent.ACTION_UP:
+                fluxFinishSwipe(viewId, event, true);
+                dragStarts.remove(viewId);
+                scaleStarts.remove(viewId);
+                break;
             case MotionEvent.ACTION_CANCEL:
+                fluxFinishSwipe(viewId, event, false);
                 dragStarts.remove(viewId);
                 scaleStarts.remove(viewId);
                 break;
@@ -6600,6 +6645,9 @@ mod tests {
         assert!(activity.contains(
             "private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);"
         ));
+        assert!(activity.contains(
+            "private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);"
+        ));
         assert!(
             activity.contains(
                 "private static native void nativeOnScale(int viewId, long scalePercent);"
@@ -6617,6 +6665,13 @@ mod tests {
         );
         assert!(activity.contains("nativeOnDrag(viewId, offsetX, offsetY);"));
         assert!(activity.contains("Math.round((event.getX() - start[0]) / density)"));
+        assert!(activity.contains(
+            "private final Map<Integer, VelocityTracker> swipeTrackers = new HashMap<>();"
+        ));
+        assert!(activity.contains("tracker.computeCurrentVelocity(1000);"));
+        assert!(activity.contains("config.getScaledTouchSlop()"));
+        assert!(activity.contains("config.getScaledMinimumFlingVelocity()"));
+        assert!(activity.contains("nativeOnSwipe(viewId, velocityX, velocityY);"));
         assert!(
             activity.contains("private final Map<Integer, Float> scaleStarts = new HashMap<>();")
         );
