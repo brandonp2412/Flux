@@ -9440,6 +9440,63 @@ fn main() -> i64 {
 }
 
 #[test]
+fn eliminates_checked_integer_helpers_for_proven_identity_operations() {
+    let identities = r#"
+fn identities(value: i64) -> i64 {
+    let addedLeft: i64 = 0 + value
+    let addedRight: i64 = addedLeft + 0
+    let subtracted: i64 = addedRight - 0
+    let multipliedLeft: i64 = 1 * subtracted
+    let multipliedRight: i64 = multipliedLeft * 1
+    return multipliedRight / 1
+}
+
+fn main() -> i64 {
+    return identities(7)
+}
+"#;
+
+    check_source(identities).expect("identity arithmetic should typecheck");
+    let generated = compile_to_c(identities).expect("identity arithmetic should lower natively");
+    assert!(!generated.contains("flux_add_i64("));
+    assert!(!generated.contains("flux_sub_i64("));
+    assert!(!generated.contains("flux_mul_i64("));
+    assert!(!generated.contains("flux_div_i64("));
+
+    let checked = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    return increment(7)
+}
+"#;
+    let checked_generated =
+        compile_to_c(checked).expect("non-identity arithmetic should retain checked lowering");
+    assert!(checked_generated.contains("flux_add_i64(flux__local_value, INT64_C(1))"));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto auto
+    state count: i64 = 1
+    Text status at 1,1
+        text: "Active"
+        visible: count + 0 > 0
+    Button action at 2,1
+        text: "Keep"
+        onPress: count => count * 1
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI identity arithmetic should use the same proven lowering");
+    assert!(!ui_generated.contains("flux_add_i64("));
+    assert!(!ui_generated.contains("flux_mul_i64("));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";

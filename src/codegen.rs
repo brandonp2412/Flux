@@ -8019,8 +8019,15 @@ fn ui_expr_c(
         ExprKind::Binary { left, op, right } => {
             let string_comparison =
                 matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
-            let left = ui_expr_c(left, view, signatures)?;
-            let right = ui_expr_c(right, view, signatures)?;
+            let left_code = ui_expr_c(left, view, signatures)?;
+            let right_code = ui_expr_c(right, view, signatures)?;
+            if let Some(code) =
+                checked_i64_identity_c(*op, left, right, &left_code, &right_code, signatures)
+            {
+                return Ok(code);
+            }
+            let left = left_code;
+            let right = right_code;
             match op {
                 BinOp::Add => Ok(format!("flux_add_i64({left}, {right})")),
                 BinOp::Sub => Ok(format!("flux_sub_i64({left}, {right})")),
@@ -11432,6 +11439,25 @@ struct BlockEmitContext<'a> {
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
 }
 
+fn checked_i64_identity_c(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    left_code: &str,
+    right_code: &str,
+    signatures: &Signatures,
+) -> Option<String> {
+    let left_constant = typecheck::constant_primitive_value(left, signatures);
+    let right_constant = typecheck::constant_primitive_value(right, signatures);
+    match (op, left_constant, right_constant) {
+        (BinOp::Add, Some(ConstantValue::I64(0)), _) => Some(right_code.to_string()),
+        (BinOp::Add | BinOp::Sub, _, Some(ConstantValue::I64(0))) => Some(left_code.to_string()),
+        (BinOp::Mul, Some(ConstantValue::I64(1)), _) => Some(right_code.to_string()),
+        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(1))) => Some(left_code.to_string()),
+        _ => None,
+    }
+}
+
 fn dead_store_rhs_is_discardable(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -14823,29 +14849,61 @@ fn emit_expr(
             }
         }
         ExprKind::Binary { left, op, right } => {
-            let left = emit_expr(left, env, signatures)?;
-            let right = emit_expr(right, env, signatures)?;
+            let emitted_left = emit_expr(left, env, signatures)?;
+            let emitted_right = emit_expr(right, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let code = if matches!(op, BinOp::Add) {
-                format!("flux_add_i64({}, {})", left.code, right.code)
+            let code = if let Some(code) = checked_i64_identity_c(
+                *op,
+                left,
+                right,
+                &emitted_left.code,
+                &emitted_right.code,
+                signatures,
+            ) {
+                code
+            } else if matches!(op, BinOp::Add) {
+                format!(
+                    "flux_add_i64({}, {})",
+                    emitted_left.code, emitted_right.code
+                )
             } else if matches!(op, BinOp::Sub) {
-                format!("flux_sub_i64({}, {})", left.code, right.code)
+                format!(
+                    "flux_sub_i64({}, {})",
+                    emitted_left.code, emitted_right.code
+                )
             } else if matches!(op, BinOp::Mul) {
-                format!("flux_mul_i64({}, {})", left.code, right.code)
+                format!(
+                    "flux_mul_i64({}, {})",
+                    emitted_left.code, emitted_right.code
+                )
             } else if matches!(op, BinOp::Div) {
-                format!("flux_div_i64({}, {})", left.code, right.code)
-            } else if matches!(op, BinOp::Eq | BinOp::Ne) && left.ty == Type::Str {
+                format!(
+                    "flux_div_i64({}, {})",
+                    emitted_left.code, emitted_right.code
+                )
+            } else if matches!(op, BinOp::Eq | BinOp::Ne) && emitted_left.ty == Type::Str {
                 let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
-                format!("(strcmp({}, {}) {comparator} 0)", left.code, right.code)
-            } else if matches!(op, BinOp::Eq | BinOp::Ne) && left.ty == Type::Error {
-                let equality = format!("flux_error_eq({}, {})", left.code, right.code);
+                format!(
+                    "(strcmp({}, {}) {comparator} 0)",
+                    emitted_left.code, emitted_right.code
+                )
+            } else if matches!(op, BinOp::Eq | BinOp::Ne) && emitted_left.ty == Type::Error {
+                let equality = format!(
+                    "flux_error_eq({}, {})",
+                    emitted_left.code, emitted_right.code
+                );
                 if matches!(op, BinOp::Eq) {
                     equality
                 } else {
                     format!("(!{equality})")
                 }
             } else {
-                format!("({} {} {})", left.code, c_operator(*op), right.code)
+                format!(
+                    "({} {} {})",
+                    emitted_left.code,
+                    c_operator(*op),
+                    emitted_right.code
+                )
             };
             EmittedExpr {
                 code,

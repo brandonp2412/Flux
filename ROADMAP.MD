@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 479
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 80 checkbox items
+- Current net scope growth after the baseline: 81 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -449,6 +449,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Native object generation through an LLVM-class backend initially.
 - [ ] Prove and eliminate redundant safety checks (including bounds checks) and abstraction overhead through CFG/SSA analysis while preserving checks whose safety preconditions cannot be established statically.
   - [x] Static list-cardinality proofs now propagate through compile-time slices (including clipped/negative/reverse bounds) and compiler-known `take` / `skip` views over known-length lists, so nested indexes erase their runtime bounds helper only when the resulting cardinality proves the index valid; runtime-dependent slice bounds/counts and statically out-of-range indexes retain checked lowering.
+  - [x] Checked `i64` identity arithmetic now eliminates provably redundant runtime safety helpers in ordinary code and dynamic UI expressions: `x + 0`, `0 + x`, `x - 0`, `x * 1`, `1 * x`, and `x / 1` lower directly to the dynamic operand, allowing unused checked helpers to tree-shake while preserving checked lowering for arithmetic that can still overflow or divide invalidly. Regression coverage pins both the optimized identities and the retained `x + 1` overflow check.
 - [x] LTO in native release builds through Clang `-flto`, covered by build-mode tests.
 - [x] Continuous bootstrap performance harness with optimized overflow-safe Flux-vs-Rust/C compute, collection-pipeline, interface-dispatch, dynamic function-call/control-flow, and display-backed native-UI baselines, output-equivalence checks where applicable, median runtime/code-size reporting, configurable checked-Rust and native-UI release thresholds, C reference tracking, and a push/PR CI gate. Broader workloads can extend the same target-aware harness without reopening the current representative-performance contract.
 - [x] Tree shaking/dead symbol elimination for all current bootstrap backend concepts: whole-program reachability removes unreachable functions, anonymous functions, value types/helpers, interface metadata/dispatch targets, enum/struct helpers, function-pointer typedefs, platform/runtime helpers, and dead view metadata while preserving public/dynamic roots; future backend resource kinds must join the same reachability graph when introduced.
