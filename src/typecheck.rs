@@ -6584,6 +6584,68 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "textInput" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("textInput.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "selectionStart" | "selectionEnd" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("textInput.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
+            "setCaret" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("textInput.setCaret expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "textInput.setCaret position",
+                )?;
+                return Ok(vec![Type::Bool]);
+            }
+            "setSelection" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "textInput.setSelection expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                for (index, label) in [(0, "start"), (1, "end")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::I64,
+                        &actual,
+                        &format!("textInput.setSelection {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("textInput module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

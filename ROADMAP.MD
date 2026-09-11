@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 470
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 59 checkbox items
+- Current net scope growth after the baseline: 60 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -507,7 +507,8 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
 - [ ] Text inputs.
   - [x] Bootstrap native `TextInput` control with typed `text: str`, `placeholder: str`, `enabled: bool`, `autofocus: bool`, `password: bool`, `maxLength: i64`, compile-time `keyboardType: str`, `onChange: fn(str) -> void`, and `onSubmit: fn(str) -> void`; Linux lowers single-line input to `GtkEntry`, passes the current borrowed entry text synchronously to named Flux callbacks, supports native password masking/validated maximum length plus text/email/number/decimal/phone/URL input purposes, and treats `text` as an initial native value so refresh does not clobber user edits while Flux-owned editable string state remains sequenced behind the ownership/string model.
   - [x] Linux GTK multiline bootstrap parity: `multiline: true` lowers to native `GtkTextView`/`GtkTextBuffer`, preserves word/character wrapping, delivers full-buffer `onChange`, defaults Enter to text insertion, and supports explicit `submitOnEnter: true` through a native key controller without application bridge code. Password masking, placeholder text, and maximum-length enforcement remain explicit unsupported combinations rather than silently degrading semantics.
-  - [ ] Editable Flux-owned text state, richer data/message validation, portable selection/caret APIs, and portable programmatic composition controls. Semantic validation presentation is now first-class through `validationState`; ordinary text entry already stays on each platform's native IME/composition path, Android preserves composing spans across compiler-required rebuilds, and Android also has native multiline submit policy plus direct focused selection/caret APIs.
+  - [x] Portable focused selection/caret control through typed `textInput.selectionStart()` / `selectionEnd()` / `setCaret(position)` / `setSelection(start, end)`: Linux operates directly on the focused native `GtkEditable`/`GtkTextView`, Android reuses its compiler-owned direct `EditText` JNI path, reads return `-1` when no editable control is focused, writes return `bool` for invalid/missing/out-of-range positions, LSP completion/signature help expose the shared surface, and unused helpers tree-shake on both targets.
+  - [ ] Editable Flux-owned text state, richer data/message validation, and portable programmatic composition controls. Semantic validation presentation is now first-class through `validationState`; ordinary text entry already stays on each platform's native IME/composition path, Android preserves composing spans across compiler-required rebuilds, and Android also has native multiline submit policy.
 - [x] Toggles/check/radio controls.
   - [x] Bootstrap native `Toggle` control with typed `label: str`, `checked: bool`, `enabled: bool`, and `onChange` event; Linux lowers to `GtkCheckButton`, while `onChange: state => nextExpression` reuses the same functional transition/state refresh model as buttons.
   - [x] Bootstrap native `Radio` controls use typed `label: str`, `selected: bool`, `enabled: bool`, and `onSelect`; sibling radios are grouped natively and `onSelect` fires only for the newly active control, while shared Flux state remains the source of truth for selection.

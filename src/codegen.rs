@@ -433,6 +433,12 @@ pub fn emit_c_for_target_with_source_metadata(
             "focus.* APIs require an application target",
         ));
     }
+    if runtime_usage.contains("flux__text_input_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "textInput.* APIs require an application target",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -675,6 +681,15 @@ fn emit_runtime_prelude(
     let uses_focus_first_in = runtime_usage.contains("flux__focus_first_in(");
     let uses_focus_last_in = runtime_usage.contains("flux__focus_last_in(");
     let uses_focus_clear = runtime_usage.contains("flux__focus_clear(");
+    let uses_text_input_selection_start =
+        runtime_usage.contains("flux__text_input_selection_start(");
+    let uses_text_input_selection_end = runtime_usage.contains("flux__text_input_selection_end(");
+    let uses_text_input_set_caret = runtime_usage.contains("flux__text_input_set_caret(");
+    let uses_text_input_set_selection = runtime_usage.contains("flux__text_input_set_selection(");
+    let uses_portable_text_input_selection = uses_text_input_selection_start
+        || uses_text_input_selection_end
+        || uses_text_input_set_caret
+        || uses_text_input_set_selection;
     let uses_portable_focus = uses_focus_next
         || uses_focus_previous
         || uses_focus_next_in
@@ -733,13 +748,17 @@ fn emit_runtime_prelude(
         || uses_android_focus_edges
         || uses_android_clear_focus
         || uses_android_focus_scoped;
-    let uses_android_selection_start =
-        uses_android && runtime_usage.contains("flux__android_selection_start(");
-    let uses_android_selection_end =
-        uses_android && runtime_usage.contains("flux__android_selection_end(");
-    let uses_android_set_caret = uses_android && runtime_usage.contains("flux__android_set_caret(");
-    let uses_android_set_selection =
-        uses_android && runtime_usage.contains("flux__android_set_selection(");
+    let uses_android_selection_start = uses_android
+        && (runtime_usage.contains("flux__android_selection_start(")
+            || uses_text_input_selection_start);
+    let uses_android_selection_end = uses_android
+        && (runtime_usage.contains("flux__android_selection_end(")
+            || uses_text_input_selection_end);
+    let uses_android_set_caret = uses_android
+        && (runtime_usage.contains("flux__android_set_caret(") || uses_text_input_set_caret);
+    let uses_android_set_selection = uses_android
+        && (runtime_usage.contains("flux__android_set_selection(")
+            || uses_text_input_set_selection);
     let uses_android_text_selection = uses_android_selection_start
         || uses_android_selection_end
         || uses_android_set_caret
@@ -1421,6 +1440,38 @@ fn emit_runtime_prelude(
             out.push_str(
                 "static inline void flux__focus_clear(void) { flux__android_clear_focus(); }\n",
             );
+        }
+    }
+    if uses_portable_text_input_selection && uses_gtk {
+        out.push_str("static GtkWidget *flux__text_input_focused_widget(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return NULL; GtkWidget *widget = gtk_window_get_focus(window); while (widget != NULL) { if (GTK_IS_EDITABLE(widget) || GTK_IS_TEXT_VIEW(widget)) return widget; widget = gtk_widget_get_parent(widget); } return NULL; }\n");
+        if uses_text_input_selection_start || uses_text_input_selection_end {
+            out.push_str("static int64_t flux__text_input_selection_position(bool end) { GtkWidget *widget = flux__text_input_focused_widget(); if (widget == NULL) return INT64_C(-1); if (GTK_IS_EDITABLE(widget)) { int start = 0; int finish = 0; if (gtk_editable_get_selection_bounds(GTK_EDITABLE(widget), &start, &finish)) return (int64_t)(end ? finish : start); return (int64_t)gtk_editable_get_position(GTK_EDITABLE(widget)); } GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start_iter; GtkTextIter end_iter; if (gtk_text_buffer_get_selection_bounds(buffer, &start_iter, &end_iter)) return (int64_t)gtk_text_iter_get_offset(end ? &end_iter : &start_iter); GtkTextIter caret; gtk_text_buffer_get_iter_at_mark(buffer, &caret, gtk_text_buffer_get_insert(buffer)); return (int64_t)gtk_text_iter_get_offset(&caret); }\n");
+            if uses_text_input_selection_start {
+                out.push_str("static inline int64_t flux__text_input_selection_start(void) { return flux__text_input_selection_position(false); }\n");
+            }
+            if uses_text_input_selection_end {
+                out.push_str("static inline int64_t flux__text_input_selection_end(void) { return flux__text_input_selection_position(true); }\n");
+            }
+        }
+        if uses_text_input_set_caret || uses_text_input_set_selection {
+            out.push_str("static bool flux__text_input_set_selection(int64_t start, int64_t end) { if (start < 0 || end < start || start > INT32_MAX || end > INT32_MAX) return false; GtkWidget *widget = flux__text_input_focused_widget(); if (widget == NULL) return false; if (GTK_IS_EDITABLE(widget)) { const char *text = gtk_editable_get_text(GTK_EDITABLE(widget)); if (text == NULL || end > (int64_t)g_utf8_strlen(text, -1)) return false; gtk_editable_select_region(GTK_EDITABLE(widget), (int)start, (int)end); return true; } GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); if (end > (int64_t)gtk_text_buffer_get_char_count(buffer)) return false; GtkTextIter start_iter; GtkTextIter end_iter; gtk_text_buffer_get_iter_at_offset(buffer, &start_iter, (int)start); gtk_text_buffer_get_iter_at_offset(buffer, &end_iter, (int)end); gtk_text_buffer_select_range(buffer, &end_iter, &start_iter); return true; }\n");
+            if uses_text_input_set_caret {
+                out.push_str("static inline bool flux__text_input_set_caret(int64_t position) { return flux__text_input_set_selection(position, position); }\n");
+            }
+        }
+    }
+    if uses_portable_text_input_selection && uses_android {
+        if uses_text_input_selection_start {
+            out.push_str("static inline int64_t flux__text_input_selection_start(void) { return flux__android_selection_start(); }\n");
+        }
+        if uses_text_input_selection_end {
+            out.push_str("static inline int64_t flux__text_input_selection_end(void) { return flux__android_selection_end(); }\n");
+        }
+        if uses_text_input_set_caret {
+            out.push_str("static inline bool flux__text_input_set_caret(int64_t position) { return flux__android_set_caret(position); }\n");
+        }
+        if uses_text_input_set_selection {
+            out.push_str("static inline bool flux__text_input_set_selection(int64_t start, int64_t end) { return flux__android_set_selection(start, end); }\n");
         }
     }
     if uses_clipboard_set_text && uses_gtk {
@@ -14102,6 +14153,62 @@ fn emit_qualified_call(
                 return Ok((format!("flux__focus_{name}()"), Vec::new(), None));
             }
             _ => return Err(diag(span, "invalid focus call reached code generation")),
+        }
+    }
+    if namespace == "textInput" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid textInput call reached code generation"));
+        }
+        match name {
+            "selectionStart" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid textInput call reached code generation"));
+                }
+                return Ok((
+                    "flux__text_input_selection_start()".to_string(),
+                    vec![Type::I64],
+                    None,
+                ));
+            }
+            "selectionEnd" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid textInput call reached code generation"));
+                }
+                return Ok((
+                    "flux__text_input_selection_end()".to_string(),
+                    vec![Type::I64],
+                    None,
+                ));
+            }
+            "setCaret" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid textInput call reached code generation"));
+                }
+                let position = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__text_input_set_caret({})", position.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "setSelection" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid textInput call reached code generation"));
+                }
+                let start = emit_expr(&args[0], env, signatures)?;
+                let end = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__text_input_set_selection({}, {})",
+                        start.code, end.code
+                    ),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            _ => {
+                return Err(diag(span, "invalid textInput call reached code generation"));
+            }
         }
     }
     if namespace == "android" {

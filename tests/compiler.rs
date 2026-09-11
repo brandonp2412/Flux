@@ -15226,6 +15226,120 @@ app Screen
 }
 
 #[test]
+fn portable_text_input_selection_lowers_to_native_application_backends() {
+    let source = r#"
+fn started() -> void {
+    print(textInput.selectionStart())
+    print(textInput.selectionEnd())
+    print(textInput.setCaret(2))
+    print(textInput.setSelection(1, 3))
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: "abcd"
+        autofocus: true
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable TextInput selection should typecheck");
+    let linux = compile_to_c(source).expect("portable TextInput selection should lower on Linux");
+    assert!(linux.contains("static GtkWidget *flux__text_input_focused_widget(void)"));
+    assert!(linux.contains("GTK_IS_EDITABLE(widget) || GTK_IS_TEXT_VIEW(widget)"));
+    assert!(linux.contains("gtk_editable_get_selection_bounds"));
+    assert!(linux.contains("gtk_editable_get_position"));
+    assert!(linux.contains("gtk_text_buffer_get_selection_bounds"));
+    assert!(linux.contains("gtk_text_buffer_get_insert"));
+    assert!(linux.contains("static inline int64_t flux__text_input_selection_start(void)"));
+    assert!(linux.contains("static inline int64_t flux__text_input_selection_end(void)"));
+    assert!(linux.contains("static inline bool flux__text_input_set_caret(int64_t position)"));
+    assert!(
+        linux.contains("static bool flux__text_input_set_selection(int64_t start, int64_t end)")
+    );
+    assert!(linux.contains("g_utf8_strlen"));
+    assert!(linux.contains("gtk_editable_select_region"));
+    assert!(linux.contains("gtk_text_buffer_select_range"));
+    assert!(!linux.contains("flux__android_selection_start"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable TextInput selection app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable TextInput selection should lower on Android");
+    assert!(android.contains("static inline int64_t flux__text_input_selection_start(void) { return flux__android_selection_start(); }"));
+    assert!(android.contains("static inline int64_t flux__text_input_selection_end(void) { return flux__android_selection_end(); }"));
+    assert!(android.contains("static inline bool flux__text_input_set_caret(int64_t position) { return flux__android_set_caret(position); }"));
+    assert!(android.contains("static inline bool flux__text_input_set_selection(int64_t start, int64_t end) { return flux__android_set_selection(start, end); }"));
+    assert!(android.contains("\"android/widget/EditText\""));
+    assert!(android.contains("\"getSelectionStart\""));
+    assert!(android.contains("\"getSelectionEnd\""));
+    assert!(android.contains("\"setSelection\", \"(II)V\""));
+
+    let unused = r#"
+fn unused() -> void {
+    textInput.setCaret(1)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken =
+        compile_to_c(unused).expect("unreachable TextInput selection code should tree-shake");
+    assert!(!tree_shaken.contains("flux__text_input_set_caret"));
+    assert!(!tree_shaken.contains("flux__text_input_focused_widget"));
+
+    let headless = r#"
+fn main() -> i64 {
+    textInput.selectionStart()
+    return 0
+}
+"#;
+    check_source(headless)
+        .expect("TextInput selection should retain target-independent static typing");
+    let error =
+        compile_to_c(headless).expect_err("TextInput selection requires an application backend");
+    assert!(
+        error
+            .message
+            .contains("textInput.* APIs require an application target")
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    textInput.selectionStart(1)
+    textInput.setCaret("bad")
+    textInput.setSelection(0, false)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid)
+        .expect_err("portable TextInput selection arguments must be typed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("textInput.selectionStart expects 0 arguments")
+    }));
+    assert!(errors.iter().any(
+        |error| error.message.contains("textInput.setCaret position")
+            && error.message.contains("expected i64")
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("textInput.setSelection end")
+                && error.message.contains("expected i64"))
+    );
+}
+
+#[test]
 fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     let root = std::env::temp_dir().join(format!("flux-android-codegen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

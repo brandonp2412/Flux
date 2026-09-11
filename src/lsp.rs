@@ -1378,6 +1378,20 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "textInput" {
+        for (label, detail) in [
+            ("selectionStart", "fn textInput.selectionStart() -> i64"),
+            ("selectionEnd", "fn textInput.selectionEnd() -> i64"),
+            ("setCaret", "fn textInput.setCaret(position: i64) -> bool"),
+            (
+                "setSelection",
+                "fn textInput.setSelection(start: i64, end: i64) -> bool",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2774,6 +2788,35 @@ fn signature_help_for_document_cached(
                         &format!("focus.{member}"),
                         &[],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "textInput" {
+            match member {
+                "selectionStart" | "selectionEnd" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("textInput.{member}"),
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "setCaret" => {
+                    return Some(signature_help_for_builtin(
+                        "textInput.setCaret",
+                        &["position: i64"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "setSelection" => {
+                    return Some(signature_help_for_builtin(
+                        "textInput.setSelection",
+                        &["start: i64", "end: i64"],
+                        "bool",
                         active_parameter,
                     ));
                 }
@@ -5899,7 +5942,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -6103,6 +6146,27 @@ mod tests {
         assert!(focus_items.contains("fn focus.first() -> void"));
         assert!(focus_items.contains("fn focus.last() -> void"));
         assert!(focus_items.contains("fn focus.clear() -> void"));
+
+        let text_input_line = source
+            .lines()
+            .position(|line| line.trim() == "textInput.")
+            .expect("TextInput completion line should exist");
+        let text_input_source = source.lines().nth(text_input_line).unwrap();
+        let text_input_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(text_input_line),
+            Some(text_input_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(text_input_items.contains("fn textInput.selectionStart() -> i64"));
+        assert!(text_input_items.contains("fn textInput.selectionEnd() -> i64"));
+        assert!(text_input_items.contains("fn textInput.setCaret(position: i64) -> bool"));
+        assert!(
+            text_input_items.contains("fn textInput.setSelection(start: i64, end: i64) -> bool")
+        );
 
         let android_line = source
             .lines()
@@ -7173,6 +7237,49 @@ mod tests {
         .expect("clipboard call should have signature help")
         .to_json();
         assert!(help.contains("fn android.setClipboardText(text: str) -> void"));
+    }
+
+    #[test]
+    fn signature_help_supports_portable_text_input_selection() {
+        let uri = "file:///tmp/text-input-selection-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(textInput.selectionStart())\n    print(textInput.selectionEnd())\n    print(textInput.setCaret(1))\n    print(textInput.setSelection(0, 1))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "textInput.selectionStart(",
+                "fn textInput.selectionStart() -> i64",
+            ),
+            (
+                "textInput.selectionEnd(",
+                "fn textInput.selectionEnd() -> i64",
+            ),
+            (
+                "textInput.setCaret(",
+                "fn textInput.setCaret(position: i64) -> bool",
+            ),
+            (
+                "textInput.setSelection(",
+                "fn textInput.setSelection(start: i64, end: i64) -> bool",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("portable TextInput selection call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("portable TextInput selection call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]
