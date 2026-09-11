@@ -1200,6 +1200,10 @@ fn add_qualified_namespace_completions(
                 "tcpAccept",
                 "fn net.tcpAccept(listener: i64) -> (i64, error)",
             ),
+            (
+                "tcpAcceptMany",
+                "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
+            ),
             ("localPort", "fn net.localPort(socket: i64) -> (i64, error)"),
             (
                 "peerAddress",
@@ -2787,6 +2791,18 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "net.tcpAccept",
                         &["listener: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "tcpAcceptMany" => {
+                    return Some(signature_help_for_builtin(
+                        "net.tcpAcceptMany",
+                        &[
+                            "listener: i64",
+                            "maxCount: i64",
+                            "callback: fn(i64) -> void",
+                        ],
                         "(i64, error)",
                         active_parameter,
                     ));
@@ -6700,6 +6716,9 @@ mod tests {
                 .contains("fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)")
         );
         assert!(net_items.contains("fn net.tcpAccept(listener: i64) -> (i64, error)"));
+        assert!(net_items.contains(
+            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+        ));
         assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
         assert!(
             net_items.contains(
@@ -7771,6 +7790,35 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_tcp_accept_many() {
+        let uri = "file:///tmp/network-accept-many.flux";
+        let source = "fn accepted(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.tcpAcceptMany(1, 32, accepted)\n    print(count)\n    print(failure)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.tcpAcceptMany("))
+            .expect("tcpAcceptMany call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.tcpAcceptMany(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("tcpAcceptMany call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -&gt; void) -&gt; (i64, error)"
+        ) || help.contains(
+            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+        ));
     }
 
     #[test]

@@ -6407,6 +6407,49 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "tcpAcceptMany" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("net.tcpAcceptMany expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let listener = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &listener,
+                    "net.tcpAcceptMany listener",
+                )?;
+                let max_count = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_count,
+                    "net.tcpAcceptMany maxCount",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if value < 1 || value > i32::MAX as i64
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.tcpAcceptMany maxCount must be between 1 and 2147483647",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "net.tcpAcceptMany callback",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "peerAddress" | "localAddress" => {
                 if args.len() != 2 {
                     return Err(diag(

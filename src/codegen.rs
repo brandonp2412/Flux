@@ -3343,6 +3343,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_tcp_accept(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept(int64_t listener) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); return fd < 0 ? flux__net_result(-1, \"failed to accept TCP connection\") : flux__net_result((int64_t)fd, NULL); }\n");
     }
+    if runtime_usage.contains("flux__net_tcp_accept_many(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"tcpAcceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"tcpAcceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"tcpAcceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"tcpAcceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
+    }
     if runtime_usage.contains("flux__net_local_port(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_local_port(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); struct sockaddr_storage address; socklen_t length = sizeof(address); if (getsockname((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return flux__net_result(-1, \"failed to read socket address\"); if (address.ss_family == AF_INET) return flux__net_result((int64_t)ntohs(((struct sockaddr_in *)&address)->sin_port), NULL); if (address.ss_family == AF_INET6) return flux__net_result((int64_t)ntohs(((struct sockaddr_in6 *)&address)->sin6_port), NULL); return flux__net_result(-1, \"socket address has unsupported family\"); }\n");
     }
@@ -18559,6 +18562,22 @@ fn emit_qualified_call(
                 let listener = emit_expr(&args[0], env, signatures)?;
                 return Ok((
                     format!("flux__net_tcp_accept({})", listener.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "tcpAcceptMany" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let listener = emit_expr(&args[0], env, signatures)?;
+                let max_count = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_tcp_accept_many({}, {}, {})",
+                        listener.code, max_count.code, callback.code
+                    ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
                 ));

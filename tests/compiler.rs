@@ -1830,6 +1830,143 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tcp_accept_many_drains_nonblocking_listener_and_tree_shakes() {
+    let source = r#"
+fn accepted(socket: i64) -> void {
+    print(net.close(socket))
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.tcpListen("127.0.0.1", 0, 8)
+    print(listenError)
+    let (port, portError) = net.localPort(listener)
+    print(portError)
+    let (first, firstError) = net.tcpConnect("127.0.0.1", port)
+    print(firstError)
+    let (second, secondError) = net.tcpConnect("127.0.0.1", port)
+    print(secondError)
+    let (third, thirdError) = net.tcpConnect("127.0.0.1", port)
+    print(thirdError)
+    print(net.setNonblocking(listener, true))
+    let (acceptedCount, acceptError) = net.tcpAcceptMany(listener, 8, accepted)
+    print(acceptedCount)
+    print(acceptError)
+    print(net.close(first))
+    print(net.close(second))
+    print(net.close(third))
+    print(net.close(listener))
+    return 0
+}
+"#;
+    check_source(source).expect("batched TCP accept should typecheck");
+    let generated = compile_to_c(source).expect("batched TCP accept should lower natively");
+    assert!(generated.contains("flux__net_tcp_accept_many("));
+    assert!(generated.contains("O_NONBLOCK"));
+    assert!(generated.contains("EAGAIN"));
+    assert!(generated.contains("SO_ACCEPTCONN"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-accept-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("batched accept fixture should be writable");
+    let source_path = root.join("accept_many.flux");
+    fs::write(&source_path, source).expect("batched accept source should be writable");
+    let binary = root.join("accept_many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("batched accept binary should build");
+    assert!(
+        built.status.success(),
+        "batched accept build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("batched accept binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 15);
+    assert!(lines.iter().all(|line| line == "nil" || line == "3"));
+    assert_eq!(lines[9], "3");
+    assert_eq!(lines[10], "nil");
+
+    let blocking = r#"
+fn accepted(socket: i64) -> void {
+    print(net.close(socket))
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.tcpListen("127.0.0.1", 0, 8)
+    print(listenError)
+    let (count, failure) = net.tcpAcceptMany(listener, 1, accepted)
+    print(count)
+    print(failure)
+    print(net.close(listener))
+    return 0
+}
+"#;
+    let blocking_path = root.join("blocking.flux");
+    fs::write(&blocking_path, blocking).expect("blocking accept source should be writable");
+    let blocking_binary = root.join("blocking");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&blocking_path)
+        .arg("-o")
+        .arg(&blocking_binary)
+        .output()
+        .expect("blocking accept fixture should build");
+    assert!(built.status.success());
+    let run = Command::new(&blocking_binary)
+        .output()
+        .expect("blocking accept fixture should run");
+    assert!(run.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.stdout)
+            .contains("tcpAcceptMany requires a nonblocking TCP listener")
+    );
+
+    let max_count_error = check_source(
+        "fn accepted(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.tcpAcceptMany(1, 0, accepted)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("zero maxCount must fail statically");
+    assert!(
+        max_count_error
+            .message
+            .contains("net.tcpAcceptMany maxCount must be between 1 and 2147483647")
+    );
+    let callback_error = check_source(
+        "fn accepted(_socket: str) -> void {\n}\nfn main() -> i64 {\n    let (count, failure) = net.tcpAcceptMany(1, 8, accepted)\n    print(count)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched accept callback type must be exact");
+    assert!(
+        callback_error
+            .message
+            .contains("net.tcpAcceptMany callback")
+    );
+
+    let unused = r#"
+fn accepted(_socket: i64) -> void {
+}
+fn hidden(listener: i64) -> void {
+    let (count, failure) = net.tcpAcceptMany(listener, 8, accepted)
+    print(count)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead batched accept should tree-shake");
+    assert!(!unused_generated.contains("flux__net_tcp_accept_many("));
+    assert!(!unused_generated.contains("SO_ACCEPTCONN"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn tcp_half_close_is_typed_native_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let port = listener.local_addr().unwrap().port();
