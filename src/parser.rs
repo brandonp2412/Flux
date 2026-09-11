@@ -1310,6 +1310,7 @@ fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {
                     | "onLowMemory"
                     | "onSaveState"
                     | "onRestoreState"
+                    | "onOpenUrl"
             ) {
                 return Err(diag(
                     line.number,

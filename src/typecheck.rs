@@ -1048,7 +1048,7 @@ pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
                     params: Vec::new(),
                     returns: vec![Type::Str],
                 }),
-                "onRestoreState" => Some(Type::Function {
+                "onRestoreState" | "onOpenUrl" => Some(Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
                 }),

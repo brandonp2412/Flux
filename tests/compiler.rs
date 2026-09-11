@@ -9906,7 +9906,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nversion_code = 42\nmin_sdk = 26\ntarget_sdk = 36\npermissions = [\"android.permission.CAMERA\", \"android.permission.RECORD_AUDIO\", \"android.permission.CAMERA\"]\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"nz.flux.sample\"\nversion_code = 42\nmin_sdk = 26\ntarget_sdk = 36\npermissions = [\"android.permission.CAMERA\", \"android.permission.RECORD_AUDIO\", \"android.permission.CAMERA\"]\ndeep_links = [\"https://example.com/app\", \"flux://open\", \"https://example.com/app\"]\nkeystore = \"signing/release.jks\"\nkey_alias = \"release\"\n",
     )
     .expect("Android manifest should be writable");
 
@@ -9923,6 +9923,13 @@ fn package_manifest_accepts_and_validates_android_configuration() {
         ]
     );
     assert_eq!(
+        parsed.android.deep_links,
+        vec![
+            "flux://open".to_string(),
+            "https://example.com/app".to_string()
+        ]
+    );
+    assert_eq!(
         parsed.android.keystore.as_deref(),
         Some(root.join("signing/release.jks").as_path())
     );
@@ -9930,7 +9937,7 @@ fn package_manifest_accepts_and_validates_android_configuration() {
 
     fs::write(
         &manifest,
-        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nversion_code = 0\nmin_sdk = 19\ntarget_sdk = 18\npermissions = [\"bad permission\"]\n",
+        "[package]\nname = \"android-app\"\nentry = \"src/main.flux\"\n\n[android]\napplication_id = \"Bad Id\"\nversion_code = 0\nmin_sdk = 19\ntarget_sdk = 18\npermissions = [\"bad permission\"]\ndeep_links = [\"missing-scheme\"]\n",
     )
     .expect("invalid Android manifest should be writable");
     let errors = fluxc::project::read_manifest(&manifest)
@@ -9964,6 +9971,11 @@ fn package_manifest_accepts_and_validates_android_configuration() {
         error
             .message
             .contains("permissions entries must be Android-style permission names")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("deep_links entries must be absolute URI prefixes")
     }));
 
     fs::write(
@@ -13036,11 +13048,14 @@ fn saveState() -> str {
 fn restoreState(value: str) -> void {
     print(value)
 }
+fn openUrl(value: str) -> void {
+    print(value)
+}
 view Screen {
     grid columns: 1fr
     grid rows: auto
 }
-app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting, onConfigurationChanged: configurationChanged, onLowMemory: lowMemory, onSaveState: saveState, onRestoreState: restoreState)
+app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped, onExit: exiting, onConfigurationChanged: configurationChanged, onLowMemory: lowMemory, onSaveState: saveState, onRestoreState: restoreState, onOpenUrl: openUrl)
 "#,
     )
     .expect("Android codegen source should be writable");
@@ -13064,6 +13079,8 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     ));
     assert!(generated.contains("flux__fn_saveState();"));
     assert!(generated.contains("flux__fn_restoreState(restored_state);"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOpenUrl"));
+    assert!(generated.contains("flux__fn_openUrl(value);"));
     assert!(generated.contains("activity->callbacks->onDestroy = flux__android_on_destroy"));
     assert!(generated.contains("flux__fn_started();"));
     assert!(generated.contains("flux__fn_resumed();"));

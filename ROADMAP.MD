@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 453
+- Completed baseline units: 454
 - Reported overall progress: **61%**
 - Current net scope growth after the baseline: 45 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -702,8 +702,8 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] WorkManager/background-job integration callable directly from Flux; generate required `Worker`/`ListenableWorker` JVM entry classes and route execution into compiled Flux without user-authored Kotlin/Java glue.
 - [x] Device vibration/haptics callable directly from Flux through the appropriate Android native/framework API for the configured API level.
   - [x] `android.vibrate(durationMs)` works from ordinary Flux code, tree-shakes its JNI helper when unused, automatically adds `android.permission.VIBRATE` only when reachable, and has been compiled into signed APK/AAB artifacts on Nox; the APK also installs/launches in Waydroid without application-authored bridge code.
-- [ ] Intents/deep links.
-  - [x] Outbound URL/settings intents: `android.openUrl(url)` directly creates an `ACTION_VIEW` intent from Flux through compiler-generated JNI; `android.openAppSettings()` opens the native application-details surface; and `android.openNotificationSettings()` opens the app-specific notification settings surface on API 26+ with a direct compiler-owned fallback to application details on older supported devices. All paths tree-shake when unreachable, use direct `Activity`/`Intent`/`Uri` JNI as required, and need no application bridge code. Inbound deep-link manifest declarations/routing and broader explicit intent forms remain pending.
+- [x] Intents/deep links for the current Android application surface.
+  - [x] Outbound URL/settings intents use compiler-owned direct framework interop: `android.openUrl(url)` creates an `ACTION_VIEW` intent, `android.openAppSettings()` opens application details, and `android.openNotificationSettings()` opens app-specific notification settings on API 26+ with an older-device fallback. Inbound routing is likewise compiler-owned: `[android].deep_links` declares validated URI prefixes that become native `VIEW`/`DEFAULT`/`BROWSABLE` manifest filters, while typed application `onOpenUrl: fn(str) -> void` receives both the launch URL and subsequent `singleTop` intents through the generated Activity/JNI boundary. Application source needs no Activity subclass, Kotlin/Java/JNI bridge, method channel, serialization bus, or plugin registry; broader third-party/native intent interoperability remains under the platform-binding/FFI track.
 - [x] Share sheet.
   - [x] `android.share(text)` opens the native Android chooser with an `ACTION_SEND` `text/plain` intent and compiler-owned UTF-8/JNI glue; Flux application code contains no Kotlin/Java/JNI bridge code.
 - [x] Permissions.

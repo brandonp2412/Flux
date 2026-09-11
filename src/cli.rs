@@ -3822,6 +3822,7 @@ fn android_activity_java_source() -> &'static str {
 import android.app.Activity;
 import android.app.UiModeManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
@@ -3887,6 +3888,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private native void nativeConfigurationChanged();
     private native String nativeSaveState();
     private native void nativeDestroy();
+    private native void nativeOpenUrl(String url);
     private static native void nativeOnClick(int viewId);
     private static native void nativeOnTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
@@ -3927,6 +3929,20 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         String restoredState = savedInstanceState == null ? null : savedInstanceState.getString(FLUX_STATE_KEY);
         nativeCreate(restoredState);
         nativeBuildUi();
+        dispatchFluxUrl(getIntent());
+    }
+
+    private void dispatchFluxUrl(Intent intent) {
+        if (intent == null) return;
+        Uri data = intent.getData();
+        if (data != null) nativeOpenUrl(data.toString());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        dispatchFluxUrl(intent);
     }
 
     @Override
@@ -4919,8 +4935,19 @@ fn android_manifest_xml(
     } else {
         "            <meta-data android:name=\"android.app.lib_name\" android:value=\"flux\" />\n"
     };
+    let deep_link_xml = manifest
+        .android
+        .deep_links
+        .iter()
+        .map(|deep_link| android_deep_link_intent_filter_xml(deep_link))
+        .collect::<String>();
+    let activity_launch_mode = if manifest.android.deep_links.is_empty() {
+        ""
+    } else {
+        " android:launchMode=\"singleTop\""
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\"{activity_config}>\n{native_activity_metadata}            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"{application_id}\" android:versionCode=\"{}\" android:versionName=\"{version}\">\n    <uses-sdk android:minSdkVersion=\"{}\" android:targetSdkVersion=\"{}\" />\n{permission_xml}    <application android:label=\"{label}\" android:hasCode=\"{has_code}\" android:extractNativeLibs=\"true\" android:debuggable=\"{}\">\n        <activity android:name=\"{activity_name}\" android:exported=\"true\"{activity_launch_mode}{activity_config}>\n{native_activity_metadata}            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n{deep_link_xml}        </activity>\n    </application>\n</manifest>\n",
         manifest.android.version_code,
         manifest.android.min_sdk,
         manifest.android.target_sdk,
@@ -4929,6 +4956,20 @@ fn android_manifest_xml(
         } else {
             "false"
         },
+    )
+}
+
+fn android_deep_link_intent_filter_xml(uri: &str) -> String {
+    let (scheme, rest) = uri
+        .split_once("://")
+        .expect("deep links are validated while reading flux.toml");
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = (!path.is_empty()).then(|| format!(" android:pathPrefix=\"/{}\"", xml_escape(path)));
+    format!(
+        "            <intent-filter>\n                <action android:name=\"android.intent.action.VIEW\" />\n                <category android:name=\"android.intent.category.DEFAULT\" />\n                <category android:name=\"android.intent.category.BROWSABLE\" />\n                <data android:scheme=\"{}\" android:host=\"{}\"{} />\n            </intent-filter>\n",
+        xml_escape(scheme),
+        xml_escape(host),
+        path.as_deref().unwrap_or("")
     )
 }
 
@@ -6056,6 +6097,7 @@ mod tests {
                 min_sdk: 23,
                 target_sdk: 36,
                 permissions: vec![],
+                deep_links: vec![],
                 keystore: None,
                 key_alias: None,
             },
@@ -6100,6 +6142,7 @@ mod tests {
                 min_sdk: 23,
                 target_sdk: 36,
                 permissions: vec!["android.permission.CAMERA".to_string()],
+                deep_links: vec![],
                 keystore: None,
                 key_alias: None,
             },
@@ -6118,8 +6161,13 @@ mod tests {
         assert!(plain.contains("android:hasCode=\"false\""));
         assert!(plain.contains("android:name=\"android.app.NativeActivity\""));
 
+        let mut deep_link_manifest = manifest.clone();
+        deep_link_manifest.android.deep_links = vec![
+            "flux://open".to_string(),
+            "https://example.com/app".to_string(),
+        ];
         let generated_ui = android_manifest_xml(
-            &manifest,
+            &deep_link_manifest,
             BuildMode::Release,
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeBuildUi(void);",
         );
@@ -6130,6 +6178,13 @@ mod tests {
                 .contains("android:configChanges=\"orientation|screenSize|smallestScreenSize")
         );
         assert!(!generated_ui.contains("android.app.lib_name"));
+        assert!(generated_ui.contains("android:launchMode=\"singleTop\""));
+        assert!(generated_ui.contains("android.intent.action.VIEW"));
+        assert!(generated_ui.contains("android.intent.category.BROWSABLE"));
+        assert!(generated_ui.contains("android:scheme=\"flux\" android:host=\"open\""));
+        assert!(generated_ui.contains(
+            "android:scheme=\"https\" android:host=\"example.com\" android:pathPrefix=\"/app\""
+        ));
         let activity = android_activity_java_source();
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
@@ -6148,6 +6203,9 @@ mod tests {
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));
         assert!(activity.contains("private native String nativeSaveState();"));
+        assert!(activity.contains("private native void nativeOpenUrl(String url);"));
+        assert!(activity.contains("dispatchFluxUrl(getIntent());"));
+        assert!(activity.contains("protected void onNewIntent(Intent intent)"));
         assert!(activity.contains("fluxThemeMode = nativeThemeMode();"));
         assert!(activity.contains("Configuration.UI_MODE_NIGHT_MASK"));
         assert!(activity.contains("Theme_DeviceDefault_NoActionBar"));

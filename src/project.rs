@@ -177,6 +177,7 @@ pub struct AndroidPackageConfig {
     pub min_sdk: u32,
     pub target_sdk: u32,
     pub permissions: Vec<String>,
+    pub deep_links: Vec<String>,
     pub keystore: Option<PathBuf>,
     pub key_alias: Option<String>,
 }
@@ -420,6 +421,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_min_sdk = None::<u32>;
     let mut android_target_sdk = None::<u32>;
     let mut android_permissions = None::<Vec<String>>;
+    let mut android_deep_links = None::<Vec<String>>;
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
     let mut diagnostics = Vec::new();
@@ -530,7 +532,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         ));
                     }
                 }
-                "permissions" => {
+                "permissions" | "deep_links" => {
                     let value = match parse_manifest_string_array(raw_value) {
                         Ok(value) => value,
                         Err(message) => {
@@ -538,11 +540,16 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                             continue;
                         }
                     };
-                    if android_permissions.replace(value).is_some() {
+                    let slot = if key == "permissions" {
+                        &mut android_permissions
+                    } else {
+                        &mut android_deep_links
+                    };
+                    if slot.replace(value).is_some() {
                         diagnostics.push(manifest_diagnostic(
                             source_id,
                             line_number,
-                            "duplicate [android] field 'permissions'",
+                            format!("duplicate [android] field '{key}'"),
                         ));
                     }
                 }
@@ -650,6 +657,18 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             }
         }
     }
+    if let Some(deep_links) = android_deep_links.as_ref() {
+        for deep_link in deep_links {
+            if !valid_android_deep_link(deep_link) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "[android].deep_links entries must be absolute URI prefixes such as 'https://example.com/app' or 'flux://open'; invalid value '{deep_link}'"
+                    ),
+                ));
+            }
+        }
+    }
     if android_keystore.as_deref().is_some_and(str::is_empty) {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
@@ -728,6 +747,12 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 permissions.sort();
                 permissions.dedup();
                 permissions
+            },
+            deep_links: {
+                let mut deep_links = android_deep_links.unwrap_or_default();
+                deep_links.sort();
+                deep_links.dedup();
+                deep_links
             },
             keystore,
             key_alias: android_key_alias,
@@ -816,6 +841,29 @@ fn parse_manifest_u32(text: &str) -> Result<u32, String> {
     }
     text.parse::<u32>()
         .map_err(|_| "manifest integer value is out of range".to_string())
+}
+
+fn valid_android_deep_link(value: &str) -> bool {
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let mut scheme_chars = scheme.chars();
+    if !scheme_chars
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+        || !scheme_chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+    {
+        return false;
+    }
+    if rest.is_empty()
+        || rest.starts_with('/')
+        || rest.contains(['?', '#'])
+        || value.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    !authority.is_empty() && !authority.contains('@')
 }
 
 fn valid_android_permission(value: &str) -> bool {

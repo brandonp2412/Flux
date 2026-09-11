@@ -3710,6 +3710,16 @@ fn emit_android_native_application(
         out.push_str("}\n\n");
     }
 
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOpenUrl(JNIEnv *env, jobject activity, jstring url) {\n    (void)activity;\n");
+    if let Some(function) = application_metadata_function(application, "on_open_url") {
+        out.push_str("    if (url == NULL) return;\n    const char *value = (*env)->GetStringUTFChars(env, url, NULL);\n    if (value == NULL) return;\n");
+        out.push_str(&format!("    {}(value);\n", function_c_name(function)));
+        out.push_str("    (*env)->ReleaseStringUTFChars(env, url, value);\n");
+    } else {
+        out.push_str("    (void)env;\n    (void)url;\n");
+    }
+    out.push_str("}\n\n");
+
     out.push_str("JNIEXPORT jstring JNICALL Java_app_flux_runtime_FluxActivity_nativeSaveState(JNIEnv *env, jobject activity) {\n    (void)activity;\n");
     if let Some(function) = application_metadata_function(application, "on_save_state") {
         out.push_str(&format!(
