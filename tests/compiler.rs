@@ -4582,6 +4582,140 @@ fn main() -> i64 {
 }
 
 #[test]
+fn locale_number_date_currency_formatting_is_native_borrowed_and_tree_shaken() {
+    let source = r#"
+fn formatted(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(locale.formatNumber(1234567, formatted))
+    print(locale.formatDateTime(946782245000, formatted))
+    print(locale.formatCurrency(1234, formatted))
+    return 0
+}
+"#;
+    check_source(source).expect("locale formatting should typecheck");
+    let generated = compile_to_c(source).expect("locale formatting should lower on Linux");
+    assert!(generated.contains("flux__locale_format_number"));
+    assert!(generated.contains("flux__locale_format_date_time"));
+    assert!(generated.contains("flux__locale_format_currency"));
+    assert!(generated.contains("newlocale(LC_ALL_MASK"));
+    assert!(!generated.contains("java/text/NumberFormat"));
+
+    let root = std::env::temp_dir().join(format!("flux-locale-format-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("locale format fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"locale-format\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("locale format manifest should be writable");
+    fs::write(root.join("src/main.flux"), source).expect("locale format source should be writable");
+    let binary = root.join("locale-format-bin");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("locale formatting fixture should build");
+    assert!(
+        built.status.success(),
+        "locale formatting fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .env("LC_ALL", "C.UTF-8")
+        .env("TZ", "UTC")
+        .output()
+        .expect("locale formatting fixture should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "1234567\nnil\n01/02/00 03:04:05\nnil\n1234.00\nnil\n"
+    );
+
+    fs::write(
+        root.join("src/main.flux"),
+        r#"
+fn formatted(value: str) -> void {
+    print(value)
+}
+fn started() -> void {
+    print(locale.formatNumber(1234567, formatted))
+    print(locale.formatDateTime(946782245000, formatted))
+    print(locale.formatCurrency(1234, formatted))
+}
+view LocaleFormatApp {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Locale format"
+}
+app LocaleFormatApp(onStart: started)
+"#,
+    )
+    .expect("Android locale formatting source should be writable");
+    let android_generated = fluxc::project::analyze(&root)
+        .expect("locale formatting package should analyze")
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("locale formatting should lower on Android");
+    assert!(android_generated.contains("java/text/NumberFormat"));
+    assert!(android_generated.contains("getIntegerInstance"));
+    assert!(android_generated.contains("getCurrencyInstance"));
+    assert!(android_generated.contains("java/text/DateFormat"));
+    assert!(android_generated.contains("getDateTimeInstance"));
+    assert!(!android_generated.contains("flux__android_locale_component"));
+
+    let invalid = r#"
+fn bad(_value: str, _extra: str) -> void {
+}
+fn main() -> i64 {
+    print(locale.formatNumber("1", bad))
+    print(locale.formatDateTime(0, bad))
+    print(locale.formatCurrency(1))
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid locale formatting should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.formatNumber value: expected i64, got str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.formatDateTime callback: expected fn(str) -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.formatCurrency expects 2 arguments")
+    }));
+
+    let dead = r#"
+fn formatted(_value: str) -> void {
+}
+fn hidden() -> void {
+    print(locale.formatNumber(1, formatted))
+    print(locale.formatDateTime(0, formatted))
+    print(locale.formatCurrency(1, formatted))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead locale formatters should lower safely");
+    assert!(!dead_generated.contains("flux__locale_format_number"));
+    assert!(!dead_generated.contains("flux__locale_format_date_time"));
+    assert!(!dead_generated.contains("flux__locale_format_currency"));
+    assert!(!dead_generated.contains("#include <monetary.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {

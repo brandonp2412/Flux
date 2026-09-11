@@ -950,6 +950,9 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
 ) {
+    if runtime_usage.contains("flux__locale_format_") {
+        out.push_str("#define _XOPEN_SOURCE 700\n");
+    }
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
@@ -990,8 +993,13 @@ fn emit_runtime_prelude(
         out.push_str("#include <sys/types.h>\n");
         out.push_str("#include <sys/wait.h>\n");
     }
-    if runtime_usage.contains("flux__time_") {
+    if runtime_usage.contains("flux__time_")
+        || runtime_usage.contains("flux__locale_format_date_time(")
+    {
         out.push_str("#include <time.h>\n");
+    }
+    if runtime_usage.contains("flux__locale_format_") && !uses_android {
+        out.push_str("#include <locale.h>\n#include <monetary.h>\n");
     }
     if runtime_usage.contains("flux__process_termination_requested(") {
         out.push_str("#include <signal.h>\n");
@@ -1060,7 +1068,15 @@ fn emit_runtime_prelude(
     let uses_locale_text = runtime_usage.contains("flux__locale_text(");
     let uses_locale_select = runtime_usage.contains("flux__locale_select(");
     let uses_locale_plural = runtime_usage.contains("flux__locale_plural(");
+    let uses_locale_format_number = runtime_usage.contains("flux__locale_format_number(");
+    let uses_locale_format_date_time = runtime_usage.contains("flux__locale_format_date_time(");
+    let uses_locale_format_currency = runtime_usage.contains("flux__locale_format_currency(");
+    let uses_locale_formatting =
+        uses_locale_format_number || uses_locale_format_date_time || uses_locale_format_currency;
     let uses_locale_resources = uses_locale_text || uses_locale_select || uses_locale_plural;
+    let uses_locale_components = runtime_usage.contains("flux__locale_language(")
+        || runtime_usage.contains("flux__locale_region(")
+        || uses_locale_resources;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
@@ -3988,7 +4004,7 @@ fn emit_runtime_prelude(
             out.push_str("static const char *flux__locale_region(void) { static char region[32]; const char *source = flux__locale_source(); if (strcmp(source, \"POSIX\") == 0 || source[0] == 'C' && (source[1] == '\\0' || source[1] == '.')) return \"\"; const char *separator = NULL; for (const char *cursor = source; *cursor != '\\0' && *cursor != '.' && *cursor != '@'; cursor += 1) { if (*cursor == '_' || *cursor == '-') { separator = cursor; break; } } if (separator == NULL) return \"\"; separator += 1; size_t index = 0; while (separator[index] != '\\0' && separator[index] != '_' && separator[index] != '-' && separator[index] != '.' && separator[index] != '@' && index + 1 < sizeof(region)) { region[index] = separator[index]; index += 1; } region[index] = '\\0'; return region; }\n");
         }
     }
-    if uses_locale && uses_android {
+    if uses_locale_components && uses_android {
         out.push_str("static const char *flux__android_locale_component(const char *method_name, const char *fallback, char *buffer, size_t capacity) { if (capacity == 0 || flux__android_activity == NULL) return fallback; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return fallback; jclass locale_class = (*env)->FindClass(env, \"java/util/Locale\"); if (locale_class == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); flux__android_release_env(detach); return fallback; } jmethodID get_default = (*env)->GetStaticMethodID(env, locale_class, \"getDefault\", \"()Ljava/util/Locale;\"); jobject locale = get_default != NULL ? (*env)->CallStaticObjectMethod(env, locale_class, get_default) : NULL; jmethodID component = (*env)->GetMethodID(env, locale_class, method_name, \"()Ljava/lang/String;\"); jstring value = locale != NULL && component != NULL ? (jstring)(*env)->CallObjectMethod(env, locale, component) : NULL; const char *chars = value != NULL ? (*env)->GetStringUTFChars(env, value, NULL) : NULL; if (chars != NULL) { strncpy(buffer, chars, capacity - 1); buffer[capacity - 1] = '\\0'; (*env)->ReleaseStringUTFChars(env, value, chars); } else { buffer[0] = '\\0'; } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value != NULL) (*env)->DeleteLocalRef(env, value); if (locale != NULL) (*env)->DeleteLocalRef(env, locale); (*env)->DeleteLocalRef(env, locale_class); flux__android_release_env(detach); return buffer[0] != '\\0' ? buffer : fallback; }\n");
         if runtime_usage.contains("flux__locale_language(") || uses_locale_resources {
             out.push_str("static const char *flux__locale_language(void) { static char language[32]; return flux__android_locale_component(\"getLanguage\", \"und\", language, sizeof(language)); }\n");
@@ -4060,6 +4076,33 @@ fn emit_runtime_prelude(
     if uses_locale_plural {
         out.push_str("static const char *flux__locale_plural_category(int64_t count) { const char *language = flux__locale_language(); const char *region = flux__locale_region(); uint64_t n = count < 0 ? (uint64_t)(-(count + 1)) + UINT64_C(1) : (uint64_t)count; uint64_t mod10 = n % 10; uint64_t mod100 = n % 100; if (strcmp(language, \"ar\") == 0) { if (n == 0) return \"zero\"; if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (mod100 >= 3 && mod100 <= 10) return \"few\"; if (mod100 >= 11 && mod100 <= 99) return \"many\"; return \"other\"; } if (strcmp(language, \"ru\") == 0 || strcmp(language, \"uk\") == 0) { if (mod10 == 1 && mod100 != 11) return \"one\"; if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return \"few\"; if (mod10 == 0 || mod10 >= 5 || (mod100 >= 11 && mod100 <= 14)) return \"many\"; return \"other\"; } if (strcmp(language, \"pl\") == 0) { if (n == 1) return \"one\"; if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return \"few\"; if (n != 1 && (mod10 == 0 || mod10 == 1 || mod10 >= 5 || (mod100 >= 12 && mod100 <= 14))) return \"many\"; return \"other\"; } if (strcmp(language, \"cs\") == 0 || strcmp(language, \"sk\") == 0) { if (n == 1) return \"one\"; if (n >= 2 && n <= 4) return \"few\"; return \"other\"; } if (strcmp(language, \"sl\") == 0) { if (mod100 == 1) return \"one\"; if (mod100 == 2) return \"two\"; if (mod100 == 3 || mod100 == 4) return \"few\"; return \"other\"; } if (strcmp(language, \"lt\") == 0) { if (mod10 == 1 && !(mod100 >= 11 && mod100 <= 19)) return \"one\"; if (mod10 >= 2 && mod10 <= 9 && !(mod100 >= 11 && mod100 <= 19)) return \"few\"; return \"other\"; } if (strcmp(language, \"lv\") == 0) { if (mod10 == 0 || (mod100 >= 11 && mod100 <= 19)) return \"zero\"; if (mod10 == 1 && mod100 != 11) return \"one\"; return \"other\"; } if (strcmp(language, \"ro\") == 0) { if (n == 1) return \"one\"; if (n == 0 || (mod100 >= 1 && mod100 <= 19)) return \"few\"; return \"other\"; } if (strcmp(language, \"ga\") == 0) { if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (n >= 3 && n <= 6) return \"few\"; if (n >= 7 && n <= 10) return \"many\"; return \"other\"; } if (strcmp(language, \"cy\") == 0) { if (n == 0) return \"zero\"; if (n == 1) return \"one\"; if (n == 2) return \"two\"; if (n == 3) return \"few\"; if (n == 6) return \"many\"; return \"other\"; } if (strcmp(language, \"mt\") == 0) { if (n == 1) return \"one\"; if (n == 0 || (mod100 >= 2 && mod100 <= 10)) return \"few\"; if (mod100 >= 11 && mod100 <= 19) return \"many\"; return \"other\"; } if (strcmp(language, \"fr\") == 0 || (strcmp(language, \"pt\") == 0 && strcmp(region, \"PT\") != 0)) return n == 0 || n == 1 ? \"one\" : \"other\"; if (strcmp(language, \"zh\") == 0 || strcmp(language, \"ja\") == 0 || strcmp(language, \"ko\") == 0 || strcmp(language, \"th\") == 0 || strcmp(language, \"vi\") == 0 || strcmp(language, \"id\") == 0) return \"other\"; return n == 1 ? \"one\" : \"other\"; }\n");
         out.push_str("static const char *flux__locale_plural(const char *key, int64_t count, const char *fallback) { return flux__locale_select(key, flux__locale_plural_category(count), fallback); }\n");
+    }
+    if uses_locale_formatting && !uses_android {
+        out.push_str("static locale_t flux__locale_native(void) { locale_t value = newlocale(LC_ALL_MASK, flux__locale_source(), (locale_t)0); if (value == (locale_t)0) value = newlocale(LC_ALL_MASK, \"C\", (locale_t)0); return value; }\n");
+        if uses_locale_format_number {
+            out.push_str("static const char *flux__locale_format_number(int64_t value, void (*callback)(const char *)) { locale_t locale = flux__locale_native(); if (locale == (locale_t)0) return \"failed to load locale for number formatting\"; locale_t previous = uselocale(locale); char buffer[128]; int length = snprintf(buffer, sizeof(buffer), \"%'lld\", (long long)value); uselocale(previous); freelocale(locale); if (length < 0 || (size_t)length >= sizeof(buffer)) return \"formatted number exceeds locale buffer\"; callback(buffer); return NULL; }\n");
+        }
+        if uses_locale_format_date_time {
+            out.push_str("static const char *flux__locale_format_date_time(int64_t unix_millis, void (*callback)(const char *)) { int64_t seconds = unix_millis / INT64_C(1000); if (unix_millis < 0 && unix_millis % INT64_C(1000) != 0) seconds -= 1; time_t raw = (time_t)seconds; if ((int64_t)raw != seconds) return \"date is outside the platform time range\"; struct tm local_time; if (localtime_r(&raw, &local_time) == NULL) return \"failed to resolve local date and time\"; locale_t locale = flux__locale_native(); if (locale == (locale_t)0) return \"failed to load locale for date formatting\"; locale_t previous = uselocale(locale); char buffer[256]; size_t length = strftime(buffer, sizeof(buffer), \"%x %X\", &local_time); uselocale(previous); freelocale(locale); if (length == 0) return \"formatted date exceeds locale buffer\"; callback(buffer); return NULL; }\n");
+        }
+        if uses_locale_format_currency {
+            out.push_str("static const char *flux__locale_format_currency(int64_t value, void (*callback)(const char *)) { if (value > INT64_C(9007199254740991) || value < -INT64_C(9007199254740991)) return \"currency value exceeds exact native formatting range\"; locale_t locale = flux__locale_native(); if (locale == (locale_t)0) return \"failed to load locale for currency formatting\"; locale_t previous = uselocale(locale); char buffer[256]; ssize_t length = strfmon(buffer, sizeof(buffer), \"%n\", (double)value); uselocale(previous); freelocale(locale); if (length < 0 || (size_t)length >= sizeof(buffer)) return \"failed to format currency for the current locale\"; callback(buffer); return NULL; }\n");
+        }
+    }
+    if uses_locale_formatting && uses_android {
+        out.push_str("static const char *flux__android_locale_emit(jstring value, void (*callback)(const char *), JNIEnv *env) { if (value == NULL) return \"Android locale formatter returned no text\"; const char *chars = (*env)->GetStringUTFChars(env, value, NULL); if (chars == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return \"failed to read Android locale text\"; } callback(chars); (*env)->ReleaseStringUTFChars(env, value, chars); return NULL; }\n");
+        if uses_locale_format_number || uses_locale_format_currency {
+            out.push_str("static const char *flux__android_locale_format_number_like(int64_t value, bool currency, void (*callback)(const char *)) { if (flux__android_activity == NULL) return \"Android activity is unavailable for locale formatting\"; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return \"failed to attach Android locale formatter\"; const char *error = NULL; jclass format_class = (*env)->FindClass(env, \"java/text/NumberFormat\"); jmethodID factory = format_class != NULL ? (*env)->GetStaticMethodID(env, format_class, currency ? \"getCurrencyInstance\" : \"getIntegerInstance\", \"()Ljava/text/NumberFormat;\") : NULL; jobject formatter = factory != NULL ? (*env)->CallStaticObjectMethod(env, format_class, factory) : NULL; jmethodID format = format_class != NULL ? (*env)->GetMethodID(env, format_class, \"format\", \"(J)Ljava/lang/String;\") : NULL; jstring text = formatter != NULL && format != NULL ? (jstring)(*env)->CallObjectMethod(env, formatter, format, (jlong)value) : NULL; if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); error = \"Android number formatter failed\"; } else error = flux__android_locale_emit(text, callback, env); if (text != NULL) (*env)->DeleteLocalRef(env, text); if (formatter != NULL) (*env)->DeleteLocalRef(env, formatter); if (format_class != NULL) (*env)->DeleteLocalRef(env, format_class); flux__android_release_env(detach); return error; }\n");
+            if uses_locale_format_number {
+                out.push_str("static inline const char *flux__locale_format_number(int64_t value, void (*callback)(const char *)) { return flux__android_locale_format_number_like(value, false, callback); }\n");
+            }
+            if uses_locale_format_currency {
+                out.push_str("static inline const char *flux__locale_format_currency(int64_t value, void (*callback)(const char *)) { return flux__android_locale_format_number_like(value, true, callback); }\n");
+            }
+        }
+        if uses_locale_format_date_time {
+            out.push_str("static const char *flux__locale_format_date_time(int64_t unix_millis, void (*callback)(const char *)) { if (flux__android_activity == NULL) return \"Android activity is unavailable for locale formatting\"; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return \"failed to attach Android locale formatter\"; const char *error = NULL; jclass date_class = (*env)->FindClass(env, \"java/util/Date\"); jmethodID date_ctor = date_class != NULL ? (*env)->GetMethodID(env, date_class, \"<init>\", \"(J)V\") : NULL; jobject date = date_ctor != NULL ? (*env)->NewObject(env, date_class, date_ctor, (jlong)unix_millis) : NULL; jclass format_class = (*env)->FindClass(env, \"java/text/DateFormat\"); jmethodID factory = format_class != NULL ? (*env)->GetStaticMethodID(env, format_class, \"getDateTimeInstance\", \"()Ljava/text/DateFormat;\") : NULL; jobject formatter = factory != NULL ? (*env)->CallStaticObjectMethod(env, format_class, factory) : NULL; jmethodID format = format_class != NULL ? (*env)->GetMethodID(env, format_class, \"format\", \"(Ljava/util/Date;)Ljava/lang/String;\") : NULL; jstring text = formatter != NULL && format != NULL && date != NULL ? (jstring)(*env)->CallObjectMethod(env, formatter, format, date) : NULL; if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); error = \"Android date formatter failed\"; } else error = flux__android_locale_emit(text, callback, env); if (text != NULL) (*env)->DeleteLocalRef(env, text); if (formatter != NULL) (*env)->DeleteLocalRef(env, formatter); if (format_class != NULL) (*env)->DeleteLocalRef(env, format_class); if (date != NULL) (*env)->DeleteLocalRef(env, date); if (date_class != NULL) (*env)->DeleteLocalRef(env, date_class); flux__android_release_env(detach); return error; }\n");
+        }
     }
 
     if runtime_usage.contains("flux__time_unix_millis(")
@@ -18958,6 +19001,24 @@ fn emit_qualified_call(
                     key.code, count.code, fallback.code
                 ),
                 vec![Type::Str],
+                None,
+            ));
+        }
+        if matches!(name, "formatNumber" | "formatDateTime" | "formatCurrency") {
+            if args.len() != 2 {
+                return Err(diag(span, "invalid locale call reached code generation"));
+            }
+            let value = emit_expr(&args[0], env, signatures)?;
+            let callback = emit_expr(&args[1], env, signatures)?;
+            let helper = match name {
+                "formatNumber" => "flux__locale_format_number",
+                "formatDateTime" => "flux__locale_format_date_time",
+                "formatCurrency" => "flux__locale_format_currency",
+                _ => unreachable!(),
+            };
+            return Ok((
+                format!("{helper}({}, {})", value.code, callback.code),
+                vec![Type::Error],
                 None,
             ));
         }

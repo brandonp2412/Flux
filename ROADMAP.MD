@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 499
+- Completed baseline units: 500
 - Reported overall progress: **68%**
 - Current net scope growth after the baseline: 115 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -888,7 +888,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Locale detection for current native targets: portable `locale.language()` and `locale.region()` return borrowed language/region strings without platform-specific source imports; Linux follows `LC_ALL` → `LC_MESSAGES` → `LANG` and normalizes the POSIX `C` locale to `und`/no region, while Android reads `java.util.Locale.getDefault()` through compiler-owned JNI. Both paths are statically typed, exposed through LSP completion/signature help, and tree-shaken when unreachable.
 - [x] Translation resources: package `[translations]` entries compile language and language-region strings directly into native output; typed `locale.text(key, fallback)` resolves exact region → language → fallback using the existing native locale bridge on Linux/Android, keeps results as borrowed static strings, participates in LSP completion/signature help, validates manifest keys/tags, and tree-shakes the lookup/resources completely when unreachable.
 - [x] Plural/select rules.
-- [ ] Number/date/currency formatting.
+- [x] Locale-aware number/date/currency formatting for the current native targets: typed `locale.formatNumber`, `locale.formatDateTime`, and `locale.formatCurrency` lend platform-formatted text only to an exact `fn(str) -> void` callback and return explicit `error`, avoiding an unsound owned-string escape. Linux lowers directly through native locale/monetary/time APIs and Android through compiler-owned `NumberFormat`/`DateFormat` JNI, with no user-written bridge; unreachable formatter support tree-shakes completely and LSP completion/signature help expose the portable API. Currency currently accepts whole-major-unit `i64` values until a sound decimal/money value type exists.
 - [x] RTL layout for current native application backends: compile-time `layoutDirection: "system" | "ltr" | "rtl"` application metadata sets the root GTK/Android native direction without a framework layout layer; `system` preserves locale/platform inheritance while explicit direction flows through native logical start/end layout behavior.
 - [x] Locale-aware text/input behavior for current native application backends: Linux keeps GTK/Pango plus the native GTK input method authoritative for locale-sensitive shaping/input, while compiler-generated Android text controls apply the current `Configuration` locale list and propagate the same locale hints to `EditText` IMEs on API 24+, with `Locale.getDefault()` compatibility on older supported releases. Android configuration changes rebuild the native surface so locale changes are picked up without application code or a platform bridge.
 

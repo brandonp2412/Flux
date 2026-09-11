@@ -1403,6 +1403,27 @@ fn add_qualified_namespace_completions(
             3,
             "fn locale.plural(key: str, count: i64, fallback: str) -> str",
         );
+        push_completion_item(
+            items,
+            seen,
+            "formatNumber",
+            3,
+            "fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "formatDateTime",
+            3,
+            "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "formatCurrency",
+            3,
+            "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "time" {
@@ -3124,6 +3145,22 @@ fn signature_help_for_document_cached(
                         "locale.plural",
                         &["key: str", "count: i64", "fallback: str"],
                         "str",
+                        active_parameter,
+                    ));
+                }
+                "formatNumber" | "formatCurrency" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("locale.{member}"),
+                        &["value: i64", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "formatDateTime" => {
+                    return Some(signature_help_for_builtin(
+                        "locale.formatDateTime",
+                        &["unixMillis: i64", "callback: fn(str) -> void"],
+                        "error",
                         active_parameter,
                     ));
                 }
@@ -6728,6 +6765,18 @@ mod tests {
         assert!(
             locale_items.contains("fn locale.plural(key: str, count: i64, fallback: str) -> str")
         );
+        assert!(
+            locale_items
+                .contains("fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error")
+        );
+        assert!(locale_items.contains(
+            "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error"
+        ));
+        assert!(
+            locale_items.contains(
+                "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error"
+            )
+        );
 
         let time_line = source
             .lines()
@@ -7854,7 +7903,7 @@ mod tests {
     #[test]
     fn signature_help_supports_locale_capabilities() {
         let uri = "file:///tmp/locale-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(locale.language())\n    print(locale.region())\n    print(locale.text(\"greeting\", \"Hello\"))\n    print(locale.select(\"tone\", \"formal\", \"Hello\"))\n    print(locale.plural(\"items\", 2, \"items\"))\n    return 0\n}\n";
+        let source = "fn formatted(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(locale.language())\n    print(locale.region())\n    print(locale.text(\"greeting\", \"Hello\"))\n    print(locale.select(\"tone\", \"formal\", \"Hello\"))\n    print(locale.plural(\"items\", 2, \"items\"))\n    print(locale.formatNumber(1234, formatted))\n    print(locale.formatDateTime(0, formatted))\n    print(locale.formatCurrency(1234, formatted))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("locale.language(", "fn locale.language() -> str"),
@@ -7870,6 +7919,18 @@ mod tests {
             (
                 "locale.plural(",
                 "fn locale.plural(key: str, count: i64, fallback: str) -> str",
+            ),
+            (
+                "locale.formatNumber(",
+                "fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "locale.formatDateTime(",
+                "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "locale.formatCurrency(",
+                "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error",
             ),
         ] {
             let line_index = source

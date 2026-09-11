@@ -760,11 +760,18 @@ process.exit(0)
 Portable Flux code can read the current language and region, or resolve a compiled package translation, without importing a platform-specific module:
 
 ```flux
+fn formatted(value: str) -> void {
+    print(value)
+}
+
 print(locale.language())
 print(locale.region())
 print(locale.text("greeting", "Hello"))
 print(locale.plural("items", 2, "items"))
 print(locale.select("tone", "formal", "Hello"))
+locale.formatNumber(1234567, formatted)
+locale.formatDateTime(time.unixMillis(), formatted)
+locale.formatCurrency(1234, formatted)
 ```
 
 Package translations live in `flux.toml`. Each key contains one or more `language=text` or `language-REGION=text` entries:
@@ -780,7 +787,9 @@ tone.formal = ["en=Good day", "fr=Bonjour"]
 tone.other = ["en=Hello", "fr=Salut"]
 ```
 
-`locale.text(key, fallback)` checks an exact language-region entry first, then the language-only entry, then returns the supplied fallback. `locale.select(key, selector, fallback)` resolves `key.selector`, then `key.other`, while `locale.plural(key, count, fallback)` chooses an integer cardinal category (`zero`, `one`, `two`, `few`, `many`, or `other`) from the current locale before using the same selector lookup. The native plural rules cover the major CLDR-style integer families, including Arabic, Slavic, Baltic, Celtic, Romance, and one/other languages, with region-sensitive Portuguese handling. Translation strings are compiled into the native binary as borrowed static strings, so lookup needs no JSON bundle, allocation, reflection, VM resource manager, or user-written platform bridge; unreachable translation calls and their resource table tree-shake away. Translation keys and locale tags are validated in the package manifest. Locale-aware number/date/currency formatting remains a separate API.
+`locale.text(key, fallback)` checks an exact language-region entry first, then the language-only entry, then returns the supplied fallback. `locale.select(key, selector, fallback)` resolves `key.selector`, then `key.other`, while `locale.plural(key, count, fallback)` chooses an integer cardinal category (`zero`, `one`, `two`, `few`, `many`, or `other`) from the current locale before using the same selector lookup. The native plural rules cover the major CLDR-style integer families, including Arabic, Slavic, Baltic, Celtic, Romance, and one/other languages, with region-sensitive Portuguese handling. Translation strings are compiled into the native binary as borrowed static strings, so lookup needs no JSON bundle, allocation, reflection, VM resource manager, or user-written platform bridge; unreachable translation calls and their resource table tree-shake away. Translation keys and locale tags are validated in the package manifest.
+
+Locale-sensitive formatting uses callback-scoped borrowed text so formatting does not invent an owned-string lifetime. `locale.formatNumber(value, callback)` formats an `i64` with the platform locale's integer conventions, `locale.formatDateTime(unixMillis, callback)` formats a local date and time from Unix milliseconds, and `locale.formatCurrency(value, callback)` formats a whole-major-unit `i64` currency amount using the platform's current currency convention. Each call returns `error`; the formatted `str` is valid only during the exact `fn(str) -> void` callback. Linux lowers directly to the native locale/monetary/time APIs, while Android uses compiler-owned direct JNI to `NumberFormat` and `DateFormat`. Unreachable formatting support tree-shakes completely, and application source needs no platform bridge, formatter object, reflection layer, or VM-style portability runtime.
 
 `locale.language()` returns the platform language code as `str`, using `"und"` when the host has no meaningful language such as the POSIX `C` locale. `locale.region()` returns the region/country code or an empty string when none is available. Linux reads the conventional `LC_ALL`, `LC_MESSAGES`, then `LANG` precedence without invoking locale-sensitive libc parsing, while Android calls the platform default `java.util.Locale` through compiler-owned JNI lowering. Both paths are emitted only when reachable, require no user-written bridge code, and keep their returned strings borrowed under the current bootstrap `str` model. Native text/input behavior follows the platform locale rather than a Flux-owned locale runtime: GTK/Pango and the native GTK input method remain authoritative on Linux, while generated Android text controls apply the current configuration locale list and pass the same locale hints to `EditText` IMEs on API 24+, with `Locale.getDefault()` compatibility on older supported releases. Android configuration changes rebuild the native view surface, so locale changes are applied without application bridge code.
 
