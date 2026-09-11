@@ -5570,9 +5570,9 @@ fn android_manifest_xml(
         .map(|deep_link| android_deep_link_intent_filter_xml(deep_link))
         .collect::<String>();
     let activity_launch_mode = if manifest.android.deep_links.is_empty() {
-        ""
+        " android:enableOnBackInvokedCallback=\"true\""
     } else {
-        " android:launchMode=\"singleTop\""
+        " android:enableOnBackInvokedCallback=\"true\" android:launchMode=\"singleTop\""
     };
     let background_service_xml = if generated_job_service {
         "        <service android:name=\"app.flux.runtime.FluxJobService\" android:permission=\"android.permission.BIND_JOB_SERVICE\" android:exported=\"false\" />\n"
@@ -6797,6 +6797,7 @@ mod tests {
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
         assert!(plain.contains("android:hasCode=\"false\""));
         assert!(plain.contains("android:name=\"android.app.NativeActivity\""));
+        assert!(plain.contains("android:enableOnBackInvokedCallback=\"true\""));
         assert!(!plain.contains("FluxJobService"));
 
         let generated_jobs = android_manifest_xml(
@@ -6829,6 +6830,7 @@ mod tests {
         );
         assert!(generated_ui.contains("android:hasCode=\"true\""));
         assert!(generated_ui.contains("android:name=\"app.flux.runtime.FluxActivity\""));
+        assert!(generated_ui.contains("android:enableOnBackInvokedCallback=\"true\""));
         assert!(
             generated_ui
                 .contains("android:configChanges=\"orientation|screenSize|smallestScreenSize")
@@ -6843,6 +6845,8 @@ mod tests {
         ));
         let activity = android_activity_java_source("");
         assert!(!activity.contains("nativeOnPickerResult"));
+        assert!(!activity.contains("onBackPressed"));
+        assert!(!activity.contains("KEYCODE_BACK"));
         assert!(!activity.contains("ACTION_OPEN_DOCUMENT"));
         assert!(!activity.contains("nativeOnFrame"));
         assert!(!activity.contains("fluxRequestFrame"));
