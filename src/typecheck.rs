@@ -7826,14 +7826,11 @@ fn check_qualified_call(
         }
     }
     if namespace == "dialog" {
-        if !named_args.is_empty() {
-            return Err(diag(
-                span,
-                &format!("dialog.{name} accepts positional arguments only"),
-            ));
-        }
         match name.as_str() {
             "alert" => {
+                if !named_args.is_empty() {
+                    return Err(diag(span, "dialog.alert accepts positional arguments only"));
+                }
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -7850,7 +7847,10 @@ fn check_qualified_call(
                 if args.len() != 3 {
                     return Err(diag(
                         span,
-                        &format!("dialog.confirm expects 3 arguments, got {}", args.len()),
+                        &format!(
+                            "dialog.confirm expects 3 positional arguments, got {}",
+                            args.len()
+                        ),
                     ));
                 }
                 let title = type_of_expr(&args[0], env, signatures)?;
@@ -7867,6 +7867,31 @@ fn check_qualified_call(
                     &callback,
                     "dialog.confirm callback",
                 )?;
+                let mut supplied_labels = HashSet::new();
+                for arg in named_args {
+                    if !matches!(arg.name.as_str(), "cancelLabel" | "confirmLabel") {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!("dialog.confirm has no named argument '{}'", arg.name),
+                        ));
+                    }
+                    if !supplied_labels.insert(arg.name.as_str()) {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!(
+                                "dialog.confirm named argument '{}' is supplied more than once",
+                                arg.name
+                            ),
+                        ));
+                    }
+                    let label = type_of_expr(&arg.value, env, signatures)?;
+                    require_type(
+                        arg.value.span,
+                        &Type::Str,
+                        &label,
+                        &format!("dialog.confirm {}", arg.name),
+                    )?;
+                }
                 return Ok(Vec::new());
             }
             _ => {

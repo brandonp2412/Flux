@@ -1568,7 +1568,7 @@ fn add_qualified_namespace_completions(
             seen,
             "confirm",
             3,
-            "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void) -> void",
+            "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void, *, cancelLabel: str = \"Cancel\", confirmLabel: str = \"OK\") -> void",
         );
         return true;
     }
@@ -3329,7 +3329,13 @@ fn signature_help_for_document_cached(
                 "confirm" => {
                     return Some(signature_help_for_builtin(
                         "dialog.confirm",
-                        &["title: str", "message: str", "onConfirm: fn() -> void"],
+                        &[
+                            "title: str",
+                            "message: str",
+                            "onConfirm: fn() -> void",
+                            "cancelLabel: str = \"Cancel\"",
+                            "confirmLabel: str = \"OK\"",
+                        ],
                         "void",
                         active_parameter,
                     ));
@@ -8383,9 +8389,9 @@ mod tests {
         ))
         .to_json();
         assert!(items.contains("fn dialog.alert(title: str, message: str) -> void"));
-        assert!(items.contains(
-            "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void) -> void"
-        ));
+        assert!(items.contains("dialog.confirm"));
+        assert!(items.contains("cancelLabel"));
+        assert!(items.contains("confirmLabel"));
 
         let signature_source =
             "fn main() -> i64 {\n    dialog.alert(\"Flux\", \"Native alert\")\n    return 0\n}\n";
@@ -8428,9 +8434,9 @@ mod tests {
         )
         .expect("dialog confirm should have signature help")
         .to_json();
-        assert!(help.contains(
-            "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void) -> void"
-        ));
+        assert!(help.contains("dialog.confirm"));
+        assert!(help.contains("cancelLabel"));
+        assert!(help.contains("confirmLabel"));
     }
 
     #[test]

@@ -5165,12 +5165,12 @@ __FLUX_PICKER_METHODS__
     let dialog_methods = if dialog_confirm_enabled {
         r#"
 
-    public void fluxShowConfirmDialog(String title, String message, long callback) {
+    public void fluxShowConfirmDialog(String title, String message, String cancelLabel, String confirmLabel, long callback) {
         new android.app.AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("OK", (dialog, which) -> nativeOnDialogConfirm(callback))
+                .setNegativeButton(cancelLabel, null)
+                .setPositiveButton(confirmLabel, (dialog, which) -> nativeOnDialogConfirm(callback))
                 .show();
     }"#
     } else {
