@@ -18238,6 +18238,115 @@ app ContextCard
 }
 
 #[test]
+fn portable_text_drag_and_drop_uses_native_platform_drag_surfaces() {
+    let source = r#"
+fn dropped(value: str) -> void {
+    print(value)
+}
+
+view DragDrop {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text source at 1,1
+        text: "Drag me"
+        dragText: "horse-profile"
+    Text target at 2,1
+        text: "Drop here"
+        onDrop: dropped
+}
+app DragDrop
+"#;
+
+    check_source(source).expect("portable text drag/drop should typecheck");
+    let linux = compile_to_c(source).expect("portable text drag/drop should lower to GTK");
+    assert!(linux.contains("gdk_content_provider_new_typed(G_TYPE_STRING, \"horse-profile\")"));
+    assert!(linux.contains("gtk_drag_source_new()"));
+    assert!(
+        linux.contains("gtk_drag_source_set_actions(flux__drag_source_source, GDK_ACTION_COPY)")
+    );
+    assert!(linux.contains("gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_COPY)"));
+    assert!(linux.contains("G_CALLBACK(flux__ui_drop_target)"));
+    assert!(linux.contains("const char *text = g_value_get_string(value)"));
+    assert!(linux.contains("flux__fn_dropped(text); flux__ui_refresh();"));
+
+    let program = fluxc::parser::parse(source).expect("drag/drop app should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("drag/drop app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable text drag/drop should lower to Android");
+    assert!(android.contains("setOnLongClickListener"));
+    assert!(android.contains("setDragText"));
+    assert!(android.contains("NewStringUTF(env, \"horse-profile\")"));
+    assert!(android.contains("setOnDragListener"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnDrop"));
+    assert!(android.contains("flux__fn_dropped(value); flux__ui_refresh();"));
+
+    let wrong_callback = r#"
+fn dropped(_value: i64) -> void {
+}
+view DragDrop {
+    grid columns: 1fr
+    grid rows: auto
+    Text target at 1,1
+        text: "Drop"
+        onDrop: dropped
+}
+app DragDrop
+"#;
+    let errors = check_source_all(wrong_callback)
+        .expect_err("onDrop must require an exact fn(str) -> void callback");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("expected fn(str) -> void"))
+    );
+
+    let dynamic_payload = r#"
+view DragDrop {
+    grid columns: 1fr
+    grid rows: auto
+    state payload: str = "horse"
+    Text source at 1,1
+        text: "Drag"
+        dragText: payload
+}
+app DragDrop
+"#;
+    let errors = check_source_all(dynamic_payload)
+        .expect_err("dragText is intentionally stable compile-time drag metadata");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dragText must be a compile-time string value")
+    }));
+
+    let conflicting = r#"
+fn opened() -> void {
+}
+view DragDrop {
+    grid columns: 1fr
+    grid rows: auto
+    Text source at 1,1
+        text: "Drag"
+        dragText: "horse"
+        onLongPress: opened
+}
+app DragDrop
+"#;
+    let errors = check_source_all(conflicting)
+        .expect_err("Android cannot assign the same long-click to drag start and long press");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dragText cannot be combined with long-press/context-menu activation")
+    }));
+}
+
+#[test]
 fn passive_tap_actions_use_native_accessible_activation() {
     let source = r#"
 fn tapped() -> void {

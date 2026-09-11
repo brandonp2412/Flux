@@ -1263,6 +1263,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "tooltip"
             | "context_menu_label"
+            | "drag_text"
             | "shortcut"
             | "shortcut_scope"
             | "accessibility_label"
@@ -1352,7 +1353,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                     returns: Vec::new(),
                 });
             }
-            "on_key" => {
+            "on_key" | "on_drop" => {
                 return Some(Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
@@ -1576,6 +1577,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "status",
     "tooltip",
     "context_menu_label",
+    "drag_text",
     "shortcut",
     "shortcut_scope",
     "accessibility_label",
@@ -1589,6 +1591,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_long_press",
     "on_context_menu",
     "on_context_menu_select",
+    "on_drop",
     "on_drag",
     "on_swipe",
     "on_scale",
@@ -1993,6 +1996,36 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     )),
                 },
                 (None, None) => {}
+            }
+
+            let drag_text = element
+                .properties
+                .iter()
+                .find(|property| source_name_to_internal(&property.name) == "drag_text");
+            if let Some(drag_text) = drag_text {
+                match evaluate_default_expr(&drag_text.value, signatures) {
+                    Ok(ConstantValue::Str(value)) if !value.is_empty() => {}
+                    Ok(ConstantValue::Str(_)) => {
+                        diagnostics.push(diag(drag_text.value.span, "dragText must not be empty"))
+                    }
+                    Ok(_) => {}
+                    Err(_) => diagnostics.push(diag(
+                        drag_text.value.span,
+                        "dragText must be a compile-time string value",
+                    )),
+                }
+                if let Some(conflict) = long_press.or(context_menu).or(context_menu_label) {
+                    diagnostics.push(
+                        diag(
+                            drag_text.name_span,
+                            "dragText cannot be combined with long-press/context-menu activation on the same element",
+                        )
+                        .with_label(conflict.name_span, "conflicting long-press gesture is declared here")
+                        .with_note(
+                            "Android starts native drag-and-drop from the long-click gesture, so one element cannot claim that gesture for both actions",
+                        ),
+                    );
+                }
             }
 
             for property in &element.properties {

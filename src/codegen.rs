@@ -6194,6 +6194,7 @@ fn emit_android_native_application(
         if view_property(element, "on_long_press").is_some()
             || view_property(element, "on_context_menu").is_some()
             || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "drag_text").is_some()
         {
             out.push_str("    jmethodID set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
             out.push_str("    jmethodID set_long_click_listener = (*env)->GetMethodID(env, child_class, \"setOnLongClickListener\", \"(Landroid/view/View$OnLongClickListener;)V\");\n");
@@ -6224,6 +6225,37 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->DeleteLocalRef(env, child_context_menu_label);\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, context_menu_activity_class);\n");
             }
+            if let Some(drag_property) = view_property(element, "drag_text") {
+                let Some(drag_text) = static_expr_str(&drag_property.value, signatures) else {
+                    return Err(diag(
+                        drag_property.value.span,
+                        "dragText must be a compile-time string value",
+                    ));
+                };
+                out.push_str(
+                    "    jclass drag_activity_class = (*env)->GetObjectClass(env, activity);\n",
+                );
+                out.push_str("    if (drag_activity_class == NULL) return;\n");
+                out.push_str("    jmethodID set_drag_text = (*env)->GetMethodID(env, drag_activity_class, \"setDragText\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
+                out.push_str("    if (set_drag_text == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jstring child_drag_text = (*env)->NewStringUTF(env, {});\n",
+                    c_string(&drag_text)
+                ));
+                out.push_str("    if (child_drag_text == NULL) return;\n");
+                out.push_str("    (*env)->CallVoidMethod(env, activity, set_drag_text, child, child_drag_text);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, child_drag_text);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, drag_activity_class);\n");
+            }
+        }
+        if view_property(element, "on_drop").is_some() {
+            out.push_str("    jmethodID set_drop_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jmethodID set_drop_listener = (*env)->GetMethodID(env, child_class, \"setOnDragListener\", \"(Landroid/view/View$OnDragListener;)V\");\n");
+            out.push_str("    if (set_drop_id == NULL || set_drop_listener == NULL) return;\n");
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_drop_id, (jint){element_id});\n"
+            ));
+            out.push_str("    (*env)->CallVoidMethod(env, child, set_drop_listener, activity);\n");
         }
         if view_property(element, "on_drag").is_some()
             || view_property(element, "on_swipe").is_some()
@@ -6603,6 +6635,31 @@ fn emit_android_native_application(
         out.push_str(&format!("        case {element_id}: {body} break;\n"));
     }
     out.push_str("        default: break;\n    }\n}\n\n");
+
+    if view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "on_drop").is_some())
+    {
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDrop(JNIEnv *env, jclass activity_class, jint view_id, jstring text) {\n    (void)activity_class;\n    if (text == NULL) return;\n    const char *value = (*env)->GetStringUTFChars(env, text, NULL);\n    if (value == NULL) return;\n    switch (view_id) {\n");
+        for element in &view.elements {
+            let Some(action) = view_property(element, "on_drop") else {
+                continue;
+            };
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onDrop requires a named fn(str) -> void callback",
+                ));
+            };
+            let element_id = stable_android_element_id(&view.name, &element.name);
+            out.push_str(&format!(
+                "        case {element_id}: {}(value); flux__ui_refresh(); break;\n",
+                function_c_name(function)
+            ));
+        }
+        out.push_str("        default: break;\n    }\n    (*env)->ReleaseStringUTFChars(env, text, value);\n}\n\n");
+    }
 
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDrag(JNIEnv *env, jclass activity_class, jint view_id, jlong offset_x, jlong offset_y) {\n    (void)env;\n    (void)activity_class;\n    switch (view_id) {\n");
     for element in &view.elements {
@@ -7314,6 +7371,19 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static void flux__ui_context_menu_{}(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {{ (void)n_press; (void)data; {request_body}{menu_body} }}\n",
                 element.name,
+            ));
+        }
+        if let Some(action) = view_property(element, "on_drop") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap native onDrop requires a named fn(str) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "static gboolean flux__ui_drop_{}(GtkDropTarget *target, const GValue *value, double x, double y, gpointer data) {{ (void)target; (void)x; (void)y; (void)data; const char *text = g_value_get_string(value); if (text == NULL) return FALSE; {}(text); flux__ui_refresh(); return TRUE; }}\n",
+                element.name,
+                function_c_name(function),
             ));
         }
         let drag_action = view_property(element, "on_drag");
@@ -8492,6 +8562,27 @@ fn emit_linux_gtk_application(
             ));
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "drag_text") {
+            let Some(text) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "dragText must be a compile-time string value",
+                ));
+            };
+            let source = format!("flux__drag_source_{}", element.name);
+            let content = format!("flux__drag_content_{}", element.name);
+            out.push_str(&format!(
+                "    GdkContentProvider *{content} = gdk_content_provider_new_typed(G_TYPE_STRING, {});\n    GtkDragSource *{source} = gtk_drag_source_new();\n    gtk_drag_source_set_actions({source}, GDK_ACTION_COPY);\n    gtk_drag_source_set_content({source}, {content});\n    g_object_unref({content});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({source}));\n",
+                c_string(&text),
+            ));
+        }
+        if view_property(element, "on_drop").is_some() {
+            let target = format!("flux__drop_target_{}", element.name);
+            out.push_str(&format!(
+                "    GtkDropTarget *{target} = gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_COPY);\n    g_signal_connect({target}, \"drop\", G_CALLBACK(flux__ui_drop_{}), NULL);\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({target}));\n",
+                element.name,
             ));
         }
         if view_property(element, "on_drag").is_some()

@@ -6495,6 +6495,8 @@ mod tests {
         assert!(element.contains("focusable: bool"));
         assert!(element.contains("autofocus: bool"));
         assert!(element.contains("onHover: fn() -> void"));
+        assert!(element.contains("dragText: str"));
+        assert!(element.contains("onDrop: fn(str) -> void"));
         assert!(element.contains("alignX: str"));
         assert!(element.contains("marginStart: i64"));
         assert!(element.contains("minHeight: i64"));

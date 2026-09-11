@@ -3933,6 +3933,7 @@ import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.content.ClipData;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -3940,6 +3941,7 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -3960,7 +3962,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener {
+public final class FluxActivity extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener, View.OnFocusChangeListener, View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener, View.OnDragListener {
     private static final String FLUX_STATE_KEY = "app.flux.runtime.savedState";
 
     static {
@@ -3977,6 +3979,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Float> scaleStarts = new HashMap<>();
     private final Map<Integer, VelocityTracker> swipeTrackers = new HashMap<>();
     private final Map<Integer, String> contextMenuLabels = new HashMap<>();
+    private final Map<Integer, String> dragTexts = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
     private final Set<String> shortcutFocusedOnly = new HashSet<>();
@@ -4004,6 +4007,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnContextMenu(int viewId);
     private static native void nativeOnContextMenuSelect(int viewId);
+    private static native void nativeOnDrop(int viewId, String text);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
     private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);
     private static native void nativeOnScale(int viewId, long scalePercent);
@@ -4142,9 +4146,24 @@ __FLUX_PICKER_METHODS__
         else contextMenuLabels.put(viewId, label);
     }
 
+    public void setDragText(View view, String text) {
+        if (view == null) return;
+        int viewId = view.getId();
+        if (text == null || text.isEmpty()) dragTexts.remove(viewId);
+        else dragTexts.put(viewId, text);
+    }
+
     @Override
     public boolean onLongClick(View view) {
         int viewId = view.getId();
+        String dragText = dragTexts.get(viewId);
+        if (dragText != null) {
+            ClipData data = ClipData.newPlainText("Flux", dragText);
+            View.DragShadowBuilder shadow = new View.DragShadowBuilder(view);
+            if (Build.VERSION.SDK_INT >= 24) view.startDragAndDrop(data, shadow, null, 0);
+            else view.startDrag(data, shadow, null, 0);
+            return true;
+        }
         nativeOnLongPress(viewId);
         nativeOnContextMenu(viewId);
         String label = contextMenuLabels.get(viewId);
@@ -4158,6 +4177,30 @@ __FLUX_PICKER_METHODS__
             menu.show();
         }
         return true;
+    }
+
+    @Override
+    public boolean onDrag(View view, DragEvent event) {
+        if (event == null) return false;
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+                return event.getClipDescription() != null
+                        && event.getClipDescription().hasMimeType(android.content.ClipDescription.MIMETYPE_TEXT_PLAIN);
+            case DragEvent.ACTION_DROP:
+                ClipData data = event.getClipData();
+                if (data == null || data.getItemCount() == 0) return false;
+                CharSequence text = data.getItemAt(0).coerceToText(this);
+                if (text == null) return false;
+                nativeOnDrop(view.getId(), text.toString());
+                return true;
+            case DragEvent.ACTION_DRAG_ENTERED:
+            case DragEvent.ACTION_DRAG_LOCATION:
+            case DragEvent.ACTION_DRAG_EXITED:
+            case DragEvent.ACTION_DRAG_ENDED:
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static float fluxPointerDistance(MotionEvent event) {
@@ -6794,7 +6837,7 @@ mod tests {
         assert!(!picker_activity.contains("__FLUX_PICKER_"));
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
-            activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener")
+            activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener, View.OnDragListener")
         );
         assert!(!activity.contains("extends NativeActivity"));
         assert!(activity.contains("System.loadLibrary(\"flux\");"));
@@ -6840,9 +6883,20 @@ mod tests {
                 "private final Map<Integer, String> contextMenuLabels = new HashMap<>();"
             )
         );
+        assert!(
+            activity.contains("private final Map<Integer, String> dragTexts = new HashMap<>();")
+        );
         assert!(activity.contains("setContextMenuLabel(View view, String label)"));
+        assert!(activity.contains("setDragText(View view, String text)"));
         assert!(activity.contains("new android.widget.PopupMenu(this, view)"));
         assert!(activity.contains("nativeOnContextMenuSelect(viewId);"));
+        assert!(
+            activity.contains("private static native void nativeOnDrop(int viewId, String text);")
+        );
+        assert!(activity.contains("ClipData.newPlainText(\"Flux\", dragText)"));
+        assert!(activity.contains("view.startDragAndDrop(data, shadow, null, 0)"));
+        assert!(activity.contains("public boolean onDrag(View view, DragEvent event)"));
+        assert!(activity.contains("nativeOnDrop(view.getId(), text.toString());"));
         assert!(activity.contains(
             "private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);"
         ));
