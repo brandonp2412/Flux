@@ -11975,9 +11975,29 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
             collect_anonymous_functions_from_expr(body, functions);
         }
         ExprKind::Call {
-            args, named_args, ..
+            name,
+            args,
+            named_args,
+        } => {
+            for (index, arg) in args.iter().enumerate() {
+                let inline_sequence_callback = named_args.is_empty()
+                    && matches!(name.as_str(), "map" | "filter" | "where")
+                    && args.len() == 2
+                    && index == 1
+                    && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
+                if inline_sequence_callback {
+                    if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
+                        collect_anonymous_functions_from_expr(body, functions);
+                    }
+                } else {
+                    collect_anonymous_functions_from_expr(arg, functions);
+                }
+            }
+            for arg in named_args {
+                collect_anonymous_functions_from_expr(&arg.value, functions);
+            }
         }
-        | ExprKind::QualifiedCall {
+        ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
             for arg in args {
@@ -11992,10 +12012,22 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
                 collect_anonymous_functions_from_expr(arg, functions);
             }
         }
-        ExprKind::Pipe { input, args, .. } => {
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
             collect_anonymous_functions_from_expr(input, functions);
-            for arg in args {
-                collect_anonymous_functions_from_expr(arg, functions);
+            for (index, arg) in args.iter().enumerate() {
+                let inline_sequence_callback = matches!(name.as_str(), "map" | "filter" | "where")
+                    && args.len() == 1
+                    && index == 0
+                    && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
+                if inline_sequence_callback {
+                    if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
+                        collect_anonymous_functions_from_expr(body, functions);
+                    }
+                } else {
+                    collect_anonymous_functions_from_expr(arg, functions);
+                }
             }
         }
         ExprKind::List(items) => {
@@ -14568,6 +14600,60 @@ fn emit_sequence_transform_stages(
             SequenceTransform::Map { callback, .. } => (callback, false),
             SequenceTransform::Filter { callback, .. } => (callback, true),
         };
+        if let ExprKind::AnonymousFunction { params, body, .. } = &callback_expr.kind {
+            let Some(param) = params.first() else {
+                return Err(diag(
+                    callback_expr.span,
+                    "sequence transform callback requires one parameter",
+                ));
+            };
+            if params.len() != 1 {
+                return Err(diag(
+                    callback_expr.span,
+                    "sequence transform callback requires one parameter",
+                ));
+            }
+            let mut callback_env = env.clone();
+            callback_env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+            if filter {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    {} {} = {value_name};\n",
+                    c_type(&param.ty, signatures),
+                    local_c_name(&param.name)
+                ));
+                let condition = emit_expr(body, &callback_env, signatures)?;
+                out.push_str(&format!("{pad}    if (!{}) continue;\n", condition.code));
+                out.push_str(&format!("{pad}}}\n"));
+                continue;
+            }
+            let stage_ty = signatures.canonical_type(&type_of_expr(stage, env, signatures)?);
+            let Type::List(output_element) = stage_ty else {
+                return Err(diag(
+                    stage.span,
+                    "sequence transform stage must produce a list",
+                ));
+            };
+            let next_name = format!("flux__transform_value_{}", *temp_counter);
+            *temp_counter += 1;
+            let output_ty = (*output_element).clone();
+            out.push_str(&format!(
+                "{pad}{} {next_name};\n{pad}{{\n",
+                c_type(&output_ty, signatures)
+            ));
+            out.push_str(&format!(
+                "{pad}    {} {} = {value_name};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+            let mapped = emit_expr(body, &callback_env, signatures)?;
+            out.push_str(&format!("{pad}    {next_name} = {};\n", mapped.code));
+            out.push_str(&format!("{pad}}}\n"));
+            value_name = next_name;
+            value_ty = output_ty;
+            continue;
+        }
+
         let callback = emit_expr(callback_expr, env, signatures)?;
         let Type::Function { .. } = callback.ty else {
             return Err(diag(

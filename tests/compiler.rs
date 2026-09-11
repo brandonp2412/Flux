@@ -6311,7 +6311,9 @@ fn main() -> i64 {
     let errors = check_source_all(mutable_reborrow)
         .expect_err("a borrowed non-copy list alias must not become mutable");
     assert!(errors.iter().any(|error| {
-        error.message.contains("list bindings are currently immutable local values")
+        error
+            .message
+            .contains("list bindings are currently immutable local values")
             || error.message.contains("non-copy")
     }));
 
@@ -6329,7 +6331,9 @@ fn main() -> i64 {
     let errors = check_source_all(assigned_reborrow)
         .expect_err("an immutable borrowed list alias must reject assignment");
     assert!(errors.iter().any(|error| {
-        error.message.contains("cannot assign to immutable binding 'alias'")
+        error
+            .message
+            .contains("cannot assign to immutable binding 'alias'")
             || error.message.contains("immutable")
     }));
 }
@@ -6806,6 +6810,69 @@ fn main() -> i64 {
     assert!(generated.contains("return flux_mul_i64(flux__local_value, INT64_C(2));"));
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_double = flux__lambda_0_"));
     assert!(generated.contains("return flux__fn_apply(flux__lambda_0_"));
+}
+
+#[test]
+fn inline_sequence_callbacks_capture_copy_values_without_closure_allocation() {
+    let source = r#"
+fn main() -> i64 {
+    let factor: i64 = 3
+    let floor: i64 = 4
+    let values: i64[] = [1, 2, 3, 4]
+    let scaled: i64[] = map(values, fn(value: i64) { value * factor })
+    let selected: i64[] = filter(scaled, fn(value: i64) { value > floor })
+    print(selected.first)
+    print(selected.last)
+    return 0
+}
+"#;
+
+    check_source(source).expect("inline sequence callbacks should safely capture Copy locals");
+    let generated = compile_to_c(source).expect("capturing inline callbacks should lower natively");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_factor"));
+    assert!(generated.contains("flux__local_floor"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-inline-capture-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary capture test directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated capture C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile inline captured callbacks");
+    assert!(
+        compile.status.success(),
+        "capturing inline callback C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("capturing inline callback program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "6\n12\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_copy_capture = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10]
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { value + offsets.first })
+    return mapped.first
+}
+"#;
+    let error = check_source(non_copy_capture)
+        .expect_err("non-copy inline captures must wait for borrow/lifetime semantics");
+    assert!(error.message.contains("capture 'offsets' must be Copy"));
 }
 
 #[test]

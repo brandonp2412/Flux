@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 483
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 91 checkbox items
+- Current net scope growth after the baseline: 92 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -173,7 +173,8 @@ The interface/capability foundation is complete for the bootstrap compiler: decl
 ## Functions
 
 - [x] Named functions as first-class values: typed function references can be stored, passed, returned, and invoked through native function-pointer lowering.
-- [ ] Closures with safe capture semantics. Outer-local capture from anonymous functions is deliberately rejected until ownership/lifetime rules can make the environment representation safe rather than silently heap-boxing it.
+- [ ] Closures with safe capture semantics. General stored/escaping outer-local capture remains rejected until ownership/lifetime rules can make the environment representation safe rather than silently heap-boxing it.
+  - [x] Allocation-free inline sequence callback captures for `map`/`filter`/`where`: anonymous callbacks passed directly to these compiler-known transforms may capture outer `Copy` bindings, the callback body is lowered directly into the fused native loop with lexical parameter shadowing and no closure environment/function-pointer allocation, and non-copy captures remain rejected pending first-class borrow/lifetime semantics. Ordinary stored/escaping anonymous functions still reject outer-local capture.
 - [x] Capture-free anonymous functions using `fn(value: i64) { value * 2 }` with typed positional parameters, optional explicit scalar/`void` return annotations, inferred scalar/`void` returns, formatter/semantic support, direct higher-order-call use, and deterministic native helper/function-pointer lowering. Anonymous parameters obey the same unused-binding compile-error rule as named functions.
 - [x] Concise single-expression function syntax using `fn name(args) -> type { expression }`, preserving brace-delimited bodies while lowering through the ordinary implicit return/type-check/native ABI path, including exact multi-return call forwarding.
 - [x] Named-only parameters using a `*` delimiter, with statically validated named call arguments and native ABI reordering.

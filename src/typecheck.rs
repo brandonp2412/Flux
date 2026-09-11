@@ -2879,6 +2879,19 @@ fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
     }
 }
 
+fn collect_inline_sequence_callback_reads(expr: &Expr, reads: &mut HashSet<String>) {
+    if let ExprKind::AnonymousFunction { params, body, .. } = &expr.kind {
+        let mut nested = HashSet::new();
+        collect_expr_reads(body, &mut nested);
+        for param in params {
+            nested.remove(&param.name);
+        }
+        reads.extend(nested);
+    } else {
+        collect_expr_reads(expr, reads);
+    }
+}
+
 pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
     match &expr.kind {
         ExprKind::Var(name) => {
@@ -2891,8 +2904,16 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             named_args,
         } => {
             reads.insert(name.clone());
-            for arg in args {
-                collect_expr_reads(arg, reads);
+            for (index, arg) in args.iter().enumerate() {
+                if named_args.is_empty()
+                    && matches!(name.as_str(), "map" | "filter" | "where")
+                    && args.len() == 2
+                    && index == 1
+                {
+                    collect_inline_sequence_callback_reads(arg, reads);
+                } else {
+                    collect_expr_reads(arg, reads);
+                }
             }
             for arg in named_args {
                 collect_expr_reads(&arg.value, reads);
@@ -2909,8 +2930,15 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
         } => {
             collect_expr_reads(input, reads);
             reads.insert(name.clone());
-            for arg in args {
-                collect_expr_reads(arg, reads);
+            for (index, arg) in args.iter().enumerate() {
+                if matches!(name.as_str(), "map" | "filter" | "where")
+                    && args.len() == 1
+                    && index == 0
+                {
+                    collect_inline_sequence_callback_reads(arg, reads);
+                } else {
+                    collect_expr_reads(arg, reads);
+                }
             }
         }
         ExprKind::List(items) => {
@@ -4365,6 +4393,133 @@ fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signa
     }
 }
 
+fn type_of_anonymous_function(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    allow_copy_captures: bool,
+) -> Result<Type, Diagnostic> {
+    let ExprKind::AnonymousFunction {
+        params,
+        return_type,
+        body,
+    } = &expr.kind
+    else {
+        return Err(diag(expr.span, "expected anonymous function"));
+    };
+
+    let mut reads = HashSet::new();
+    collect_expr_reads(body, &mut reads);
+    let param_names = params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut captures = reads
+        .iter()
+        .filter(|name| env.contains_key(*name) && !param_names.contains(name.as_str()))
+        .map(|name| name.as_str())
+        .collect::<Vec<_>>();
+    captures.sort_unstable();
+    if !captures.is_empty() && !allow_copy_captures {
+        let captured = captures[0];
+        return Err(diag(
+            body.span,
+            &format!(
+                "anonymous function captures outer binding '{captured}'; general closure capture semantics are not implemented yet"
+            ),
+        ));
+    }
+    if allow_copy_captures {
+        if let Some(captured) = captures.iter().find(|name| {
+            env.get(**name)
+                .is_some_and(|ty| !signatures.is_copy_type(ty))
+        }) {
+            let ty = env
+                .get(*captured)
+                .expect("captured binding was resolved from the environment");
+            return Err(diag(
+                body.span,
+                &format!(
+                    "inline anonymous callback capture '{captured}' must be Copy, got {}",
+                    signatures.canonical_type(ty).name()
+                ),
+            )
+            .with_note("non-copy captures require first-class borrow/lifetime semantics before they can be safe"));
+        }
+    }
+
+    let mut lambda_env = if allow_copy_captures {
+        env.clone()
+    } else {
+        HashMap::new()
+    };
+    for param in params {
+        require_known_type(param.type_span, &param.ty, signatures)?;
+        let ty = signatures.canonical_type(&param.ty);
+        if ty == Type::Void {
+            return Err(diag(
+                param.type_span,
+                "anonymous function parameters cannot have type void",
+            ));
+        }
+        lambda_env.insert(param.name.clone(), ty);
+    }
+    for param in params {
+        if !param.name.starts_with('_') && !reads.contains(&param.name) {
+            return Err(diag(
+                param.name_span,
+                &format!("unused anonymous function parameter '{}'", param.name),
+            )
+            .with_note("Flux has no lint-warning tier: unused bindings are compile errors; prefix an intentionally ignored binding with '_'"));
+        }
+    }
+
+    let actual = signatures.canonical_type(&type_of_expr(body, &lambda_env, signatures)?);
+    let returns = if let Some(declared) = return_type {
+        require_known_type(expr.span, declared, signatures)?;
+        let declared = signatures.canonical_type(declared);
+        if declared == Type::Void {
+            require_type(body.span, &Type::Void, &actual, "anonymous function body")?;
+            Vec::new()
+        } else {
+            require_type(body.span, &declared, &actual, "anonymous function body")?;
+            vec![declared]
+        }
+    } else if actual == Type::Void {
+        Vec::new()
+    } else {
+        vec![actual]
+    };
+    if returns
+        .iter()
+        .any(|ty| matches!(signatures.canonical_type(ty), Type::List(_)))
+    {
+        return Err(diag(
+            body.span,
+            "list values cannot be returned from anonymous functions until collection ownership is implemented",
+        ));
+    }
+    Ok(Type::Function {
+        params: params
+            .iter()
+            .map(|param| signatures.canonical_type(&param.ty))
+            .collect(),
+        returns,
+    })
+}
+
+fn type_of_sequence_callback(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if matches!(expr.kind, ExprKind::AnonymousFunction { .. }) {
+        type_of_anonymous_function(expr, env, signatures, true)
+    } else {
+        type_of_expr(expr, env, signatures)
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -4409,84 +4564,8 @@ pub fn type_of_expr(
                 &format!("unknown binding, constant, or function '{name}'"),
             ))
         }
-        ExprKind::AnonymousFunction {
-            params,
-            return_type,
-            body,
-        } => {
-            let mut reads = HashSet::new();
-            collect_expr_reads(body, &mut reads);
-            let param_names = params
-                .iter()
-                .map(|param| param.name.as_str())
-                .collect::<HashSet<_>>();
-            if let Some(captured) = reads
-                .iter()
-                .filter(|name| env.contains_key(*name) && !param_names.contains(name.as_str()))
-                .min()
-            {
-                return Err(diag(
-                    body.span,
-                    &format!(
-                        "anonymous function captures outer binding '{captured}'; closure capture semantics are not implemented yet"
-                    ),
-                ));
-            }
-
-            let mut lambda_env = HashMap::new();
-            for param in params {
-                require_known_type(param.type_span, &param.ty, signatures)?;
-                let ty = signatures.canonical_type(&param.ty);
-                if ty == Type::Void {
-                    return Err(diag(
-                        param.type_span,
-                        "anonymous function parameters cannot have type void",
-                    ));
-                }
-                lambda_env.insert(param.name.clone(), ty);
-            }
-            for param in params {
-                if !param.name.starts_with('_') && !reads.contains(&param.name) {
-                    return Err(diag(
-                        param.name_span,
-                        &format!("unused anonymous function parameter '{}'", param.name),
-                    )
-                    .with_note("Flux has no lint-warning tier: unused bindings are compile errors; prefix an intentionally ignored binding with '_'"));
-                }
-            }
-
-            let actual = signatures.canonical_type(&type_of_expr(body, &lambda_env, signatures)?);
-            let returns = if let Some(declared) = return_type {
-                require_known_type(expr.span, declared, signatures)?;
-                let declared = signatures.canonical_type(declared);
-                if declared == Type::Void {
-                    require_type(body.span, &Type::Void, &actual, "anonymous function body")?;
-                    Vec::new()
-                } else {
-                    require_type(body.span, &declared, &actual, "anonymous function body")?;
-                    vec![declared]
-                }
-            } else if actual == Type::Void {
-                Vec::new()
-            } else {
-                vec![actual]
-            };
-            if returns
-                .iter()
-                .any(|ty| matches!(signatures.canonical_type(ty), Type::List(_)))
-            {
-                return Err(diag(
-                    body.span,
-                    "list values cannot be returned from anonymous functions until collection ownership is implemented",
-                ));
-            }
-            Ok(Type::Function {
-                params: params
-                    .iter()
-                    .map(|param| signatures.canonical_type(&param.ty))
-                    .collect(),
-                returns,
-            })
+        ExprKind::AnonymousFunction { .. } => {
+            type_of_anonymous_function(expr, env, signatures, false)
         }
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
@@ -4835,7 +4914,8 @@ pub fn type_of_expr(
                     &format!("{name} expects a list as its first argument"),
                 ));
             };
-            let callback_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            let callback_ty =
+                signatures.canonical_type(&type_of_sequence_callback(&args[1], env, signatures)?);
             if name == "map" {
                 let Type::Function { params, returns } = callback_ty else {
                     return Err(diag(args[1].span, "map callback must be a function"));
