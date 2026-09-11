@@ -1639,7 +1639,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn socket_peer_address_is_typed_borrowed_tree_shaken_and_runnable() {
+fn socket_addresses_are_typed_borrowed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let port = listener.local_addr().unwrap().port();
     let source = format!(
@@ -1651,6 +1651,7 @@ fn main() -> i64 {{
     let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
     print(connectError)
     print(net.peerAddress(socket, inspect))
+    print(net.localAddress(socket, inspect))
     print(net.close(socket))
     return 0
 }}
@@ -1659,7 +1660,9 @@ fn main() -> i64 {{
     check_source(&source).expect("connected peer inspection should typecheck");
     let generated = compile_to_c(&source).expect("connected peer inspection should lower on Linux");
     assert!(generated.contains("flux__net_peer_address("));
+    assert!(generated.contains("flux__net_local_address("));
     assert!(generated.contains("getpeername("));
+    assert!(generated.contains("getsockname("));
     assert!(generated.contains("inet_ntop("));
 
     let root = std::env::temp_dir().join(format!("flux-net-peer-{}", std::process::id()));
@@ -1688,11 +1691,14 @@ fn main() -> i64 {{
         .lines()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    assert_eq!(lines.len(), 5);
+    assert_eq!(lines.len(), 8);
     assert_eq!(lines[0], "nil");
     assert_eq!(lines[1], "127.0.0.1");
     assert_eq!(lines[2], port.to_string());
-    assert_eq!(&lines[3..], &["nil", "nil"]);
+    assert_eq!(lines[3], "nil");
+    assert_eq!(lines[4], "127.0.0.1");
+    assert!(lines[5].parse::<u16>().is_ok_and(|port| port > 0));
+    assert_eq!(&lines[6..], &["nil", "nil"]);
 
     let callback_error = check_source(
         "fn inspect(_host: str) -> void {\n}\nfn main() -> i64 {\n    print(net.peerAddress(1, inspect))\n    return 0\n}\n",
@@ -1707,12 +1713,32 @@ fn main() -> i64 {{
         socket_error.message.contains("net.peerAddress socket")
             && socket_error.message.contains("expected i64")
     );
+    let local_callback_error = check_source(
+        "fn inspect(_host: str) -> void {\n}\nfn main() -> i64 {\n    print(net.localAddress(1, inspect))\n    return 0\n}\n",
+    )
+    .expect_err("local address callback shape must be exact");
+    assert!(
+        local_callback_error
+            .message
+            .contains("net.localAddress callback")
+    );
+    let local_socket_error = check_source(
+        "fn inspect(_host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    print(net.localAddress(\"bad\", inspect))\n    return 0\n}\n",
+    )
+    .expect_err("local address socket must be an i64 handle");
+    assert!(
+        local_socket_error
+            .message
+            .contains("net.localAddress socket")
+            && local_socket_error.message.contains("expected i64")
+    );
 
     let unused = r#"
 fn inspect(_host: str, _port: i64) -> void {
 }
 fn hidden(socket: i64) -> void {
     print(net.peerAddress(socket, inspect))
+    print(net.localAddress(socket, inspect))
 }
 fn main() -> i64 {
     return 0
@@ -1721,6 +1747,7 @@ fn main() -> i64 {
     let unused_generated =
         compile_to_c(unused).expect("dead peer-address support should tree-shake");
     assert!(!unused_generated.contains("flux__net_peer_address("));
+    assert!(!unused_generated.contains("flux__net_local_address("));
     let _ = fs::remove_dir_all(&root);
     drop(listener);
 }
