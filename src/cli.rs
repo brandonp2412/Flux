@@ -4976,7 +4976,7 @@ __FLUX_PICKER_METHODS__
             else if ("end".equals(ellipsize)) view.setEllipsize(TextUtils.TruncateAt.END);
         }
         if (maxLines > 0) view.setMaxLines(maxLines);
-        if (maxWidthChars > 0) view.setMaxEms(maxWidthChars);
+        if (maxWidthChars >= 0) view.setMaxEms(maxWidthChars == 0 ? Integer.MAX_VALUE : maxWidthChars);
     }
 
     public void configureImage(ImageView view, String source, String fit, String alt, boolean canShrink) {
@@ -6844,6 +6844,9 @@ mod tests {
             "android:scheme=\"https\" android:host=\"example.com\" android:pathPrefix=\"/app\""
         ));
         let activity = android_activity_java_source("");
+        assert!(activity.contains(
+            "if (maxWidthChars >= 0) view.setMaxEms(maxWidthChars == 0 ? Integer.MAX_VALUE : maxWidthChars);"
+        ));
         assert!(!activity.contains("nativeOnPickerResult"));
         assert!(!activity.contains("onBackPressed"));
         assert!(!activity.contains("KEYCODE_BACK"));

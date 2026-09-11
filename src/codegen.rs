@@ -5929,24 +5929,26 @@ fn emit_android_native_application(
             } else {
                 (None, None)
             };
-            let max_width_chars = view_property(element, "max_width_chars")
-                .map(|property| {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Text.max_width_chars must be a compile-time i64 value",
-                        ));
-                    };
-                    if !(0..=i64::from(i32::MAX)).contains(&value) {
-                        return Err(diag(
-                            property.value.span,
-                            "Text.maxWidthChars must be between 0 and 2147483647",
-                        ));
+            let max_width_chars_property = view_property(element, "max_width_chars");
+            let (max_width_chars, dynamic_max_width_chars) =
+                if let Some(property) = max_width_chars_property {
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        if !(0..=i64::from(i32::MAX)).contains(&value) {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.maxWidthChars must be between 0 and 2147483647",
+                            ));
+                        }
+                        (value, None)
+                    } else {
+                        (
+                            default_max_width_chars,
+                            Some(ui_expr_c(&property.value, view, signatures)?),
+                        )
                     }
-                    Ok(value)
-                })
-                .transpose()?
-                .unwrap_or(default_max_width_chars);
+                } else {
+                    (default_max_width_chars, None)
+                };
             if font_family.is_some()
                 || dynamic_font_family.is_some()
                 || letter_spacing.is_some()
@@ -5961,6 +5963,7 @@ fn emit_android_native_application(
                 || dynamic_ellipsize.is_some()
                 || max_lines.is_some()
                 || dynamic_max_lines.is_some()
+                || dynamic_max_width_chars.is_some()
                 || max_width_chars >= 0
             {
                 let emit_optional_text =
@@ -6033,13 +6036,20 @@ fn emit_android_native_application(
                 } else {
                     max_lines.unwrap_or(0).to_string()
                 };
+                let max_width_chars_call = if let Some(value) = dynamic_max_width_chars.as_ref() {
+                    out.push_str(&format!(
+                            "    int64_t child_max_width_chars_value = {value};\n    if (child_max_width_chars_value < 0 || child_max_width_chars_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); }}\n"
+                        ));
+                    "child_max_width_chars_value".to_string()
+                } else {
+                    max_width_chars.to_string()
+                };
                 out.push_str("    jclass text_layout_activity_class = (*env)->GetObjectClass(env, activity);\n");
                 out.push_str("    if (text_layout_activity_class == NULL) return;\n");
                 out.push_str("    jmethodID style_text_layout = (*env)->GetMethodID(env, text_layout_activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                 out.push_str("    if (style_text_layout == NULL) return;\n");
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){letter_spacing_call}, (jint){line_height_percent_call}, child_text_align, child_wrap_mode, child_ellipsize, (jint){max_lines_call}, (jint){});\n",
-                    max_width_chars,
+                    "    (*env)->CallVoidMethod(env, activity, style_text_layout, child, child_font_family, (jint){letter_spacing_call}, (jint){line_height_percent_call}, child_text_align, child_wrap_mode, child_ellipsize, (jint){max_lines_call}, (jint){max_width_chars_call});\n",
                 ));
                 out.push_str("    (*env)->DeleteLocalRef(env, text_layout_activity_class);\n");
                 out.push_str("    if (child_font_family != NULL) (*env)->DeleteLocalRef(env, child_font_family);\n");
@@ -9198,6 +9208,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Text", "wrap_mode")
             | ("Text", "ellipsize")
             | ("Text", "max_lines")
+            | ("Text", "max_width_chars")
             | ("Button", "text")
             | ("TextInput", "placeholder")
             | ("Image", "source")
@@ -9339,6 +9350,7 @@ fn android_ui_element_needs_refresh(
             "wrap_mode",
             "ellipsize",
             "max_lines",
+            "max_width_chars",
         ],
         "Button" => &["text"],
         "TextInput" => &["placeholder"],
@@ -9853,6 +9865,11 @@ fn emit_android_ui_refresh(
                         android_ui_property_needs_refresh(element, "ellipsize", &runtime_names);
                     let refresh_max_lines =
                         android_ui_property_needs_refresh(element, "max_lines", &runtime_names);
+                    let refresh_max_width_chars = android_ui_property_needs_refresh(
+                        element,
+                        "max_width_chars",
+                        &runtime_names,
+                    );
                     if refresh_font_family
                         || refresh_letter_spacing
                         || refresh_line_height_percent
@@ -9860,6 +9877,7 @@ fn emit_android_ui_refresh(
                         || refresh_wrap_mode
                         || refresh_ellipsize
                         || refresh_max_lines
+                        || refresh_max_width_chars
                     {
                         if refresh_font_family {
                             let property = view_property(element, "font_family")
@@ -9934,9 +9952,20 @@ fn emit_android_ui_refresh(
                         } else {
                             "0"
                         };
+                        let refresh_max_width_chars_call = if refresh_max_width_chars {
+                            let property = view_property(element, "max_width_chars")
+                                .expect("dynamic Text.max_width_chars property exists");
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                int64_t refresh_max_width_chars_value = {value};\n                if (refresh_max_width_chars_value < 0 || refresh_max_width_chars_value > INT32_MAX) {{ fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); }}\n"
+                            ));
+                            "refresh_max_width_chars_value"
+                        } else {
+                            "-1"
+                        };
                         out.push_str("                jmethodID refresh_text_layout = (*env)->GetMethodID(env, activity_class, \"styleTextLayout\", \"(Landroid/widget/TextView;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)V\");\n");
                         out.push_str(&format!(
-                            "                if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint){refresh_letter_spacing_call}, (jint){refresh_line_height_percent_call}, refresh_text_align, refresh_wrap_mode, refresh_ellipsize, (jint){refresh_max_lines_call}, (jint)0);\n"
+                            "                if (refresh_text_layout != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_layout, child, refresh_font_family, (jint){refresh_letter_spacing_call}, (jint){refresh_line_height_percent_call}, refresh_text_align, refresh_wrap_mode, refresh_ellipsize, (jint){refresh_max_lines_call}, (jint){refresh_max_width_chars_call});\n"
                         ));
                         out.push_str("                if (refresh_font_family != NULL) (*env)->DeleteLocalRef(env, refresh_font_family);\n");
                         out.push_str("                if (refresh_text_align != NULL) (*env)->DeleteLocalRef(env, refresh_text_align);\n");

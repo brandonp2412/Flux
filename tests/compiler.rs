@@ -22218,6 +22218,66 @@ app DynamicText
 }
 
 #[test]
+fn android_text_max_width_chars_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicTextWidth {
+    state width: i64 = 40
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Readable measure"
+        maxWidthChars: width
+    Button clear at 2,1
+        text: "Clear cap"
+        onPress: width => width - 40
+}
+app DynamicTextWidth
+"#;
+
+    check_source(source).expect("dynamic Android Text.maxWidthChars should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android Text.maxWidthChars should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android Text.maxWidthChars should lower");
+
+    assert!(android.contains("int64_t child_max_width_chars_value = flux__ui_state_width"));
+    assert!(android.contains("int64_t refresh_max_width_chars_value = flux__ui_state_width"));
+    assert!(android.contains("Text.maxWidthChars must be between 0 and 2147483647"));
+    assert!(android.contains("(jint)refresh_max_width_chars_value"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__ui_state_width = flux_sub_i64"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticTextWidth {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Readable measure"
+        maxWidthChars: 40
+}
+app StaticTextWidth
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android Text.maxWidthChars should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android Text.maxWidthChars should lower");
+    assert!(!static_android.contains("refresh_max_width_chars_value"));
+    assert!(!static_android.contains("child_max_width_chars_value"));
+}
+
+#[test]
 fn android_background_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicBackground {
