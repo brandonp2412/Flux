@@ -14172,6 +14172,61 @@ app Screen
 }
 
 #[test]
+fn portable_rich_text_uses_native_styled_text_without_a_widget_tree() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        richText: "<b>Horse</b> <i>Tinder</i> <u>&amp; Flux</u>"
+        selectable: true
+}
+app Screen
+"#;
+    check_source(source).expect("Text.richText should have a compiler-owned string contract");
+    let linux = compile_to_c(source).expect("portable rich text should lower on Linux");
+    assert!(linux.contains(
+        "gtk_label_set_markup(GTK_LABEL(flux__ui_title), \"<b>Horse</b> <i>Tinder</i> <u>&amp; Flux</u>\")"
+    ));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("rich text fixture should analyze for Android lowering");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable rich text should lower on Android");
+    assert!(android.contains("android/text/Html"));
+    assert!(android.contains("fromHtml"));
+    assert!(android.contains("(Ljava/lang/String;)Landroid/text/Spanned;"));
+    assert!(android.contains("<b>Horse</b> <i>Tinder</i> <u>&amp; Flux</u>"));
+
+    for invalid in ["<b>Horse</i>", "<span>Horse</span>", "Horse & pony"] {
+        let source = format!(
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Text title at 1,1\n        richText: \"{invalid}\"\n}}\napp Screen\n"
+        );
+        check_source(&source).expect("rich text syntax is validated during native lowering");
+        let error = compile_to_c(&source).expect_err("unsupported rich text markup must fail");
+        assert!(error.message.contains("Text.richText supports balanced"));
+    }
+
+    let conflicting = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Horse"
+        richText: "<b>Horse</b>"
+}
+app Screen
+"#;
+    let error = compile_to_c(conflicting).expect_err("plain and rich text must be unambiguous");
+    assert!(error.message.contains("cannot be combined with Text.text"));
+}
+
+#[test]
 fn native_elements_support_background_borders_and_radii() {
     let source = r##"
 view Styled {
@@ -15400,6 +15455,7 @@ view Form {
         text: "initial"
         placeholder: "Search Flux"
         enabled: true
+        readOnly: true
         autofocus: true
         password: true
         keyboard_type: "email"
@@ -15435,6 +15491,8 @@ app Form
     ));
     assert!(generated.contains("gtk_widget_grab_focus(flux__ui_query)"));
     assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_query), FALSE)"));
+    assert!(generated.contains("gtk_editable_set_editable(GTK_EDITABLE(flux__ui_query), FALSE)"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_READ_ONLY, TRUE, -1"));
     assert!(generated.contains(
         "gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_query), GTK_INPUT_PURPOSE_EMAIL)"
     ));
@@ -15525,6 +15583,7 @@ view Form {
     TextInput query at 1,1
         text: "first\nsecond"
         multiline: true
+        readOnly: true
         keyboardType: "text"
         submitOnEnter: true
         onChange: submit
@@ -15544,6 +15603,7 @@ app Form
     assert!(generated.contains(
         "gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(flux__ui_query), GTK_WRAP_WORD_CHAR)"
     ));
+    assert!(generated.contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_query), FALSE)"));
     assert!(generated.contains("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW(flux__ui_query), GTK_INPUT_PURPOSE_FREE_FORM)"));
     assert!(generated.contains(
         "g_signal_connect(flux__ui_buffer_query, \"changed\", G_CALLBACK(flux__ui_change_query), NULL)"
@@ -16118,33 +16178,46 @@ app HoverCard
     assert!(generated.contains("GtkGestureClick *gesture"));
     assert!(generated.contains("flux__fn_tapped(); flux__ui_refresh();"));
     assert!(generated.contains("gtk_button_new()"));
-    assert!(generated.contains("gtk_button_set_has_frame(GTK_BUTTON(flux__ui_action_title), FALSE)"));
-    assert!(generated.contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)"));
+    assert!(
+        generated.contains("gtk_button_set_has_frame(GTK_BUTTON(flux__ui_action_title), FALSE)")
+    );
+    assert!(
+        generated
+            .contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)")
+    );
     assert!(generated.contains("g_signal_connect(flux__ui_action_title, \"clicked\", G_CALLBACK(flux__ui_activate_title), NULL)"));
     assert!(generated.contains("flux__ui_double_tap_title"));
     assert!(generated.contains("if (n_press != 2) return; flux__fn_tapped(); flux__ui_refresh();"));
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_double_tap_title)"));
-    assert!(generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__double_tap_title)"));
+    assert!(
+        generated
+            .contains("gtk_widget_add_controller(flux__ui_action_title, flux__double_tap_title)")
+    );
     assert!(!generated.contains("flux__ui_tap_key_title"));
     assert!(generated.contains("GtkGestureLongPress *gesture"));
     assert!(generated.contains("gtk_gesture_long_press_new()"));
     assert!(generated.contains("\"pressed\", G_CALLBACK(flux__ui_long_press_title)"));
     assert!(
-        generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__long_press_title)")
+        generated
+            .contains("gtk_widget_add_controller(flux__ui_action_title, flux__long_press_title)")
     );
     assert!(generated.contains("flux__ui_state_hovered = true; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__ui_state_hovered = false; flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__fn_leave_notice(); flux__ui_refresh();"));
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_action_title, \"Hover me\")"));
     assert!(generated.contains("GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Hover state title\", -1"));
-    assert!(generated.contains("gtk_widget_set_visible(flux__ui_action_title, flux__ui_state_hovered)"));
+    assert!(
+        generated.contains("gtk_widget_set_visible(flux__ui_action_title, flux__ui_state_hovered)")
+    );
     assert!(generated.contains("gtk_event_controller_motion_new()"));
     assert!(generated.contains("gtk_event_controller_focus_new()"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_focus_action)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_blur_action)"));
     assert!(generated.contains("\"enter\", G_CALLBACK(flux__ui_hover_title)"));
     assert!(generated.contains("\"leave\", G_CALLBACK(flux__ui_leave_title)"));
-    assert!(generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__motion_title)"));
+    assert!(
+        generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__motion_title)")
+    );
 }
 
 #[test]
@@ -16176,23 +16249,41 @@ app Actions
 "#;
 
     check_source(source).expect("portable passive activation should typecheck");
-    let linux = compile_to_c(source).expect("passive activation should lower to native GTK actions");
+    let linux =
+        compile_to_c(source).expect("passive activation should lower to native GTK actions");
     for (host, child, callback) in [
-        ("flux__ui_action_title", "flux__ui_title", "flux__ui_activate_title"),
-        ("flux__ui_action_artwork", "flux__ui_artwork", "flux__ui_activate_artwork"),
+        (
+            "flux__ui_action_title",
+            "flux__ui_title",
+            "flux__ui_activate_title",
+        ),
+        (
+            "flux__ui_action_artwork",
+            "flux__ui_artwork",
+            "flux__ui_activate_artwork",
+        ),
     ] {
         assert!(linux.contains(&format!("{host} = gtk_button_new()")));
-        assert!(linux.contains(&format!("gtk_button_set_has_frame(GTK_BUTTON({host}), FALSE)")));
-        assert!(linux.contains(&format!("gtk_button_set_child(GTK_BUTTON({host}), {child})")));
-        assert!(linux.contains(&format!("g_signal_connect({host}, \"clicked\", G_CALLBACK({callback}), NULL)")));
+        assert!(linux.contains(&format!(
+            "gtk_button_set_has_frame(GTK_BUTTON({host}), FALSE)"
+        )));
+        assert!(linux.contains(&format!(
+            "gtk_button_set_child(GTK_BUTTON({host}), {child})"
+        )));
+        assert!(linux.contains(&format!(
+            "g_signal_connect({host}, \"clicked\", G_CALLBACK({callback}), NULL)"
+        )));
     }
-    assert!(linux.contains("GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Open details\", -1"));
+    assert!(linux.contains(
+        "GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Open details\", -1"
+    ));
     assert!(linux.contains("GTK_ACCESSIBLE(flux__ui_action_artwork), GTK_ACCESSIBLE_PROPERTY_LABEL, \"Open preview\", -1"));
     assert!(!linux.contains("flux__ui_tap_key_title"));
     assert!(linux.contains("if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter || keyval == GDK_KEY_space) return TRUE;"));
 
     let program = fluxc::parser::parse(source).expect("passive action app should parse");
-    let signatures = fluxc::typecheck::check(&program).expect("passive action app should typecheck");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("passive action app should typecheck");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
@@ -16468,7 +16559,10 @@ app NativeLinux(title: "Native Linux")
     assert!(generated.contains("gtk_label_new("));
     assert!(generated.contains("gtk_entry_new()"));
     assert!(generated.contains("gtk_button_new_with_label("));
-    assert!(generated.contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)"));
+    assert!(
+        generated
+            .contains("gtk_button_set_child(GTK_BUTTON(flux__ui_action_title), flux__ui_title)")
+    );
     assert!(generated.contains("\"clicked\", G_CALLBACK(flux__ui_activate_title)"));
     assert!(generated.contains("gtk_event_controller_key_new()"));
     assert!(generated.contains("\"changed\", G_CALLBACK(flux__ui_change_query)"));
@@ -18304,6 +18398,7 @@ view Settings {
         text: "initial"
         placeholder: "Search Flux"
         enabled: enabled
+        readOnly: true
         autofocus: true
         password: true
         max_length: 32
@@ -18403,6 +18498,10 @@ app Settings(theme: "dark")
         generated.contains("(jboolean)false, (jboolean)false, (jboolean)true, (jboolean)false")
     );
     assert!(generated.contains("setSingleLine"));
+    assert!(generated.contains("setKeyListener"));
+    assert!(generated.contains("(Landroid/text/method/KeyListener;)V"));
+    assert!(generated.contains("setTextIsSelectable"));
+    assert!(generated.contains("(jboolean)true"));
     assert!(generated.contains("(jboolean)false"));
     assert!(generated.contains("(jint)131105"));
     assert!(generated.contains("setMaxLength"));
@@ -18535,9 +18634,10 @@ app DynamicText
     assert!(android.contains("int64_t refresh_text_size = flux__ui_state_text_size"));
     assert!(android.contains("refresh_text_style"));
     assert!(android.contains("(jfloat)refresh_text_size"));
-    assert!(android.contains(
-        "Text.size must be greater than zero and fit within a 32-bit signed integer"
-    ));
+    assert!(
+        android
+            .contains("Text.size must be greater than zero and fit within a 32-bit signed integer")
+    );
     let label_id = android_stable_view_id("DynamicText", "label");
     assert!(android.contains(&format!("find_view, (jint){label_id}")));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));

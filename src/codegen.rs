@@ -4049,14 +4049,23 @@ fn emit_android_native_application(
             out.push_str("    (*env)->DeleteLocalRef(env, child_image_alt);\n");
             out.push_str("    (*env)->DeleteLocalRef(env, child_image_fit);\n");
         } else {
+            let rich_text = if element.kind == "Text" {
+                static_rich_text_markup(element, signatures)?
+            } else {
+                None
+            };
             let text_property = match element.kind.as_str() {
                 "Toggle" | "Radio" => "label",
                 _ => "text",
             };
-            let text = match view_property(element, text_property) {
-                Some(property) => ui_expr_c(&property.value, view, signatures)?,
-                None if element.kind == "TextInput" => c_string(""),
-                None => c_string(&element.name),
+            let text = if rich_text.is_some() {
+                c_string("")
+            } else {
+                match view_property(element, text_property) {
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                    None if element.kind == "TextInput" => c_string(""),
+                    None => c_string(&element.name),
+                }
             };
             out.push_str("    jmethodID set_text = (*env)->GetMethodID(env, child_class, \"setText\", \"(Ljava/lang/CharSequence;)V\");\n");
             out.push_str("    if (set_text == NULL) return;\n");
@@ -4078,6 +4087,27 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->DeleteLocalRef(env, initial_activity_class);\n");
             } else {
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_text, child_text);\n");
+            }
+            if let Some(markup) = rich_text {
+                out.push_str(
+                    "    jclass rich_text_class = (*env)->FindClass(env, \"android/text/Html\");\n",
+                );
+                out.push_str("    if (rich_text_class == NULL) return;\n");
+                out.push_str("    jmethodID parse_rich_text = (*env)->GetStaticMethodID(env, rich_text_class, \"fromHtml\", \"(Ljava/lang/String;)Landroid/text/Spanned;\");\n");
+                out.push_str("    if (parse_rich_text == NULL) return;\n");
+                out.push_str(&format!(
+                    "    jstring rich_text_markup = flux__android_utf8_string(env, {});\n",
+                    c_string(&markup)
+                ));
+                out.push_str("    if (rich_text_markup == NULL) return;\n");
+                out.push_str("    jobject rich_text_value = (*env)->CallStaticObjectMethod(env, rich_text_class, parse_rich_text, rich_text_markup);\n");
+                out.push_str("    if (rich_text_value == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+                out.push_str(
+                    "    (*env)->CallVoidMethod(env, child, set_text, rich_text_value);\n",
+                );
+                out.push_str("    (*env)->DeleteLocalRef(env, rich_text_value);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, rich_text_markup);\n");
+                out.push_str("    (*env)->DeleteLocalRef(env, rich_text_class);\n");
             }
         }
         if element.kind == "Button" {
@@ -4700,7 +4730,9 @@ fn emit_android_native_application(
             } else {
                 text_size.as_str()
             };
-            out.push_str("    jclass text_style_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str(
+                "    jclass text_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
+            );
             out.push_str("    if (text_style_activity_class == NULL) return;\n");
             out.push_str("    jmethodID style_text = (*env)->GetMethodID(env, text_style_activity_class, \"styleText\", \"(Landroid/widget/TextView;Ljava/lang/String;FZZZZ)V\");\n");
             out.push_str("    if (style_text == NULL) return;\n");
@@ -4925,6 +4957,15 @@ fn emit_android_native_application(
                 })?,
                 None => !multiline,
             };
+            let read_only = match view_property(element, "read_only") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Android TextInput.readOnly must be a compile-time bool value",
+                    )
+                })?,
+                None => false,
+            };
             if let Some(property) = view_property(element, "placeholder") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str("    jmethodID set_hint = (*env)->GetMethodID(env, child_class, \"setHint\", \"(Ljava/lang/CharSequence;)V\");\n");
@@ -5009,6 +5050,14 @@ fn emit_android_native_application(
                 out.push_str(&format!(
                     "    (*env)->CallVoidMethod(env, child, set_input_type, (jint){input_type});\n"
                 ));
+            }
+            if read_only {
+                out.push_str("    jmethodID set_key_listener = (*env)->GetMethodID(env, child_class, \"setKeyListener\", \"(Landroid/text/method/KeyListener;)V\");\n");
+                out.push_str("    if (set_key_listener == NULL) return;\n");
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_key_listener, NULL);\n");
+                out.push_str("    jmethodID set_text_selectable = (*env)->GetMethodID(env, child_class, \"setTextIsSelectable\", \"(Z)V\");\n");
+                out.push_str("    if (set_text_selectable == NULL) return;\n");
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_text_selectable, (jboolean)true);\n");
             }
             if let Some(property) = view_property(element, "max_length") {
                 let Some(max_length) = static_expr_i64(&property.value, signatures) else {
@@ -6146,11 +6195,22 @@ fn emit_linux_gtk_application(
         let variable = ui_widget_c_name(&element.name);
         match element.kind.as_str() {
             "Text" => {
-                let text = match view_property(element, "text") {
-                    None => c_string(&element.name),
-                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                let rich_text = static_rich_text_markup(element, signatures)?;
+                let text = if rich_text.is_some() {
+                    c_string("")
+                } else {
+                    match view_property(element, "text") {
+                        None => c_string(&element.name),
+                        Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                    }
                 };
                 out.push_str(&format!("    {variable} = gtk_label_new({text});\n",));
+                if let Some(markup) = rich_text {
+                    out.push_str(&format!(
+                        "    gtk_label_set_markup(GTK_LABEL({variable}), {});\n",
+                        c_string(&markup)
+                    ));
+                }
                 out.push_str(&format!(
                     "    gtk_widget_add_css_class({variable}, \"flux-text\");\n"
                 ));
@@ -6499,6 +6559,15 @@ fn emit_linux_gtk_application(
                     })?,
                     None => !multiline,
                 };
+                let read_only = match view_property(element, "read_only") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Linux TextInput.readOnly must be a compile-time bool value",
+                        )
+                    })?,
+                    None => false,
+                };
                 let text = match view_property(element, "text") {
                     None => c_string(""),
                     Some(property) => ui_expr_c(&property.value, view, signatures)?,
@@ -6538,6 +6607,20 @@ fn emit_linux_gtk_application(
                             "    gtk_entry_set_placeholder_text(GTK_ENTRY({variable}), {placeholder});\n"
                         ));
                     }
+                }
+                if read_only {
+                    if multiline {
+                        out.push_str(&format!(
+                            "    gtk_text_view_set_editable(GTK_TEXT_VIEW({variable}), FALSE);\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    gtk_editable_set_editable(GTK_EDITABLE({variable}), FALSE);\n"
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, TRUE, -1);\n"
+                    ));
                 }
                 if validation_state != "normal" {
                     out.push_str(&format!(
@@ -8992,6 +9075,75 @@ fn emit_grid_sizing(
         ));
     }
     Ok(())
+}
+
+fn valid_portable_rich_text(markup: &str) -> bool {
+    let bytes = markup.as_bytes();
+    let mut index = 0;
+    let mut stack: Vec<&str> = Vec::new();
+    while index < bytes.len() {
+        if bytes[index] == b'<' {
+            let Some(relative_end) = markup[index + 1..].find('>') else {
+                return false;
+            };
+            let end = index + 1 + relative_end;
+            let token = &markup[index + 1..end];
+            let (closing, tag) = token
+                .strip_prefix('/')
+                .map_or((false, token), |tag| (true, tag));
+            if !matches!(tag, "b" | "i" | "u") {
+                return false;
+            }
+            if closing {
+                if stack.pop() != Some(tag) {
+                    return false;
+                }
+            } else {
+                stack.push(tag);
+            }
+            index = end + 1;
+        } else if bytes[index] == b'&' {
+            let remainder = &markup[index..];
+            if remainder.starts_with("&lt;") || remainder.starts_with("&gt;") {
+                index += 4;
+            } else if remainder.starts_with("&amp;") {
+                index += 5;
+            } else {
+                return false;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    stack.is_empty()
+}
+
+fn static_rich_text_markup(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> Result<Option<String>, Diagnostic> {
+    let Some(property) = view_property(element, "rich_text") else {
+        return Ok(None);
+    };
+    if view_property(element, "text").is_some() {
+        return Err(diag(
+            property.value.span,
+            "Text.richText cannot be combined with Text.text",
+        ));
+    }
+    let Some(markup) = static_expr_str(&property.value, signatures) else {
+        return Err(diag(
+            property.value.span,
+            "Text.richText must be a compile-time string value",
+        ));
+    };
+    if !valid_portable_rich_text(&markup) {
+        return Err(diag(
+            property.value.span,
+            "Text.richText supports balanced <b>, <i>, and <u> tags plus &lt;, &gt;, and &amp; entities",
+        ));
+    }
+    Ok(Some(markup))
 }
 
 fn static_minimum_size(

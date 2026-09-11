@@ -1334,6 +1334,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
     }
     match (kind, property) {
         ("Text", "text")
+        | ("Text", "rich_text")
         | ("Text", "variant")
         | ("Text", "color")
         | ("Text", "font_family")
@@ -1365,6 +1366,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         | ("TextInput", "keyboard_type")
         | ("TextInput", "validation_state") => Some(Type::Str),
         ("TextInput", "enabled")
+        | ("TextInput", "read_only")
         | ("TextInput", "password")
         | ("TextInput", "multiline")
         | ("TextInput", "submit_on_enter") => Some(Type::Bool),
@@ -1611,6 +1613,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
     let specific: &[&str] = match kind {
         "Text" => &[
             "text",
+            "rich_text",
             "variant",
             "selectable",
             "size",
@@ -1634,6 +1637,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "text",
             "placeholder",
             "enabled",
+            "read_only",
             "password",
             "multiline",
             "submit_on_enter",

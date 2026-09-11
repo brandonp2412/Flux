@@ -6823,6 +6823,8 @@ mod tests {
             Some(4),
         ))
         .to_json();
+        assert!(properties.contains("\"label\":\"readOnly\""));
+        assert!(properties.contains("TextInput.readOnly: bool"));
         assert!(properties.contains("\"label\":\"multiline\""));
         assert!(properties.contains("TextInput.multiline: bool"));
         assert!(properties.contains("\"label\":\"submitOnEnter\""));
@@ -6967,6 +6969,8 @@ mod tests {
             Some(5),
         ))
         .to_json();
+        assert!(text_properties.contains("\"label\":\"richText\""));
+        assert!(text_properties.contains("Text.richText: str"));
         assert!(text_properties.contains("\"label\":\"selectable\""));
         assert!(text_properties.contains("Text.selectable: bool"));
         assert!(text_properties.contains("\"label\":\"translateX\""));
