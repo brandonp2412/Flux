@@ -11813,6 +11813,12 @@ fn checked_i64_identity_c(
     match (op, left_constant, right_constant) {
         (BinOp::Add, Some(ConstantValue::I64(0)), _) => Some(right_code.to_string()),
         (BinOp::Add | BinOp::Sub, _, Some(ConstantValue::I64(0))) => Some(left_code.to_string()),
+        (BinOp::Mul, Some(ConstantValue::I64(0)), _) => {
+            Some(format!("((void)({right_code}), INT64_C(0))"))
+        }
+        (BinOp::Mul, _, Some(ConstantValue::I64(0))) => {
+            Some(format!("((void)({left_code}), INT64_C(0))"))
+        }
         (BinOp::Mul, Some(ConstantValue::I64(1)), _) => Some(right_code.to_string()),
         (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(1))) => Some(left_code.to_string()),
         _ => None,

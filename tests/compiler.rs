@@ -9722,6 +9722,42 @@ fn main() -> i64 {
     assert!(!generated.contains("flux_mul_i64("));
     assert!(!generated.contains("flux_div_i64("));
 
+    let annihilators = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn zeroLeft(value: i64) -> i64 {
+    return 0 * observe(value)
+}
+
+fn zeroRight(value: i64) -> i64 {
+    return observe(value) * 0
+}
+
+fn zeroChecked(value: i64) -> i64 {
+    return (value + 1) * 0
+}
+
+fn main() -> i64 {
+    print(zeroLeft(7))
+    print(zeroRight(9))
+    return zeroChecked(4)
+}
+"#;
+    check_source(annihilators).expect("zero-multiplication arithmetic should typecheck");
+    let annihilator_generated = compile_to_c(annihilators)
+        .expect("zero multiplication should lower without overflow checks");
+    assert!(!annihilator_generated.contains("flux_mul_i64("));
+    assert_eq!(
+        annihilator_generated
+            .matches("((void)(flux__fn_observe(flux__local_value)), INT64_C(0))")
+            .count(),
+        2
+    );
+    assert!(annihilator_generated.contains("flux_add_i64(flux__local_value, INT64_C(1))"));
+
     let checked = r#"
 fn increment(value: i64) -> i64 {
     return value + 1
