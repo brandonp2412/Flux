@@ -11883,6 +11883,12 @@ fn checked_i64_identity_c(
         }
         (BinOp::Mul, Some(ConstantValue::I64(1)), _) => Some(right_code.to_string()),
         (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(1))) => Some(left_code.to_string()),
+        (BinOp::Mul, Some(ConstantValue::I64(-1)), _) => {
+            Some(format!("flux_neg_i64({right_code})"))
+        }
+        (BinOp::Mul | BinOp::Div, _, Some(ConstantValue::I64(-1))) => {
+            Some(format!("flux_neg_i64({left_code})"))
+        }
         _ => None,
     }
 }

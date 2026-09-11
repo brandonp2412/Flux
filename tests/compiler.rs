@@ -9778,8 +9778,23 @@ fn identities(value: i64) -> i64 {
     return multipliedRight / 1
 }
 
+fn negateMultiplyLeft(value: i64) -> i64 {
+    return -1 * value
+}
+
+fn negateMultiplyRight(value: i64) -> i64 {
+    return value * -1
+}
+
+fn negateDivide(value: i64) -> i64 {
+    return value / -1
+}
+
 fn main() -> i64 {
-    return identities(7)
+    print(identities(7))
+    print(negateMultiplyLeft(8))
+    print(negateMultiplyRight(9))
+    return negateDivide(10)
 }
 "#;
 
@@ -9789,6 +9804,12 @@ fn main() -> i64 {
     assert!(!generated.contains("flux_sub_i64("));
     assert!(!generated.contains("flux_mul_i64("));
     assert!(!generated.contains("flux_div_i64("));
+    assert_eq!(
+        generated
+            .matches("return flux_neg_i64(flux__local_value);")
+            .count(),
+        3
+    );
 
     let annihilators = r#"
 fn observe(value: i64) -> i64 {
