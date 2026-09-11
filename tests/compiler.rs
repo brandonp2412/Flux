@@ -6221,6 +6221,44 @@ fn main() -> i64 {
 }
 
 #[test]
+fn non_copy_list_aliases_cannot_become_mutable() {
+    let mutable_reborrow = r#"
+fn inspect(values: i64[]) -> i64 {
+    var alias: i64[] = values
+    return alias.first
+}
+
+fn main() -> i64 {
+    return inspect([1, 2])
+}
+"#;
+    let errors = check_source_all(mutable_reborrow)
+        .expect_err("a borrowed non-copy list alias must not become mutable");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("list bindings are currently immutable local values")
+            || error.message.contains("non-copy")
+    }));
+
+    let assigned_reborrow = r#"
+fn inspect(values: i64[]) -> i64 {
+    let alias: i64[] = values
+    alias = values
+    return alias.first
+}
+
+fn main() -> i64 {
+    return inspect([1, 2])
+}
+"#;
+    let errors = check_source_all(assigned_reborrow)
+        .expect_err("an immutable borrowed list alias must reject assignment");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("cannot assign to immutable binding 'alias'")
+            || error.message.contains("immutable")
+    }));
+}
+
+#[test]
 fn ownership_ignores_non_copy_borrows_in_statically_dead_expression_regions() {
     let dead_borrow = r#"
 fn main() -> i64 {

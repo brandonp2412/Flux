@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 482
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 89 checkbox items
+- Current net scope growth after the baseline: 90 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -361,6 +361,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Follow-up: nested-list `for value in source` bindings retain their normalized borrow source from the foreach iterable. Moving the outer list owner while a projected list element is still live now fails with the same CFG-liveness borrow diagnostic as destructuring/match views, while a breaking path may move the owner after the element's final reachable use.
   - [x] Follow-up: list-typed foreach, destructuring, and match-pattern bindings that are already proven borrowed views now propagate that borrowed-definition identity through direct local aliases. Rebinding such a view is an immutable reborrow rather than a move of the view binding, while the alias still keeps the original list owner live and blocks moving that owner until the alias's final reachable use.
 - [ ] Prevent aliasing violations.
+  - [x] Bootstrap non-copy aliasing is immutable-only: local list/view storage cannot be declared mutable, borrowed list parameters and derived views may only form immutable reborrow aliases, and assignment cannot upgrade those aliases into mutable access. Regression coverage pins both mutable-declaration and assignment rejection, so the current bootstrap cannot create simultaneous mutable/shared aliases before first-class exclusive borrows exist.
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.
 - [ ] Thread-safety/sendability rules.
