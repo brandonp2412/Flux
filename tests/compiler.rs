@@ -1889,6 +1889,7 @@ fn filesystem_capabilities_are_typed_native_and_tree_shaken() {
     let copy_destination = root.join("copy-destination.txt");
     let renamed = root.join("renamed.txt");
     let missing = root.join("missing.txt");
+    let deep = root.join("deep/a/b");
     fs::write(&delete, "delete me").expect("delete fixture should be writable");
     fs::write(&copy_source, "copy me").expect("copy fixture should be writable");
     let path = |value: &std::path::Path| {
@@ -1904,6 +1905,8 @@ fn main() -> i64 {{
     print(fs.isDirectory("{}"))
     print(fs.exists("{}"))
     print(fs.isFile("{}"))
+    print(fs.createDirectories("{}"))
+    print(fs.isDirectory("{}"))
     print(fs.createDirectory("{}"))
     print(fs.isDirectory("{}"))
     print(fs.writeText("{}", "one"))
@@ -1925,6 +1928,8 @@ fn main() -> i64 {{
         path(&root),
         path(&missing),
         path(&delete),
+        path(&deep),
+        path(&deep),
         path(&created),
         path(&created),
         path(&content),
@@ -1951,6 +1956,10 @@ fn main() -> i64 {{
     assert!(generated.contains("static inline bool flux__fs_is_directory(const char *path)"));
     assert!(
         generated.contains("static inline const char *flux__fs_create_directory(const char *path)")
+    );
+    assert!(
+        generated
+            .contains("static inline const char *flux__fs_create_directories(const char *path)")
     );
     assert!(generated.contains("static inline const char *flux__fs_remove_file(const char *path)"));
     assert!(
@@ -1990,8 +1999,8 @@ fn main() -> i64 {{
     assert_eq!(
         lines,
         [
-            "true", "true", "false", "true", "nil", "true", "nil", "nil", "true", "nil", "true",
-            "nil", "false", "true", "nil", "false", "nil", "false"
+            "true", "true", "false", "true", "nil", "true", "nil", "true", "nil", "nil", "true",
+            "nil", "true", "nil", "false", "true", "nil", "false", "nil", "false"
         ]
     );
     assert_eq!(
@@ -2009,6 +2018,7 @@ fn main() -> i64 {{
     let unused = r#"
 fn hidden() -> void {
     print(fs.exists("/tmp"))
+    print(fs.createDirectories("/tmp/unused-flux-directory/nested"))
     print(fs.writeText("/tmp/unused-flux-file", "unused"))
     print(fs.copyFile("/tmp/a", "/tmp/b"))
 }
@@ -2019,6 +2029,7 @@ fn main() -> i64 {
     let unused_generated = compile_to_c(unused).expect("dead filesystem calls should lower");
     assert!(!unused_generated.contains("#include <sys/stat.h>"));
     assert!(!unused_generated.contains("flux__fs_exists"));
+    assert!(!unused_generated.contains("flux__fs_create_directories"));
     assert!(!unused_generated.contains("flux__fs_write_text"));
     assert!(!unused_generated.contains("flux__fs_copy_file"));
 
@@ -2028,6 +2039,7 @@ fn main() -> i64 {
     fs.isFile(false)
     fs.isDirectory(1)
     fs.createDirectory(42)
+    fs.createDirectories(false)
     fs.removeFile(false)
     fs.removeDirectory(1)
     fs.writeText("x", 1)
@@ -2044,6 +2056,7 @@ fn main() -> i64 {
         "isFile",
         "isDirectory",
         "createDirectory",
+        "createDirectories",
         "removeFile",
         "removeDirectory",
     ] {

@@ -1237,6 +1237,10 @@ fn add_qualified_namespace_completions(
                 "createDirectory",
                 "fn fs.createDirectory(path: str) -> error",
             ),
+            (
+                "createDirectories",
+                "fn fs.createDirectories(path: str) -> error",
+            ),
             ("removeFile", "fn fs.removeFile(path: str) -> error"),
             (
                 "removeDirectory",
@@ -2434,7 +2438,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "createDirectory" | "removeFile" | "removeDirectory" => {
+                "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory" => {
                     return Some(signature_help_for_builtin(
                         &format!("fs.{member}"),
                         &["path: str"],
@@ -5515,6 +5519,7 @@ mod tests {
         ))
         .to_json();
         assert!(fs_items.contains("fn fs.exists(path: str) -> bool"));
+        assert!(fs_items.contains("fn fs.createDirectories(path: str) -> error"));
         assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
         assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
         assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
@@ -6245,7 +6250,7 @@ mod tests {
     #[test]
     fn signature_help_supports_filesystem_capabilities() {
         let uri = "file:///tmp/filesystem-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("fs.exists(", "fn fs.exists(path: str) -> bool"),
@@ -6254,6 +6259,10 @@ mod tests {
             (
                 "fs.createDirectory(",
                 "fn fs.createDirectory(path: str) -> error",
+            ),
+            (
+                "fs.createDirectories(",
+                "fn fs.createDirectories(path: str) -> error",
             ),
             ("fs.removeFile(", "fn fs.removeFile(path: str) -> error"),
             (

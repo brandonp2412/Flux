@@ -301,6 +301,7 @@ fn emit_runtime_prelude(
     if uses_background
         || runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
+        || runtime_usage.contains("flux__fs_create_directories(")
     {
         out.push_str("#include <errno.h>\n");
     }
@@ -1627,6 +1628,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__fs_create_directory(") {
         out.push_str("static inline const char *flux__fs_create_directory(const char *path) { return mkdir(path, 0777) == 0 ? NULL : \"failed to create directory\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_create_directories(") {
+        out.push_str("static inline const char *flux__fs_create_directories(const char *path) { if (path[0] == '\\0') return \"failed to create directories\"; size_t length = strlen(path); char *copy = malloc(length + 1); if (copy == NULL) return \"failed to allocate directory path\"; memcpy(copy, path, length + 1); while (length > 1 && copy[length - 1] == '/') copy[--length] = '\\0'; for (char *cursor = copy + 1; *cursor != '\\0'; cursor += 1) { if (*cursor != '/') continue; *cursor = '\\0'; if (mkdir(copy, 0777) != 0 && errno != EEXIST) { free(copy); return \"failed to create directories\"; } struct stat info; if (stat(copy, &info) != 0 || !S_ISDIR(info.st_mode)) { free(copy); return \"path component is not a directory\"; } *cursor = '/'; } if (mkdir(copy, 0777) != 0 && errno != EEXIST) { free(copy); return \"failed to create directories\"; } struct stat info; bool is_directory = stat(copy, &info) == 0 && S_ISDIR(info.st_mode); free(copy); return is_directory ? NULL : \"path is not a directory\"; }\n");
     }
     if runtime_usage.contains("flux__fs_remove_file(") {
         out.push_str("static inline const char *flux__fs_remove_file(const char *path) { return unlink(path) == 0 ? NULL : \"failed to remove file\"; }\n");
@@ -12865,7 +12869,7 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}({})", path.code), vec![Type::Bool], None));
             }
-            "createDirectory" | "removeFile" | "removeDirectory" => {
+            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -12875,6 +12879,7 @@ fn emit_qualified_call(
                 let path = emit_expr(&args[0], env, signatures)?;
                 let helper = match name {
                     "createDirectory" => "flux__fs_create_directory",
+                    "createDirectories" => "flux__fs_create_directories",
                     "removeFile" => "flux__fs_remove_file",
                     _ => "flux__fs_remove_directory",
                 };
