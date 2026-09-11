@@ -3903,9 +3903,14 @@ fn borrowed_definition_span_inner(
                     node: node.id,
                     index,
                 };
-                let value = graph.definition_value(id)?;
-                definition_value_borrows_from(graph, value, source, visiting)
-                    .then_some(definition.span)
+                let borrows_source = if let Some(value) = graph.definition_value(id) {
+                    definition_value_borrows_from(graph, value, source, visiting)
+                } else if let Some(value) = graph.definition_borrow_source_value(id) {
+                    value_depends_on_borrow_source(graph, value, source, visiting)
+                } else {
+                    false
+                };
+                borrows_source.then_some(definition.span)
             })
     });
     visiting.remove(name);

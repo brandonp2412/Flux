@@ -419,6 +419,47 @@ impl ControlFlowGraph {
         self.definition_values.get(&id).copied()
     }
 
+    pub fn definition_borrow_source_value(
+        &self,
+        id: ControlFlowDefinitionId,
+    ) -> Option<ControlFlowValueId> {
+        let ControlFlowDefinitionId::Node { node, index } = id else {
+            return None;
+        };
+        let definition = self.nodes.get(node.0)?.definitions.get(index)?;
+        if !matches!(definition.ty, Type::List(_)) {
+            return None;
+        }
+        let source_node = match self.nodes.get(node.0)?.kind {
+            ControlFlowNodeKind::Destructure { .. } => node,
+            ControlFlowNodeKind::PatternBindings => {
+                self.edges
+                    .iter()
+                    .find(|edge| {
+                        edge.to == node && matches!(edge.kind, ControlFlowEdgeKind::MatchArm(_))
+                    })?
+                    .from
+            }
+            _ => return None,
+        };
+        self.edges
+            .iter()
+            .filter(|edge| edge.to == source_node && edge.kind == ControlFlowEdgeKind::Next)
+            .find_map(|edge| {
+                let source = self.nodes.get(edge.from.0)?;
+                matches!(
+                    source.kind,
+                    ControlFlowNodeKind::Evaluation(
+                        ControlFlowEvaluationKind::DestructureValue
+                            | ControlFlowEvaluationKind::AssignmentValue
+                            | ControlFlowEvaluationKind::MatchValue
+                    )
+                )
+                .then(|| source.values.first().copied())
+                .flatten()
+            })
+    }
+
     pub fn definition_span(&self, id: ControlFlowDefinitionId) -> Option<SourceSpan> {
         match id {
             ControlFlowDefinitionId::Parameter(index) => {

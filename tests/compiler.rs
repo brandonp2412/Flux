@@ -3757,6 +3757,75 @@ fn main() -> i64 {
             .message
             .contains("while borrowed view 'lastTwo' is still live")
     }));
+
+    let live_rest = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30, 40]
+    let [_, ...middle, _] = source
+    let destination: i64[] = source
+    print(middle[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_rest)
+        .expect_err("a live list-rest view must keep its owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'middle' is still live")
+    }));
+
+    let live_nested_element = r#"
+fn main() -> i64 {
+    let source: i64[][] = [[10, 20], [30, 40]]
+    let [first, ..._] = source
+    let destination: i64[][] = source
+    print(first[0])
+    print(destination[0][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_nested_element)
+        .expect_err("a destructured nested-list element is a borrowed view");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'first' is still live")
+    }));
+
+    let live_match_rest = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30]
+    match source:
+        []:
+            print 0
+        [_, ...middle]:
+            let destination: i64[] = source
+            print(middle[0])
+            print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_match_rest)
+        .expect_err("a live list-match rest binding must keep its owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'middle' is still live")
+    }));
+
+    let dead_rest = r#"
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30]
+    let [_, ...middle] = source
+    print(middle[0])
+    let destination: i64[] = source
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead_rest).expect("a dead list-rest borrow must not prevent a later owner move");
 }
 
 #[test]
