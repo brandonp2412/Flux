@@ -724,12 +724,16 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
         }
         ExprKind::ListIf {
             condition,
+            binding,
             value,
             else_value,
             if_span,
             else_span,
         } => {
             *if_span = if_span.with_source(source_id);
+            if let Some(binding) = binding {
+                binding.span = binding.span.with_source(source_id);
+            }
             *else_span = else_span.map(|span| span.with_source(source_id));
             attach_expr_source(condition, source_id);
             attach_expr_source(value, source_id);
@@ -1030,12 +1034,16 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
         }
         ExprKind::ListIf {
             condition,
+            binding,
             value,
             else_value,
             if_span,
             else_span,
         } => {
             if_span.column += offset;
+            if let Some(binding) = binding {
+                binding.span.column += offset;
+            }
             if let Some(else_span) = else_span {
                 else_span.column += offset;
             }
@@ -4752,6 +4760,7 @@ enum TokenKind {
     Nil,
     None,
     Fn,
+    Let,
     If,
     Else,
     For,
@@ -4761,6 +4770,7 @@ enum TokenKind {
     Arrow,
     Star,
     Slash,
+    Assign,
     EqEq,
     NotEq,
     Lt,
@@ -4883,6 +4893,16 @@ fn parse_regular_expression_at(
     let expr = parser.parse_conditional()?;
     if parser.index != tokens.len() {
         let token = &tokens[parser.index];
+        if matches!(token.kind, TokenKind::Assign) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                token.span,
+                "assignment is a statement, not a value-producing expression",
+            )
+            .with_note(
+                "declare mutable locals with 'var' and write assignment as its own statement",
+            ));
+        }
         let message = if matches!(token.kind, TokenKind::If | TokenKind::Else) {
             "conditional/ternary expressions are not part of Flux; use an if statement or match"
         } else {
@@ -5356,6 +5376,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "nil" => TokenKind::Nil,
                 "none" => TokenKind::None,
                 "fn" => TokenKind::Fn,
+                "let" => TokenKind::Let,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
                 "for" => TokenKind::For,
@@ -5384,13 +5405,36 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
                 b'=' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::EqEq, 2),
+                b'=' if matches!(
+                    tokens.as_slice(),
+                    [
+                        ..,
+                        Token {
+                            kind: TokenKind::If,
+                            ..
+                        },
+                        Token {
+                            kind: TokenKind::Let,
+                            ..
+                        },
+                        Token {
+                            kind: TokenKind::Ident(_),
+                            ..
+                        }
+                    ]
+                ) =>
+                {
+                    (TokenKind::Assign, 1)
+                }
                 b'=' => {
                     return Err(Diagnostic::new(
                         DiagnosticStage::Parse,
                         SourceSpan::new(line, column + index, 1),
                         "assignment is a statement, not a value-producing expression",
                     )
-                    .with_note("declare mutable locals with 'var' and write assignment as its own statement"));
+                    .with_note(
+                        "declare mutable locals with 'var' and write assignment as its own statement",
+                    ));
                 }
                 b'<' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::Le, 2),
                 b'<' => (TokenKind::Lt, 1),
@@ -6285,6 +6329,46 @@ impl ExprParser<'_> {
         ) {
             let if_span = self.tokens[self.index].span;
             self.index += 1;
+            let binding = if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Let)
+            ) {
+                self.index += 1;
+                let Some(binding_token) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(
+                        self.line,
+                        "list optional guard requires a binding after 'let'",
+                    ));
+                };
+                let TokenKind::Ident(name) = binding_token.kind else {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        binding_token.span,
+                        "list optional guard requires a binding after 'let'",
+                    ));
+                };
+                self.index += 1;
+                let Some(assign_token) = self.tokens.get(self.index).cloned() else {
+                    return Err(diag(
+                        self.line,
+                        "list optional guard requires '=' after its binding",
+                    ));
+                };
+                if !matches!(assign_token.kind, TokenKind::Assign) {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        assign_token.span,
+                        "list optional guard requires '=' after its binding",
+                    ));
+                }
+                self.index += 1;
+                Some(PatternBinding {
+                    name,
+                    span: binding_token.span,
+                })
+            } else {
+                None
+            };
             let condition = self.parse_conditional()?;
             let Some(colon) = self.tokens.get(self.index).cloned() else {
                 return Err(diag(
@@ -6335,6 +6419,7 @@ impl ExprParser<'_> {
                 ),
                 kind: ExprKind::ListIf {
                     condition: Box::new(condition),
+                    binding,
                     value: Box::new(value),
                     else_value,
                     if_span,

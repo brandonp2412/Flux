@@ -3192,12 +3192,18 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
         }
         ExprKind::ListIf {
             condition,
+            binding,
             value,
             else_value,
             ..
         } => {
             collect_expr_reads(condition, reads);
-            collect_expr_reads(value, reads);
+            let mut nested_reads = HashSet::new();
+            collect_expr_reads(value, &mut nested_reads);
+            if let Some(binding) = binding {
+                nested_reads.remove(&binding.name);
+            }
+            reads.extend(nested_reads);
             if let Some(else_value) = else_value {
                 collect_expr_reads(else_value, reads);
             }
@@ -5038,18 +5044,56 @@ pub fn type_of_expr(
                     }
                     ExprKind::ListIf {
                         condition,
+                        binding,
                         value,
                         else_value,
                         ..
                     } => {
-                        let condition_ty = type_of_expr(condition, env, signatures)?;
-                        require_type(
-                            condition.span,
-                            &Type::Bool,
-                            &condition_ty,
-                            "list if condition",
-                        )?;
-                        let value_ty = type_of_expr(value, env, signatures)?;
+                        let value_ty = if let Some(binding) = binding {
+                            let condition_ty = signatures
+                                .canonical_type(&type_of_expr(condition, env, signatures)?);
+                            let Type::Optional(inner) = condition_ty else {
+                                return Err(diag(
+                                    condition.span,
+                                    &format!(
+                                        "list optional guard requires an optional value, got {}",
+                                        condition_ty.name()
+                                    ),
+                                ));
+                            };
+                            if matches!(inner.as_ref(), Type::Void) {
+                                return Err(diag(
+                                    condition.span,
+                                    "list optional guard on 'none' needs a concrete optional value type",
+                                ));
+                            }
+                            let mut guarded_env = env.clone();
+                            if binding.name != "_" {
+                                if env.contains_key(&binding.name) {
+                                    return Err(diag(
+                                        binding.span,
+                                        &format!(
+                                            "list optional guard binding '{}' shadows an existing binding",
+                                            binding.name
+                                        ),
+                                    ));
+                                }
+                                guarded_env.insert(
+                                    binding.name.clone(),
+                                    signatures.canonical_type(&inner),
+                                );
+                            }
+                            type_of_expr(value, &guarded_env, signatures)?
+                        } else {
+                            let condition_ty = type_of_expr(condition, env, signatures)?;
+                            require_type(
+                                condition.span,
+                                &Type::Bool,
+                                &condition_ty,
+                                "list if condition",
+                            )?;
+                            type_of_expr(value, env, signatures)?
+                        };
                         if let Some(else_value) = else_value {
                             let else_ty = type_of_expr(else_value, env, signatures)?;
                             require_type(

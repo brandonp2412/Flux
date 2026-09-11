@@ -17321,14 +17321,16 @@ fn emit_list_builder_binding(
             }
             ExprKind::ListIf {
                 condition,
+                binding,
                 value,
                 else_value,
                 ..
             } => {
-                if let Some(ConstantValue::Bool(condition)) =
-                    fold_primitive_expr(condition, env, signatures)?
+                if binding.is_none()
+                    && let Some(ConstantValue::Bool(condition_value)) =
+                        fold_primitive_expr(condition, env, signatures)?
                 {
-                    let selected = if condition {
+                    let selected = if condition_value {
                         Some(value.as_ref())
                     } else {
                         else_value.as_deref()
@@ -17345,16 +17347,42 @@ fn emit_list_builder_binding(
                     }
                     continue;
                 }
-                let condition = emit_expr(condition, env, signatures)?;
+                let condition_expr = emit_expr(condition, env, signatures)?;
                 let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
                 *temp_counter += 1;
                 let value_name = format!("flux__list_build_value_{}", *temp_counter);
                 *temp_counter += 1;
-                let then_value = emit_expr(value, env, signatures)?;
-                out.push_str(&format!(
-                    "{pad}bool {condition_name} = {};\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n{pad}    {value_name} = {};\n",
-                    condition.code, then_value.code
-                ));
+                let mut guarded_env = env.clone();
+                if let Some(binding) = binding {
+                    let optional_ty = signatures.canonical_type(&condition_expr.ty);
+                    let Type::Optional(inner) = &optional_ty else {
+                        return Err(diag(
+                            condition.span,
+                            "non-optional value reached list optional guard code generation",
+                        ));
+                    };
+                    let optional_name = format!("flux__list_guard_optional_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {optional_name} = {};\n{pad}bool {condition_name} = {optional_name}.has_value;\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n",
+                        c_type(&optional_ty, signatures), condition_expr.code
+                    ));
+                    if binding.name != "_" {
+                        out.push_str(&format!(
+                            "{pad}    {} {} = {optional_name}.value;\n",
+                            c_type(inner, signatures),
+                            local_c_name(&binding.name)
+                        ));
+                        guarded_env.insert(binding.name.clone(), signatures.canonical_type(inner));
+                    }
+                } else {
+                    out.push_str(&format!(
+                        "{pad}bool {condition_name} = {};\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n",
+                        condition_expr.code
+                    ));
+                }
+                let then_value = emit_expr(value, &guarded_env, signatures)?;
+                out.push_str(&format!("{pad}    {value_name} = {};\n", then_value.code));
                 if else_value.is_none() {
                     out.push_str(&format!(
                         "{pad}    if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}    ++{capacity_name};\n"

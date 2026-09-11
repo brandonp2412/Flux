@@ -1072,15 +1072,17 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::ListOptional { value, .. } => format!("?{}", format_expr(value, 0)),
         ExprKind::ListIf {
             condition,
+            binding,
             value,
             else_value,
             ..
         } => {
-            let mut text = format!(
-                "if {}: {}",
-                format_expr(condition, 0),
-                format_expr(value, 0)
-            );
+            let condition = if let Some(binding) = binding {
+                format!("let {} = {}", binding.name, format_expr(condition, 0))
+            } else {
+                format_expr(condition, 0)
+            };
+            let mut text = format!("if {condition}: {}", format_expr(value, 0));
             if let Some(else_value) = else_value {
                 text.push_str(&format!(" else: {}", format_expr(else_value, 0)));
             }

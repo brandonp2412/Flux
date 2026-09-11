@@ -1721,16 +1721,36 @@ impl<'a> ControlFlowBuilder<'a> {
                 }),
             ExprKind::ListIf {
                 condition,
+                binding,
                 value,
                 else_value,
                 ..
             } => {
-                let condition = self.lower_scalar_expr(producer, condition);
-                let value = self.lower_scalar_expr(producer, value);
+                let condition_value = self.lower_scalar_expr(producer, condition);
+                let value = if let Some(binding) = binding {
+                    let definitions = self
+                        .scalar_expression_type(condition)
+                        .and_then(|ty| match self.signatures.canonical_type(&ty) {
+                            Type::Optional(inner)
+                                if *inner != Type::Void && binding.name != "_" =>
+                            {
+                                Some(vec![self.definition(&binding.name, &inner, binding.span)])
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let definitions = self.add_scoped_definitions(producer, definitions);
+                    self.push_scoped_definitions(definitions);
+                    let lowered = self.lower_scalar_expr(producer, value);
+                    self.scoped_definition_stack.pop();
+                    lowered
+                } else {
+                    self.lower_scalar_expr(producer, value)
+                };
                 let else_value = else_value
                     .as_deref()
                     .and_then(|value| self.lower_scalar_expr(producer, value));
-                match (condition, value) {
+                match (condition_value, value) {
                     (Some(condition), Some(value)) => ControlFlowValueKind::ListIf {
                         condition,
                         value,
@@ -2519,16 +2539,25 @@ fn record_expr_types(
         }
         ExprKind::ListIf {
             condition,
+            binding,
             value,
             else_value,
             ..
         } => {
             record_expr_types(condition, env, signatures, evaluations);
-            record_expr_types(value, env, signatures, evaluations);
+            let mut guarded_env = env.clone();
+            if let Some(binding) = binding
+                && binding.name != "_"
+                && let Ok(Type::Optional(inner)) =
+                    typecheck::type_of_expr(condition, env, signatures)
+            {
+                guarded_env.insert(binding.name.clone(), signatures.canonical_type(&inner));
+            }
+            record_expr_types(value, &guarded_env, signatures, evaluations);
             if let Some(else_value) = else_value {
                 record_expr_types(else_value, env, signatures, evaluations);
             }
-            if let Ok(ty) = typecheck::type_of_expr(value, env, signatures) {
+            if let Ok(ty) = typecheck::type_of_expr(value, &guarded_env, signatures) {
                 evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
             }
         }

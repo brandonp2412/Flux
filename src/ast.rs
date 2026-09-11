@@ -719,6 +719,7 @@ pub enum ExprKind {
     },
     ListIf {
         condition: Box<Expr>,
+        binding: Option<PatternBinding>,
         value: Box<Expr>,
         else_value: Option<Box<Expr>>,
         if_span: SourceSpan,

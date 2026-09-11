@@ -5382,6 +5382,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn list_optional_pattern_guards_bind_present_values_and_lower_natively() {
+    let source = r#"
+fn maybe(flag: bool) -> i64? {
+    if flag:
+        return 7
+    return none
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, if let value = maybe(true): value, if let missing = maybe(false): missing else: 9]
+    print values.length
+    print values[1]
+    print values[2]
+    return 0
+}
+"#;
+
+    check_source(source).expect("list optional pattern guards should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("list optional pattern guards should format canonically");
+    assert!(formatted.contains("if let value = maybe(true): value"));
+    assert!(formatted.contains("if let missing = maybe(false): missing else: 9"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted list optional guards should reparse"),
+        formatted
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1419))
+        .expect("list optional guards should retain typed semantic IR");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let guarded_value = graph
+        .values()
+        .iter()
+        .find_map(|value| match value.kind {
+            ControlFlowValueKind::ListIf { value, .. } => graph.value(value),
+            _ => None,
+        })
+        .expect("list optional guard should retain its selected value in typed IR");
+    assert!(matches!(
+        &guarded_value.kind,
+        ControlFlowValueKind::NameRead { name, definitions }
+            if name == "value" && !definitions.is_empty()
+    ));
+
+    let generated =
+        compile_to_c(source).expect("list optional pattern guards should lower natively");
+    assert!(generated.contains("flux__list_guard_optional_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(".value"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-list-optional-guards-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary list optional guard directory should be writable");
+    let c_path = root.join("list_optional_guards.c");
+    let exe_path = root.join("list_optional_guards");
+    fs::write(&c_path, generated).expect("generated list optional guard C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile list optional guards");
+    assert!(
+        compile.status.success(),
+        "list optional guard C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("list optional guard program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n7\n9\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    let values: i64[] = [if let value = 1: value]
+    return values.length
+}
+"#;
+    let error = check_source(non_optional).expect_err("list optional guards require optionals");
+    assert!(
+        error
+            .message
+            .contains("list optional guard requires an optional value, got i64"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+
+    let shadow = r#"
+fn maybe() -> i64? {
+    return 1
+}
+fn main() -> i64 {
+    let value: i64 = 3
+    let values: i64[] = [if let value = maybe(): value]
+    return values.length
+}
+"#;
+    let error = check_source(shadow).expect_err("list optional guards must not shadow bindings");
+    assert!(
+        error
+            .message
+            .contains("list optional guard binding 'value' shadows an existing binding"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn list_destructuring_patterns_infer_types_and_lower_strided_views() {
     let source = r#"
 fn main() -> i64 {

@@ -268,7 +268,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 - [x] Null/optional-aware collection elements use `?element` inside list literals: the expression must be a concrete Copy optional, is evaluated exactly once, appends its payload only when present, rejects bare `none`/non-optionals/type mismatches statically, formats canonically, participates in semantic/typed-IR traversal, and lowers through the existing overflow-checked stack-backed list builder with no allocation or runtime null assertion.
 - [x] List-only `if condition: value` / `if condition: first else: second` construction items with strict bool conditions, exact element typing, selected-branch evaluation, and the same overflow-checked stack-backed builder used by spreads.
 - [x] Python-style list comprehensions with optional boolean filters: `[expr for item in source if condition]`.
-- [ ] Pattern guards inside collection construction where useful.
+- [x] Pattern guards inside collection construction where useful: list construction supports safe optional-binding guards with `if let value = optionalValue: element`, including optional single evaluation, branch-local binding scope, optional absence skipping, typed `else` fallback elements, formatter/semantic/typed-IR traversal, and allocation-free native lowering through the existing list builder.
 - [x] Bootstrap list literals/slices/comprehensions lower directly to native list descriptors; slices are zero-copy and comprehensions use stack-backed output sized from the source list without intermediate collections.
 
 ## Records, patterns, and destructuring
