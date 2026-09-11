@@ -1292,6 +1292,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "openAppSettings",
+            3,
+            "fn android.openAppSettings() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "share",
             3,
             "fn android.share(text: str) -> void",
@@ -2486,6 +2493,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.openUrl",
                         &["url: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "openAppSettings" => {
+                    return Some(signature_help_for_builtin(
+                        "android.openAppSettings",
+                        &[],
                         "void",
                         active_parameter,
                     ));
@@ -5539,6 +5554,8 @@ mod tests {
         assert!(android_items.contains("fn android.vibrate(durationMs: i64) -> void"));
         assert!(android_items.contains("\"label\":\"openUrl\""));
         assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
+        assert!(android_items.contains("\"label\":\"openAppSettings\""));
+        assert!(android_items.contains("fn android.openAppSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
@@ -6283,7 +6300,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(android.sdkInt())\n    android.vibrate(25)\n    android.openUrl(\"https://example.com\")\n    android.share(\"hello\")\n    print(android.permissionGranted(\"android.permission.CAMERA\"))\n    android.requestPermission(\"android.permission.CAMERA\")\n    android.createNotificationChannel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notificationPermissionGranted())\n    android.requestNotificationPermission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notifyUrlAction(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancelNotification(1)\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android.sdkInt())\n    android.vibrate(25)\n    android.openUrl(\"https://example.com\")\n    android.openAppSettings()\n    android.share(\"hello\")\n    print(android.permissionGranted(\"android.permission.CAMERA\"))\n    android.requestPermission(\"android.permission.CAMERA\")\n    android.createNotificationChannel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notificationPermissionGranted())\n    android.requestNotificationPermission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notifyUrlAction(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancelNotification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.sdkInt(", "fn android.sdkInt() -> i64"),
@@ -6292,6 +6309,10 @@ mod tests {
                 "fn android.vibrate(durationMs: i64) -> void",
             ),
             ("android.openUrl(", "fn android.openUrl(url: str) -> void"),
+            (
+                "android.openAppSettings(",
+                "fn android.openAppSettings() -> void",
+            ),
             ("android.share(", "fn android.share(text: str) -> void"),
             (
                 "android.permissionGranted(",

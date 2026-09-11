@@ -702,7 +702,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Device vibration/haptics callable directly from Flux through the appropriate Android native/framework API for the configured API level.
   - [x] `android.vibrate(durationMs)` works from ordinary Flux code, tree-shakes its JNI helper when unused, automatically adds `android.permission.VIBRATE` only when reachable, and has been compiled into signed APK/AAB artifacts on Nox; the APK also installs/launches in Waydroid without application-authored bridge code.
 - [ ] Intents/deep links.
-  - [x] Outbound URL intents: `android.openUrl(url)` directly creates an `ACTION_VIEW` intent from Flux through compiler-generated JNI with full UTF-8 conversion and no application bridge code. Inbound deep-link manifest declarations/routing and richer explicit intent APIs remain pending.
+  - [x] Outbound URL/settings intents: `android.openUrl(url)` directly creates an `ACTION_VIEW` intent from Flux through compiler-generated JNI with full UTF-8 conversion, while `android.openAppSettings()` opens the native application-details settings surface for the current package through compiler-owned `Activity`/`Uri`/`Intent` JNI. Both paths tree-shake when unreachable and require no application bridge code. Inbound deep-link manifest declarations/routing and broader explicit intent forms remain pending.
 - [x] Share sheet.
   - [x] `android.share(text)` opens the native Android chooser with an `ACTION_SEND` `text/plain` intent and compiler-owned UTF-8/JNI glue; Flux application code contains no Kotlin/Java/JNI bridge code.
 - [x] Permissions.

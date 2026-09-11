@@ -12810,6 +12810,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     print(android.sdkInt())
     android.vibrate(25)
     android.openUrl("https://example.com")
+    android.openAppSettings()
     android.share("hello from Flux")
     android.setClipboardText("copied from Flux")
     android.showKeyboard()
@@ -12900,6 +12901,10 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("\"vibrate\", \"(J)V\""));
     assert!(generated.contains("static void flux__android_open_url(const char *url)"));
     assert!(generated.contains("android.intent.action.VIEW"));
+    assert!(generated.contains("static void flux__android_open_app_settings(void)"));
+    assert!(generated.contains("android.settings.APPLICATION_DETAILS_SETTINGS"));
+    assert!(generated.contains("\"getPackageName\", \"()Ljava/lang/String;\""));
+    assert!(generated.contains("\"fromParts\""));
     assert!(generated.contains("static void flux__android_share(const char *text)"));
     assert!(generated.contains("android.intent.action.SEND"));
     assert!(generated.contains("android.intent.extra.TEXT"));
@@ -13010,6 +13015,7 @@ fn main() -> i64 {
     fs::write(
         android_tree_root.join("src/main.flux"),
         r#"fn unused_android() -> void {
+    android.openAppSettings()
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
@@ -13043,6 +13049,8 @@ app Screen
     let tree_generated = tree_analysis
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("Android tree-shaking fixture should lower");
+    assert!(!tree_generated.contains("flux__android_open_app_settings"));
+    assert!(!tree_generated.contains("android.settings.APPLICATION_DETAILS_SETTINGS"));
     assert!(!tree_generated.contains("flux__android_show_keyboard"));
     assert!(!tree_generated.contains("flux__android_hide_keyboard"));
     assert!(!tree_generated.contains("flux__android_focus_next"));
@@ -13077,6 +13085,7 @@ fn main() -> i64 {
     android.sdkInt(1)
     android.vibrate("long")
     android.openUrl(42)
+    android.openAppSettings(1)
     android.share(42)
     android.showKeyboard(1)
     android.hideKeyboard(false)
@@ -13112,6 +13121,11 @@ fn main() -> i64 {
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.openUrl url") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.openAppSettings expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")

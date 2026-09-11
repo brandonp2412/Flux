@@ -5650,7 +5650,8 @@ fn check_qualified_call(
                 }
                 return Ok(Vec::new());
             }
-            "showKeyboard" | "hideKeyboard" | "focusFirst" | "focusLast" | "clearFocus" => {
+            "showKeyboard" | "hideKeyboard" | "openAppSettings" | "focusFirst" | "focusLast"
+            | "clearFocus" => {
                 if !args.is_empty() {
                     return Err(diag(
                         span,

@@ -353,6 +353,8 @@ fn emit_runtime_prelude(
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
+    let uses_android_open_app_settings =
+        uses_android && runtime_usage.contains("flux__android_open_app_settings(");
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
     let uses_android_set_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
@@ -420,6 +422,7 @@ fn emit_runtime_prelude(
         || uses_android_cancel_notification;
     let uses_android_platform_api = uses_android_vibrate
         || uses_android_open_url
+        || uses_android_open_app_settings
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_show_keyboard
@@ -980,6 +983,58 @@ fn emit_runtime_prelude(
         out.push_str("    if (uri != NULL) (*env)->DeleteLocalRef(env, uri);\n");
         out.push_str("    if (url_string != NULL) (*env)->DeleteLocalRef(env, url_string);\n");
         out.push_str("    if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+
+    if uses_android_open_app_settings {
+        out.push_str("static void flux__android_open_app_settings(void) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = NULL; jclass uri_class = NULL; jclass intent_class = NULL;\n");
+        out.push_str(
+            "    jstring package_name = NULL; jstring scheme = NULL; jstring action = NULL;\n",
+        );
+        out.push_str("    jobject uri = NULL; jobject intent = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_package_name = (*env)->GetMethodID(env, activity_class, \"getPackageName\", \"()Ljava/lang/String;\");\n");
+        out.push_str("    if (get_package_name == NULL) goto done;\n");
+        out.push_str("    package_name = (jstring)(*env)->CallObjectMethod(env, activity, get_package_name);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || package_name == NULL) goto done;\n");
+        out.push_str("    uri_class = (*env)->FindClass(env, \"android/net/Uri\");\n");
+        out.push_str("    if (uri_class == NULL) goto done;\n");
+        out.push_str("    jmethodID from_parts = (*env)->GetStaticMethodID(env, uri_class, \"fromParts\", \"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;\");\n");
+        out.push_str("    if (from_parts == NULL) goto done;\n");
+        out.push_str("    scheme = (*env)->NewStringUTF(env, \"package\");\n");
+        out.push_str("    if (scheme == NULL) goto done;\n");
+        out.push_str("    uri = (*env)->CallStaticObjectMethod(env, uri_class, from_parts, scheme, package_name, NULL);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || uri == NULL) goto done;\n");
+        out.push_str("    intent_class = (*env)->FindClass(env, \"android/content/Intent\");\n");
+        out.push_str("    if (intent_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;Landroid/net/Uri;)V\");\n");
+        out.push_str("    if (ctor == NULL) goto done;\n");
+        out.push_str("    action = (*env)->NewStringUTF(env, \"android.settings.APPLICATION_DETAILS_SETTINGS\");\n");
+        out.push_str("    if (action == NULL) goto done;\n");
+        out.push_str("    intent = (*env)->NewObject(env, intent_class, ctor, action, uri);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || intent == NULL) goto done;\n");
+        out.push_str("    jmethodID start_activity = (*env)->GetMethodID(env, activity_class, \"startActivity\", \"(Landroid/content/Intent;)V\");\n");
+        out.push_str("    if (start_activity != NULL) (*env)->CallVoidMethod(env, activity, start_activity, intent);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (intent != NULL) (*env)->DeleteLocalRef(env, intent);\n");
+        out.push_str("    if (action != NULL) (*env)->DeleteLocalRef(env, action);\n");
+        out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
+        out.push_str("    if (uri != NULL) (*env)->DeleteLocalRef(env, uri);\n");
+        out.push_str("    if (scheme != NULL) (*env)->DeleteLocalRef(env, scheme);\n");
+        out.push_str("    if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class);\n");
+        out.push_str("    if (package_name != NULL) (*env)->DeleteLocalRef(env, package_name);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
@@ -12951,6 +13006,19 @@ fn emit_qualified_call(
                 }
                 return Ok((
                     "flux__android_request_notification_permission()".to_string(),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "openAppSettings" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok((
+                    "flux__android_open_app_settings()".to_string(),
                     Vec::new(),
                     None,
                 ));
