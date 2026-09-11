@@ -11640,6 +11640,118 @@ app Status
 }
 
 #[test]
+fn eliminates_redundant_boolean_comparisons_against_constants() {
+    let source = r#"
+const YES: bool = true
+const NO: bool = false
+
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn equalTrue(value: bool) -> bool {
+    return value == true
+}
+
+fn trueEqual(value: bool) -> bool {
+    return YES == value
+}
+
+fn equalFalse(value: bool) -> bool {
+    return value == false
+}
+
+fn falseEqual(value: bool) -> bool {
+    return NO == value
+}
+
+fn notEqualFalse(value: bool) -> bool {
+    return value != false
+}
+
+fn falseNotEqual(value: bool) -> bool {
+    return NO != value
+}
+
+fn notEqualTrue(value: bool) -> bool {
+    return value != true
+}
+
+fn trueNotEqual(value: bool) -> bool {
+    return YES != value
+}
+
+fn effectful(value: bool) -> bool {
+    return observe(value) == false
+}
+
+fn main() -> i64 {
+    print(equalTrue(true))
+    print(trueEqual(false))
+    print(equalFalse(true))
+    print(falseEqual(false))
+    print(notEqualFalse(true))
+    print(falseNotEqual(false))
+    print(notEqualTrue(true))
+    print(trueNotEqual(false))
+    print(effectful(true))
+    return 0
+}
+"#;
+
+    check_source(source).expect("boolean comparison identities should typecheck");
+    let generated =
+        compile_to_c(source).expect("boolean comparison identities should lower natively");
+    assert_eq!(generated.matches("return flux__local_value;").count(), 5);
+    assert_eq!(
+        generated.matches("return (!(flux__local_value));").count(),
+        4
+    );
+    assert!(generated.contains("return (!(flux__fn_observe(flux__local_value)));"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful comparison operands must still evaluate exactly once",
+    );
+    assert!(!generated.contains("flux__local_value == true"));
+    assert!(!generated.contains("flux__local_value == false"));
+    assert!(!generated.contains("flux__local_value != true"));
+    assert!(!generated.contains("flux__local_value != false"));
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state active: bool = true
+    Text first at 1,1
+        text: "One"
+        visible: active == true
+    Text second at 2,1
+        text: "Two"
+        visible: false == active
+    Text third at 3,1
+        text: "Three"
+        visible: active != false
+    Text fourth at 4,1
+        text: "Four"
+        visible: true != active
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI boolean comparison identities should share lowering");
+    assert!(!ui_generated.contains("flux__ui_state_active == true"));
+    assert!(!ui_generated.contains("false == flux__ui_state_active"));
+    assert!(!ui_generated.contains("flux__ui_state_active != false"));
+    assert!(!ui_generated.contains("true != flux__ui_state_active"));
+    assert!(ui_generated.contains("flux__ui_state_active"));
+    assert!(ui_generated.contains("(!(flux__ui_state_active))"));
+}
+
+#[test]
 fn eliminates_redundant_negated_same_binding_boolean_work() {
     let source = r#"
 fn observe(value: bool) -> bool {

@@ -14143,6 +14143,24 @@ fn boolean_identity_c(
     right_code: &str,
     signatures: &Signatures,
 ) -> Option<String> {
+    let left_constant = typecheck::constant_primitive_value(left, signatures);
+    let right_constant = typecheck::constant_primitive_value(right, signatures);
+
+    if matches!(op, BinOp::Eq | BinOp::Ne) {
+        let negate = |code: &str| format!("(!({code}))");
+        return match (op, left_constant, right_constant) {
+            (BinOp::Eq, Some(ConstantValue::Bool(true)), _)
+            | (BinOp::Ne, Some(ConstantValue::Bool(false)), _) => Some(right_code.to_string()),
+            (BinOp::Eq, Some(ConstantValue::Bool(false)), _)
+            | (BinOp::Ne, Some(ConstantValue::Bool(true)), _) => Some(negate(right_code)),
+            (BinOp::Eq, _, Some(ConstantValue::Bool(true)))
+            | (BinOp::Ne, _, Some(ConstantValue::Bool(false))) => Some(left_code.to_string()),
+            (BinOp::Eq, _, Some(ConstantValue::Bool(false)))
+            | (BinOp::Ne, _, Some(ConstantValue::Bool(true))) => Some(negate(left_code)),
+            _ => None,
+        };
+    }
+
     if !matches!(op, BinOp::And | BinOp::Or) {
         return None;
     }
@@ -14200,8 +14218,6 @@ fn boolean_identity_c(
         return Some(format!("((void)({left_code}), {result})"));
     }
 
-    let left_constant = typecheck::constant_primitive_value(left, signatures);
-    let right_constant = typecheck::constant_primitive_value(right, signatures);
     match (op, left_constant, right_constant) {
         (BinOp::And, Some(ConstantValue::Bool(false)), _)
         | (BinOp::Or, Some(ConstantValue::Bool(true)), _) => Some(
