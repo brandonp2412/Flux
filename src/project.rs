@@ -19,6 +19,7 @@ pub struct ProjectAnalysis {
     pub program: Program,
     pub signatures: typecheck::Signatures,
     pub sources: Vec<ProjectSource>,
+    pub translations: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl ProjectAnalysis {
@@ -51,6 +52,7 @@ impl ProjectAnalysis {
             &self.signatures,
             &source_paths,
             &source_modules,
+            &self.translations,
             target,
         )
     }
@@ -214,6 +216,7 @@ pub struct PackageManifest {
     pub entry: PathBuf,
     pub path: PathBuf,
     pub dependencies: BTreeMap<String, PackageDependency>,
+    pub translations: BTreeMap<String, BTreeMap<String, String>>,
     pub android: AndroidPackageConfig,
 }
 
@@ -276,6 +279,7 @@ struct ProjectLoadReport {
     program: Program,
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
+    translations: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn load_report_with_overlays(
@@ -290,7 +294,8 @@ fn load_report_with_overlays_and_parse_cache(
     overlays: &HashMap<PathBuf, String>,
     parse_cache: Option<&mut ModuleParseCache>,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    let (entry, module_root, package_name, dependencies) = resolve_project_target(target)?;
+    let (entry, module_root, package_name, dependencies, translations) =
+        resolve_project_target(target)?;
     let package_scopes = package_name
         .as_ref()
         .map(|name| {
@@ -317,6 +322,7 @@ fn load_report_with_overlays_and_parse_cache(
         program: loader.program,
         sources: loader.sources,
         diagnostics: loader.diagnostics,
+        translations,
     })
 }
 
@@ -354,6 +360,7 @@ fn analyze_with_overlays_report(
         program: report.program,
         signatures,
         sources: report.sources,
+        translations: report.translations,
     })
 }
 
@@ -395,7 +402,7 @@ pub fn compile_to_c_header(entry: &Path) -> Result<String, Diagnostic> {
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
-    resolve_project_target(target).map(|(entry, _, _, _)| entry)
+    resolve_project_target(target).map(|(entry, _, _, _, _)| entry)
 }
 
 pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -412,6 +419,7 @@ fn resolve_project_target(
         PathBuf,
         Option<String>,
         BTreeMap<String, PackageDependency>,
+        BTreeMap<String, BTreeMap<String, String>>,
     ),
     Vec<Diagnostic>,
 > {
@@ -432,6 +440,7 @@ fn resolve_project_target(
             root,
             Some(manifest.name),
             manifest.dependencies,
+            manifest.translations,
         ));
     }
     let entry = canonical_source(target, "entry source")?;
@@ -439,7 +448,7 @@ fn resolve_project_target(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    Ok((entry, root, None, BTreeMap::new()))
+    Ok((entry, root, None, BTreeMap::new(), BTreeMap::new()))
 }
 
 pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
@@ -476,6 +485,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
+    let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
     let mut diagnostics = Vec::new();
 
     for (index, raw_line) in source.lines().enumerate() {
@@ -494,7 +504,10 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 continue;
             }
             let table = line[1..line.len() - 1].trim();
-            if !matches!(table, "package" | "android" | "dependencies") {
+            if !matches!(
+                table,
+                "package" | "android" | "dependencies" | "translations"
+            ) {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
                     line_number,
@@ -591,6 +604,65 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                     ));
                 }
             }
+            Some("translations") => {
+                if !valid_dependency_name(key) {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!(
+                            "invalid translation key '{key}'; keys use ASCII letters, digits, '.', '-', or '_' and must start with a letter or digit"
+                        ),
+                    ));
+                    continue;
+                }
+                let entries = match parse_manifest_string_array(raw_value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                        continue;
+                    }
+                };
+                if translations.contains_key(key) {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!("duplicate [translations] entry '{key}'"),
+                    ));
+                    continue;
+                }
+                let mut localized = BTreeMap::new();
+                for entry in entries {
+                    let Some((locale, text)) = entry.split_once('=') else {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!(
+                                "[translations].{key} entries use 'locale=text' strings; invalid value '{entry}'"
+                            ),
+                        ));
+                        continue;
+                    };
+                    if !valid_translation_locale(locale) {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!(
+                                "[translations].{key} has invalid locale '{locale}'; use a language tag such as 'en' or 'fr-CA'"
+                            ),
+                        ));
+                        continue;
+                    }
+                    let locale_key = canonical_translation_locale(locale);
+                    if localized.insert(locale_key, text.to_string()).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("[translations].{key} repeats locale '{locale}'"),
+                        ));
+                    }
+                }
+                translations.insert(key.to_string(), localized);
+            }
             Some("android") => match key {
                 "application_id" | "keystore" | "key_alias" => {
                     let value = match parse_manifest_string(raw_value) {
@@ -666,7 +738,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], or [android]",
+                "manifest fields must be declared inside [package], [dependencies], [translations], or [android]",
             )),
         }
     }
@@ -844,6 +916,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         entry: canonical_entry,
         path: canonical_manifest,
         dependencies,
+        translations,
     })
 }
 
@@ -984,6 +1057,29 @@ fn valid_dependency_name(value: &str) -> bool {
     let mut chars = value.chars();
     chars.next().is_some_and(|ch| ch.is_ascii_alphanumeric())
         && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn valid_translation_locale(value: &str) -> bool {
+    let parts = value.split('-').collect::<Vec<_>>();
+    matches!(parts.len(), 1 | 2)
+        && parts[0].len() >= 2
+        && parts[0].len() <= 8
+        && parts[0].chars().all(|ch| ch.is_ascii_alphabetic())
+        && parts.get(1).is_none_or(|region| {
+            (region.len() == 2 && region.chars().all(|ch| ch.is_ascii_alphabetic()))
+                || (region.len() == 3 && region.chars().all(|ch| ch.is_ascii_digit()))
+        })
+}
+
+fn canonical_translation_locale(value: &str) -> String {
+    let mut parts = value.split('-');
+    let language = parts
+        .next()
+        .expect("validated locale has a language")
+        .to_ascii_lowercase();
+    parts.next().map_or(language.clone(), |region| {
+        format!("{language}-{}", region.to_ascii_uppercase())
+    })
 }
 
 fn valid_semver_requirement(value: &str) -> bool {

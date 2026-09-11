@@ -4006,6 +4006,132 @@ app LocaleApp(onStart: appStarted)
 }
 
 #[test]
+fn translation_resources_are_compiled_locale_aware_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!("flux-translations-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("translation fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        r#"[package]
+name = "translations"
+entry = "src/main.flux"
+
+[translations]
+greeting = ["en=Hello", "fr=Bonjour", "fr-CA=Salut"]
+farewell = ["en=Goodbye", "fr=Au revoir"]
+"#,
+    )
+    .expect("translation manifest should be writable");
+    let source = r#"
+fn main() -> i64 {
+    print(locale.text("greeting", "Fallback"))
+    print(locale.text("missing", "Missing"))
+    return 0
+}
+"#;
+    fs::write(root.join("src/main.flux"), source).expect("translation source should be writable");
+
+    let analysis = fluxc::project::analyze(&root).expect("translation package should analyze");
+    let generated = analysis
+        .emit_c()
+        .expect("translations should lower on Linux");
+    assert!(generated.contains("static const char *flux__locale_text"));
+    assert!(generated.contains("\"Salut\""));
+    assert!(generated.contains("\"Bonjour\""));
+    assert!(generated.contains("\"Hello\""));
+    assert!(generated.contains("flux__locale_language()"));
+    assert!(generated.contains("flux__locale_region()"));
+
+    let binary = root.join("translations-bin");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("translation fixture should build");
+    assert!(
+        built.status.success(),
+        "translation fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    for (locale, expected) in [
+        ("fr_CA.UTF-8", "Salut\nMissing\n"),
+        ("fr_FR.UTF-8", "Bonjour\nMissing\n"),
+        ("en_NZ.UTF-8", "Hello\nMissing\n"),
+        ("de_DE.UTF-8", "Fallback\nMissing\n"),
+    ] {
+        let run = Command::new(&binary)
+            .env("LC_ALL", locale)
+            .env_remove("LC_MESSAGES")
+            .env_remove("LANG")
+            .output()
+            .expect("translation fixture should run");
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    }
+
+    fs::write(
+        root.join("src/main.flux"),
+        r#"
+fn started() -> void {
+    print(locale.text("greeting", "Fallback"))
+}
+
+view TranslationApp {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Translations"
+}
+
+app TranslationApp(onStart: started)
+"#,
+    )
+    .expect("Android translation source should be writable");
+    let android_generated = fluxc::project::analyze(&root)
+        .expect("Android translation package should analyze")
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("translations should lower on Android");
+    assert!(android_generated.contains("java/util/Locale"));
+    assert!(android_generated.contains("\"Salut\""));
+    assert!(android_generated.contains("flux__locale_text"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    print(locale.text("only-one"))
+    print(locale.text(1, "fallback"))
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid translation calls should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("locale.text expects 2 arguments"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("locale.text key: expected str, got i64")
+    }));
+
+    fs::write(
+        root.join("src/main.flux"),
+        "fn hidden() -> void {\n    print(locale.text(\"greeting\", \"Fallback\"))\n}\nfn main() -> i64 {\n    return 0\n}\n",
+    )
+    .expect("dead translation source should be writable");
+    let dead_generated = fluxc::project::analyze(&root)
+        .expect("dead translation package should analyze")
+        .emit_c()
+        .expect("dead translations should lower safely");
+    assert!(!dead_generated.contains("flux__locale_text"));
+    assert!(!dead_generated.contains("\"Salut\""));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {

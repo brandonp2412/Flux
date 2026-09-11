@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 493
+- Completed baseline units: 494
 - Reported overall progress: **67%**
 - Current net scope growth after the baseline: 112 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -883,7 +883,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Reduced motion for the currently supported transition backend: generated native transition styling follows GTK's live system reduced-motion setting and suppresses duration/delay without requiring application code.
 - [x] Keyboard-only navigation for the current native UI backends: native Button/TextInput/Toggle/Radio controls retain platform focus traversal and keyboard activation; common typed `focusable: bool` explicitly includes/excludes built-in elements and may be state-derived, with `onKey` implying focusability only when no explicit override exists. Passive Linux Text/Image elements with `onTap` now use a compiler-owned native `GtkButton` activation host, so Enter/Space, pointer, and accessibility activation all reach the same typed Flux action while an explicit `onKey` handler consumes those activation keys first; Android `onTap` lowers through a focusable native `OnClickListener` so D-pad/keyboard activation reaches the same action without synthetic touch events. No framework focus manager or platform object is exposed to Flux source.
 - [x] Locale detection for current native targets: portable `locale.language()` and `locale.region()` return borrowed language/region strings without platform-specific source imports; Linux follows `LC_ALL` → `LC_MESSAGES` → `LANG` and normalizes the POSIX `C` locale to `und`/no region, while Android reads `java.util.Locale.getDefault()` through compiler-owned JNI. Both paths are statically typed, exposed through LSP completion/signature help, and tree-shaken when unreachable.
-- [ ] Translation resources.
+- [x] Translation resources: package `[translations]` entries compile language and language-region strings directly into native output; typed `locale.text(key, fallback)` resolves exact region → language → fallback using the existing native locale bridge on Linux/Android, keeps results as borrowed static strings, participates in LSP completion/signature help, validates manifest keys/tags, and tree-shakes the lookup/resources completely when unreachable.
 - [ ] Plural/select rules.
 - [ ] Number/date/currency formatting.
 - [x] RTL layout for current native application backends: compile-time `layoutDirection: "system" | "ltr" | "rtl"` application metadata sets the root GTK/Android native direction without a framework layout layer; `system` preserves locale/platform inheritance while explicit direction flows through native logical start/end layout behavior.

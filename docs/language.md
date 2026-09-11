@@ -755,16 +755,26 @@ process.exit(0)
 
 `process.pid()` and `process.parentPid()` return `i64`. Server observability can sample `process.cpuMillis()` for total user-plus-system CPU time consumed by the current process and `process.peakResidentMemoryBytes()` for the Linux process peak resident-set size in bytes; both are direct `getrusage`-backed scalar reads with no metrics runtime or allocation. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. `process.terminationRequested()` lazily installs minimal SIGINT/SIGTERM handlers on the current Linux/server target and then reports whether either termination signal has arrived; the native signal handler only stores a `sig_atomic_t` flag, so application work remains outside signal context. `process.exit(code)` terminates explicitly with a status from `0` through `255`, rejecting known invalid constants at compile time and guarding dynamic values at runtime. These calls lower directly to the host C/POSIX process APIs without a framework runtime and are tree-shaken when unreachable. Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
 
-## Locale detection
+## Locale detection and translation resources
 
-Portable Flux code can read the current language and region without importing a platform-specific module:
+Portable Flux code can read the current language and region, or resolve a compiled package translation, without importing a platform-specific module:
 
 ```flux
 print(locale.language())
 print(locale.region())
+print(locale.text("greeting", "Hello"))
 ```
 
-`locale.language()` returns the platform language code as `str`, using `"und"` when the host has no meaningful language such as the POSIX `C` locale. `locale.region()` returns the region/country code or an empty string when none is available. Linux reads the conventional `LC_ALL`, `LC_MESSAGES`, then `LANG` precedence without invoking locale-sensitive libc parsing, while Android calls the platform default `java.util.Locale` through compiler-owned JNI lowering. Both paths are emitted only when reachable, require no user-written bridge code, and keep their returned strings borrowed under the current bootstrap `str` model. Native text/input behavior follows the platform locale rather than a Flux-owned locale runtime: GTK/Pango and the native GTK input method remain authoritative on Linux, while generated Android text controls apply the current configuration locale list and pass the same locale hints to `EditText` IMEs on API 24+, with `Locale.getDefault()` compatibility on older supported releases. Android configuration changes rebuild the native view surface, so locale changes are applied without application bridge code. Translation resources, plural/select rules, locale-aware number/date/currency formatting, and richer locale identifiers remain separate internationalization work.
+Package translations live in `flux.toml`. Each key contains one or more `language=text` or `language-REGION=text` entries:
+
+```toml
+[translations]
+greeting = ["en=Hello", "fr=Bonjour", "fr-CA=Salut"]
+```
+
+`locale.text(key, fallback)` checks an exact language-region entry first, then the language-only entry, then returns the supplied fallback. Translation strings are compiled into the native binary as borrowed static strings, so lookup needs no JSON bundle, allocation, reflection, VM resource manager, or user-written platform bridge; unreachable translation calls and their resource table tree-shake away. Translation keys and locale tags are validated in the package manifest, with locale tags currently limited to language or language-region forms while plural/select rules and locale-aware number/date/currency formatting remain separate APIs.
+
+`locale.language()` returns the platform language code as `str`, using `"und"` when the host has no meaningful language such as the POSIX `C` locale. `locale.region()` returns the region/country code or an empty string when none is available. Linux reads the conventional `LC_ALL`, `LC_MESSAGES`, then `LANG` precedence without invoking locale-sensitive libc parsing, while Android calls the platform default `java.util.Locale` through compiler-owned JNI lowering. Both paths are emitted only when reachable, require no user-written bridge code, and keep their returned strings borrowed under the current bootstrap `str` model. Native text/input behavior follows the platform locale rather than a Flux-owned locale runtime: GTK/Pango and the native GTK input method remain authoritative on Linux, while generated Android text controls apply the current configuration locale list and pass the same locale hints to `EditText` IMEs on API 24+, with `Locale.getDefault()` compatibility on older supported releases. Android configuration changes rebuild the native view surface, so locale changes are applied without application bridge code.
 
 ## Filesystem capabilities
 

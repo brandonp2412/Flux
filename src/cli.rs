@@ -6595,6 +6595,7 @@ mod tests {
             entry: std::path::PathBuf::from("src/main.flux"),
             path: std::path::PathBuf::from("flux.toml"),
             dependencies: std::collections::BTreeMap::new(),
+            translations: std::collections::BTreeMap::new(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,
@@ -6641,6 +6642,7 @@ mod tests {
             entry: std::path::PathBuf::from("src/main.flux"),
             path: std::path::PathBuf::from("flux.toml"),
             dependencies: std::collections::BTreeMap::new(),
+            translations: std::collections::BTreeMap::new(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,

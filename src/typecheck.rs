@@ -6986,6 +6986,28 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Str]);
             }
+            "text" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("locale.text expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    let actual = type_of_expr(argument, env, signatures)?;
+                    require_type(
+                        argument.span,
+                        &Type::Str,
+                        &actual,
+                        if index == 0 {
+                            "locale.text key"
+                        } else {
+                            "locale.text fallback"
+                        },
+                    )?;
+                }
+                return Ok(vec![Type::Str]);
+            }
             _ => {
                 return Err(diag(
                     *name_span,

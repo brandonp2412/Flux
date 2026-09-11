@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
     BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
@@ -619,6 +619,7 @@ pub fn emit_c_for_target_with_source_paths(
         signatures,
         source_paths,
         &HashMap::new(),
+        &BTreeMap::new(),
         target,
     )
 }
@@ -628,6 +629,7 @@ pub fn emit_c_for_target_with_source_metadata(
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
     source_modules: &HashMap<SourceId, String>,
+    translations: &BTreeMap<String, BTreeMap<String, String>>,
     target: NativeTarget,
 ) -> Result<String, Diagnostic> {
     let function_ir = build_function_ir_cache(program, signatures);
@@ -801,6 +803,7 @@ pub fn emit_c_for_target_with_source_metadata(
     emit_runtime_prelude(
         &mut out,
         &runtime_usage,
+        translations,
         program_uses_background(program, &reachable_functions, &function_ir),
         program.application.is_some() && target == NativeTarget::Linux,
         program.application.is_some() && target == NativeTarget::Android,
@@ -942,6 +945,7 @@ pub fn emit_c_for_target_with_source_metadata(
 fn emit_runtime_prelude(
     out: &mut String,
     runtime_usage: &str,
+    translations: &BTreeMap<String, BTreeMap<String, String>>,
     uses_background: bool,
     uses_gtk: bool,
     uses_android: bool,
@@ -1050,6 +1054,7 @@ fn emit_runtime_prelude(
     out.push('\n');
 
     let uses_locale = runtime_usage.contains("flux__locale_");
+    let uses_locale_text = runtime_usage.contains("flux__locale_text(");
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
@@ -3934,21 +3939,47 @@ fn emit_runtime_prelude(
 
     if uses_locale && !uses_android {
         out.push_str("static inline const char *flux__locale_source(void) { const char *value = getenv(\"LC_ALL\"); if (value == NULL || value[0] == '\\0') value = getenv(\"LC_MESSAGES\"); if (value == NULL || value[0] == '\\0') value = getenv(\"LANG\"); return value != NULL && value[0] != '\\0' ? value : \"C\"; }\n");
-        if runtime_usage.contains("flux__locale_language(") {
+        if runtime_usage.contains("flux__locale_language(") || uses_locale_text {
             out.push_str("static const char *flux__locale_language(void) { static char language[32]; const char *source = flux__locale_source(); if (strcmp(source, \"POSIX\") == 0 || source[0] == 'C' && (source[1] == '\\0' || source[1] == '.')) return \"und\"; size_t index = 0; while (source[index] != '\\0' && source[index] != '_' && source[index] != '-' && source[index] != '.' && source[index] != '@' && index + 1 < sizeof(language)) { language[index] = source[index]; index += 1; } language[index] = '\\0'; return index > 0 ? language : \"und\"; }\n");
         }
-        if runtime_usage.contains("flux__locale_region(") {
+        if runtime_usage.contains("flux__locale_region(") || uses_locale_text {
             out.push_str("static const char *flux__locale_region(void) { static char region[32]; const char *source = flux__locale_source(); if (strcmp(source, \"POSIX\") == 0 || source[0] == 'C' && (source[1] == '\\0' || source[1] == '.')) return \"\"; const char *separator = NULL; for (const char *cursor = source; *cursor != '\\0' && *cursor != '.' && *cursor != '@'; cursor += 1) { if (*cursor == '_' || *cursor == '-') { separator = cursor; break; } } if (separator == NULL) return \"\"; separator += 1; size_t index = 0; while (separator[index] != '\\0' && separator[index] != '_' && separator[index] != '-' && separator[index] != '.' && separator[index] != '@' && index + 1 < sizeof(region)) { region[index] = separator[index]; index += 1; } region[index] = '\\0'; return region; }\n");
         }
     }
     if uses_locale && uses_android {
         out.push_str("static const char *flux__android_locale_component(const char *method_name, const char *fallback, char *buffer, size_t capacity) { if (capacity == 0 || flux__android_activity == NULL) return fallback; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return fallback; jclass locale_class = (*env)->FindClass(env, \"java/util/Locale\"); if (locale_class == NULL) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); flux__android_release_env(detach); return fallback; } jmethodID get_default = (*env)->GetStaticMethodID(env, locale_class, \"getDefault\", \"()Ljava/util/Locale;\"); jobject locale = get_default != NULL ? (*env)->CallStaticObjectMethod(env, locale_class, get_default) : NULL; jmethodID component = (*env)->GetMethodID(env, locale_class, method_name, \"()Ljava/lang/String;\"); jstring value = locale != NULL && component != NULL ? (jstring)(*env)->CallObjectMethod(env, locale, component) : NULL; const char *chars = value != NULL ? (*env)->GetStringUTFChars(env, value, NULL) : NULL; if (chars != NULL) { strncpy(buffer, chars, capacity - 1); buffer[capacity - 1] = '\\0'; (*env)->ReleaseStringUTFChars(env, value, chars); } else { buffer[0] = '\\0'; } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value != NULL) (*env)->DeleteLocalRef(env, value); if (locale != NULL) (*env)->DeleteLocalRef(env, locale); (*env)->DeleteLocalRef(env, locale_class); flux__android_release_env(detach); return buffer[0] != '\\0' ? buffer : fallback; }\n");
-        if runtime_usage.contains("flux__locale_language(") {
+        if runtime_usage.contains("flux__locale_language(") || uses_locale_text {
             out.push_str("static const char *flux__locale_language(void) { static char language[32]; return flux__android_locale_component(\"getLanguage\", \"und\", language, sizeof(language)); }\n");
         }
-        if runtime_usage.contains("flux__locale_region(") {
+        if runtime_usage.contains("flux__locale_region(") || uses_locale_text {
             out.push_str("static const char *flux__locale_region(void) { static char region[32]; return flux__android_locale_component(\"getCountry\", \"\", region, sizeof(region)); }\n");
         }
+    }
+    if uses_locale_text {
+        out.push_str("static const char *flux__locale_text(const char *key, const char *fallback) { const char *language = flux__locale_language(); const char *region = flux__locale_region();");
+        for (key, localized) in translations {
+            out.push_str(&format!(" if (strcmp(key, {}) == 0) {{", c_string(key)));
+            for (locale, text) in localized.iter().filter(|(locale, _)| locale.contains('-')) {
+                let (language_tag, region_tag) = locale
+                    .split_once('-')
+                    .expect("validated region-specific translation locale");
+                out.push_str(&format!(
+                    " if (strcmp(language, {}) == 0 && strcmp(region, {}) == 0) return {};",
+                    c_string(language_tag),
+                    c_string(region_tag),
+                    c_string(text)
+                ));
+            }
+            for (locale, text) in localized.iter().filter(|(locale, _)| !locale.contains('-')) {
+                out.push_str(&format!(
+                    " if (strcmp(language, {}) == 0) return {};",
+                    c_string(locale),
+                    c_string(text)
+                ));
+            }
+            out.push_str(" return fallback; }");
+        }
+        out.push_str(" return fallback; }\n");
     }
 
     if runtime_usage.contains("flux__time_unix_millis(")
@@ -18125,7 +18156,22 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "locale" {
-        if !named_args.is_empty() || !args.is_empty() {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid locale call reached code generation"));
+        }
+        if name == "text" {
+            if args.len() != 2 {
+                return Err(diag(span, "invalid locale call reached code generation"));
+            }
+            let key = emit_expr(&args[0], env, signatures)?;
+            let fallback = emit_expr(&args[1], env, signatures)?;
+            return Ok((
+                format!("flux__locale_text({}, {})", key.code, fallback.code),
+                vec![Type::Str],
+                None,
+            ));
+        }
+        if !args.is_empty() {
             return Err(diag(span, "invalid locale call reached code generation"));
         }
         let helper = match name {

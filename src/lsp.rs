@@ -1369,6 +1369,13 @@ fn add_qualified_namespace_completions(
     if namespace == "locale" {
         push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
         push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
+        push_completion_item(
+            items,
+            seen,
+            "text",
+            3,
+            "fn locale.text(key: str, fallback: str) -> str",
+        );
         return true;
     }
     if namespace == "time" {
@@ -3058,6 +3065,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("locale.{member}"),
                         &[],
+                        "str",
+                        active_parameter,
+                    ));
+                }
+                "text" => {
+                    return Some(signature_help_for_builtin(
+                        "locale.text",
+                        &["key: str", "fallback: str"],
                         "str",
                         active_parameter,
                     ));
@@ -6636,6 +6651,7 @@ mod tests {
         .to_json();
         assert!(locale_items.contains("fn locale.language() -> str"));
         assert!(locale_items.contains("fn locale.region() -> str"));
+        assert!(locale_items.contains("fn locale.text(key: str, fallback: str) -> str"));
 
         let time_line = source
             .lines()
@@ -7729,11 +7745,15 @@ mod tests {
     #[test]
     fn signature_help_supports_locale_capabilities() {
         let uri = "file:///tmp/locale-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(locale.language())\n    print(locale.region())\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(locale.language())\n    print(locale.region())\n    print(locale.text(\"greeting\", \"Hello\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("locale.language(", "fn locale.language() -> str"),
             ("locale.region(", "fn locale.region() -> str"),
+            (
+                "locale.text(",
+                "fn locale.text(key: str, fallback: str) -> str",
+            ),
         ] {
             let line_index = source
                 .lines()
