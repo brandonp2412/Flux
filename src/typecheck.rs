@@ -8939,12 +8939,20 @@ fn require_known_type(
         Type::List(element) => require_known_type(span, &element, signatures),
         Type::Optional(inner) => {
             require_known_type(span, &inner, signatures)?;
-            match signatures.canonical_type(&inner) {
+            let actual = signatures.canonical_type(&inner);
+            match &actual {
                 Type::I64 | Type::Bool | Type::Str | Type::Error => Ok(()),
-                actual => Err(diag(
+                Type::Named(name)
+                    if (signatures.struct_type(name).is_some()
+                        || signatures.enum_type(name).is_some())
+                        && signatures.is_copy_type(&actual) =>
+                {
+                    Ok(())
+                }
+                _ => Err(diag(
                     span,
                     &format!(
-                        "bootstrap optional values currently support i64, bool, str, and error; got {}?",
+                        "bootstrap optional values require a Copy scalar, struct, or enum; got {}?",
                         actual.name()
                     ),
                 )),

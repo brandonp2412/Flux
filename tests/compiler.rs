@@ -21688,6 +21688,107 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_copy_aggregates_are_typed_and_lowered_by_value() {
+    let source = r#"
+struct Wrapper {
+    point: Point?
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+enum Choice {
+    Value(i64)
+    Missing
+}
+
+fn maybePoint(flag: bool) -> Point? {
+    if flag:
+        return Point { x: 2, y: 3 }
+    return none
+}
+
+fn maybeChoice(flag: bool) -> Choice? {
+    if flag:
+        return Choice.Value(7)
+    return none
+}
+
+fn score(choice: Choice) -> i64 {
+    match choice:
+        Choice.Value(value):
+            return value
+        Choice.Missing():
+            return -1
+}
+
+fn main() -> i64 {
+    let wrapper: Wrapper = Wrapper { point: maybePoint(false) }
+    let point: Point = wrapper.point ?? Point { x: 4, y: 5 }
+    print(point.x + point.y)
+    let choice: Choice = maybeChoice(true) ?? Choice.Missing()
+    print(score(choice))
+    return 0
+}
+"#;
+
+    check_source(source).expect("Copy struct and enum optionals should typecheck");
+    let generated = compile_to_c(source).expect("Copy aggregate optionals should lower natively");
+    assert!(generated.contains(
+        "struct flux__optional_named_Point { bool has_value; struct flux__type_Point value; };"
+    ));
+    assert!(generated.contains(
+        "struct flux__optional_named_Choice { bool has_value; struct flux__type_Choice value; };"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-copy-aggregates-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary aggregate optional directory should be writable");
+    let c_path = root.join("optional_copy_aggregates.c");
+    let exe_path = root.join("optional_copy_aggregates");
+    fs::write(&c_path, generated).expect("generated aggregate optional C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile aggregate optionals");
+    assert!(
+        compile.status.success(),
+        "aggregate optional C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("aggregate optional program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n7\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_copy = r#"
+fn main() -> i64 {
+    let values: i64[]? = none
+    return 0
+}
+"#;
+    let error = check_source(non_copy).expect_err("non-Copy optionals must remain rejected");
+    assert!(
+        error.message.contains(
+            "bootstrap optional values require a Copy scalar, struct, or enum; got i64[]?"
+        ),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn optional_coalescing_is_lazy_typed_and_native() {
     let source = r#"
 fn present() -> i64? {

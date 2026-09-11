@@ -838,6 +838,10 @@ pub fn emit_c_for_target_with_source_metadata(
             }
             ValueDef::Enum(definition) => emit_enum_definition(&mut out, definition, signatures),
         }
+        let optional_inner = Type::Named(definition.name().to_string());
+        if signatures.is_copy_type(&optional_inner) {
+            emit_optional_value_definition(&mut out, &optional_inner, signatures);
+        }
     }
     if !reachable_value_types.is_empty() {
         out.push('\n');
@@ -19280,6 +19284,15 @@ fn emit_struct_definition(out: &mut String, definition: &StructDef, signatures: 
     out.push_str("};\n");
 }
 
+fn emit_optional_value_definition(out: &mut String, inner: &Type, signatures: &Signatures) {
+    let optional = Type::Optional(Box::new(inner.clone()));
+    out.push_str(&format!(
+        "{} {{ bool has_value; {} value; }};\n",
+        c_type(&optional, signatures),
+        c_type(inner, signatures)
+    ));
+}
+
 fn emit_enum_definition(out: &mut String, definition: &EnumDef, signatures: &Signatures) {
     let tag_type = enum_tag_type_name(&definition.name);
     out.push_str(&format!("enum {tag_type} {{\n"));
@@ -19490,7 +19503,16 @@ fn visit_value_type<'a>(
             .collect::<Vec<_>>(),
     };
     for dependency_type in dependencies {
-        if let Type::Named(dependency_name) = signatures.canonical_type(dependency_type)
+        let dependency_type = signatures.canonical_type(dependency_type);
+        let dependency_name = match dependency_type {
+            Type::Named(name) => Some(name),
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::Named(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(dependency_name) = dependency_name
             && let Some(dependency) = definitions.get(dependency_name.as_str())
         {
             visit_value_type(
