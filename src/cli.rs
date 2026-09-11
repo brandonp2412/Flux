@@ -3871,6 +3871,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> selectionEnds = new HashMap<>();
     private final Map<Integer, Integer> composingStarts = new HashMap<>();
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
+    private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
@@ -3891,6 +3892,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private native void nativeOpenUrl(String url);
     private static native void nativeOnClick(int viewId);
     private static native void nativeOnTap(int viewId);
+    private static native void nativeOnDoubleTap(int viewId);
     private static native void nativeOnLongPress(int viewId);
     private static native void nativeOnChecked(int viewId, boolean checked);
     private static native void nativeOnFocus(int viewId, boolean focused);
@@ -4006,6 +4008,12 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         int viewId = view.getId();
         nativeOnClick(viewId);
         nativeOnTap(viewId);
+        long now = android.os.SystemClock.uptimeMillis();
+        Long previous = lastTapTimes.put(viewId, now);
+        if (previous != null && now - previous <= android.view.ViewConfiguration.getDoubleTapTimeout()) {
+            lastTapTimes.remove(viewId);
+            nativeOnDoubleTap(viewId);
+        }
     }
 
     @Override
@@ -6218,6 +6226,7 @@ mod tests {
         assert!(activity.contains("nativeDestroy();"));
         assert!(activity.contains("private static native void nativeOnClick(int viewId);"));
         assert!(activity.contains("private static native void nativeOnTap(int viewId);"));
+        assert!(activity.contains("private static native void nativeOnDoubleTap(int viewId);"));
         assert!(
             activity.contains("private static native void nativeOnKey(int viewId, String key);")
         );
@@ -6228,6 +6237,8 @@ mod tests {
         assert!(!activity.contains("MethodChannel"));
         assert!(!activity.contains("PluginRegistry"));
         assert!(activity.contains("nativeOnTap(viewId);"));
+        assert!(activity.contains("ViewConfiguration.getDoubleTapTimeout()"));
+        assert!(activity.contains("nativeOnDoubleTap(viewId);"));
         assert!(activity.contains("nativeOnLongPress(view.getId());"));
         assert!(
             activity.contains(

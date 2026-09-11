@@ -1311,7 +1311,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transition_easing" => {
                 return Some(Type::Str);
             }
-            "on_tap" | "on_long_press" | "on_hover" | "on_leave" | "on_focus" | "on_blur" => {
+            "on_tap" | "on_double_tap" | "on_long_press" | "on_hover" | "on_leave" | "on_focus"
+            | "on_blur" => {
                 return Some(Type::Function {
                     params: Vec::new(),
                     returns: Vec::new(),
@@ -1516,6 +1517,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "accessibility_hidden",
     "accessibility_order",
     "on_tap",
+    "on_double_tap",
     "on_long_press",
     "on_hover",
     "on_leave",
@@ -1905,6 +1907,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                             | ("Toggle", "on_change")
                             | ("Radio", "on_select")
                             | (_, "on_tap")
+                            | (_, "on_double_tap")
                             | (_, "on_long_press")
                             | (_, "on_hover")
                             | (_, "on_leave")
@@ -1914,7 +1917,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap, onLongPress, onHover/onLeave, or onFocus/onBlur",
+                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress, onHover/onLeave, or onFocus/onBlur",
                         ));
                         continue;
                     }

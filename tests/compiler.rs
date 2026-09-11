@@ -13013,6 +13013,7 @@ view HoverCard {
         accessibility_label: "Hover state title"
         visible: hovered
         onTap: tapped
+        onDoubleTap: tapped
         onLongPress: hovered => true
         on_hover: hovered => true
         on_leave: hovered => false
@@ -13033,6 +13034,12 @@ app HoverCard
     assert!(generated.contains("gtk_gesture_click_new()"));
     assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_tap_title)"));
     assert!(generated.contains("gtk_widget_add_controller(flux__ui_title, flux__tap_title)"));
+    assert!(generated.contains("flux__ui_double_tap_title"));
+    assert!(generated.contains("if (n_press != 2) return; flux__fn_tapped(); flux__ui_refresh();"));
+    assert!(generated.contains("\"released\", G_CALLBACK(flux__ui_double_tap_title)"));
+    assert!(
+        generated.contains("gtk_widget_add_controller(flux__ui_title, flux__double_tap_title)")
+    );
     assert!(generated.contains("flux__ui_tap_key_title"));
     assert!(generated.contains("GDK_KEY_Return"));
     assert!(generated.contains("GDK_KEY_KP_Enter"));
@@ -14589,6 +14596,7 @@ view Settings {
         accessibilityDescription: "Enter text to search"
         accessibilityHidden: !enabled
         onTap: enabled => true
+        onDoubleTap: enabled => !enabled
         onLongPress: enabled => false
         onKey: key_pressed
         on_change: changed
@@ -14717,6 +14725,7 @@ app Settings(theme: "dark")
     let second_id = android_stable_view_id("Settings", "second");
     let cache_only_id = android_stable_view_id("Settings", "cache_only");
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnTap"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnDoubleTap"));
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("setFocusable"));
     assert!(!generated.contains("setOnTouchListener"));
@@ -14915,6 +14924,7 @@ view App {
         text: "Press"
         enabled: true
         onTap: handle_press
+        onDoubleTap: handle_press
         onLongPress: handle_press
         on_press: handle_press
     Chart chart at 2,1

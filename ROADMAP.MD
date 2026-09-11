@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 462
 - Reported overall progress: **63%**
-- Current net scope growth after the baseline: 52 checkbox items
+- Current net scope growth after the baseline: 53 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -587,7 +587,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
   - [x] Common `onHover` / `onLeave` events on native Text/Button/TextInput/Toggle/Radio controls accept named `fn() -> void` callbacks or typed functional state transitions; Linux lowers them through native motion controllers while keeping event/controller objects out of Flux source.
 - [ ] Gestures.
   - [x] Portable single-tap recognition is available through `onTap`.
-  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Double-tap, drag, scale, and velocity semantics remain pending.
+  - [x] Portable double-tap recognition through typed `onDoubleTap: fn() -> void` callbacks or functional state transitions: Linux uses native multi-press `GtkGestureClick` recognition, while Android recognizes two native click activations within the platform double-tap timeout and dispatches directly into compiled Flux without exposing event objects or application bridge code. Single-tap/click behavior remains intact, including keyboard/accessibility activation through the native click path.
+  - [x] Portable long-press recognition is available through `onLongPress`; Linux uses native `GtkGestureLongPress` and Android uses the platform long-click recognizer. Drag, scale, and velocity semantics remain pending.
 - [ ] Drag and drop.
 - [ ] Keyboard shortcuts.
   - [x] Bootstrap `Button.shortcut: str` accepts validated compile-time forms such as `Ctrl+K`, `Ctrl+Shift+K`, `Alt+Enter`, and `Shift+Space`; Linux lowers them to native GTK shortcut triggers/actions and dispatches through the button's existing typed `onPress` logic.
