@@ -6247,6 +6247,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn fresh_non_copy_definitions_kill_stale_move_state() {
+    let loop_local = r#"
+fn main() -> i64 {
+    for index in 0..2:
+        let source: i64[] = [10, 20]
+        let destination: i64[] = source
+        print(destination[index])
+    return 0
+}
+"#;
+    check_source(loop_local)
+        .expect("a fresh loop-local non-copy binding must not inherit the prior iteration's move");
+    compile_to_c(loop_local).expect("fresh loop-local moves should lower natively");
+
+    let reused_after_branch = r#"
+fn consume(flag: bool) -> i64 {
+    if flag:
+        let source: i64[] = [1]
+        let destination: i64[] = source
+        print(destination.first)
+    let source: i64[] = [2]
+    print(source.first)
+    return 0
+}
+
+fn main() -> i64 {
+    return consume(true)
+}
+"#;
+    check_source(reused_after_branch)
+        .expect("a new binding after a nested scope must not inherit an older binding's move");
+    compile_to_c(reused_after_branch).expect("scope-local name reuse should lower natively");
+}
+
+#[test]
 fn branch_moves_are_conservative_and_loop_moves_are_rejected() {
     let branch = r#"
 fn main() -> i64 {

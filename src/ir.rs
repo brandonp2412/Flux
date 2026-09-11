@@ -3480,6 +3480,9 @@ fn compute_move_states(
         let Some(mut outgoing_state) = states[id.0].clone() else {
             continue;
         };
+        for definition in &nodes[id.0].definitions {
+            outgoing_state.remove(&definition.name);
+        }
         for movement in &nodes[id.0].ownership.moves {
             outgoing_state
                 .entry(movement.source.clone())

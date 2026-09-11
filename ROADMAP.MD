@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 482
 - Reported overall progress: **65%**
-- Current net scope growth after the baseline: 87 checkbox items
+- Current net scope growth after the baseline: 88 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -339,6 +339,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [x] Return-terminated ownership paths do not poison reachable sibling/post-loop state because move facts propagate only over actual CFG successors; zero-iteration loop exits likewise preserve the pre-loop state where appropriate.
   - [x] Nested direct-move loop analysis follows composed CFG edges across `if`/`match`, nested loops, branch-specific `break`, and `continue`, removing the former syntax-shaped loop-exit ownership bookkeeping.
   - [x] Bootstrap direct-local move path-state is computed to a fixed point on the semantic CFG with deterministic move origins and reachability facts; compile-time primitive conditions and statically empty integer ranges remove impossible CFG edges before ownership propagation so dead moves do not poison live owners.
+  - [x] Follow-up: fresh local definitions kill stale same-name move facts before CFG propagation to successors, so a non-copy value created and moved inside a loop is fresh on the next iteration, and reusing a branch-local binding name after its scope does not inherit the older value's moved state. Reads in the defining node still observe the incoming state before the new definition exists, preserving use-after-move checks while separating successive definition identities operationally.
   - [ ] General move analysis across calls, aggregate fields, partial moves, and owned resource types after normalized control-flow ownership facts exist. The current bootstrap has no consuming non-copy call boundary to analyze yet: list parameters are immutable borrows, structs/enums reject non-copy fields, and owned resource types have not landed. Do not invent consuming-call syntax merely to advance this checkbox; extend the normalized move facts when the first owned non-copy parameter/aggregate/resource contract exists.
 - [ ] Immutable borrows.
   - [x] Bootstrap local list/view reads, indexing/slicing, transforms, iteration, matching, and list function parameters are non-consuming immutable borrows of their local owner; borrowed list parameters can be rebound through direct local alias chains without incorrectly moving either the parameter or an earlier borrowed alias.
