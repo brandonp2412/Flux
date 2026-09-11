@@ -4771,8 +4771,12 @@ fn main() -> i64 {
     let generated =
         compile_to_c(source).expect("function values should lower to function pointers");
     assert!(generated.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
-    assert!(generated.contains("static int64_t flux__fn_double(int64_t flux__local_value);"));
-    assert!(generated.contains("static int64_t flux__fn_increment(int64_t flux__local_value);"));
+    assert!(
+        generated.contains("static inline int64_t flux__fn_double(int64_t flux__local_value);")
+    );
+    assert!(
+        generated.contains("static inline int64_t flux__fn_increment(int64_t flux__local_value);")
+    );
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_mapper = flux__fn_double;"));
     assert!(generated.contains("return flux__local_transform(flux__local_value);"));
     assert!(generated.contains("return flux__fn_increment;"));
@@ -6347,8 +6351,10 @@ fn main() -> i64 {
 
     check_source(source).expect("tree-shaking fixture should typecheck");
     let generated = compile_to_c(source).expect("tree-shaking fixture should lower natively");
-    assert!(generated.contains("static int64_t flux__fn_helper(int64_t flux__local_value);"));
-    assert!(generated.contains("static int64_t flux__fn_leaf(int64_t flux__local_value);"));
+    assert!(
+        generated.contains("static inline int64_t flux__fn_helper(int64_t flux__local_value);")
+    );
+    assert!(generated.contains("static inline int64_t flux__fn_leaf(int64_t flux__local_value);"));
     assert!(generated.contains("int64_t flux__fn_exported(int64_t flux__local_value);"));
     assert!(!generated.contains("static int64_t flux__fn_exported"));
     assert!(generated.contains("int main(void);"));

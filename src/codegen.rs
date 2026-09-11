@@ -7018,7 +7018,7 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
             .join(", ")
     };
     let linkage = if function.name != "main" && !function.public {
-        "static "
+        "static inline "
     } else {
         ""
     };

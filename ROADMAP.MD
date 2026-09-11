@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 462
+- Completed baseline units: 463
 - Reported overall progress: **63%**
 - Current net scope growth after the baseline: 53 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -429,7 +429,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Dead-code elimination.
   - [x] Bootstrap native lowering removes semantic-CFG-unreachable statements after terminating control flow (`return`, `break`, `continue`), literal or locally propagated compile-time-selected `if`/`while` branches, and statically empty integer ranges before emitting C; general SSA value-liveness and broader cross-block optimization remain pending.
   - [x] The CFG now computes deterministic backward live-before/live-after facts for parameters and every normalized local definition. Native lowering removes dead mutable-local assignments, omits dead mutable initializers when safe, prunes dead multi-value/list/struct destructuring extractions and statement-match pattern materialization, substitutes internal loop counters for dead source-level loop indexes, and avoids dead foreach element loads while retaining required RHS effects and list-pattern cardinality checks. Full SSA-value DCE remains pending.
-- [ ] Inlining.
+- [x] Inlining for the current bootstrap native backend: reachable private named functions lower as internal `static inline` native helpers, while `main` and explicit `pub` exports retain their external ABI. Clang can therefore inline private calls within the generated translation unit and release LTO can erase the call boundary entirely; address-taken private function values remain ordinary callable symbols when required. Generated-C regression coverage pins the linkage boundary, and a real release-build regression executes a private leaf helper then verifies it disappears from the optimized native symbol table.
   - [x] Bootstrap private named functions and capture-free anonymous functions lower with internal native linkage while `main` and explicit `pub` exports retain external linkage. This removes accidental interposition/ABI surface for compiler-owned internals and gives the current Clang/LTO backend full freedom to inline or internalize reachable private helpers without changing Flux source semantics; generated-C regression coverage pins the linkage boundary, and a real release-build regression executes a private leaf helper then verifies it disappears from the optimized native symbol table.
 - [ ] Escape analysis.
 - [x] Bounds-check elimination where proven safe for current list operations: compiler-generated iteration/transform/match/destructure accesses lower unchecked only behind compiler-established cardinality/range facts, and provably in-range literal `first`/`last`/`single` accesses skip redundant checks while dynamic/unproven indexes keep explicit checked semantics.
