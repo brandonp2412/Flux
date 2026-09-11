@@ -8598,21 +8598,33 @@ fn removes_proven_list_bounds_checks_but_keeps_unproven_checks() {
 fn main() -> i64 {
     let first: i64 = [10, 20, 30][0]
     let last: i64 = [10, 20, 30][-1]
+    let sliced: i64 = [10, 20, 30, 40][1:3][1]
+    let reversedFirst: i64 = [10, 20, 30][::-1][0]
+    let taken: i64 = take([10, 20, 30], 2)[1]
+    let skipped: i64 = skip([10, 20, 30], 1)[1]
     let firstProperty: i64 = [4, 5].first
     let lastProperty: i64 = [4, 5].last
     let single: i64 = [7].single
-    return first + last + firstProperty + lastProperty + single
+    return first + last + sliced + reversedFirst + taken + skipped + firstProperty + lastProperty + single
 }
 "#;
     check_source(proven).expect("proven list indexing should typecheck");
     let generated = compile_to_c(proven).expect("proven list indexing should lower");
     assert!(generated.contains("flux_list_at_unchecked"));
+    assert!(generated.contains("flux_list_slice("));
     assert!(!generated.contains("flux_list_index("));
     assert!(!generated.contains("static inline void *flux_list_at("));
 
     let unproven = r#"
+fn choose(index: i64, count: i64) -> i64 {
+    let sliced: i64 = [10, 20, 30][index:][0]
+    let taken: i64 = take([10, 20, 30], count)[0]
+    return sliced + taken
+}
+
 fn main() -> i64 {
-    return [10, 20, 30][3]
+    let direct: i64 = [10, 20, 30][3]
+    return direct + choose(1, 2)
 }
 "#;
     check_source(unproven).expect("runtime-checked list indexing should typecheck");

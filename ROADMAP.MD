@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 474
 - Reported overall progress: **64%**
-- Current net scope growth after the baseline: 74 checkbox items
+- Current net scope growth after the baseline: 75 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -447,6 +447,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
   - [x] Native-UI release artifact/code-footprint coverage now compares equivalent GTK4 grid/Text/Button construction across optimized Flux, C, and Rust builds in the continuous performance harness, with a configurable best-native binary-size gate. Display-backed application startup/render/interaction timing remains pending before the parent target-aware optimization item is complete.
 - [ ] Native object generation through an LLVM-class backend initially.
 - [ ] Prove and eliminate redundant safety checks (including bounds checks) and abstraction overhead through CFG/SSA analysis while preserving checks whose safety preconditions cannot be established statically.
+  - [x] Static list-cardinality proofs now propagate through compile-time slices (including clipped/negative/reverse bounds) and compiler-known `take` / `skip` views over known-length lists, so nested indexes erase their runtime bounds helper only when the resulting cardinality proves the index valid; runtime-dependent slice bounds/counts and statically out-of-range indexes retain checked lowering.
 - [x] LTO in native release builds through Clang `-flto`, covered by build-mode tests.
 - [x] Continuous bootstrap performance harness with optimized overflow-safe Flux-vs-Rust/C compute, collection-pipeline, interface-dispatch, and dynamic function-call/control-flow baselines, output-equivalence checks, median runtime/code-size reporting, a configurable checked-Rust release threshold, C reference tracking, and a push/PR CI gate. Native-UI release artifact footprint is now covered under the target-aware item above; display-backed startup/render/interaction timing and broader workloads remain pending there.
 - [x] Tree shaking/dead symbol elimination for all current bootstrap backend concepts: whole-program reachability removes unreachable functions, anonymous functions, value types/helpers, interface metadata/dispatch targets, enum/struct helpers, function-pointer typedefs, platform/runtime helpers, and dead view metadata while preserving public/dynamic roots; future backend resource kinds must join the same reachability graph when introduced.

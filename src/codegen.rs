@@ -10704,12 +10704,15 @@ fn dead_store_rhs_is_discardable(
                 .map(|ty| signatures.canonical_type(&ty))
             {
                 Some(Type::Named(_)) => true,
-                Some(Type::List(_)) => match name.as_str() {
-                    "length" | "isEmpty" | "isNotEmpty" => true,
-                    "first" | "last" => static_list_length(base).is_some_and(|len| len > 0),
-                    "single" => static_list_length(base) == Some(1),
-                    _ => false,
-                },
+                Some(Type::List(_)) => {
+                    let static_len = static_list_length(base, env, signatures).ok().flatten();
+                    match name.as_str() {
+                        "length" | "isEmpty" | "isNotEmpty" => true,
+                        "first" | "last" => static_len.is_some_and(|len| len > 0),
+                        "single" => static_len == Some(1),
+                        _ => false,
+                    }
+                }
                 _ => false,
             }
         }
@@ -14001,7 +14004,7 @@ fn emit_expr(
             }
         }
         ExprKind::Field { base, name, .. } => {
-            let static_len = static_list_length(base);
+            let static_len = static_list_length(base, env, signatures)?;
             let base = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
             let code = if let Type::List(element) = &base.ty {
@@ -16546,8 +16549,12 @@ fn visit_value_type<'a>(
     Ok(())
 }
 
-fn static_list_length(expr: &Expr) -> Option<usize> {
-    match &expr.kind {
+fn static_list_length(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<usize>, Diagnostic> {
+    let length = match &expr.kind {
         ExprKind::List(items)
             if items.iter().all(|item| {
                 !matches!(
@@ -16558,8 +16565,135 @@ fn static_list_length(expr: &Expr) -> Option<usize> {
         {
             Some(items.len())
         }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if named_args.is_empty()
+            && args.len() == 2
+            && matches!(name.as_str(), "take" | "skip") =>
+        {
+            static_list_view_length(name, &args[0], &args[1], env, signatures)?
+        }
+        ExprKind::Pipe {
+            input, name, args, ..
+        } if args.len() == 1 && matches!(name.as_str(), "take" | "skip") => {
+            static_list_view_length(name, input, &args[0], env, signatures)?
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            let Some(len) = static_list_length(base, env, signatures)? else {
+                return Ok(None);
+            };
+            let Ok(len_i64) = i64::try_from(len) else {
+                return Ok(None);
+            };
+            let start = match start {
+                Some(start) => match fold_primitive_expr(start, env, signatures)? {
+                    Some(ConstantValue::I64(value)) => Some(value),
+                    _ => return Ok(None),
+                },
+                None => None,
+            };
+            let end = match end {
+                Some(end) => match fold_primitive_expr(end, env, signatures)? {
+                    Some(ConstantValue::I64(value)) => Some(value),
+                    _ => return Ok(None),
+                },
+                None => None,
+            };
+            let step = match step {
+                Some(step) => match fold_primitive_expr(step, env, signatures)? {
+                    Some(ConstantValue::I64(value)) if value != 0 => value,
+                    _ => return Ok(None),
+                },
+                None => 1,
+            };
+            let resolve_bound = |value: Option<i64>, is_end: bool| -> Option<i64> {
+                if step > 0 {
+                    let Some(value) = value else {
+                        return Some(if is_end { len_i64 } else { 0 });
+                    };
+                    let resolved = if value < 0 {
+                        value.checked_add(len_i64)?
+                    } else {
+                        value
+                    };
+                    if resolved < 0 {
+                        Some(0)
+                    } else if resolved > len_i64 {
+                        Some(len_i64)
+                    } else {
+                        Some(resolved)
+                    }
+                } else {
+                    let Some(value) = value else {
+                        return Some(if is_end {
+                            -1
+                        } else if len == 0 {
+                            -1
+                        } else {
+                            len_i64 - 1
+                        });
+                    };
+                    let resolved = if value < 0 {
+                        value.checked_add(len_i64)?
+                    } else {
+                        value
+                    };
+                    if resolved < 0 {
+                        Some(-1)
+                    } else if resolved >= len_i64 {
+                        Some(if len == 0 { -1 } else { len_i64 - 1 })
+                    } else {
+                        Some(resolved)
+                    }
+                }
+            };
+            let Some(first) = resolve_bound(start, false) else {
+                return Ok(None);
+            };
+            let Some(last) = resolve_bound(end, true) else {
+                return Ok(None);
+            };
+            let count = if step > 0 && first < last {
+                let distance = i128::from(last) - 1 - i128::from(first);
+                1 + distance / i128::from(step)
+            } else if step < 0 && first > last {
+                let distance = i128::from(first) - 1 - i128::from(last);
+                1 + distance / -i128::from(step)
+            } else {
+                0
+            };
+            usize::try_from(count).ok()
+        }
         _ => None,
+    };
+    Ok(length)
+}
+
+fn static_list_view_length(
+    name: &str,
+    list: &Expr,
+    count: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<usize>, Diagnostic> {
+    let Some(len) = static_list_length(list, env, signatures)? else {
+        return Ok(None);
+    };
+    let Some(ConstantValue::I64(count)) = fold_primitive_expr(count, env, signatures)? else {
+        return Ok(None);
+    };
+    if count < 0 {
+        return Ok(None);
     }
+    let count = usize::try_from(count).unwrap_or(usize::MAX).min(len);
+    Ok(Some(if name == "take" { count } else { len - count }))
 }
 
 fn resolved_static_list_index(
@@ -16568,7 +16702,7 @@ fn resolved_static_list_index(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Option<usize>, Diagnostic> {
-    let Some(len) = static_list_length(base) else {
+    let Some(len) = static_list_length(base, env, signatures)? else {
         return Ok(None);
     };
     let Some(ConstantValue::I64(index)) = fold_primitive_expr(index, env, signatures)? else {
