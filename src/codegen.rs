@@ -108,7 +108,10 @@ pub fn emit_c_header_with_module_names(
     out.push_str(
         "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
     );
+    out.push_str("/* Copy callback values use plain C function pointers with ABI-safe scalar parameters/results. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
+
+    emit_c_header_function_type_typedefs(&mut out, program, signatures)?;
 
     for definition in &public_value_defs {
         match definition {
@@ -242,13 +245,14 @@ fn ordered_public_scalar_aliases<'a>(
 }
 
 fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
-    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new())
+    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new(), true)
 }
 
 fn ffi_header_type_supported_inner(
     ty: &Type,
     signatures: &Signatures,
     visiting: &mut HashSet<String>,
+    allow_function: bool,
 ) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str | Type::Error => true,
@@ -257,14 +261,13 @@ fn ffi_header_type_supported_inner(
                 return false;
             }
             let supported = if let Some(definition) = signatures.struct_type(&name) {
-                definition
-                    .fields
-                    .iter()
-                    .all(|field| ffi_header_type_supported_inner(&field.ty, signatures, visiting))
+                definition.fields.iter().all(|field| {
+                    ffi_header_type_supported_inner(&field.ty, signatures, visiting, false)
+                })
             } else if let Some(definition) = signatures.enum_type(&name) {
                 definition.variants.iter().all(|variant| {
                     variant.payloads.iter().all(|payload| {
-                        ffi_header_type_supported_inner(payload, signatures, visiting)
+                        ffi_header_type_supported_inner(payload, signatures, visiting, false)
                     })
                 })
             } else {
@@ -273,8 +276,86 @@ fn ffi_header_type_supported_inner(
             visiting.remove(&name);
             supported
         }
+        Type::Function { params, returns } if allow_function => {
+            returns.len() <= 1
+                && params
+                    .iter()
+                    .chain(&returns)
+                    .all(|ty| ffi_header_callback_scalar_supported(ty, signatures))
+        }
         Type::Void | Type::List(_) | Type::Function { .. } => false,
     }
+}
+
+fn ffi_header_callback_scalar_supported(ty: &Type, signatures: &Signatures) -> bool {
+    matches!(
+        signatures.canonical_type(ty),
+        Type::I64 | Type::Bool | Type::Str | Type::Error
+    )
+}
+
+fn emit_c_header_function_type_typedefs(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let mut types = HashSet::new();
+    for alias in program.aliases.iter().filter(|alias| alias.public) {
+        let ty = signatures.canonical_type(&alias.target);
+        if matches!(ty, Type::Function { .. })
+            && ffi_header_type_supported(&alias.target, signatures)
+        {
+            types.insert(ty);
+        }
+    }
+    for function in program
+        .functions
+        .iter()
+        .filter(|function| function.public && function.name != "main")
+    {
+        for ty in function
+            .params
+            .iter()
+            .map(|param| &param.ty)
+            .chain(&function.returns)
+        {
+            let canonical = signatures.canonical_type(ty);
+            if matches!(canonical, Type::Function { .. })
+                && ffi_header_type_supported(ty, signatures)
+            {
+                types.insert(canonical);
+            }
+        }
+    }
+    let mut types = types.into_iter().collect::<Vec<_>>();
+    types.sort_by_key(|ty| ty.name());
+    let emitted_any = !types.is_empty();
+    for ty in types {
+        let Type::Function { params, returns } = ty else {
+            continue;
+        };
+        let return_type = returns
+            .first()
+            .map(|ty| c_type(ty, signatures))
+            .unwrap_or_else(|| "void".to_string());
+        let params_text = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params
+                .iter()
+                .map(|ty| c_type(ty, signatures))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!(
+            "typedef {return_type} (*{})({params_text});\n",
+            function_type_name(&params, &returns, signatures)
+        ));
+    }
+    if emitted_any {
+        out.push('\n');
+    }
+    Ok(())
 }
 
 fn c_header_value_type_name(

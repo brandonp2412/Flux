@@ -7501,6 +7501,8 @@ pub enum Choice {
     On
 }
 
+pub type Mapper = fn(i64) -> i64
+
 pub fn scale(value: i64) -> i64 {
     return value * 2
 }
@@ -7511,6 +7513,10 @@ pub fn identity(point: Point) -> Point {
 
 pub fn roundtrip(choice: Choice) -> Choice {
     return choice
+}
+
+pub fn passThrough(mapper: Mapper) -> Mapper {
+    return mapper
 }
 
 fn main() -> i64 {
@@ -7532,6 +7538,7 @@ fn main() -> i64 {
     let symbol = format!("flux__abi_{module_component}__fn_scale");
     let identity_symbol = format!("flux__abi_{module_component}__fn_identity");
     let roundtrip_symbol = format!("flux__abi_{module_component}__fn_roundtrip");
+    let callback_symbol = format!("flux__abi_{module_component}__fn_passThrough");
     let point_type = format!("flux__abi_{module_component}__type_Point");
     let choice_type = format!("flux__abi_{module_component}__type_Choice");
     let choice_tag = format!("flux__abi_{module_component}__tag_Choice");
@@ -7550,9 +7557,15 @@ fn main() -> i64 {
     assert!(header.contains(&format!(
         "struct {choice_type} {roundtrip_symbol}(struct {choice_type} flux__local_choice);"
     )));
+    assert!(header.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
+    assert!(header.contains("typedef flux__fn_i64__to__i64 flux__alias_Mapper;"));
+    assert!(header.contains(&format!(
+        "flux__alias_Mapper {callback_symbol}(flux__alias_Mapper flux__local_mapper);"
+    )));
     assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{identity_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{roundtrip_symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{callback_symbol}\")")));
 
     let header_path = root.join("package.h");
     let consumer_path = root.join("consumer.c");
@@ -7611,6 +7624,10 @@ fn main() -> i64 {
     assert!(
         symbols.contains(&roundtrip_symbol),
         "qualified enum ABI symbol should be exported"
+    );
+    assert!(
+        symbols.contains(&callback_symbol),
+        "qualified callback ABI symbol should be exported"
     );
     assert!(
         !symbols.contains("flux__fn_scale"),
@@ -7696,9 +7713,58 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_c_header_exports_with_ownership_sensitive_ffi_types() {
+fn emits_c_header_for_public_copy_callback_abi() {
     let source = r#"
-pub type Mapper = fn(i64) -> i64
+pub type Mapper = fn(i64, str) -> i64
+
+pub fn choose(value: Mapper) -> Mapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("Copy callbacks with scalar ABI-safe signatures should emit a C header");
+    assert!(
+        header.contains("typedef int64_t (*flux__fn_i64__str__to__i64)(int64_t, const char *);")
+    );
+    assert!(header.contains("typedef flux__fn_i64__str__to__i64 flux__alias_Mapper;"));
+    assert!(
+        header
+            .contains("flux__alias_Mapper flux__fn_choose(flux__alias_Mapper flux__local_value);")
+    );
+
+    let root = std::env::temp_dir().join(format!("flux-c-callback-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary C callback header directory should be writable");
+    let header_path = root.join("flux_callback_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header).expect("generated callback C header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_callback_api.h\"\nstatic int64_t plus_label(int64_t value, const char *label) { return value + (label != 0); }\nflux__alias_Mapper probe(void) { return flux__fn_choose(plus_label); }\n",
+    )
+    .expect("callback ABI C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the callback ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated callback ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rejects_c_header_callbacks_with_ownership_sensitive_signatures() {
+    let source = r#"
+pub type Mapper = fn(i64[]) -> i64
 
 pub fn choose(value: Mapper) -> Mapper {
     return value
@@ -7710,7 +7776,7 @@ fn main() -> i64 {
 "#;
 
     let error = compile_to_c_header(source)
-        .expect_err("ownership-sensitive function-value FFI exports must remain rejected");
+        .expect_err("callbacks borrowing list storage must remain outside the stable C ABI");
     assert_eq!(error.stage, DiagnosticStage::Codegen);
     assert!(error.message.contains("unsupported FFI type 'Mapper'"));
 }
