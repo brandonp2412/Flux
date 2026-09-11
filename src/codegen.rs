@@ -13867,9 +13867,12 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
         } => {
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback = named_args.is_empty()
-                    && matches!(name.as_str(), "map" | "filter" | "where")
-                    && args.len() == 2
-                    && index == 1
+                    && match name.as_str() {
+                        "map" | "filter" | "where" => args.len() == 2 && index == 1,
+                        "fold" => args.len() == 3 && index == 2,
+                        "reduce" => args.len() == 2 && index == 1,
+                        _ => false,
+                    }
                     && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
                 if inline_sequence_callback {
                     if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
@@ -13903,10 +13906,13 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
         } => {
             collect_anonymous_functions_from_expr(input, functions);
             for (index, arg) in args.iter().enumerate() {
-                let inline_sequence_callback = matches!(name.as_str(), "map" | "filter" | "where")
-                    && args.len() == 1
-                    && index == 0
-                    && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
+                let inline_sequence_callback =
+                    match name.as_str() {
+                        "map" | "filter" | "where" => args.len() == 1 && index == 0,
+                        "fold" => args.len() == 2 && index == 1,
+                        "reduce" => args.len() == 1 && index == 0,
+                        _ => false,
+                    } && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
                 if inline_sequence_callback {
                     if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
                         collect_anonymous_functions_from_expr(body, functions);
@@ -17186,6 +17192,49 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
     }
 }
 
+fn emit_inline_sequence_reducer_application(
+    out: &mut String,
+    pad: &str,
+    target_name: &str,
+    value_name: &str,
+    reducer_expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<bool, Diagnostic> {
+    let ExprKind::AnonymousFunction { params, body, .. } = &reducer_expr.kind else {
+        return Ok(false);
+    };
+    if params.len() != 2 {
+        return Err(diag(
+            reducer_expr.span,
+            "inline sequence reducer requires exactly two parameters",
+        ));
+    }
+    let accumulator = &params[0];
+    let item = &params[1];
+    let mut callback_env = env.clone();
+    callback_env.insert(
+        accumulator.name.clone(),
+        signatures.canonical_type(&accumulator.ty),
+    );
+    callback_env.insert(item.name.clone(), signatures.canonical_type(&item.ty));
+    out.push_str(&format!("{pad}{{\n"));
+    out.push_str(&format!(
+        "{pad}    {} {} = {target_name};\n",
+        c_type(&accumulator.ty, signatures),
+        local_c_name(&accumulator.name)
+    ));
+    out.push_str(&format!(
+        "{pad}    {} {} = {value_name};\n",
+        c_type(&item.ty, signatures),
+        local_c_name(&item.name)
+    ));
+    let reduced = emit_expr(body, &callback_env, signatures)?;
+    out.push_str(&format!("{pad}    {target_name} = {};\n", reduced.code));
+    out.push_str(&format!("{pad}}}\n"));
+    Ok(true)
+}
+
 fn emit_sequence_reduction_binding(
     out: &mut String,
     pad: &str,
@@ -17223,12 +17272,17 @@ fn emit_sequence_reduction_binding(
             "sequence reduction input must remain a list",
         ));
     };
-    let reducer = emit_expr(reducer_expr, env, signatures)?;
-    let Type::Function { .. } = reducer.ty else {
-        return Err(diag(
-            expr.span,
-            "sequence reduction requires a function reducer",
-        ));
+    let reducer = if matches!(reducer_expr.kind, ExprKind::AnonymousFunction { .. }) {
+        None
+    } else {
+        let reducer = emit_expr(reducer_expr, env, signatures)?;
+        let Type::Function { .. } = reducer.ty else {
+            return Err(diag(
+                expr.span,
+                "sequence reduction requires a function reducer",
+            ));
+        };
+        Some(reducer)
     };
     let source_name = format!("flux__reduce_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -17291,13 +17345,45 @@ fn emit_sequence_reduction_binding(
     }
     if let Some(has_value_name) = &has_value_name {
         out.push_str(&format!(
-            "{pad}    if (!{has_value_name}) {{ {target_name} = {value_name}; {has_value_name} = true; }} else {{ {target_name} = {}({target_name}, {value_name}); }}\n",
-            reducer.code
+            "{pad}    if (!{has_value_name}) {{ {target_name} = {value_name}; {has_value_name} = true; }} else {{\n"
         ));
-    } else {
+        if let Some(reducer) = &reducer {
+            out.push_str(&format!(
+                "{pad}        {target_name} = {}({target_name}, {value_name});\n",
+                reducer.code
+            ));
+        } else if !emit_inline_sequence_reducer_application(
+            out,
+            &format!("{pad}        "),
+            &target_name,
+            &value_name,
+            reducer_expr,
+            env,
+            signatures,
+        )? {
+            return Err(diag(
+                reducer_expr.span,
+                "sequence reduction requires a function reducer",
+            ));
+        }
+        out.push_str(&format!("{pad}    }}\n"));
+    } else if let Some(reducer) = &reducer {
         out.push_str(&format!(
             "{pad}    {target_name} = {}({target_name}, {value_name});\n",
             reducer.code
+        ));
+    } else if !emit_inline_sequence_reducer_application(
+        out,
+        &format!("{pad}    "),
+        &target_name,
+        &value_name,
+        reducer_expr,
+        env,
+        signatures,
+    )? {
+        return Err(diag(
+            reducer_expr.span,
+            "sequence reduction requires a function reducer",
         ));
     }
     out.push_str(&format!("{pad}}}\n"));

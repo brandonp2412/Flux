@@ -8404,6 +8404,70 @@ fn main() -> i64 {
 }
 
 #[test]
+fn inline_reductions_capture_copy_values_without_closure_allocation() {
+    let source = r#"
+fn main() -> i64 {
+    let foldBias: i64 = 10
+    let reduceBias: i64 = 4
+    let values: i64[] = [1, 2, 3, 4]
+    let folded: i64 = fold(values, 0, fn(total: i64, value: i64) { total + value + foldBias })
+    let reduced: i64 = values | reduce (fn(total: i64, value: i64) { total + value + reduceBias })
+    print(folded)
+    print(reduced)
+    return 0
+}
+"#;
+
+    check_source(source).expect("inline fold/reduce reducers should safely capture Copy locals");
+    let generated =
+        compile_to_c(source).expect("capturing inline fold/reduce reducers should lower natively");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_foldBias"));
+    assert!(generated.contains("flux__local_reduceBias"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-inline-reduction-capture-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary reduction capture directory should be writable");
+    let c_path = root.join("capture.c");
+    let exe_path = root.join("capture");
+    fs::write(&c_path, generated).expect("generated reduction capture C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile inline reduction captures");
+    assert!(
+        compile.status.success(),
+        "capturing inline reduction C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("capturing inline reduction program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "50\n22\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_copy_capture = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10]
+    let values: i64[] = [1, 2]
+    let total: i64 = fold(values, 0, fn(acc: i64, value: i64) { acc + value + offsets.first })
+    return total
+}
+"#;
+    let error = check_source(non_copy_capture)
+        .expect_err("non-copy reduction captures must wait for borrow/lifetime semantics");
+    assert!(error.message.contains("capture 'offsets' must be Copy"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_anonymous_functions() {
     let source = "type Mapper=fn(i64)->i64\nfn main()->i64 {\n let mapper:Mapper=fn(value:i64)->i64 { value+1 }\n return mapper(41)\n}\n";
     let expected = "type Mapper = fn(i64) -> i64\nfn main() -> i64 {\n    let mapper: Mapper = fn(value: i64) -> i64 { value + 1 }\n    return mapper(41)\n}\n";

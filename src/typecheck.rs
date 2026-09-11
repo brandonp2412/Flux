@@ -3146,11 +3146,14 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
         } => {
             reads.insert(name.clone());
             for (index, arg) in args.iter().enumerate() {
-                if named_args.is_empty()
-                    && matches!(name.as_str(), "map" | "filter" | "where")
-                    && args.len() == 2
-                    && index == 1
-                {
+                let inline_sequence_callback = named_args.is_empty()
+                    && match name.as_str() {
+                        "map" | "filter" | "where" => args.len() == 2 && index == 1,
+                        "fold" => args.len() == 3 && index == 2,
+                        "reduce" => args.len() == 2 && index == 1,
+                        _ => false,
+                    };
+                if inline_sequence_callback {
                     collect_inline_sequence_callback_reads(arg, reads);
                 } else {
                     collect_expr_reads(arg, reads);
@@ -3172,10 +3175,13 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             collect_expr_reads(input, reads);
             reads.insert(name.clone());
             for (index, arg) in args.iter().enumerate() {
-                if matches!(name.as_str(), "map" | "filter" | "where")
-                    && args.len() == 1
-                    && index == 0
-                {
+                let inline_sequence_callback = match name.as_str() {
+                    "map" | "filter" | "where" => args.len() == 1 && index == 0,
+                    "fold" => args.len() == 2 && index == 1,
+                    "reduce" => args.len() == 1 && index == 0,
+                    _ => false,
+                };
+                if inline_sequence_callback {
                     collect_inline_sequence_callback_reads(arg, reads);
                 } else {
                     collect_expr_reads(arg, reads);
@@ -5459,8 +5465,11 @@ pub fn type_of_expr(
                     vec![(*element).clone(), (*element).clone()],
                 )
             };
-            let reducer_ty =
-                signatures.canonical_type(&type_of_expr(&args[reducer_index], env, signatures)?);
+            let reducer_ty = signatures.canonical_type(&type_of_sequence_callback(
+                &args[reducer_index],
+                env,
+                signatures,
+            )?);
             let expected_reducer = Type::Function {
                 params: expected_params,
                 returns: vec![result_ty.clone()],
