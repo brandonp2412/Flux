@@ -17360,6 +17360,110 @@ fn main() -> i64 {
 }
 
 #[test]
+fn android_native_document_pickers_are_typed_direct_and_tree_shaken() {
+    let source = r#"
+fn selected(uri: str) -> void {
+    print(uri)
+}
+fn started() -> void {
+    android.pickFile(selected)
+    android.pickMedia(selected)
+    android.pickDirectory(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("Android native pickers should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("Android picker app should analyze");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Android native pickers should lower directly");
+    assert!(generated.contains("static inline void flux__android_pick_file"));
+    assert!(generated.contains("static inline void flux__android_pick_media"));
+    assert!(generated.contains("static inline void flux__android_pick_directory"));
+    assert!(generated.contains("static void flux__android_launch_picker"));
+    assert!(generated.contains("\"fluxPickFile\", callback, 1"));
+    assert!(generated.contains("\"fluxPickMedia\", callback, 2"));
+    assert!(generated.contains("\"fluxPickDirectory\", callback, 3"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult"));
+    assert!(generated.contains("callback(value);"));
+    assert!(generated.contains("ReleaseStringUTFChars"));
+    assert!(!generated.contains("MethodChannel"));
+    assert!(!generated.contains("plugin registry"));
+
+    let error = compile_to_c(source).expect_err("Android pickers must reject the Linux target");
+    assert!(
+        error
+            .message
+            .contains("android.* platform APIs require the Android target")
+    );
+
+    let unused = r#"
+fn selected(uri: str) -> void {
+    print(uri)
+}
+fn unused() -> void {
+    android.pickFile(selected)
+    android.pickMedia(selected)
+    android.pickDirectory(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(unused, SourceId::UNKNOWN)
+        .expect("unreachable picker app should analyze");
+    let tree_shaken = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("unreachable Android picker code should tree-shake");
+    assert!(!tree_shaken.contains("flux__android_pick_file("));
+    assert!(!tree_shaken.contains("flux__android_pick_media("));
+    assert!(!tree_shaken.contains("flux__android_pick_directory("));
+    assert!(!tree_shaken.contains("nativeOnPickerResult"));
+
+    let invalid = r#"
+fn wrong(value: i64) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    android.pickFile(wrong)
+    android.pickMedia(42)
+    android.pickDirectory()
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("Android picker callbacks must be typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.pickFile callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.pickMedia callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.pickDirectory expects 1 argument, got 0")
+    }));
+}
+
+#[test]
 fn android_native_ui_lowers_flat_grid_text_button_and_click_dispatch() {
     let root = std::env::temp_dir().join(format!("flux-android-ui-codegen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

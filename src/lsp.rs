@@ -1608,6 +1608,22 @@ fn add_qualified_namespace_completions(
             3,
             "fn android.setImeAction(action: str) -> bool",
         );
+        for (label, detail) in [
+            (
+                "pickFile",
+                "fn android.pickFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "pickMedia",
+                "fn android.pickMedia(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "pickDirectory",
+                "fn android.pickDirectory(callback: fn(str) -> void) -> void",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
         push_completion_item(
             items,
             seen,
@@ -3150,6 +3166,14 @@ fn signature_help_for_document_cached(
                         "android.setImeAction",
                         &["action: str"],
                         "bool",
+                        active_parameter,
+                    ));
+                }
+                "pickFile" | "pickMedia" | "pickDirectory" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("android.{member}"),
+                        &["callback: fn(str) -> void"],
+                        "void",
                         active_parameter,
                     ));
                 }
@@ -6514,6 +6538,11 @@ mod tests {
         assert!(android_items.contains("fn android.openNotificationSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
+        assert!(android_items.contains("fn android.pickFile(callback: fn(str) -> void) -> void"));
+        assert!(android_items.contains("fn android.pickMedia(callback: fn(str) -> void) -> void"));
+        assert!(
+            android_items.contains("fn android.pickDirectory(callback: fn(str) -> void) -> void")
+        );
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
         assert!(android_items.contains("fn android.hideKeyboard() -> void"));
         assert!(android_items.contains("fn android.focusNext(wrap: bool = false) -> void"));
@@ -7497,7 +7526,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_platform_calls() {
         let uri = "file:///tmp/android-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(android.sdkInt())\n    android.vibrate(25)\n    android.openUrl(\"https://example.com\")\n    android.openAppSettings()\n    android.share(\"hello\")\n    print(android.permissionGranted(\"android.permission.CAMERA\"))\n    android.requestPermission(\"android.permission.CAMERA\")\n    android.createNotificationChannel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notificationPermissionGranted())\n    android.requestNotificationPermission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notifyUrlAction(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancelNotification(1)\n    return 0\n}\n";
+        let source = "fn picked(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    print(android.sdkInt())\n    android.vibrate(25)\n    android.openUrl(\"https://example.com\")\n    android.openAppSettings()\n    android.share(\"hello\")\n    android.pickFile(picked)\n    android.pickMedia(picked)\n    android.pickDirectory(picked)\n    print(android.permissionGranted(\"android.permission.CAMERA\"))\n    android.requestPermission(\"android.permission.CAMERA\")\n    android.createNotificationChannel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notificationPermissionGranted())\n    android.requestNotificationPermission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notifyUrlAction(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancelNotification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("android.sdkInt(", "fn android.sdkInt() -> i64"),
@@ -7511,6 +7540,18 @@ mod tests {
                 "fn android.openAppSettings() -> void",
             ),
             ("android.share(", "fn android.share(text: str) -> void"),
+            (
+                "android.pickFile(",
+                "fn android.pickFile(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "android.pickMedia(",
+                "fn android.pickMedia(callback: fn(str) -> void) -> void",
+            ),
+            (
+                "android.pickDirectory(",
+                "fn android.pickDirectory(callback: fn(str) -> void) -> void",
+            ),
             (
                 "android.permissionGranted(",
                 "fn android.permissionGranted(permission: str) -> bool",

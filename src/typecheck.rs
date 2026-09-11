@@ -7083,6 +7083,26 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Bool]);
             }
+            "pickFile" | "pickMedia" | "pickDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("android.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[0].span,
+                    &expected,
+                    &actual,
+                    &format!("android.{name} callback"),
+                )?;
+                return Ok(Vec::new());
+            }
             "createNotificationChannel" => {
                 if args.len() != 3 {
                     return Err(diag(

@@ -1102,6 +1102,13 @@ fn emit_runtime_prelude(
             || uses_text_input_set_selection);
     let uses_android_set_ime_action =
         uses_android && runtime_usage.contains("flux__android_set_ime_action(");
+    let uses_android_pick_file = uses_android && runtime_usage.contains("flux__android_pick_file(");
+    let uses_android_pick_media =
+        uses_android && runtime_usage.contains("flux__android_pick_media(");
+    let uses_android_pick_directory =
+        uses_android && runtime_usage.contains("flux__android_pick_directory(");
+    let uses_android_picker =
+        uses_android_pick_file || uses_android_pick_media || uses_android_pick_directory;
     let uses_android_text_selection = uses_android_selection_start
         || uses_android_selection_end
         || uses_android_set_caret
@@ -1146,6 +1153,7 @@ fn emit_runtime_prelude(
         || uses_android_notifications
         || uses_android_permission_granted
         || uses_android_request_permission
+        || uses_android_picker
         || uses_android_generated_ui
         || (uses_android && uses_locale);
     if uses_android {
@@ -1677,6 +1685,76 @@ fn emit_runtime_prelude(
             out.push_str("    return applied;\n");
             out.push_str("}\n");
         }
+    }
+    if uses_android_picker {
+        if uses_android_pick_file {
+            out.push_str("static void (*flux__android_pick_file_callback)(const char *) = NULL;\n");
+        }
+        if uses_android_pick_media {
+            out.push_str(
+                "static void (*flux__android_pick_media_callback)(const char *) = NULL;\n",
+            );
+        }
+        if uses_android_pick_directory {
+            out.push_str(
+                "static void (*flux__android_pick_directory_callback)(const char *) = NULL;\n",
+            );
+        }
+        out.push_str("static void flux__android_launch_picker(const char *method_name, void (*callback)(const char *), int kind) {\n");
+        out.push_str("    if (callback == NULL || method_name == NULL || flux__android_activity == NULL) return;\n");
+        if uses_android_pick_file {
+            out.push_str("    if (kind == 1) flux__android_pick_file_callback = callback;\n");
+        }
+        if uses_android_pick_media {
+            out.push_str("    if (kind == 2) flux__android_pick_media_callback = callback;\n");
+        }
+        if uses_android_pick_directory {
+            out.push_str("    if (kind == 3) flux__android_pick_directory_callback = callback;\n");
+        }
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class != NULL) {\n");
+        out.push_str("        jmethodID launch = (*env)->GetMethodID(env, activity_class, method_name, \"()V\");\n");
+        out.push_str(
+            "        if (launch != NULL) (*env)->CallVoidMethod(env, activity, launch);\n",
+        );
+        out.push_str("    }\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str(
+            "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
+        );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+        if uses_android_pick_file {
+            out.push_str("static inline void flux__android_pick_file(void (*callback)(const char *)) { flux__android_launch_picker(\"fluxPickFile\", callback, 1); }\n");
+        }
+        if uses_android_pick_media {
+            out.push_str("static inline void flux__android_pick_media(void (*callback)(const char *)) { flux__android_launch_picker(\"fluxPickMedia\", callback, 2); }\n");
+        }
+        if uses_android_pick_directory {
+            out.push_str("static inline void flux__android_pick_directory(void (*callback)(const char *)) { flux__android_launch_picker(\"fluxPickDirectory\", callback, 3); }\n");
+        }
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnPickerResult(JNIEnv *env, jobject activity, jint kind, jstring uri) {\n");
+        out.push_str("    (void)activity;\n");
+        out.push_str("    void (*callback)(const char *) = NULL;\n");
+        if uses_android_pick_file {
+            out.push_str("    if (kind == 1) { callback = flux__android_pick_file_callback; flux__android_pick_file_callback = NULL; }\n");
+        }
+        if uses_android_pick_media {
+            out.push_str("    if (kind == 2) { callback = flux__android_pick_media_callback; flux__android_pick_media_callback = NULL; }\n");
+        }
+        if uses_android_pick_directory {
+            out.push_str("    if (kind == 3) { callback = flux__android_pick_directory_callback; flux__android_pick_directory_callback = NULL; }\n");
+        }
+        out.push_str("    if (callback == NULL || uri == NULL) return;\n");
+        out.push_str("    const char *value = (*env)->GetStringUTFChars(env, uri, NULL);\n");
+        out.push_str("    if (value == NULL) return;\n");
+        out.push_str("    callback(value);\n");
+        out.push_str("    (*env)->ReleaseStringUTFChars(env, uri, value);\n");
+        out.push_str("}\n");
     }
     if uses_android_share {
         out.push_str("static void flux__android_share(const char *text) {\n");
@@ -15512,6 +15590,26 @@ fn emit_qualified_call(
                 return Ok((
                     format!("flux__android_set_ime_action({})", action.code),
                     vec![Type::Bool],
+                    None,
+                ));
+            }
+            "pickFile" | "pickMedia" | "pickDirectory" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let callback = emit_expr(&args[0], env, signatures)?;
+                let runtime_name = match name {
+                    "pickFile" => "pick_file",
+                    "pickMedia" => "pick_media",
+                    "pickDirectory" => "pick_directory",
+                    _ => unreachable!(),
+                };
+                return Ok((
+                    format!("flux__android_{runtime_name}({})", callback.code),
+                    Vec::new(),
                     None,
                 ));
             }

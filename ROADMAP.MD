@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 477
+- Completed baseline units: 478
 - Reported overall progress: **65%**
 - Current net scope growth after the baseline: 78 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -733,7 +733,7 @@ Android is the first application-platform target. Android integration must feel 
 - [ ] Microphone.
 - [ ] Media playback.
 - [ ] Secure storage.
-- [ ] Files/media picker.
+- [x] Files/media picker: typed `android.pickFile`, `android.pickMedia`, and `android.pickDirectory` launch Android's native Storage Access Framework directly from ordinary Flux code and lend the selected content URI to an exact `fn(str) -> void` callback. Compiler-generated `FluxActivity`/JNI owns request/result routing and persistable URI grants, cancellation clears pending callbacks without inventing a nullable source value, unreachable picker support tree-shakes from both native and generated-Java glue, and application source needs no Activity/Kotlin/Java/JNI bridge.
 - [x] Android keyboard/IME: the current native Android surface covers platform-owned text composition, keyboard-type selection, submit policy, compiler-managed caret/selection/composition preservation across required rebuilds, direct show/hide IME control, focus restoration and scoped traversal, focused selection/caret mutation, and typed IME action configuration. The integrated Android codegen regression verifies these helpers lower through direct platform/JNI calls, reject non-Android reachability, tree-shake when unused, and introduce no method-channel/plugin bridge.
   - [x] Bootstrap native text input supports compiler-managed autofocus, password input type, maximum length, live `onChange: fn(str)`, native multiline editing, compile-time `submitOnEnter` policy, and IME Done/Enter `onSubmit: fn(str)` callbacks without application Java/Kotlin code.
   - [x] Portable compile-time `TextInput.keyboardType` selects `text`, `email`, `number`, `decimal`, `phone`, or `url`; Android lowers to the corresponding native `InputType` flags and Linux lowers to the corresponding GTK input purpose, with unsupported values rejected at compile time.

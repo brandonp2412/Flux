@@ -3843,8 +3843,8 @@ fn android_has_generated_activity(c_source: &str) -> bool {
     c_source.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi")
 }
 
-fn android_activity_java_source() -> &'static str {
-    r#"package app.flux.runtime;
+fn android_activity_java_source(c_source: &str) -> String {
+    let source = r#"package app.flux.runtime;
 
 import android.app.Activity;
 import android.app.UiModeManager;
@@ -3932,6 +3932,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnKey(int viewId, String key);
     private static native void nativeOnTextChanged(int viewId, String text);
     private static native void nativeOnSubmit(int viewId, String text);
+__FLUX_PICKER_DECLARATIONS__
 
     private void applyFluxTheme() {
         boolean dark = fluxThemeMode == 2;
@@ -3978,6 +3979,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         setIntent(intent);
         dispatchFluxUrl(intent);
     }
+__FLUX_PICKER_METHODS__
 
     @Override
     protected void onStart() {
@@ -4696,7 +4698,77 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         }
     }
 }
-"#
+"#;
+    let picker_declarations =
+        if c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult") {
+            r#"
+    private static final int FLUX_PICK_FILE = 7001;
+    private static final int FLUX_PICK_MEDIA = 7002;
+    private static final int FLUX_PICK_DIRECTORY = 7003;
+    private native void nativeOnPickerResult(int kind, String uri);"#
+        } else {
+            ""
+        };
+    let picker_methods = if c_source
+        .contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult")
+    {
+        r#"
+
+    private void fluxLaunchDocumentPicker(int requestCode, String[] mimeTypes) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        if (mimeTypes != null) intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, requestCode);
+        } catch (RuntimeException failure) {
+            nativeOnPickerResult(requestCode - 7000, null);
+        }
+    }
+
+    public void fluxPickFile() {
+        fluxLaunchDocumentPicker(FLUX_PICK_FILE, null);
+    }
+
+    public void fluxPickMedia() {
+        fluxLaunchDocumentPicker(FLUX_PICK_MEDIA, new String[] { "image/*", "video/*", "audio/*" });
+    }
+
+    public void fluxPickDirectory() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, FLUX_PICK_DIRECTORY);
+        } catch (RuntimeException failure) {
+            nativeOnPickerResult(3, null);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FLUX_PICK_FILE || requestCode == FLUX_PICK_MEDIA || requestCode == FLUX_PICK_DIRECTORY) {
+            String selectedUri = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri uri = data.getData();
+                selectedUri = uri.toString();
+                int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                try {
+                    getContentResolver().takePersistableUriPermission(uri, flags);
+                } catch (SecurityException ignored) {
+                }
+            }
+            nativeOnPickerResult(requestCode - 7000, selectedUri);
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }"#
+    } else {
+        ""
+    };
+    source
+        .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations)
+        .replace("__FLUX_PICKER_METHODS__", picker_methods)
 }
 
 fn compile_android_activity_dex(
@@ -4725,7 +4797,7 @@ fn compile_android_activity_dex(
     fs::create_dir_all(dex_output)
         .map_err(|error| format!("failed to create generated Android dex directory: {error}"))?;
     let java_source = java_dir.join("FluxActivity.java");
-    fs::write(&java_source, android_activity_java_source())
+    fs::write(&java_source, android_activity_java_source(c_source))
         .map_err(|error| format!("failed to write compiler-generated Android activity: {error}"))?;
     run_checked(
         Command::new("javac")
@@ -6286,7 +6358,23 @@ mod tests {
         assert!(generated_ui.contains(
             "android:scheme=\"https\" android:host=\"example.com\" android:pathPrefix=\"/app\""
         ));
-        let activity = android_activity_java_source();
+        let activity = android_activity_java_source("");
+        assert!(!activity.contains("nativeOnPickerResult"));
+        assert!(!activity.contains("ACTION_OPEN_DOCUMENT"));
+        let picker_activity = android_activity_java_source(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnPickerResult(JNIEnv *env, jobject activity, jint kind, jstring uri);",
+        );
+        assert!(
+            picker_activity
+                .contains("private native void nativeOnPickerResult(int kind, String uri);")
+        );
+        assert!(picker_activity.contains("Intent.ACTION_OPEN_DOCUMENT"));
+        assert!(picker_activity.contains("Intent.ACTION_OPEN_DOCUMENT_TREE"));
+        assert!(picker_activity.contains("Intent.EXTRA_MIME_TYPES"));
+        assert!(picker_activity.contains("startActivityForResult"));
+        assert!(picker_activity.contains("takePersistableUriPermission"));
+        assert!(picker_activity.contains("protected void onActivityResult"));
+        assert!(!picker_activity.contains("__FLUX_PICKER_"));
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
             activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener")
