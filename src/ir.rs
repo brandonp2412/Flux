@@ -570,6 +570,234 @@ impl ControlFlowGraph {
         self.move_state_before(id)
             .is_some_and(ControlFlowMoveState::reachable)
     }
+
+    pub fn borrowed_definition_span(&self, name: &str, source: &str) -> Option<SourceSpan> {
+        let mut visiting = HashSet::new();
+        self.borrowed_definition_span_inner(name, source, &mut visiting)
+    }
+
+    fn borrowed_definition_span_inner(
+        &self,
+        name: &str,
+        source: &str,
+        visiting: &mut HashSet<String>,
+    ) -> Option<SourceSpan> {
+        if !visiting.insert(name.to_string()) {
+            return None;
+        }
+        let result = self.nodes.iter().find_map(|node| {
+            node.definitions
+                .iter()
+                .enumerate()
+                .find_map(|(index, definition)| {
+                    if definition.name != name || !matches!(definition.ty, Type::List(_)) {
+                        return None;
+                    }
+                    let id = ControlFlowDefinitionId::Node {
+                        node: node.id,
+                        index,
+                    };
+                    let borrows_source = if let Some(value) = self.definition_value(id) {
+                        self.definition_value_borrows_from(value, source, visiting)
+                    } else if let Some(value) = self.definition_borrow_source_value(id) {
+                        self.value_depends_on_borrow_source(value, source, visiting)
+                    } else {
+                        false
+                    };
+                    borrows_source.then_some(definition.span)
+                })
+        });
+        visiting.remove(name);
+        result
+    }
+
+    fn definition_value_borrows_from(
+        &self,
+        value: ControlFlowValueId,
+        source: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if !self.is_value_reachable(value) {
+            return false;
+        }
+        let Some(value) = self.value(value) else {
+            return false;
+        };
+        match &value.kind {
+            ControlFlowValueKind::List { items } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+                items
+                    .iter()
+                    .any(|item| self.value_depends_on_borrow_source(*item, source, visiting))
+            }
+            ControlFlowValueKind::ListSpread { value } => {
+                self.value_depends_on_borrow_source(*value, source, visiting)
+            }
+            ControlFlowValueKind::ListIf {
+                value, else_value, ..
+            } => {
+                self.value_depends_on_borrow_source(*value, source, visiting)
+                    || else_value.is_some_and(|value| {
+                        self.value_depends_on_borrow_source(value, source, visiting)
+                    })
+            }
+            ControlFlowValueKind::ListComprehension { value: body, .. } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+                self.value_depends_on_borrow_source(*body, source, visiting)
+            }
+            ControlFlowValueKind::Slice { base, .. } => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+            {
+                arguments.first().is_some_and(|argument| {
+                    self.value_depends_on_borrow_source(*argument, source, visiting)
+                })
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                    && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+            {
+                let retained = if callee == "concat" {
+                    arguments.iter().take(2)
+                } else {
+                    arguments.iter().take(1)
+                };
+                retained.into_iter().any(|argument| {
+                    self.value_depends_on_borrow_source(*argument, source, visiting)
+                })
+            }
+            ControlFlowValueKind::Match { arms, .. }
+            | ControlFlowValueKind::ListMatch { arms, .. } => arms
+                .iter()
+                .any(|arm| self.value_depends_on_borrow_source(*arm, source, visiting)),
+            ControlFlowValueKind::Conditional {
+                then_value,
+                else_value,
+                ..
+            } => {
+                self.value_depends_on_borrow_source(*then_value, source, visiting)
+                    || self.value_depends_on_borrow_source(*else_value, source, visiting)
+            }
+            ControlFlowValueKind::NameRead { definitions, .. } => {
+                definitions.iter().any(|definition| {
+                    self.definition_borrow_source_value(*definition)
+                        .is_some_and(|value| {
+                            self.value_depends_on_borrow_source(value, source, visiting)
+                        })
+                        || match definition {
+                            ControlFlowDefinitionId::Parameter(_) => false,
+                            ControlFlowDefinitionId::Node { .. }
+                            | ControlFlowDefinitionId::Scoped { .. } => self
+                                .definition_name(*definition)
+                                .and_then(|name| {
+                                    self.borrowed_definition_span_inner(name, source, visiting)
+                                })
+                                .is_some(),
+                        }
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn value_depends_on_borrow_source(
+        &self,
+        value: ControlFlowValueId,
+        source: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if !self.is_value_reachable(value) {
+            return false;
+        }
+        let Some(value) = self.value(value) else {
+            return false;
+        };
+        match &value.kind {
+            ControlFlowValueKind::List { items } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+                items
+                    .iter()
+                    .any(|item| self.value_depends_on_borrow_source(*item, source, visiting))
+            }
+            ControlFlowValueKind::ListSpread { value } => {
+                self.value_depends_on_borrow_source(*value, source, visiting)
+            }
+            ControlFlowValueKind::ListIf {
+                value, else_value, ..
+            } => {
+                self.value_depends_on_borrow_source(*value, source, visiting)
+                    || else_value.is_some_and(|value| {
+                        self.value_depends_on_borrow_source(value, source, visiting)
+                    })
+            }
+            ControlFlowValueKind::ListComprehension { value: body, .. } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+                self.value_depends_on_borrow_source(*body, source, visiting)
+            }
+            ControlFlowValueKind::NameRead { name, definitions } => {
+                name == source
+                    || definitions.iter().any(|definition| {
+                        self.definition_borrow_source_value(*definition)
+                            .is_some_and(|value| {
+                                self.value_depends_on_borrow_source(value, source, visiting)
+                            })
+                            || self
+                                .definition_name(*definition)
+                                .filter(|name| *name != source)
+                                .and_then(|name| {
+                                    self.borrowed_definition_span_inner(name, source, visiting)
+                                })
+                                .is_some()
+                    })
+            }
+            ControlFlowValueKind::Slice { base, .. } => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Index { base, .. } if matches!(value.ty, Type::List(_)) => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Field { base, .. } if matches!(value.ty, Type::List(_)) => {
+                self.value_depends_on_borrow_source(*base, source, visiting)
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+            {
+                arguments.first().is_some_and(|argument| {
+                    self.value_depends_on_borrow_source(*argument, source, visiting)
+                })
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                    && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+            {
+                let retained = if callee == "concat" {
+                    arguments.iter().take(2)
+                } else {
+                    arguments.iter().take(1)
+                };
+                retained.into_iter().any(|argument| {
+                    self.value_depends_on_borrow_source(*argument, source, visiting)
+                })
+            }
+            ControlFlowValueKind::Match { arms, .. }
+            | ControlFlowValueKind::ListMatch { arms, .. } => arms
+                .iter()
+                .any(|arm| self.value_depends_on_borrow_source(*arm, source, visiting)),
+            ControlFlowValueKind::Conditional {
+                then_value,
+                else_value,
+                ..
+            } => {
+                self.value_depends_on_borrow_source(*then_value, source, visiting)
+                    || self.value_depends_on_borrow_source(*else_value, source, visiting)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

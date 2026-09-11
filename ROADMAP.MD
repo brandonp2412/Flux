@@ -361,7 +361,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
 - [ ] Safe closures/captures under the ownership model.
 - [ ] Thread-safety/sendability rules.
 - [ ] Narrow, explicit `unsafe` escape hatch only where necessary.
-- [x] First bootstrap borrow checker over normalized semantics/IR rather than parser syntax: direct non-copy moves, immutable non-copy reads, borrowed list-parameter reborrows, path-sensitive move state, and use-after-move diagnostics are derived from CFG/typed-value/reaching-definition facts. Full borrow/reference types, inferred lifetimes, mutable aliasing, dangling-borrow prevention, partial moves, and drop semantics remain tracked explicitly above rather than being implied complete.
+- [x] First bootstrap borrow checker over normalized semantics/IR rather than parser syntax: direct non-copy moves, immutable non-copy reads, borrowed list-parameter reborrows, path-sensitive move state, zero-copy list/view borrow provenance, and use-after-move diagnostics are derived from CFG/typed-value/reaching-definition facts. Borrow-source provenance is now queried directly through `ControlFlowGraph` rather than being reconstructed inside the type checker, keeping this ownership fact on the normalized IR boundary. Full borrow/reference types, inferred lifetimes, mutable aliasing, dangling-borrow prevention, partial moves, and drop semantics remain tracked explicitly above rather than being implied complete.
 
 # Milestone 5 — Standard library and built-in concrete containers
 

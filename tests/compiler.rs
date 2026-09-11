@@ -5268,6 +5268,15 @@ fn main() -> i64 {
 "#;
     check_source(dead_slice).expect("a dead slice borrow must not prevent a later owner move");
     compile_to_c(dead_slice).expect("a move after the slice's last use should lower natively");
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead_slice, SourceId::new(1208))
+        .expect("borrow provenance should remain available through semantic CFG analysis");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(
+        graph.borrowed_definition_span("tail", "source").is_some(),
+        "normalized ownership IR should expose the zero-copy borrow source"
+    );
 
     let chained_view = r#"
 fn main() -> i64 {
