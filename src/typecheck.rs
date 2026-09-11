@@ -6339,11 +6339,11 @@ fn check_qualified_call(
                 return Ok(vec![Type::Error]);
             }
             "sendTextResponse" => {
-                if args.len() != 4 {
+                if !(4..=5).contains(&args.len()) {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.sendTextResponse expects 4 arguments, got {}",
+                            "http.sendTextResponse expects 4 or 5 arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -6385,6 +6385,15 @@ fn check_qualified_call(
                     &body,
                     "http.sendTextResponse body",
                 )?;
+                if args.len() == 5 {
+                    let keep_alive = type_of_expr(&args[4], env, signatures)?;
+                    require_type(
+                        args[4].span,
+                        &Type::Bool,
+                        &keep_alive,
+                        "http.sendTextResponse keepAlive",
+                    )?;
+                }
                 return Ok(vec![Type::Error]);
             }
             _ => {

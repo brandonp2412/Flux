@@ -2495,7 +2495,8 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("HTTP text response should lower on Linux");
     assert!(generated.contains("flux__net_http_send_text_response("));
     assert!(generated.contains("Content-Length: %zu"));
-    assert!(generated.contains("Connection: close"));
+    assert!(generated.contains("Connection: %s"));
+    assert!(generated.contains("keep_alive ? \"keep-alive\" : \"close\""));
     assert!(generated.contains("#include <sys/socket.h>"));
 
     let invalid_status = check_source(
@@ -2515,6 +2516,15 @@ fn main() -> i64 {
         invalid_type
             .message
             .contains("http.sendTextResponse contentType")
+    );
+    let invalid_keep_alive = check_source(
+        "fn main() -> i64 {\n    print(http.sendTextResponse(1, 200, \"text/plain\", \"nope\", 1))\n    return 0\n}\n",
+    )
+    .expect_err("HTTP keepAlive must be boolean");
+    assert!(
+        invalid_keep_alive
+            .message
+            .contains("http.sendTextResponse keepAlive")
     );
 
     let unused = r#"
@@ -2538,7 +2548,7 @@ fn main() -> i64 {
     fs::write(
         &source_path,
         format!(
-            "fn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextResponse(socket, 201, \"text/plain; charset=utf-8\", \"hello\"))\n    print(net.close(socket))\n    return 0\n}}\n"
+            "fn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    print(http.sendTextResponse(socket, 201, \"text/plain; charset=utf-8\", \"hello\", true))\n    print(net.close(socket))\n    return 0\n}}\n"
         ),
     )
     .expect("HTTP Flux source should be writable");
@@ -2570,7 +2580,7 @@ fn main() -> i64 {
         .expect("HTTP response should be readable");
     assert_eq!(
         response,
-        "HTTP/1.1 201 \r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello"
+        "HTTP/1.1 201 \r\nContent-Length: 5\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: keep-alive\r\n\r\nhello"
     );
     let _ = fs::remove_dir_all(&root);
 }
