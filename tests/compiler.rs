@@ -14121,13 +14121,14 @@ view Shortcuts {
     Button action at 1,1
         text: "Add"
         shortcut: "Ctrl+Shift+Enter"
+        shortcutScope: "focused"
         on_press: count => count + 1
 }
 app Shortcuts
 "#;
     check_source(source).expect("button shortcut should typecheck with an on_press action");
     let generated = compile_to_c(source).expect("button shortcut should lower natively");
-    assert!(generated.contains("GTK_SHORTCUT_SCOPE_GLOBAL"));
+    assert!(generated.contains("GTK_SHORTCUT_SCOPE_LOCAL"));
     assert!(generated.contains("gtk_shortcut_trigger_parse_string(\"<Control><Shift>Return\")"));
     assert!(generated.contains("gtk_callback_action_new(flux__ui_shortcut_action, NULL, NULL)"));
     assert!(generated.contains("flux__ui_click_action(widget, NULL); return TRUE;"));
@@ -14143,11 +14144,11 @@ app Shortcuts
     )
     .expect("button shortcut should lower to Android");
     assert!(
-        android.contains("\"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;Z)V\"")
+        android.contains("\"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;ZZ)V\"")
     );
     assert!(android.contains("NewStringUTF(env, \"Ctrl+Shift+Enter\")"));
     assert!(android.contains(
-        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_FALSE)"
+        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_FALSE, (jboolean)JNI_TRUE)"
     ));
 
     let missing_action = r#"
@@ -14195,6 +14196,48 @@ app Shortcuts
     )
     .expect_err("unsupported shortcut syntax must also fail for Android");
     assert!(android_error.message.contains("modifiers Ctrl/Shift/Alt"));
+
+    let invalid_scope = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcut: "Ctrl+K"
+        shortcutScope: "application"
+        on_press: action
+}
+fn action() -> void {
+    print("action")
+}
+app Shortcuts
+"#;
+    let errors = check_source_all(invalid_scope).expect_err("unsupported shortcut scope must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unsupported shortcutScope 'application'")
+    }));
+
+    let missing_shortcut = r#"
+view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        shortcutScope: "focused"
+        on_press: action
+}
+fn action() -> void {
+    print("action")
+}
+app Shortcuts
+"#;
+    let errors =
+        check_source_all(missing_shortcut).expect_err("shortcut scope without shortcut must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("Button.shortcutScope requires shortcut")
+    }));
 }
 
 #[test]
@@ -14213,6 +14256,7 @@ app Shortcuts
 "#;
     check_source(source).expect("common shortcut should accept a non-button onTap action");
     let generated = compile_to_c(source).expect("non-button shortcut should lower on Linux");
+    assert!(generated.contains("GTK_SHORTCUT_SCOPE_GLOBAL"));
     assert!(generated.contains("static gboolean flux__ui_shortcut_action"));
     assert!(generated.contains("gtk_callback_action_new(flux__ui_shortcut_action, NULL, NULL)"));
 
@@ -14228,7 +14272,7 @@ app Shortcuts
     .expect("non-button shortcut should lower to Android");
     assert!(android.contains("NewStringUTF(env, \"Ctrl+K\")"));
     assert!(android.contains(
-        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_TRUE)"
+        "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_TRUE, (jboolean)JNI_FALSE)"
     ));
 
     let missing_action = r#"

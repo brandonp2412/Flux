@@ -3894,6 +3894,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
+    private final Set<String> shortcutFocusedOnly = new HashSet<>();
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
@@ -4109,11 +4110,13 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         return false;
     }
 
-    public void registerShortcut(View view, String shortcut, boolean tapAction) {
+    public void registerShortcut(View view, String shortcut, boolean tapAction, boolean focusedOnly) {
         if (view == null || shortcut == null) return;
         shortcutViewIds.put(shortcut, view.getId());
         if (tapAction) shortcutTapActions.add(shortcut);
         else shortcutTapActions.remove(shortcut);
+        if (focusedOnly) shortcutFocusedOnly.add(shortcut);
+        else shortcutFocusedOnly.remove(shortcut);
     }
 
     private static String fluxShortcutName(KeyEvent event) {
@@ -4153,6 +4156,10 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         String shortcut = fluxShortcutName(event);
         Integer viewId = shortcut == null ? null : shortcutViewIds.get(shortcut);
         if (viewId != null) {
+            View focused = getCurrentFocus();
+            if (shortcutFocusedOnly.contains(shortcut) && (focused == null || focused.getId() != viewId)) {
+                return super.dispatchKeyEvent(event);
+            }
             if (shortcutTapActions.contains(shortcut)) nativeOnTap(viewId);
             else nativeOnClick(viewId);
             return true;
@@ -6320,11 +6327,17 @@ mod tests {
         assert!(
             activity.contains("private final Set<String> shortcutTapActions = new HashSet<>();")
         );
+        assert!(
+            activity.contains("private final Set<String> shortcutFocusedOnly = new HashSet<>();")
+        );
         assert!(activity.contains(
-            "public void registerShortcut(View view, String shortcut, boolean tapAction)"
+            "public void registerShortcut(View view, String shortcut, boolean tapAction, boolean focusedOnly)"
         ));
         assert!(activity.contains("public boolean dispatchKeyEvent(KeyEvent event)"));
         assert!(activity.contains("if (event.isCtrlPressed()) shortcut.append(\"Ctrl+\");"));
+        assert!(activity.contains(
+            "if (shortcutFocusedOnly.contains(shortcut) && (focused == null || focused.getId() != viewId))"
+        ));
         assert!(
             activity.contains("if (shortcutTapActions.contains(shortcut)) nativeOnTap(viewId);")
         );

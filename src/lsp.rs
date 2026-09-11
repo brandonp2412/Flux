@@ -1932,6 +1932,17 @@ fn add_builtin_ui_context_completions(
                     );
                 }
             }
+            if property.trim() == "shortcutScope" {
+                for scope in crate::typecheck::SHORTCUT_SCOPES {
+                    push_completion_item(
+                        items,
+                        seen,
+                        &format!("\"{scope}\""),
+                        12,
+                        "native Flux shortcut scope",
+                    );
+                }
+            }
             if property.trim() == "status" {
                 for state in crate::typecheck::UI_PRESENTATION_STATES {
                     push_completion_item(
@@ -6510,6 +6521,23 @@ mod tests {
     }
 
     #[test]
+    fn completion_suggests_shortcut_scopes() {
+        let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Button action at 1,1\n        text: \"Run\"\n        shortcut: \"Ctrl+K\"\n        shortcutScope: \n        onPress: run\n}\nfn run() -> void {\n    print(\"run\")\n}\n";
+        let uri = "file:///tmp/shortcut-scope-completion.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let items = completion_items_at_position(uri, source, &documents, Some(6));
+        for scope in crate::typecheck::SHORTCUT_SCOPES {
+            let expected = format!("\"{scope}\"");
+            assert!(items.iter().any(|item| {
+                item.get("label").and_then(JsonValue::as_str) == Some(expected.as_str())
+            }));
+        }
+        assert!(items.iter().any(|item| {
+            item.get("detail").and_then(JsonValue::as_str) == Some("native Flux shortcut scope")
+        }));
+    }
+
+    #[test]
     fn completion_suggests_text_input_validation_states() {
         let source = "view Screen {\n    grid columns: 1fr\n    grid rows: auto\n    TextInput email at 1,1\n        validationState: \n}\n";
         let uri = "file:///tmp/text-input-validation-completion.flux";
@@ -6588,6 +6616,8 @@ mod tests {
         assert!(text_properties.contains("Text.borderStyle: str"));
         assert!(text_properties.contains("\"label\":\"transitionEasing\""));
         assert!(text_properties.contains("Text.transitionEasing: str"));
+        assert!(text_properties.contains("\"label\":\"shortcutScope\""));
+        assert!(text_properties.contains("Text.shortcutScope: str"));
         assert!(text_properties.contains("\"label\":\"windowWidth\""));
         assert!(text_properties.contains("read-only view environment windowWidth: i64"));
         assert!(text_properties.contains("\"label\":\"windowIsLandscape\""));

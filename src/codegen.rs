@@ -3045,16 +3045,38 @@ fn emit_android_native_application(
             };
             let tap_action =
                 element.kind != "Button" || view_property(element, "on_press").is_none();
+            let focused_only = match view_property(element, "shortcut_scope") {
+                Some(property) => {
+                    let Some(scope) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "shortcutScope must be a compile-time string value",
+                        ));
+                    };
+                    match scope.as_str() {
+                        "window" => false,
+                        "focused" => true,
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "shortcutScope must be 'window' or 'focused'",
+                            ));
+                        }
+                    }
+                }
+                None => false,
+            };
             out.push_str(
                 "    jclass shortcut_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
             out.push_str("    if (shortcut_activity_class == NULL) return;\n");
-            out.push_str("    jmethodID register_shortcut = (*env)->GetMethodID(env, shortcut_activity_class, \"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;Z)V\");\n");
+            out.push_str("    jmethodID register_shortcut = (*env)->GetMethodID(env, shortcut_activity_class, \"registerShortcut\", \"(Landroid/view/View;Ljava/lang/String;ZZ)V\");\n");
             out.push_str("    if (register_shortcut == NULL) return;\n");
             out.push_str(&format!(
-                "    jstring child_shortcut = (*env)->NewStringUTF(env, {});\n    if (child_shortcut == NULL) return;\n    (*env)->CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean){});\n    (*env)->DeleteLocalRef(env, child_shortcut);\n",
+                "    jstring child_shortcut = (*env)->NewStringUTF(env, {});\n    if (child_shortcut == NULL) return;\n    (*env)->CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean){}, (jboolean){});\n    (*env)->DeleteLocalRef(env, child_shortcut);\n",
                 c_string(&shortcut),
-                if tap_action { "JNI_TRUE" } else { "JNI_FALSE" }
+                if tap_action { "JNI_TRUE" } else { "JNI_FALSE" },
+                if focused_only { "JNI_TRUE" } else { "JNI_FALSE" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, shortcut_activity_class);\n");
         }
@@ -5694,9 +5716,30 @@ fn emit_linux_gtk_application(
                     "shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
                 ));
             };
+            let scope = match view_property(element, "shortcut_scope") {
+                Some(property) => {
+                    let Some(scope) = static_expr_str(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "shortcutScope must be a compile-time string value",
+                        ));
+                    };
+                    match scope.as_str() {
+                        "window" => "GTK_SHORTCUT_SCOPE_GLOBAL",
+                        "focused" => "GTK_SHORTCUT_SCOPE_LOCAL",
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "shortcutScope must be 'window' or 'focused'",
+                            ));
+                        }
+                    }
+                }
+                None => "GTK_SHORTCUT_SCOPE_GLOBAL",
+            };
             let controller = format!("flux__shortcut_controller_{}", element.name);
             out.push_str(&format!(
-                "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), GTK_SHORTCUT_SCOPE_GLOBAL);\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
+                "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), {scope});\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
                 c_string(&trigger),
                 element.name,
             ));

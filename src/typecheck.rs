@@ -1253,6 +1253,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "tooltip"
             | "shortcut"
+            | "shortcut_scope"
             | "accessibility_label"
             | "accessibility_description"
             | "accessibility_role" => {
@@ -1448,6 +1449,7 @@ pub const ACCESSIBILITY_ROLES: &[&str] = &[
 
 pub const TEXT_INPUT_VALIDATION_STATES: &[&str] = &["normal", "error", "success", "warning"];
 pub const UI_PRESENTATION_STATES: &[&str] = &["normal", "loading", "empty", "error"];
+pub const SHORTCUT_SCOPES: &[&str] = &["window", "focused"];
 pub const TRANSITION_EASINGS: &[&str] = &[
     "linear",
     "ease",
@@ -1538,6 +1540,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "status",
     "tooltip",
     "shortcut",
+    "shortcut_scope",
     "accessibility_label",
     "accessibility_description",
     "accessibility_role",
@@ -1885,6 +1888,27 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         )),
                     }
                 }
+                if internal_property == "shortcut_scope" {
+                    match evaluate_default_expr(&property.value, signatures) {
+                        Ok(ConstantValue::Str(scope))
+                            if SHORTCUT_SCOPES.contains(&scope.as_str()) => {}
+                        Ok(ConstantValue::Str(scope)) => diagnostics.push(
+                            diag(
+                                property.value.span,
+                                &format!("unsupported shortcutScope '{scope}'"),
+                            )
+                            .with_note(format!(
+                                "supported shortcut scopes: {}",
+                                SHORTCUT_SCOPES.join(", ")
+                            )),
+                        ),
+                        Ok(_) => {}
+                        Err(_) => diagnostics.push(diag(
+                            property.value.span,
+                            "shortcutScope must be a compile-time string value",
+                        )),
+                    }
+                }
                 if internal_property == "status" {
                     match evaluate_default_expr(&property.value, signatures) {
                         Ok(ConstantValue::Str(state))
@@ -2045,11 +2069,21 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 }
             }
 
-            if element
+            let has_shortcut = element
                 .properties
                 .iter()
-                .any(|property| source_name_to_internal(&property.name) == "shortcut")
-            {
+                .any(|property| source_name_to_internal(&property.name) == "shortcut");
+            let has_shortcut_scope = element
+                .properties
+                .iter()
+                .any(|property| source_name_to_internal(&property.name) == "shortcut_scope");
+            if has_shortcut_scope && !has_shortcut {
+                diagnostics.push(diag(
+                    element.span,
+                    &format!("{}.shortcutScope requires shortcut", element.kind),
+                ));
+            }
+            if has_shortcut {
                 let has_press = element.kind == "Button"
                     && element
                         .properties
