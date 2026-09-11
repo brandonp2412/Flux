@@ -11196,6 +11196,72 @@ app Status
 }
 
 #[test]
+fn eliminates_redundant_negated_same_binding_boolean_work() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn negatedAnd(value: bool) -> bool {
+    return !value && !value
+}
+
+fn negatedOr(value: bool) -> bool {
+    return !value || !value
+}
+
+fn effectfulAnd(value: bool) -> bool {
+    return !observe(value) && !observe(value)
+}
+
+fn effectfulOr(value: bool) -> bool {
+    return !observe(value) || !observe(value)
+}
+
+fn main() -> i64 {
+    print(negatedAnd(true))
+    print(negatedOr(false))
+    print(effectfulAnd(true))
+    print(effectfulOr(false))
+    return 0
+}
+"#;
+
+    check_source(source).expect("negated same-binding boolean identities should typecheck");
+    let generated = compile_to_c(source)
+        .expect("negated same-binding boolean identities should lower natively");
+    assert_eq!(generated.matches("return (!flux__local_value);").count(), 2);
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        4,
+        "effectful repeated expressions must retain both source evaluations",
+    );
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = true
+    Text first at 1,1
+        text: "One"
+        visible: !active && !active
+    Text second at 2,1
+        text: "Two"
+        visible: !active || !active
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI negated same-binding identities should share lowering");
+    assert!(!ui_generated.contains("(!(flux__ui_state_active)) && (!(flux__ui_state_active))"));
+    assert!(!ui_generated.contains("(!(flux__ui_state_active)) || (!(flux__ui_state_active))"));
+    assert!(ui_generated.contains("(!(flux__ui_state_active))"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";

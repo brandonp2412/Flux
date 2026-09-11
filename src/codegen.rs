@@ -13837,6 +13837,26 @@ fn boolean_identity_c(
         return Some(left_code.to_string());
     }
 
+    let same_negated_binding = match (&left.kind, &right.kind) {
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => matches!(
+            (&left_inner.kind, &right_inner.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        ),
+        _ => false,
+    };
+    if same_negated_binding {
+        return Some(left_code.to_string());
+    }
+
     let complementary_binding = match (&left.kind, &right.kind) {
         (
             ExprKind::Var(left_name),
