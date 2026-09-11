@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 472
+- Completed baseline units: 473
 - Reported overall progress: **64%**
 - Current net scope growth after the baseline: 73 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -619,9 +619,9 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 # Milestone 14 — Styling, themes, responsive UI, and animation
 
-- [ ] Colors.
-  - [x] Bootstrap `Text.color: str` accepts compile-time `#RRGGBB` / `#RRGGBBAA` values, validates hexadecimal syntax, and lowers directly to native Pango foreground/alpha attributes.
-  - [x] Every built-in native element accepts compile-time `backgroundColor` / `borderColor` hexadecimal values, lowered through an element-specific native GTK style provider without wrapper controls. A first-class `Color` value type plus themes/tokens remain pending.
+- [x] Colors: Flux UI color properties use a compiler-validated, zero-runtime-object color domain rather than a separate framework `Color` object. Compile-time strings/constants accept `#RRGGBB`, `#RRGGBBAA`, semantic theme tokens, and `transparent`; invalid values fail statically at the property boundary, LSP completion exposes semantic choices, and Linux/Android lower them directly to native color representations. A dedicated source value type remains unnecessary unless future color arithmetic/interpolation demonstrates a capability gap.
+  - [x] `Text.color` accepts validated hexadecimal/semantic/transparent colors and lowers directly to native Pango/Android text colors while preserving theme/high-contrast behavior.
+  - [x] Common background, border, and shadow color properties accept the same validated domain across built-in native elements; semantic palettes/custom application theme overrides remain compiler-owned, explicit element styling wins, and `transparent` lowers without allocating a runtime color object.
 - [x] Typography.
   - [x] Bootstrap native `Text.size: i64` and `Text.bold: bool` contracts lower to Pango attributes on Linux; invalid/non-positive sizes fail at compile/codegen time instead of silently rendering.
   - [x] Native text family/slant/decoration/spacing controls: compile-time `fontFamily`, `italic`, `underline`, `strikethrough`, `letterSpacing`, and `lineHeightPercent` are compiler-owned/LSP-visible `Text` properties and lower directly to Pango attributes, including range/empty-family diagnostics.

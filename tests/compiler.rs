@@ -13236,7 +13236,7 @@ fn semantic_ui_colors_lower_through_native_theme_tokens() {
     let source = r#"
 view Palette {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text title at 1,1
         text: "Flux"
         color: "textMuted"
@@ -13247,6 +13247,9 @@ view Palette {
         borderWidth: 1
         shadowColor: "shadow"
         shadowBlur: 8
+    Button ghost at 3,1
+        text: "Ghost"
+        backgroundColor: "transparent"
 }
 app Palette(theme: "system")
 "#;
@@ -13259,6 +13262,7 @@ app Palette(theme: "system")
     assert!(linux.contains("background-color: @flux_accent;"));
     assert!(linux.contains("border-color: @flux_outline;"));
     assert!(linux.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
+    assert!(linux.contains("background-color: transparent;"));
     assert!(linux.contains("gtk_widget_add_css_class(grid, \"flux-root\")"));
     assert!(linux.contains("gtk_widget_add_css_class(flux__ui_action, \"flux-button\")"));
     assert!(linux.contains("@media (prefers-contrast: more)"));
@@ -13280,6 +13284,7 @@ app Palette(theme: "system")
     assert!(android.contains("\"outline\""));
     assert!(android.contains("\"textMuted\""));
     assert!(android.contains("\"shadow\""));
+    assert!(android.contains("\"transparent\""));
 }
 
 #[test]

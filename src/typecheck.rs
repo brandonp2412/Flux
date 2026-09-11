@@ -1487,6 +1487,7 @@ pub const SEMANTIC_UI_COLOR_TOKENS: &[&str] = &[
     "success",
     "warning",
     "shadow",
+    "transparent",
 ];
 
 pub const SEMANTIC_UI_I64_TOKENS: &[(&str, i64)] = &[

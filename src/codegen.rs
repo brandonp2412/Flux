@@ -7063,6 +7063,7 @@ fn gtk_ui_color_css(value: &str) -> Option<&str> {
         "success" => Some("@flux_success"),
         "warning" => Some("@flux_warning"),
         "shadow" => Some("@flux_shadow"),
+        "transparent" => Some("transparent"),
         _ => None,
     }
 }

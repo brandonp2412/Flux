@@ -4247,6 +4247,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
             case "success": return highContrast ? (dark ? 0xFF86EFAC : 0xFF166534) : (dark ? 0xFF4ADE80 : 0xFF16A34A);
             case "warning": return highContrast ? (dark ? 0xFFFDE047 : 0xFF92400E) : (dark ? 0xFFFBBF24 : 0xFFD97706);
             case "shadow": return highContrast ? (dark ? 0x99000000 : 0x66000000) : (dark ? 0x66000000 : 0x33000000);
+            case "transparent": return 0x00000000;
             default:
                 if (value.length() == 9 && value.charAt(0) == '#') {
                     value = String.valueOf('#') + value.substring(7, 9) + value.substring(1, 7);
@@ -6394,6 +6395,7 @@ mod tests {
         assert!(activity.contains("case \"surface\":"));
         assert!(activity.contains("case \"accent\":"));
         assert!(activity.contains("case \"textMuted\":"));
+        assert!(activity.contains("case \"transparent\": return 0x00000000;"));
         assert!(activity.contains(
             "UiModeManager manager = (UiModeManager) getSystemService(UI_MODE_SERVICE);"
         ));
