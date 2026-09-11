@@ -5624,6 +5624,49 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "focus" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("focus.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "next" | "previous" => {
+                if args.len() > 1 {
+                    return Err(diag(
+                        span,
+                        &format!("focus.{name} expects 0 or 1 arguments, got {}", args.len()),
+                    ));
+                }
+                if let Some(wrap) = args.first() {
+                    let actual = type_of_expr(wrap, env, signatures)?;
+                    require_type(
+                        wrap.span,
+                        &Type::Bool,
+                        &actual,
+                        &format!("focus.{name} wrap"),
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
+            "first" | "last" | "clear" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("focus.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("focus module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

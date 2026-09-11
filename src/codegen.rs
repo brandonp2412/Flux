@@ -145,6 +145,12 @@ pub fn emit_c_for_target_with_source_paths(
             "clipboard.* APIs require an application target",
         ));
     }
+    if runtime_usage.contains("flux__focus_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "focus.* APIs require an application target",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -351,6 +357,16 @@ fn emit_runtime_prelude(
 
     let uses_locale = runtime_usage.contains("flux__locale_");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
+    let uses_focus_next = runtime_usage.contains("flux__focus_next(");
+    let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
+    let uses_focus_first = runtime_usage.contains("flux__focus_first(");
+    let uses_focus_last = runtime_usage.contains("flux__focus_last(");
+    let uses_focus_clear = runtime_usage.contains("flux__focus_clear(");
+    let uses_portable_focus = uses_focus_next
+        || uses_focus_previous
+        || uses_focus_first
+        || uses_focus_last
+        || uses_focus_clear;
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
@@ -367,20 +383,20 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_focus_next(");
     let uses_android_focus_previous =
         uses_android && runtime_usage.contains("flux__android_focus_previous(");
-    let uses_android_focus_next_wrap =
-        uses_android && runtime_usage.contains("flux__android_focus_next_wrap(");
-    let uses_android_focus_previous_wrap =
-        uses_android && runtime_usage.contains("flux__android_focus_previous_wrap(");
+    let uses_android_focus_next_wrap = uses_android
+        && (runtime_usage.contains("flux__android_focus_next_wrap(") || uses_focus_next);
+    let uses_android_focus_previous_wrap = uses_android
+        && (runtime_usage.contains("flux__android_focus_previous_wrap(") || uses_focus_previous);
     let uses_android_focus_first =
-        uses_android && runtime_usage.contains("flux__android_focus_first(");
+        uses_android && (runtime_usage.contains("flux__android_focus_first(") || uses_focus_first);
     let uses_android_focus_last =
-        uses_android && runtime_usage.contains("flux__android_focus_last(");
+        uses_android && (runtime_usage.contains("flux__android_focus_last(") || uses_focus_last);
     let uses_android_focus_edges = uses_android_focus_first
         || uses_android_focus_last
         || uses_android_focus_next_wrap
         || uses_android_focus_previous_wrap;
     let uses_android_clear_focus =
-        uses_android && runtime_usage.contains("flux__android_clear_focus(");
+        uses_android && (runtime_usage.contains("flux__android_clear_focus(") || uses_focus_clear);
     let uses_android_focus_navigation = uses_android_focus_next
         || uses_android_focus_previous
         || uses_android_focus_next_wrap
@@ -871,6 +887,50 @@ fn emit_runtime_prelude(
         out.push_str("    if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class);\n");
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
+    }
+    if uses_portable_focus && uses_gtk {
+        out.push_str("static GtkWindow *flux__focus_active_window(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; return gtk_application_get_active_window(GTK_APPLICATION(application)); }\n");
+        if uses_focus_next || uses_focus_previous {
+            out.push_str("static void flux__focus_move(GtkDirectionType direction, bool wrap) { GtkWindow *window = flux__focus_active_window(); if (window == NULL) return; if (gtk_widget_child_focus(GTK_WIDGET(window), direction)) return; if (!wrap) return; gtk_window_set_focus(window, NULL); (void)gtk_widget_child_focus(GTK_WIDGET(window), direction); }\n");
+        }
+        if uses_focus_next {
+            out.push_str("static inline void flux__focus_next(bool wrap) { flux__focus_move(GTK_DIR_TAB_FORWARD, wrap); }\n");
+        }
+        if uses_focus_previous {
+            out.push_str("static inline void flux__focus_previous(bool wrap) { flux__focus_move(GTK_DIR_TAB_BACKWARD, wrap); }\n");
+        }
+        if uses_focus_first {
+            out.push_str("static inline void flux__focus_first(void) { GtkWindow *window = flux__focus_active_window(); if (window == NULL) return; gtk_window_set_focus(window, NULL); (void)gtk_widget_child_focus(GTK_WIDGET(window), GTK_DIR_TAB_FORWARD); }\n");
+        }
+        if uses_focus_last {
+            out.push_str("static inline void flux__focus_last(void) { GtkWindow *window = flux__focus_active_window(); if (window == NULL) return; gtk_window_set_focus(window, NULL); (void)gtk_widget_child_focus(GTK_WIDGET(window), GTK_DIR_TAB_BACKWARD); }\n");
+        }
+        if uses_focus_clear {
+            out.push_str("static inline void flux__focus_clear(void) { GtkWindow *window = flux__focus_active_window(); if (window != NULL) gtk_window_set_focus(window, NULL); }\n");
+        }
+    }
+    if uses_portable_focus && uses_android {
+        if uses_focus_next {
+            out.push_str("static inline void flux__focus_next(bool wrap) { flux__android_focus_next_wrap(wrap); }\n");
+        }
+        if uses_focus_previous {
+            out.push_str("static inline void flux__focus_previous(bool wrap) { flux__android_focus_previous_wrap(wrap); }\n");
+        }
+        if uses_focus_first {
+            out.push_str(
+                "static inline void flux__focus_first(void) { flux__android_focus_first(); }\n",
+            );
+        }
+        if uses_focus_last {
+            out.push_str(
+                "static inline void flux__focus_last(void) { flux__android_focus_last(); }\n",
+            );
+        }
+        if uses_focus_clear {
+            out.push_str(
+                "static inline void flux__focus_clear(void) { flux__android_clear_focus(); }\n",
+            );
+        }
     }
     if uses_clipboard_set_text && uses_gtk {
         out.push_str("static void flux__clipboard_set_text(const char *text) {\n");
@@ -12955,6 +13015,31 @@ fn emit_qualified_call(
             Vec::new(),
             None,
         ));
+    }
+    if namespace == "focus" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid focus call reached code generation"));
+        }
+        match name {
+            "next" | "previous" => {
+                if args.len() > 1 {
+                    return Err(diag(span, "invalid focus call reached code generation"));
+                }
+                let wrap = if let Some(wrap) = args.first() {
+                    emit_expr(wrap, env, signatures)?.code
+                } else {
+                    "false".to_string()
+                };
+                return Ok((format!("flux__focus_{name}({wrap})"), Vec::new(), None));
+            }
+            "first" | "last" | "clear" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid focus call reached code generation"));
+                }
+                return Ok((format!("flux__focus_{name}()"), Vec::new(), None));
+            }
+            _ => return Err(diag(span, "invalid focus call reached code generation")),
+        }
     }
     if namespace == "android" {
         if !named_args.is_empty() {

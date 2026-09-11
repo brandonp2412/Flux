@@ -1277,6 +1277,18 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "focus" {
+        for (label, detail) in [
+            ("next", "fn focus.next(wrap: bool = false) -> void"),
+            ("previous", "fn focus.previous(wrap: bool = false) -> void"),
+            ("first", "fn focus.first() -> void"),
+            ("last", "fn focus.last() -> void"),
+            ("clear", "fn focus.clear() -> void"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "android" {
         push_completion_item(items, seen, "sdkInt", 3, "fn android.sdkInt() -> i64");
         push_completion_item(
@@ -2473,6 +2485,27 @@ fn signature_help_for_document_cached(
                     "void",
                     active_parameter,
                 ));
+            }
+        }
+        if namespace == "focus" {
+            match member {
+                "next" | "previous" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("focus.{member}"),
+                        &["wrap: bool = false"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "first" | "last" | "clear" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("focus.{member}"),
+                        &[],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
             }
         }
         if namespace == "android" {
@@ -5403,7 +5436,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    clipboard.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    locale.\n    time.\n    fs.\n    clipboard.\n    focus.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -5540,6 +5573,26 @@ mod tests {
         ))
         .to_json();
         assert!(clipboard_items.contains("fn clipboard.setText(text: str) -> void"));
+
+        let focus_line = source
+            .lines()
+            .position(|line| line.trim() == "focus.")
+            .expect("focus completion line should exist");
+        let focus_source = source.lines().nth(focus_line).unwrap();
+        let focus_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(focus_line),
+            Some(focus_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(focus_items.contains("fn focus.next(wrap: bool = false) -> void"));
+        assert!(focus_items.contains("fn focus.previous(wrap: bool = false) -> void"));
+        assert!(focus_items.contains("fn focus.first() -> void"));
+        assert!(focus_items.contains("fn focus.last() -> void"));
+        assert!(focus_items.contains("fn focus.clear() -> void"));
 
         let android_line = source
             .lines()
@@ -6418,6 +6471,41 @@ mod tests {
         .expect("clipboard call should have signature help")
         .to_json();
         assert!(help.contains("fn android.setClipboardText(text: str) -> void"));
+    }
+
+    #[test]
+    fn signature_help_supports_portable_focus_navigation() {
+        let uri = "file:///tmp/focus-signatures.flux";
+        let source = "fn main() -> i64 {\n    focus.next()\n    focus.previous(true)\n    focus.first()\n    focus.last()\n    focus.clear()\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("focus.next(", "fn focus.next(wrap: bool = false) -> void"),
+            (
+                "focus.previous(",
+                "fn focus.previous(wrap: bool = false) -> void",
+            ),
+            ("focus.first(", "fn focus.first() -> void"),
+            ("focus.last(", "fn focus.last() -> void"),
+            ("focus.clear(", "fn focus.clear() -> void"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("portable focus call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("portable focus call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

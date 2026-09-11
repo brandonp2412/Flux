@@ -12872,6 +12872,104 @@ fn main() -> i64 {
 }
 
 #[test]
+fn portable_focus_navigation_lowers_to_native_application_backends() {
+    let source = r#"
+fn started() -> void {
+    focus.next()
+    focus.next(true)
+    focus.previous()
+    focus.previous(true)
+    focus.first()
+    focus.last()
+    focus.clear()
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button first at 1,1
+        text: "First"
+        focusable: true
+    Button second at 2,1
+        text: "Second"
+        focusable: true
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable focus navigation should typecheck");
+    let linux = compile_to_c(source).expect("portable focus navigation should lower on Linux");
+    assert!(linux.contains("static void flux__focus_move(GtkDirectionType direction, bool wrap)"));
+    assert!(linux.contains("gtk_application_get_active_window"));
+    assert!(linux.contains("gtk_widget_child_focus"));
+    assert!(linux.contains("GTK_DIR_TAB_FORWARD"));
+    assert!(linux.contains("GTK_DIR_TAB_BACKWARD"));
+    assert!(linux.contains("gtk_window_set_focus"));
+    assert!(!linux.contains("flux__android_focus_"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable focus app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable focus navigation should lower on Android");
+    assert!(android.contains("static inline void flux__focus_next(bool wrap)"));
+    assert!(android.contains("flux__android_focus_next_wrap(wrap)"));
+    assert!(android.contains("flux__android_focus_previous_wrap(wrap)"));
+    assert!(android.contains("flux__android_focus_first()"));
+    assert!(android.contains("flux__android_focus_last()"));
+    assert!(android.contains("flux__android_clear_focus()"));
+
+    let unused = r#"
+fn unused() -> void {
+    focus.next(true)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable focus code should tree-shake");
+    assert!(!tree_shaken.contains("flux__focus_next"));
+    assert!(!tree_shaken.contains("gtk_widget_child_focus"));
+
+    let headless = r#"
+fn main() -> i64 {
+    focus.next()
+    return 0
+}
+"#;
+    check_source(headless).expect("focus API should retain target-independent static typing");
+    let error =
+        compile_to_c(headless).expect_err("focus navigation requires an application backend");
+    assert!(
+        error
+            .message
+            .contains("focus.* APIs require an application target")
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    focus.next(1)
+    focus.first(true)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("portable focus arguments must be typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("focus.next wrap") && error.message.contains("expected bool")
+    }));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("focus.first expects 0 arguments"))
+    );
+}
+
+#[test]
 fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     let root = std::env::temp_dir().join(format!("flux-android-codegen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
