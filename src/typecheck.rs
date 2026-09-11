@@ -6571,6 +6571,18 @@ fn check_qualified_call(
                 )?;
                 return Ok(Vec::new());
             }
+            "finishActivity" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "android.finishActivity expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
             "openUrl" => {
                 if args.len() != 1 {
                     return Err(diag(

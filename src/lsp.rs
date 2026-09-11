@@ -1387,6 +1387,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "finishActivity",
+            3,
+            "fn android.finishActivity() -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "openUrl",
             3,
             "fn android.openUrl(url: str) -> void",
@@ -2772,6 +2779,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.keepScreenOn",
                         &["enabled: bool"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "finishActivity" => {
+                    return Some(signature_help_for_builtin(
+                        "android.finishActivity",
+                        &[],
                         "void",
                         active_parameter,
                     ));
@@ -5942,6 +5957,7 @@ mod tests {
         assert!(android_items.contains("fn android.sdkInt() -> i64"));
         assert!(android_items.contains("fn android.vibrate(durationMs: i64) -> void"));
         assert!(android_items.contains("fn android.keepScreenOn(enabled: bool) -> void"));
+        assert!(android_items.contains("fn android.finishActivity() -> void"));
         assert!(android_items.contains("\"label\":\"openUrl\""));
         assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
         assert!(android_items.contains("\"label\":\"openAppSettings\""));
@@ -6828,6 +6844,28 @@ mod tests {
         .expect("keepScreenOn should have signature help")
         .to_json();
         assert!(help.contains("fn android.keepScreenOn(enabled: bool) -> void"));
+    }
+
+    #[test]
+    fn signature_help_supports_android_finish_activity() {
+        let uri = "file:///tmp/android-finish-activity-signature.flux";
+        let source = "fn main() -> i64 {\n    android.finishActivity()\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = 1;
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "android.finishActivity(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("finishActivity should have signature help")
+        .to_json();
+        assert!(help.contains("fn android.finishActivity() -> void"));
     }
 
     #[test]

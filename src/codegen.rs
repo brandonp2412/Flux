@@ -611,6 +611,8 @@ fn emit_runtime_prelude(
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_keep_screen_on =
         uses_android && runtime_usage.contains("flux__android_keep_screen_on(");
+    let uses_android_finish_activity =
+        uses_android && runtime_usage.contains("flux__android_finish_activity(");
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_open_notification_settings =
         uses_android && runtime_usage.contains("flux__android_open_notification_settings(");
@@ -690,6 +692,7 @@ fn emit_runtime_prelude(
         || uses_android_cancel_notification;
     let uses_android_platform_api = uses_android_vibrate
         || (uses_android_keep_screen_on && uses_android_generated_ui)
+        || (uses_android_finish_activity && uses_android_generated_ui)
         || uses_android_open_url
         || uses_android_open_app_settings
         || uses_android_open_notification_settings
@@ -715,6 +718,9 @@ fn emit_runtime_prelude(
     }
     if uses_android_keep_screen_on && !uses_android_generated_ui {
         out.push_str("static inline void flux__android_keep_screen_on(bool enabled) { if (flux__android_activity != NULL) ANativeActivity_setWindowFlags(flux__android_activity, enabled ? AWINDOW_FLAG_KEEP_SCREEN_ON : 0, enabled ? 0 : AWINDOW_FLAG_KEEP_SCREEN_ON); }\n");
+    }
+    if uses_android_finish_activity && !uses_android_generated_ui {
+        out.push_str("static inline void flux__android_finish_activity(void) { if (flux__android_activity != NULL) ANativeActivity_finish(flux__android_activity); }\n");
     }
     if uses_android_platform_api {
         out.push_str("static JNIEnv *flux__android_get_env(bool *detach) {\n");
@@ -798,6 +804,25 @@ fn emit_runtime_prelude(
         out.push_str(
             "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
         );
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_finish_activity && uses_android_generated_ui {
+        out.push_str("static void flux__android_finish_activity(void) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return;\n");
+        out.push_str("    jobject activity = flux__android_activity->clazz;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class != NULL) {\n");
+        out.push_str("        jmethodID finish = (*env)->GetMethodID(env, activity_class, \"finish\", \"()V\");\n");
+        out.push_str(
+            "        if (finish != NULL) (*env)->CallVoidMethod(env, activity, finish);\n",
+        );
+        out.push_str("        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("        (*env)->DeleteLocalRef(env, activity_class);\n");
+        out.push_str("    }\n");
         out.push_str("    flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
@@ -14167,6 +14192,19 @@ fn emit_qualified_call(
                 let enabled = emit_expr(&args[0], env, signatures)?;
                 return Ok((
                     format!("flux__android_keep_screen_on({})", enabled.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "finishActivity" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                return Ok((
+                    "flux__android_finish_activity()".to_string(),
                     Vec::new(),
                     None,
                 ));
