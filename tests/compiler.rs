@@ -10004,6 +10004,9 @@ fn main() -> i64 {
     let deadSubtract: i64 = dynamic - 0
     if false:
         print(deadSubtract)
+    let deadSelfSubtract: i64 = dynamic - dynamic
+    if false:
+        print(deadSelfSubtract)
     let deadZeroProduct: i64 = dynamic * 0
     if false:
         print(deadZeroProduct)
@@ -10039,6 +10042,7 @@ fn main() -> i64 {
     assert!(!generated.contains("flux__local_deadAddLeft"));
     assert!(!generated.contains("flux__local_deadAddRight"));
     assert!(!generated.contains("flux__local_deadSubtract"));
+    assert!(!generated.contains("flux__local_deadSelfSubtract"));
     assert!(!generated.contains("flux__local_deadZeroProduct"));
     assert!(!generated.contains("flux__local_deadMultiplyLeft"));
     assert!(!generated.contains("flux__local_deadMultiplyRight"));
@@ -10291,6 +10295,10 @@ fn subtractFromZero(value: i64) -> i64 {
     return 0 - value
 }
 
+fn subtractSelf(value: i64) -> i64 {
+    return value - value
+}
+
 fn divideByConstant(value: i64) -> i64 {
     return value / DIVISOR
 }
@@ -10304,6 +10312,7 @@ fn main() -> i64 {
     print(negateMultiplyLeft(8))
     print(negateMultiplyRight(9))
     print(negateDivide(10))
+    print(subtractSelf(12))
     print(divideByConstant(9))
     print(divideByNegativeConstant(-9))
     return subtractFromZero(11)
@@ -10316,6 +10325,8 @@ fn main() -> i64 {
     assert!(!generated.contains("flux_sub_i64("));
     assert!(!generated.contains("flux_mul_i64("));
     assert!(!generated.contains("flux_div_i64("));
+    assert!(!generated.contains("flux_sub_i64(flux__local_value, flux__local_value)"));
+    assert!(generated.contains("return INT64_C(0);"));
     assert_eq!(
         generated
             .matches("return flux_neg_i64(flux__local_value);")
@@ -10387,7 +10398,7 @@ view Counter {
     state count: i64 = 1
     Text status at 1,1
         text: "Active"
-        visible: count + 0 > 0
+        visible: count - count == 0
     Button action at 2,1
         text: "Keep"
         onPress: count => count * 1
@@ -10396,7 +10407,7 @@ app Counter
 "#;
     let ui_generated =
         compile_to_c(ui).expect("UI identity arithmetic should use the same proven lowering");
-    assert!(!ui_generated.contains("flux_add_i64("));
+    assert!(!ui_generated.contains("flux_sub_i64("));
     assert!(!ui_generated.contains("flux_mul_i64("));
 }
 

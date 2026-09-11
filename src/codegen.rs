@@ -12647,6 +12647,7 @@ struct BlockEmitContext<'a> {
 enum CheckedI64Reduction {
     Left,
     Right,
+    Zero,
     ZeroAfterLeft,
     ZeroAfterRight,
     NegateLeft,
@@ -12660,6 +12661,15 @@ fn checked_i64_reduction(
     right: &Expr,
     signatures: &Signatures,
 ) -> Option<CheckedI64Reduction> {
+    if matches!(op, BinOp::Sub)
+        && matches!(
+            (&left.kind, &right.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        )
+    {
+        return Some(CheckedI64Reduction::Zero);
+    }
+
     let left_constant = typecheck::constant_primitive_value(left, signatures);
     let right_constant = typecheck::constant_primitive_value(right, signatures);
     match (op, left_constant, right_constant) {
@@ -12696,6 +12706,7 @@ fn checked_i64_identity_c(
     match checked_i64_reduction(op, left, right, signatures)? {
         CheckedI64Reduction::Left => Some(left_code.to_string()),
         CheckedI64Reduction::Right => Some(right_code.to_string()),
+        CheckedI64Reduction::Zero => Some("INT64_C(0)".to_string()),
         CheckedI64Reduction::ZeroAfterLeft => Some(format!("((void)({left_code}), INT64_C(0))")),
         CheckedI64Reduction::ZeroAfterRight => Some(format!("((void)({right_code}), INT64_C(0))")),
         CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
@@ -12774,6 +12785,7 @@ fn dead_store_rhs_is_discardable(
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
             match checked_i64_reduction(*op, left, right, signatures) {
+                Some(CheckedI64Reduction::Zero) => true,
                 Some(
                     CheckedI64Reduction::Left
                     | CheckedI64Reduction::ZeroAfterLeft
