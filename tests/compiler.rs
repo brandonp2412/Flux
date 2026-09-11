@@ -1851,9 +1851,10 @@ fn main() -> i64 {
 "#;
     check_source(source).expect("HTTP request text body should typecheck");
     let generated = compile_to_c(source).expect("HTTP request text body should lower on Linux");
-    assert!(generated.contains("flux__net_http_receive_request_with_text_body("));
+    assert!(generated.contains("flux__net_http_receive_request_with_text_body_v2("));
     assert!(generated.contains("duplicate Content-Length is not supported"));
-    assert!(generated.contains("Transfer-Encoding request bodies are not supported"));
+    assert!(generated.contains("unsupported HTTP Transfer-Encoding"));
+    assert!(generated.contains("Content-Length with Transfer-Encoding is not supported"));
     assert!(generated.contains("HTTP request body exceeds maxBodyBytes"));
 
     let invalid_limit = check_source(
@@ -1869,7 +1870,7 @@ fn main() -> i64 {
     let unused = source.replace("fn main() -> i64 {\n    let (received, receiveError) = http.receiveRequestWithTextBody(1, 4096, 1024, handleRequest, handleHeader, handleBody)\n    print(received)\n    print(receiveError)\n    return 0\n}", "fn hidden() -> void {\n    let (received, receiveError) = http.receiveRequestWithTextBody(1, 4096, 1024, handleRequest, handleHeader, handleBody)\n    print(received)\n    print(receiveError)\n}\nfn main() -> i64 {\n    return 0\n}");
     let unused_generated =
         compile_to_c(&unused).expect("dead HTTP request-body helper should tree-shake");
-    assert!(!unused_generated.contains("flux__net_http_receive_request_with_text_body("));
+    assert!(!unused_generated.contains("flux__net_http_receive_request_with_text_body_v2("));
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP body listener should bind");
     let port = listener.local_addr().unwrap().port();
@@ -1916,6 +1917,61 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "nil\ntrue\nPOST\n/submit\nHTTP/1.1\ntrue\nHost\nexample.test\ntrue\nContent-Length\n5\ntrue\nhello\ntrue\nnil\ntrue\nEXTRA\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_chunked_text_request_body_is_decoded_bounded_and_does_not_overread() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP chunked request listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("HTTP chunked request receiver should connect");
+        stream
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;demo=yes\r\n world\r\n0\r\n\r\nTAIL",
+            )
+            .expect("chunked HTTP request should be writable");
+    });
+
+    let root =
+        std::env::temp_dir().join(format!("flux-http-chunked-server-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP chunked request fixture should be writable");
+    let source_path = root.join("server.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(_socket: i64, method: str, target: str, version: str) -> void {{\n    print(method)\n    print(target)\n    print(version)\n}}\nfn header(_socket: i64, name: str, value: str) -> void {{\n    print(name)\n    print(value)\n}}\nfn body(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn tail(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveRequestWithTextBody(socket, 4096, 1024, request, header, body)\n    print(received > 0)\n    print(receiveError)\n    let (tailBytes, tailError) = net.receiveText(socket, 4, tail)\n    print(tailBytes)\n    print(tailError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP chunked request source should be writable");
+    let binary = root.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP chunked request Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP chunked request fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP chunked request Flux binary should run");
+    server
+        .join()
+        .expect("HTTP chunked request writer should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nPOST\n/upload\nHTTP/1.1\nHost\nexample.test\nTransfer-Encoding\nchunked\nhello world\ntrue\nnil\nTAIL\n4\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
