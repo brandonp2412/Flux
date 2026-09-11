@@ -1739,6 +1739,92 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_request_headers_are_parsed_borrowed_and_runnable() {
+    let source = r#"
+fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {
+    print(socket >= 0)
+    print(method)
+    print(target)
+    print(version)
+}
+fn handleHeader(socket: i64, name: str, value: str) -> void {
+    print(socket >= 0)
+    print(name)
+    print(value)
+}
+fn main() -> i64 {
+    let (received, receiveError) = http.receiveRequestHeadWithHeaders(1, 4096, handleRequest, handleHeader)
+    print(received)
+    print(receiveError)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP request-header receive should typecheck");
+    let generated = compile_to_c(source).expect("HTTP request headers should lower on Linux");
+    assert!(generated.contains("flux__net_http_receive_request_head_with_headers("));
+    assert!(generated.contains("invalid HTTP header name"));
+    assert!(generated.contains("folded HTTP headers are not supported"));
+
+    let invalid_callback = check_source(
+        "fn request(socket: i64, method: str, target: str, version: str) -> void {\n    print(socket)\n    print(method)\n    print(target)\n    print(version)\n}\nfn badHeader(name: str, value: str) -> void {\n    print(name)\n    print(value)\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveRequestHeadWithHeaders(1, 4096, request, badHeader)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("HTTP header callback must carry the socket handle");
+    assert!(
+        invalid_callback
+            .message
+            .contains("http.receiveRequestHeadWithHeaders headerCallback")
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP header listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let root = std::env::temp_dir().join(format!("flux-http-headers-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP header fixture should be writable");
+    let source_path = root.join("headers.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn handleRequest(socket: i64, method: str, target: str, version: str) -> void {{\n    print(socket >= 0)\n    print(method)\n    print(target)\n    print(version)\n}}\nfn handleHeader(socket: i64, name: str, value: str) -> void {{\n    print(socket >= 0)\n    print(name)\n    print(value)\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {port})\n    print(connectError)\n    let (received, receiveError) = http.receiveRequestHeadWithHeaders(socket, 4096, handleRequest, handleHeader)\n    print(received > 0)\n    print(receiveError)\n    print(net.close(socket))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP header Flux source should be writable");
+    let binary = root.join("headers");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP header Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP header fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP header Flux binary should start");
+    let (mut stream, _) = listener
+        .accept()
+        .expect("HTTP header connection should accept");
+    stream
+        .write_all(
+            b"GET /headers HTTP/1.1\r\nHost: example.test\r\nX-Trace:\t abc-123 \t\r\n\r\nBODY",
+        )
+        .expect("HTTP headers should be writable");
+    let output = child
+        .wait_with_output()
+        .expect("HTTP header Flux binary should finish");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\ntrue\nGET\n/headers\nHTTP/1.1\ntrue\nHost\nexample.test\ntrue\nX-Trace\nabc-123\ntrue\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_text_response_is_typed_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
