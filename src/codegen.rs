@@ -1722,6 +1722,17 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__net_tcp_connect(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_tcp_connect(const char *host, int64_t port) { return flux__net_open_tcp(host, port, 0, 0); }\n");
     }
+    if runtime_usage.contains("flux__net_udp_connect(")
+        || runtime_usage.contains("flux__net_udp_bind(")
+    {
+        out.push_str("static struct flux__net_i64_error flux__net_open_udp(const char *host, int64_t port, int passive) { if (port < 0 || port > 65535 || (!passive && port == 0)) return flux__net_result(-1, passive ? \"UDP bind port must be between 0 and 65535\" : \"UDP connect port must be between 1 and 65535\"); char service[6]; snprintf(service, sizeof(service), \"%lld\", (long long)port); struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP; hints.ai_flags = passive ? AI_PASSIVE : 0; struct addrinfo *addresses = NULL; const char *node = passive && host[0] == '\\0' ? NULL : host; if (getaddrinfo(node, service, &hints, &addresses) != 0) return flux__net_result(-1, passive ? \"failed to resolve UDP bind address\" : \"failed to resolve UDP host\"); int fd = -1; for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol); if (fd < 0) continue; if (passive) { int enabled = 1; (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)); if (bind(fd, address->ai_addr, address->ai_addrlen) == 0) break; } else if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) { break; } close(fd); fd = -1; } freeaddrinfo(addresses); if (fd < 0) return flux__net_result(-1, passive ? \"failed to bind UDP socket\" : \"failed to connect UDP socket\"); return flux__net_result((int64_t)fd, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__net_udp_connect(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_udp_connect(const char *host, int64_t port) { return flux__net_open_udp(host, port, 0); }\n");
+    }
+    if runtime_usage.contains("flux__net_udp_bind(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_udp_bind(const char *host, int64_t port) { return flux__net_open_udp(host, port, 1); }\n");
+    }
     if runtime_usage.contains("flux__net_tcp_listen(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_tcp_listen(const char *host, int64_t port, int64_t backlog) { if (backlog < 1 || backlog > INT_MAX) return flux__net_result(-1, \"TCP listen backlog must be positive\"); return flux__net_open_tcp(host, port, 1, (int)backlog); }\n");
     }
@@ -12966,6 +12977,23 @@ fn emit_qualified_call(
                 let port = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__net_tcp_connect({}, {})", host.code, port.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "udpConnect" | "udpBind" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let host = emit_expr(&args[0], env, signatures)?;
+                let port = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "udpConnect" {
+                    "flux__net_udp_connect"
+                } else {
+                    "flux__net_udp_bind"
+                };
+                return Ok((
+                    format!("{helper}({}, {})", host.code, port.code),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
                 ));

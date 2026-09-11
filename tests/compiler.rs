@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write;
-use std::net::TcpListener;
+use std::net::{TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -1635,6 +1635,128 @@ fn main() -> i64 {
             .message
             .contains("net.* APIs require a desktop/server target")
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn udp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, bindError) = net.udpBind("127.0.0.1", 0)
+    print(bindError)
+    let (port, portError) = net.localPort(socket)
+    print(port)
+    print(portError)
+    print(net.close(socket))
+    return 0
+}
+"#;
+    check_source(source).expect("UDP socket lifecycle should typecheck");
+    let generated = compile_to_c(source).expect("UDP socket lifecycle should lower on Linux");
+    assert!(generated.contains("flux__net_udp_bind("));
+    assert!(generated.contains("flux__net_open_udp("));
+    assert!(generated.contains("SOCK_DGRAM"));
+    assert!(generated.contains("IPPROTO_UDP"));
+    assert!(generated.contains("flux__net_local_port("));
+    assert!(generated.contains("flux__net_close("));
+
+    let root = std::env::temp_dir().join(format!("flux-udp-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UDP API fixture should be writable");
+    let source_path = root.join("bind.flux");
+    fs::write(&source_path, source).expect("UDP bind source should be writable");
+    let binary = root.join("bind");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("UDP API binary should build");
+    assert!(
+        built.status.success(),
+        "UDP API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("UDP API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0], "nil");
+    assert!(lines[1].parse::<u16>().is_ok_and(|port| port > 0));
+    assert_eq!(&lines[2..], &["nil", "nil"]);
+
+    let rust_socket = UdpSocket::bind("127.0.0.1:0").expect("loopback UDP socket should bind");
+    let connect_port = rust_socket.local_addr().unwrap().port();
+    let connect_source = format!(
+        "fn main() -> i64 {{\n    let (socket, failure) = net.udpConnect(\"127.0.0.1\", {connect_port})\n    print(failure)\n    print(net.close(socket))\n    return 0\n}}\n"
+    );
+    let connect_path = root.join("connect.flux");
+    fs::write(&connect_path, connect_source).expect("UDP connect source should be writable");
+    let connect_binary = root.join("connect");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&connect_path)
+        .arg("-o")
+        .arg(&connect_binary)
+        .output()
+        .expect("UDP connect binary should build");
+    assert!(
+        built.status.success(),
+        "UDP connect build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&connect_binary)
+        .output()
+        .expect("UDP connect binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\nnil\n");
+
+    let host_error = check_source(
+        "fn main() -> i64 {\n    let (socket, failure) = net.udpBind(1, 0)\n    return 0\n}\n",
+    )
+    .expect_err("UDP bind host must be a string");
+    assert!(
+        host_error.message.contains("net.udpBind host")
+            && host_error.message.contains("expected str")
+    );
+    let connect_port_error = check_source(
+        "fn main() -> i64 {\n    let (socket, failure) = net.udpConnect(\"127.0.0.1\", 0)\n    return 0\n}\n",
+    )
+    .expect_err("constant UDP connect port zero must fail");
+    assert!(
+        connect_port_error
+            .message
+            .contains("net.udpConnect port must be between 1 and 65535")
+    );
+    let bind_port_error = check_source(
+        "fn main() -> i64 {\n    let (socket, failure) = net.udpBind(\"127.0.0.1\", -1)\n    return 0\n}\n",
+    )
+    .expect_err("constant UDP bind ports below zero must fail");
+    assert!(
+        bind_port_error
+            .message
+            .contains("net.udpBind port must be between 0 and 65535")
+    );
+
+    let unused = r#"
+fn hidden() -> void {
+    let (socket, failure) = net.udpBind("127.0.0.1", 0)
+    print(socket)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead UDP calls should tree-shake");
+    assert!(!unused_generated.contains("flux__net_udp_bind("));
+    assert!(!unused_generated.contains("SOCK_DGRAM"));
     let _ = fs::remove_dir_all(&root);
 }
 

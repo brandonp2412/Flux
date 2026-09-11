@@ -1179,6 +1179,14 @@ fn add_qualified_namespace_completions(
                 "fn net.tcpConnect(host: str, port: i64) -> (i64, error)",
             ),
             (
+                "udpConnect",
+                "fn net.udpConnect(host: str, port: i64) -> (i64, error)",
+            ),
+            (
+                "udpBind",
+                "fn net.udpBind(host: str, port: i64) -> (i64, error)",
+            ),
+            (
                 "tcpListen",
                 "fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)",
             ),
@@ -2365,6 +2373,14 @@ fn signature_help_for_document_cached(
                 "tcpConnect" => {
                     return Some(signature_help_for_builtin(
                         "net.tcpConnect",
+                        &["host: str", "port: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "udpConnect" | "udpBind" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("net.{member}"),
                         &["host: str", "port: i64"],
                         "(i64, error)",
                         active_parameter,
@@ -5590,6 +5606,8 @@ mod tests {
         ))
         .to_json();
         assert!(net_items.contains("fn net.tcpConnect(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.udpConnect(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.udpBind(host: str, port: i64) -> (i64, error)"));
         assert!(
             net_items
                 .contains("fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)")
@@ -6331,6 +6349,58 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("process call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_network_capabilities() {
+        let uri = "file:///tmp/network-signatures.flux";
+        let source = "fn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.close(bound))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "net.tcpConnect(",
+                "fn net.tcpConnect(host: str, port: i64) -> (i64, error)",
+            ),
+            (
+                "net.tcpListen(",
+                "fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)",
+            ),
+            (
+                "net.tcpAccept(",
+                "fn net.tcpAccept(listener: i64) -> (i64, error)",
+            ),
+            (
+                "net.udpConnect(",
+                "fn net.udpConnect(host: str, port: i64) -> (i64, error)",
+            ),
+            (
+                "net.udpBind(",
+                "fn net.udpBind(host: str, port: i64) -> (i64, error)",
+            ),
+            (
+                "net.localPort(",
+                "fn net.localPort(socket: i64) -> (i64, error)",
+            ),
+            ("net.close(", "fn net.close(socket: i64) -> error"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("network call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("network call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

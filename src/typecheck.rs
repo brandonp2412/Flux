@@ -5551,6 +5551,29 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "udpConnect" | "udpBind" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("net.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let host = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &host, &format!("net.{name} host"))?;
+                let port = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &port, &format!("net.{name} port"))?;
+                let minimum = if name == "udpBind" { 0 } else { 1 };
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if value < minimum || value > 65535
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        &format!("net.{name} port must be between {minimum} and 65535"),
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "tcpListen" => {
                 if args.len() != 3 {
                     return Err(diag(
