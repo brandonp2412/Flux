@@ -10466,6 +10466,14 @@ fn equalTextSelf(value: str) -> bool {
     return value == value
 }
 
+fn andSelf(value: bool) -> bool {
+    return value && value
+}
+
+fn orSelf(value: bool) -> bool {
+    return value || value
+}
+
 fn main() -> i64 {
     print(identities(7))
     print(negateMultiplyLeft(8))
@@ -10478,6 +10486,8 @@ fn main() -> i64 {
     print(equalSelf(4))
     print(lessSelf(4))
     print(equalTextSelf("flux"))
+    print(andSelf(true))
+    print(orSelf(false))
     return subtractFromZero(11)
 }
 "#;
@@ -10504,9 +10514,34 @@ fn main() -> i64 {
     assert!(generated.contains("static inline bool flux__fn_equalSelf"));
     assert!(generated.contains("static inline bool flux__fn_lessSelf"));
     assert!(generated.contains("static inline bool flux__fn_equalTextSelf"));
+    assert!(generated.contains("static inline bool flux__fn_andSelf"));
+    assert!(generated.contains("static inline bool flux__fn_orSelf"));
     assert!(!generated.contains("flux__local_value == flux__local_value"));
     assert!(!generated.contains("flux__local_value < flux__local_value"));
     assert!(!generated.contains("strcmp(flux__local_value, flux__local_value)"));
+    assert!(!generated.contains("flux__local_value && flux__local_value"));
+    assert!(!generated.contains("flux__local_value || flux__local_value"));
+
+    let boolean_effects = r#"
+fn observeBool(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn combine(value: bool) -> bool {
+    return observeBool(value) && observeBool(value)
+}
+
+fn main() -> i64 {
+    print(combine(true))
+    return 0
+}
+"#;
+    let boolean_effects_generated = compile_to_c(boolean_effects)
+        .expect("effectful boolean operands must retain short-circuit evaluation");
+    assert!(boolean_effects_generated.contains(
+        "flux__fn_observeBool(flux__local_value) && flux__fn_observeBool(flux__local_value)"
+    ));
 
     let annihilators = r#"
 fn observe(value: i64) -> i64 {
@@ -10566,15 +10601,19 @@ fn main() -> i64 {
     let ui = r#"
 view Counter {
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto
     state count: i64 = 1
+    state active: bool = true
     Text status at 1,1
         text: "Active"
         visible: count - count == 0
     Text ratio at 2,1
         text: "Safe"
         visible: count / count == 1
-    Button action at 3,1
+    Text boolean at 3,1
+        text: "Ready"
+        visible: active && active
+    Button action at 4,1
         text: "Keep"
         visible: count >= count
         onPress: count => count * 1
@@ -10587,6 +10626,7 @@ app Counter
     assert!(!ui_generated.contains("flux_mul_i64("));
     assert!(ui_generated.contains("flux_div_self_i64(flux__ui_state_count)"));
     assert!(!ui_generated.contains("flux__ui_state_count >= flux__ui_state_count"));
+    assert!(!ui_generated.contains("flux__ui_state_active && flux__ui_state_active"));
 }
 
 #[test]

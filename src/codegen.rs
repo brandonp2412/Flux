@@ -9606,6 +9606,9 @@ fn ui_expr_c(
             if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 return Ok(code.to_string());
             }
+            if let Some(code) = same_binding_boolean_identity_c(*op, left, right, &left_code) {
+                return Ok(code);
+            }
             if let Some(code) =
                 checked_i64_identity_c(*op, left, right, &left_code, &right_code, signatures)
             {
@@ -13265,6 +13268,24 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
+fn same_binding_boolean_identity_c(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    left_code: &str,
+) -> Option<String> {
+    if !matches!(op, BinOp::And | BinOp::Or)
+        || !matches!(
+            (&left.kind, &right.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        )
+    {
+        return None;
+    }
+
+    Some(left_code.to_string())
+}
+
 fn checked_i64_identity_c(
     op: BinOp,
     left: &Expr,
@@ -16810,6 +16831,10 @@ fn emit_expr(
                 }
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 code.to_string()
+            } else if let Some(code) =
+                same_binding_boolean_identity_c(*op, left, right, &emitted_left.code)
+            {
+                code
             } else if let Some(code) = checked_i64_identity_c(
                 *op,
                 left,
