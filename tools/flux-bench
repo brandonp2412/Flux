@@ -12,7 +12,9 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARKS = ROOT / "benchmarks" / "perf"
 OUTPUT = ROOT / "target" / "flux-bench"
-WORKLOADS = ("compute", "collections", "dispatch", "calls")
+RUNTIME_WORKLOADS = ("compute", "collections", "dispatch", "calls")
+ARTIFACT_WORKLOADS = ("native_ui",)
+WORKLOADS = RUNTIME_WORKLOADS + ARTIFACT_WORKLOADS
 
 
 def run(command, *, capture=False):
@@ -39,7 +41,8 @@ def compile_workload(name, flux):
         "rust": OUTPUT / f"{name}-rust",
     }
     run([flux, "build", BENCHMARKS / f"{name}.flux", "-o", paths["flux"], "--mode", "release"])
-    run([
+
+    c_command = [
         "clang",
         "-std=c17",
         "-O3",
@@ -48,8 +51,8 @@ def compile_workload(name, flux):
         BENCHMARKS / f"{name}.c",
         "-o",
         paths["c"],
-    ])
-    run([
+    ]
+    rust_command = [
         "rustc",
         "--edition=2024",
         "-C",
@@ -63,7 +66,14 @@ def compile_workload(name, flux):
         BENCHMARKS / f"{name}.rs",
         "-o",
         paths["rust"],
-    ])
+    ]
+    if name == "native_ui":
+        gtk_flags = run(["pkg-config", "--cflags", "--libs", "gtk4"], capture=True).stdout.split()
+        c_command.extend(gtk_flags)
+        rust_command.extend(["-l", "gtk-4"])
+
+    run(c_command)
+    run(rust_command)
     return paths
 
 
@@ -109,12 +119,25 @@ def benchmark(name, paths, runs, batch):
     sizes = {language: paths[language].stat().st_size for language in paths}
     best_native = min(medians["c"], medians["rust"])
     return {
+        "kind": "runtime",
         "output": expected,
         "seconds": medians,
         "binary_bytes": sizes,
         "flux_vs_c": medians["flux"] / medians["c"],
         "flux_vs_rust": medians["flux"] / medians["rust"],
         "flux_vs_best_native": medians["flux"] / best_native,
+    }
+
+
+def benchmark_artifact(paths):
+    sizes = {language: path.stat().st_size for language, path in paths.items()}
+    best_native = min(sizes["c"], sizes["rust"])
+    return {
+        "kind": "artifact",
+        "binary_bytes": sizes,
+        "flux_size_vs_c": sizes["flux"] / sizes["c"],
+        "flux_size_vs_rust": sizes["flux"] / sizes["rust"],
+        "flux_size_vs_best_native": sizes["flux"] / best_native,
     }
 
 
@@ -138,6 +161,12 @@ def main():
         default=float(os.environ.get("FLUX_PERF_MAX_RATIO", "1.25")),
         help="maximum Flux median / overflow-safe Rust median before failure (default: 1.25)",
     )
+    parser.add_argument(
+        "--max-ui-size-ratio",
+        type=float,
+        default=float(os.environ.get("FLUX_PERF_MAX_UI_SIZE_RATIO", "2.0")),
+        help="maximum Flux native-UI binary size / best native baseline before failure (default: 2.0)",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-fail", action="store_true")
     args = parser.parse_args()
@@ -147,6 +176,8 @@ def main():
         parser.error("--batch must be at least 1")
     if args.max_ratio <= 0:
         parser.error("--max-ratio must be positive")
+    if args.max_ui_size_ratio <= 0:
+        parser.error("--max-ui-size-ratio must be positive")
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
     run(["cargo", "build", "--release", "--bin", "flux"])
@@ -156,15 +187,21 @@ def main():
     failures = []
     for name in WORKLOADS:
         paths = compile_workload(name, flux)
-        result = benchmark(name, paths, args.runs, args.batch)
+        if name in ARTIFACT_WORKLOADS:
+            result = benchmark_artifact(paths)
+            if result["flux_size_vs_best_native"] > args.max_ui_size_ratio:
+                failures.append(name)
+        else:
+            result = benchmark(name, paths, args.runs, args.batch)
+            if result["flux_vs_rust"] > args.max_ratio:
+                failures.append(name)
         results[name] = result
-        if result["flux_vs_rust"] > args.max_ratio:
-            failures.append(name)
 
     report = {
         "runs": args.runs,
         "batch": args.batch,
         "max_ratio": args.max_ratio,
+        "max_ui_size_ratio": args.max_ui_size_ratio,
         "workloads": results,
         "passed": not failures,
         "failures": failures,
@@ -174,11 +211,18 @@ def main():
     else:
         print(
             f"Flux performance gate: {args.runs} rounds x {args.batch} executions, "
-            f"max checked-Rust ratio {args.max_ratio:.2f}x"
+            f"max checked-Rust ratio {args.max_ratio:.2f}x, "
+            f"max native-UI size ratio {args.max_ui_size_ratio:.2f}x"
         )
         for name, result in results.items():
-            seconds = result["seconds"]
             sizes = result["binary_bytes"]
+            if result["kind"] == "artifact":
+                print(
+                    f"{name:12} release-artifact size flux {sizes['flux']}  rust {sizes['rust']}  "
+                    f"c {sizes['c']} bytes  best-ratio {result['flux_size_vs_best_native']:.3f}x"
+                )
+                continue
+            seconds = result["seconds"]
             print(
                 f"{name:12} flux {seconds['flux']:.6f}s  rust {seconds['rust']:.6f}s  "
                 f"c {seconds['c']:.6f}s  rust-ratio {result['flux_vs_rust']:.3f}x  "
@@ -188,7 +232,9 @@ def main():
                 f"{'':12} size flux {sizes['flux']}  rust {sizes['rust']}  c {sizes['c']} bytes"
             )
         if failures:
-            print(f"FAILED: {', '.join(failures)} exceeded {args.max_ratio:.2f}x checked Rust")
+            print(
+                f"FAILED: {', '.join(failures)} exceeded a configured runtime or native-UI size gate"
+            )
         else:
             print("PASS")
 

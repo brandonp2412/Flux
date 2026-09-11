@@ -9199,6 +9199,11 @@ fn performance_benchmark_flux_sources_stay_compiler_valid() {
             include_str!("../benchmarks/perf/collections.flux"),
         ),
         ("dispatch", include_str!("../benchmarks/perf/dispatch.flux")),
+        ("calls", include_str!("../benchmarks/perf/calls.flux")),
+        (
+            "native_ui",
+            include_str!("../benchmarks/perf/native_ui.flux"),
+        ),
     ] {
         check_source(source)
             .unwrap_or_else(|error| panic!("{name} benchmark must compile: {error:?}"));

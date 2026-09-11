@@ -14,10 +14,10 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Install Clang
+      - name: Install native benchmark toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get install -y clang libgtk-4-dev pkg-config
       - name: Validate compiler
         run: cargo test --all-targets
       - name: Enforce native performance gate
