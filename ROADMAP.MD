@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 468
 - Reported overall progress: **63%**
-- Current net scope growth after the baseline: 56 checkbox items
+- Current net scope growth after the baseline: 57 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -805,6 +805,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Stable C FFI.
 - [ ] Generated C header/binding support.
   - [x] Bootstrap generated C headers for the currently safe scalar export ABI: `flux emit-c-header <file|package> [-o file.h]` exposes only `pub fn` declarations, supports `i64`/`bool`/borrowed `str`/`error` plus scalar multi-return result structs, emits C++ `extern "C"` compatibility, and rejects lists/function values/interfaces/structs/enums until their cross-FFI ownership/layout contracts are explicit. The current ABI and borrowed-string caveats are documented in `docs/c-interop.md`; C imports, linker metadata, callbacks, aggregate ABI, and ownership-safe foreign values remain pending.
+  - [x] Generated scalar C bindings now preserve public transparent aliases as compiler-prefixed typedefs and expose public compile-time `i64`/`bool`/`str` constants as typed macros while keeping private constants absent. This adds source-level binding names without introducing runtime storage or widening the ownership-sensitive FFI type surface.
 - [ ] Android Kotlin/Java/NDK bindings, with compiler-generated glue sufficient for ordinary platform API use directly from Flux; manual FFI remains an advanced escape hatch for third-party/native libraries, not the default Android programming model.
 - [ ] Apple Swift/Objective-C bindings following the same no-user-written-bridge principle where platform ABI/runtime constraints allow it.
 - [ ] Windows native API bindings.

@@ -24,6 +24,17 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
         .iter()
         .filter(|function| function.public && function.name != "main")
         .collect::<Vec<_>>();
+    let public_scalar_aliases = program
+        .aliases
+        .iter()
+        .filter(|alias| alias.public && ffi_header_type_supported(&alias.target, signatures))
+        .map(|alias| alias.name.clone())
+        .collect::<HashSet<_>>();
+    let public_constants = program
+        .constants
+        .iter()
+        .filter(|constant| constant.public)
+        .collect::<Vec<_>>();
 
     for function in &public_functions {
         for param in &function.params {
@@ -61,22 +72,61 @@ pub fn emit_c_header(program: &Program, signatures: &Signatures) -> Result<Strin
     let mut out = String::new();
     out.push_str("#pragma once\n\n");
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
+    out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
+    out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
+
+    for alias in program
+        .aliases
+        .iter()
+        .filter(|alias| public_scalar_aliases.contains(&alias.name))
+    {
+        out.push_str(&format!(
+            "typedef {} flux__alias_{};\n",
+            c_type(&alias.target, signatures),
+            alias.name
+        ));
+    }
+    if !public_scalar_aliases.is_empty() {
+        out.push('\n');
+    }
+
+    for constant in public_constants {
+        let signature = signatures
+            .constant(&constant.name)
+            .expect("checked public constants have signatures");
+        out.push_str(&format!(
+            "#define flux__const_{} (({}){})\n",
+            constant.name,
+            c_header_type(&constant.ty, &public_scalar_aliases, signatures),
+            constant_c_value(&signature.value)
+        ));
+    }
+    if program.constants.iter().any(|constant| constant.public) {
+        out.push('\n');
+    }
+
     out.push_str("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
-    out.push_str("/* str and error values are borrowed const char * values owned by Flux/runtime storage. */\n\n");
 
     for function in &public_functions {
         if function.returns.len() > 1 {
             let tag = multi_return_struct_name(&function.name);
             out.push_str(&format!("struct {tag} {{\n"));
             for (index, ty) in function.returns.iter().enumerate() {
-                out.push_str(&format!("    {} v{index};\n", c_type(ty, signatures)));
+                out.push_str(&format!(
+                    "    {} v{index};\n",
+                    c_header_type(ty, &public_scalar_aliases, signatures)
+                ));
             }
             out.push_str("};\n\n");
         }
     }
 
     for function in public_functions {
-        out.push_str(&function_prototype(function, signatures));
+        out.push_str(&c_header_function_prototype(
+            function,
+            &public_scalar_aliases,
+            signatures,
+        ));
         out.push_str(";\n");
     }
 
@@ -89,6 +139,48 @@ fn ffi_header_type_supported(ty: &Type, signatures: &Signatures) -> bool {
         signatures.canonical_type(ty),
         Type::I64 | Type::Bool | Type::Str | Type::Error
     )
+}
+
+fn c_header_type(
+    ty: &Type,
+    public_scalar_aliases: &HashSet<String>,
+    signatures: &Signatures,
+) -> String {
+    if let Type::Named(name) = ty
+        && public_scalar_aliases.contains(name)
+    {
+        return format!("flux__alias_{name}");
+    }
+    c_type(ty, signatures)
+}
+
+fn c_header_function_prototype(
+    function: &Function,
+    public_scalar_aliases: &HashSet<String>,
+    signatures: &Signatures,
+) -> String {
+    let ret = match function.returns.as_slice() {
+        [] => "void".to_string(),
+        [ty] => c_header_type(ty, public_scalar_aliases, signatures),
+        _ => format!("struct {}", multi_return_struct_name(&function.name)),
+    };
+    let params = if function.params.is_empty() {
+        "void".to_string()
+    } else {
+        function
+            .params
+            .iter()
+            .map(|param| {
+                format!(
+                    "{} {}",
+                    c_header_type(&param.ty, public_scalar_aliases, signatures),
+                    local_c_name(&param.name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("{ret} {}({params})", function_c_name(&function.name))
 }
 
 pub fn emit_c_with_source_paths(

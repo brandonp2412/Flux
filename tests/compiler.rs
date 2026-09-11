@@ -6867,7 +6867,12 @@ fn main() -> i64 {
 #[test]
 fn emits_c_header_for_public_scalar_abi_and_multi_returns() {
     let source = r#"
-pub fn scale(value: i64, enabled: bool, label: str) -> (i64, error) {
+pub type Count = i64
+pub const DEFAULT_COUNT: Count = 3
+pub const FEATURE_NAME: str = "flux ffi"
+const HIDDEN_COUNT: i64 = 9
+
+pub fn scale(value: Count, enabled: bool, label: str) -> (Count, error) {
     if enabled:
         return value * 2, nil
     return value, error(label)
@@ -6885,12 +6890,16 @@ fn main() -> i64 {
     let header = compile_to_c_header(source).expect("public scalar ABI should emit a C header");
     assert!(header.contains("#include <stdbool.h>"));
     assert!(header.contains("#include <stdint.h>"));
+    assert!(header.contains("typedef int64_t flux__alias_Count;"));
+    assert!(header.contains("#define flux__const_DEFAULT_COUNT ((flux__alias_Count)INT64_C(3))"));
+    assert!(header.contains("#define flux__const_FEATURE_NAME ((const char *)\"flux ffi\")"));
+    assert!(!header.contains("HIDDEN_COUNT"));
     assert!(header.contains("extern \"C\""));
     assert!(header.contains("struct flux__ret_scale"));
-    assert!(header.contains("int64_t v0;"));
+    assert!(header.contains("flux__alias_Count v0;"));
     assert!(header.contains("const char * v1;"));
     assert!(header.contains(
-        "struct flux__ret_scale flux__fn_scale(int64_t flux__local_value, bool flux__local_enabled, const char * flux__local_label);"
+        "struct flux__ret_scale flux__fn_scale(flux__alias_Count flux__local_value, bool flux__local_enabled, const char * flux__local_label);"
     ));
     assert!(!header.contains("flux__fn_hidden"));
     assert!(!header.contains("main("));
