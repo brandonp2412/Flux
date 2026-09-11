@@ -811,4 +811,5 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    Coalesce,
 }

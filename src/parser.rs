@@ -4704,6 +4704,7 @@ enum TokenKind {
     Colon,
     Dot,
     Comma,
+    QuestionQuestion,
     Question,
 }
 
@@ -4833,7 +4834,7 @@ fn parse_shell_call_at(
     }
     if parts.len() > 1 {
         let next = parts[1].0.trim_start();
-        if next.starts_with(['+', '-', '*', '/', '<', '>', '=', '!', '&', '|', '{']) {
+        if next.starts_with(['+', '-', '*', '/', '<', '>', '=', '!', '&', '|', '?', '{']) {
             return Ok(None);
         }
     }
@@ -5288,6 +5289,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 b':' => (TokenKind::Colon, 1),
                 b'.' => (TokenKind::Dot, 1),
                 b',' => (TokenKind::Comma, 1),
+                b'?' if bytes.get(index + 1) == Some(&b'?') => (TokenKind::QuestionQuestion, 2),
                 b'?' => (TokenKind::Question, 1),
                 b'!' if bytes.get(index + 1) == Some(&b'=') => (TokenKind::NotEq, 2),
                 b'!' => (TokenKind::Bang, 1),
@@ -6471,18 +6473,19 @@ impl ExprParser<'_> {
 
     fn peek_binary(&self) -> Option<(BinOp, u8)> {
         Some(match &self.tokens.get(self.index)?.kind {
-            TokenKind::OrOr => (BinOp::Or, 1),
-            TokenKind::AndAnd => (BinOp::And, 2),
-            TokenKind::EqEq => (BinOp::Eq, 3),
-            TokenKind::NotEq => (BinOp::Ne, 3),
-            TokenKind::Lt => (BinOp::Lt, 4),
-            TokenKind::Le => (BinOp::Le, 4),
-            TokenKind::Gt => (BinOp::Gt, 4),
-            TokenKind::Ge => (BinOp::Ge, 4),
-            TokenKind::Plus => (BinOp::Add, 5),
-            TokenKind::Minus => (BinOp::Sub, 5),
-            TokenKind::Star => (BinOp::Mul, 6),
-            TokenKind::Slash => (BinOp::Div, 6),
+            TokenKind::QuestionQuestion => (BinOp::Coalesce, 1),
+            TokenKind::OrOr => (BinOp::Or, 2),
+            TokenKind::AndAnd => (BinOp::And, 3),
+            TokenKind::EqEq => (BinOp::Eq, 4),
+            TokenKind::NotEq => (BinOp::Ne, 4),
+            TokenKind::Lt => (BinOp::Lt, 5),
+            TokenKind::Le => (BinOp::Le, 5),
+            TokenKind::Gt => (BinOp::Gt, 5),
+            TokenKind::Ge => (BinOp::Ge, 5),
+            TokenKind::Plus => (BinOp::Add, 6),
+            TokenKind::Minus => (BinOp::Sub, 6),
+            TokenKind::Star => (BinOp::Mul, 7),
+            TokenKind::Slash => (BinOp::Div, 7),
             _ => return None,
         })
     }

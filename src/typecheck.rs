@@ -5575,6 +5575,45 @@ pub fn type_of_expr(
                     require_type(expr.span, &Type::Bool, &right_ty, "right boolean operand")?;
                     Ok(Type::Bool)
                 }
+                BinOp::Coalesce => {
+                    let left_ty = signatures.canonical_type(&left_ty);
+                    let right_ty = signatures.canonical_type(&right_ty);
+                    let Type::Optional(inner) = left_ty else {
+                        return Err(diag(
+                            left.span,
+                            &format!(
+                                "left operand of '??' must be optional, got {}",
+                                left_ty.name()
+                            ),
+                        ));
+                    };
+                    if *inner == Type::Void {
+                        if matches!(right_ty, Type::Optional(ref right) if **right == Type::Void) {
+                            return Err(diag(
+                                expr.span,
+                                "'none ?? none' has no concrete optional value type",
+                            ));
+                        }
+                        return Ok(right_ty);
+                    }
+                    if right_ty == *inner {
+                        Ok(*inner)
+                    } else if right_ty == Type::Optional(inner.clone())
+                        || matches!(right_ty, Type::Optional(ref right) if **right == Type::Void)
+                    {
+                        Ok(Type::Optional(inner))
+                    } else {
+                        Err(diag(
+                            right.span,
+                            &format!(
+                                "fallback of '??' must be {} or {}?, got {}",
+                                inner.name(),
+                                inner.name(),
+                                right_ty.name()
+                            ),
+                        ))
+                    }
+                }
             }
         }
     }
@@ -8314,6 +8353,7 @@ fn constant_operator_name(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+        BinOp::Coalesce => "??",
     }
 }
 

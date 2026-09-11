@@ -21262,6 +21262,106 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_coalescing_is_lazy_typed_and_native() {
+    let source = r#"
+fn present() -> i64? {
+    return 7
+}
+
+fn missing() -> i64? {
+    return none
+}
+
+fn fallback() -> i64 {
+    print(99)
+    return 9
+}
+
+fn main() -> i64 {
+    print(present() ?? fallback())
+    print(missing() ?? fallback())
+    let first: i64? = none
+    let second: i64? = 3
+    print(first ?? second ?? 5)
+    print(none ?? 4)
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional coalescing should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("optional coalescing should format canonically");
+    assert!(formatted.contains("print(present() ?? fallback())"));
+    assert!(formatted.contains("print(first ?? second ?? 5)"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional coalescing should reparse"),
+        formatted
+    );
+
+    let generated = compile_to_c(source).expect("optional coalescing should lower natively");
+    assert!(generated.contains("flux__coalesce_value.has_value"));
+    assert!(generated.contains("__extension__ ({ struct flux__optional_i64"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-coalescing-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary coalescing test directory should be writable");
+    let c_path = root.join("coalescing.c");
+    let exe_path = root.join("coalescing");
+    fs::write(&c_path, generated).expect("generated coalescing C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile native coalescing");
+    assert!(
+        compile.status.success(),
+        "coalescing C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("coalescing program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n99\n9\n3\n4\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    return 1 ?? 2
+}
+"#;
+    let error = check_source(non_optional).expect_err("coalescing needs an optional left operand");
+    assert!(
+        error
+            .message
+            .contains("left operand of '??' must be optional, got i64")
+    );
+
+    let wrong_fallback = r#"
+fn main() -> i64 {
+    let value: i64? = none
+    return value ?? false
+}
+"#;
+    let error =
+        check_source(wrong_fallback).expect_err("coalescing fallback must match the inner type");
+    assert!(
+        error
+            .message
+            .contains("fallback of '??' must be i64 or i64?, got bool"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
+
+#[test]
 fn rejects_error_comparison_with_string() {
     let source = r#"
 fn main() -> i64 {

@@ -16158,7 +16158,40 @@ fn emit_expr(
             let emitted_left = emit_expr(left, env, signatures)?;
             let emitted_right = emit_expr(right, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let code = if let Some(code) = checked_i64_identity_c(
+            let code = if matches!(op, BinOp::Coalesce) {
+                let left_ty = signatures.canonical_type(&emitted_left.ty);
+                let result_ty_canonical = signatures.canonical_type(&result_ty);
+                let Type::Optional(inner) = left_ty else {
+                    return Err(diag(
+                        expr.span,
+                        "invalid coalescing expression reached code generation",
+                    ));
+                };
+                if *inner == Type::Void {
+                    if matches!(result_ty_canonical, Type::Optional(_)) {
+                        emit_expr_for_expected(right, &result_ty_canonical, env, signatures)?
+                    } else {
+                        emitted_right.code.clone()
+                    }
+                } else {
+                    let optional_ty = Type::Optional(inner.clone());
+                    let optional_c = c_type(&optional_ty, signatures);
+                    if matches!(result_ty_canonical, Type::Optional(_)) {
+                        let right_code =
+                            emit_expr_for_expected(right, &result_ty_canonical, env, signatures)?;
+                        let result_c = c_type(&result_ty_canonical, signatures);
+                        format!(
+                            "__extension__ ({{ {optional_c} flux__coalesce_value = {}; flux__coalesce_value.has_value ? ({result_c}){{ .has_value = true, .value = flux__coalesce_value.value }} : {right_code}; }})",
+                            emitted_left.code
+                        )
+                    } else {
+                        format!(
+                            "__extension__ ({{ {optional_c} flux__coalesce_value = {}; flux__coalesce_value.has_value ? flux__coalesce_value.value : {}; }})",
+                            emitted_left.code, emitted_right.code
+                        )
+                    }
+                }
+            } else if let Some(code) = checked_i64_identity_c(
                 *op,
                 left,
                 right,
@@ -19305,6 +19338,7 @@ fn c_operator(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+        BinOp::Coalesce => unreachable!("coalescing lowers before C operator selection"),
     }
 }
 

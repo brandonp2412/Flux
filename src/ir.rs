@@ -161,6 +161,9 @@ pub enum ControlFlowValueRegionKind {
         condition: ControlFlowValueId,
         execute_when: bool,
     },
+    OptionalFallback {
+        optional: ControlFlowValueId,
+    },
     Branch {
         condition: ControlFlowValueId,
         selected_when: bool,
@@ -2940,6 +2943,16 @@ fn collect_value_uses(
                             execute_when: matches!(op, BinOp::And),
                         },
                     );
+                } else if matches!(op, BinOp::Coalesce) {
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *right,
+                        ControlFlowValueUseKind::ShortCircuitRight,
+                        ControlFlowValueRegionKind::OptionalFallback { optional: *left },
+                    );
                 } else {
                     push_value_use(&mut uses, value.id, *right, ControlFlowValueUseKind::Eager);
                 }
@@ -3139,7 +3152,8 @@ fn value_use_is_reachable(
                 .and_then(|guard| guard.source_constant.as_ref()),
             Some(ConstantValue::Bool(false))
         ),
-        ControlFlowValueRegionKind::MatchGuard { .. }
+        ControlFlowValueRegionKind::OptionalFallback { .. }
+        | ControlFlowValueRegionKind::MatchGuard { .. }
         | ControlFlowValueRegionKind::LoopCondition { .. }
         | ControlFlowValueRegionKind::LoopBody { .. }
         | ControlFlowValueRegionKind::DeferredBody => true,

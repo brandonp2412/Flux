@@ -1168,13 +1168,13 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 text
             }
         }
-        ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 7)),
+        ExprKind::Field { base, name, .. } => format!("{}.{name}", format_expr(base, 8)),
         ExprKind::Unary { op, expr } => {
             let operator = match op {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "!",
             };
-            format!("{operator}{}", format_expr(expr, 7))
+            format!("{operator}{}", format_expr(expr, 8))
         }
         ExprKind::Binary { left, op, right } => {
             let precedence = binary_precedence(*op);
@@ -1195,12 +1195,13 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
 
 fn binary_precedence(op: BinOp) -> u8 {
     match op {
-        BinOp::Or => 1,
-        BinOp::And => 2,
-        BinOp::Eq | BinOp::Ne => 3,
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 4,
-        BinOp::Add | BinOp::Sub => 5,
-        BinOp::Mul | BinOp::Div => 6,
+        BinOp::Coalesce => 1,
+        BinOp::Or => 2,
+        BinOp::And => 3,
+        BinOp::Eq | BinOp::Ne => 4,
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 5,
+        BinOp::Add | BinOp::Sub => 6,
+        BinOp::Mul | BinOp::Div => 7,
     }
 }
 
@@ -1218,6 +1219,7 @@ fn binary_text(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+        BinOp::Coalesce => "??",
     }
 }
 
