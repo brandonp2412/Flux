@@ -108,10 +108,28 @@ pub fn emit_c_header_with_module_names(
     out.push_str(
         "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
     );
-    out.push_str("/* Copy callback values use plain C function pointers with ABI-safe scalar parameters/results. */\n");
+    out.push_str("/* Copy callback values use plain C function pointers with ABI-safe Copy parameters/results. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
 
-    emit_c_header_function_type_typedefs(&mut out, program, signatures)?;
+    for definition in &public_value_defs {
+        out.push_str(&format!(
+            "struct {};\n",
+            public_value_names
+                .get(definition.name())
+                .expect("public FFI value has a header name")
+        ));
+    }
+    if !public_value_defs.is_empty() {
+        out.push('\n');
+    }
+
+    emit_c_header_function_type_typedefs(
+        &mut out,
+        program,
+        &public_ffi_aliases,
+        &public_value_names,
+        signatures,
+    )?;
 
     for definition in &public_value_defs {
         match definition {
@@ -281,22 +299,21 @@ fn ffi_header_type_supported_inner(
                 && params
                     .iter()
                     .chain(&returns)
-                    .all(|ty| ffi_header_callback_scalar_supported(ty, signatures))
+                    .all(|ty| ffi_header_callback_value_supported(ty, signatures))
         }
         Type::Void | Type::List(_) | Type::Function { .. } => false,
     }
 }
 
-fn ffi_header_callback_scalar_supported(ty: &Type, signatures: &Signatures) -> bool {
-    matches!(
-        signatures.canonical_type(ty),
-        Type::I64 | Type::Bool | Type::Str | Type::Error
-    )
+fn ffi_header_callback_value_supported(ty: &Type, signatures: &Signatures) -> bool {
+    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new(), false)
 }
 
 fn emit_c_header_function_type_typedefs(
     out: &mut String,
     program: &Program,
+    public_ffi_aliases: &HashSet<String>,
+    public_value_names: &HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let mut types = HashSet::new();
@@ -336,14 +353,14 @@ fn emit_c_header_function_type_typedefs(
         };
         let return_type = returns
             .first()
-            .map(|ty| c_type(ty, signatures))
+            .map(|ty| c_header_type(ty, public_ffi_aliases, public_value_names, signatures))
             .unwrap_or_else(|| "void".to_string());
         let params_text = if params.is_empty() {
             "void".to_string()
         } else {
             params
                 .iter()
-                .map(|ty| c_type(ty, signatures))
+                .map(|ty| c_header_type(ty, public_ffi_aliases, public_value_names, signatures))
                 .collect::<Vec<_>>()
                 .join(", ")
         };

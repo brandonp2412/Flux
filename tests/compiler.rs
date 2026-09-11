@@ -7502,6 +7502,7 @@ pub enum Choice {
 }
 
 pub type Mapper = fn(i64) -> i64
+pub type PointMapper = fn(Point) -> Point
 
 pub fn scale(value: i64) -> i64 {
     return value * 2
@@ -7516,6 +7517,10 @@ pub fn roundtrip(choice: Choice) -> Choice {
 }
 
 pub fn passThrough(mapper: Mapper) -> Mapper {
+    return mapper
+}
+
+pub fn passPoint(mapper: PointMapper) -> PointMapper {
     return mapper
 }
 
@@ -7539,6 +7544,7 @@ fn main() -> i64 {
     let identity_symbol = format!("flux__abi_{module_component}__fn_identity");
     let roundtrip_symbol = format!("flux__abi_{module_component}__fn_roundtrip");
     let callback_symbol = format!("flux__abi_{module_component}__fn_passThrough");
+    let point_callback_symbol = format!("flux__abi_{module_component}__fn_passPoint");
     let point_type = format!("flux__abi_{module_component}__type_Point");
     let choice_type = format!("flux__abi_{module_component}__type_Choice");
     let choice_tag = format!("flux__abi_{module_component}__tag_Choice");
@@ -7560,12 +7566,22 @@ fn main() -> i64 {
     assert!(header.contains("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);"));
     assert!(header.contains("typedef flux__fn_i64__to__i64 flux__alias_Mapper;"));
     assert!(header.contains(&format!(
+        "typedef struct {point_type} (*flux__fn_named_Point__to__named_Point)(struct {point_type});"
+    )));
+    assert!(
+        header.contains("typedef flux__fn_named_Point__to__named_Point flux__alias_PointMapper;")
+    );
+    assert!(header.contains(&format!(
         "flux__alias_Mapper {callback_symbol}(flux__alias_Mapper flux__local_mapper);"
+    )));
+    assert!(header.contains(&format!(
+        "flux__alias_PointMapper {point_callback_symbol}(flux__alias_PointMapper flux__local_mapper);"
     )));
     assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{identity_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{roundtrip_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{callback_symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{point_callback_symbol}\")")));
 
     let header_path = root.join("package.h");
     let consumer_path = root.join("consumer.c");
@@ -7628,6 +7644,10 @@ fn main() -> i64 {
     assert!(
         symbols.contains(&callback_symbol),
         "qualified callback ABI symbol should be exported"
+    );
+    assert!(
+        symbols.contains(&point_callback_symbol),
+        "qualified aggregate callback ABI symbol should be exported"
     );
     assert!(
         !symbols.contains("flux__fn_scale"),
@@ -7756,6 +7776,81 @@ fn main() -> i64 {
     assert!(
         output.status.success(),
         "generated callback ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn emits_c_header_for_public_copy_aggregate_callback_abi() {
+    let source = r#"
+pub struct Point {
+    x: i64
+}
+
+pub enum Choice {
+    Empty
+    PointValue(Point)
+}
+
+pub type PointMapper = fn(Point) -> Point
+pub type ChoiceMapper = fn(Choice) -> Choice
+
+pub fn choosePoint(value: PointMapper) -> PointMapper {
+    return value
+}
+
+pub fn chooseChoice(value: ChoiceMapper) -> ChoiceMapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("Copy callbacks with aggregate ABI-safe signatures should emit a C header");
+    assert!(header.contains("struct flux__type_Point;"));
+    assert!(header.contains("struct flux__type_Choice;"));
+    assert!(header.contains(
+        "typedef struct flux__type_Point (*flux__fn_named_Point__to__named_Point)(struct flux__type_Point);"
+    ));
+    assert!(header.contains(
+        "typedef struct flux__type_Choice (*flux__fn_named_Choice__to__named_Choice)(struct flux__type_Choice);"
+    ));
+    assert!(
+        header.contains("typedef flux__fn_named_Point__to__named_Point flux__alias_PointMapper;")
+    );
+    assert!(
+        header
+            .contains("typedef flux__fn_named_Choice__to__named_Choice flux__alias_ChoiceMapper;")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-c-aggregate-callback-header-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary aggregate callback header directory should be writable");
+    let header_path = root.join("flux_callback_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header)
+        .expect("generated aggregate callback C header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_callback_api.h\"\nstatic struct flux__type_Point point_identity(struct flux__type_Point value) { return value; }\nstatic struct flux__type_Choice choice_identity(struct flux__type_Choice value) { return value; }\nflux__alias_PointMapper point_probe(void) { return flux__fn_choosePoint(point_identity); }\nflux__alias_ChoiceMapper choice_probe(void) { return flux__fn_chooseChoice(choice_identity); }\n",
+    )
+    .expect("aggregate callback ABI C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the aggregate callback ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated aggregate callback ABI should compile: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = fs::remove_dir_all(&root);
