@@ -1550,6 +1550,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "setImeAction",
+            3,
+            "fn android.setImeAction(action: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
             "createNotificationChannel",
             3,
             "fn android.createNotificationChannel(id: str, name: str, description: str) -> void",
@@ -2986,6 +2993,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "android.setSelection",
                         &["start: i64", "end: i64"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "setImeAction" => {
+                    return Some(signature_help_for_builtin(
+                        "android.setImeAction",
+                        &["action: str"],
                         "bool",
                         active_parameter,
                     ));
@@ -6331,6 +6346,7 @@ mod tests {
         assert!(android_items.contains("fn android.selectionEnd() -> i64"));
         assert!(android_items.contains("fn android.setCaret(position: i64) -> bool"));
         assert!(android_items.contains("fn android.setSelection(start: i64, end: i64) -> bool"));
+        assert!(android_items.contains("fn android.setImeAction(action: str) -> bool"));
         assert!(android_items.contains(
             "fn android.createNotificationChannel(id: str, name: str, description: str) -> void"
         ));
@@ -7474,7 +7490,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_focus_and_selection() {
         let uri = "file:///tmp/android-focus-signatures.flux";
-        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.focusFirst()\n    android.focusLast()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    android.focusNext()\n    android.focusPrevious()\n    android.focusFirst()\n    android.focusLast()\n    android.clearFocus()\n    print(android.selectionStart())\n    print(android.selectionEnd())\n    print(android.setCaret(1))\n    print(android.setSelection(0, 1))\n    print(android.setImeAction(\"done\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -7500,6 +7516,10 @@ mod tests {
             (
                 "android.setSelection(",
                 "fn android.setSelection(start: i64, end: i64) -> bool",
+            ),
+            (
+                "android.setImeAction(",
+                "fn android.setImeAction(action: str) -> bool",
             ),
         ] {
             let line_index = source

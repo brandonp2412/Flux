@@ -15867,6 +15867,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     print(android.selectionEnd())
     print(android.setCaret(1))
     print(android.setSelection(0, 1))
+    print(android.setImeAction("done"))
     print(android.permissionGranted("android.permission.CAMERA"))
     android.requestPermission("android.permission.CAMERA")
     android.createNotificationChannel("updates", "Updates", "Flux update notifications")
@@ -16000,6 +16001,10 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(
         generated.contains("static bool flux__android_set_selection(int64_t start, int64_t end)")
     );
+    assert!(generated.contains("static bool flux__android_set_ime_action(const char *action)"));
+    assert!(generated.contains("strcmp(action, \"done\") == 0"));
+    assert!(generated.contains("\"setImeOptions\", \"(I)V\""));
+    assert!(generated.contains("flux__android_set_ime_action(\"done\")"));
     assert!(generated.contains("\"android/widget/EditText\""));
     assert!(generated.contains("\"getSelectionStart\""));
     assert!(generated.contains("\"getSelectionEnd\""));
@@ -16092,6 +16097,7 @@ fn main() -> i64 {
     android.selectionEnd()
     android.setCaret(1)
     android.setSelection(0, 1)
+    android.setImeAction("next")
     android.permissionGranted("android.permission.CAMERA")
     android.requestPermission("android.permission.CAMERA")
     android.createNotificationChannel("unused", "Unused", "Unused")
@@ -16135,6 +16141,7 @@ app Screen
     assert!(!tree_generated.contains("flux__android_selection_end"));
     assert!(!tree_generated.contains("flux__android_set_caret"));
     assert!(!tree_generated.contains("flux__android_set_selection"));
+    assert!(!tree_generated.contains("flux__android_set_ime_action"));
     assert!(!tree_generated.contains("android/widget/EditText"));
     assert!(!tree_generated.contains("showSoftInput"));
     assert!(!tree_generated.contains("hideSoftInputFromWindow"));
@@ -16169,6 +16176,7 @@ fn main() -> i64 {
     android.selectionEnd(false)
     android.setCaret("bad")
     android.setSelection(0, "bad")
+    android.setImeAction(42)
     android.createNotificationChannel("updates", 1, false)
     android.permissionGranted(42)
     android.requestPermission(false)
@@ -16251,6 +16259,10 @@ fn main() -> i64 {
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.setSelection end") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.setImeAction action")
+            && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error

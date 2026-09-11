@@ -978,10 +978,13 @@ fn emit_runtime_prelude(
     let uses_android_set_selection = uses_android
         && (runtime_usage.contains("flux__android_set_selection(")
             || uses_text_input_set_selection);
+    let uses_android_set_ime_action =
+        uses_android && runtime_usage.contains("flux__android_set_ime_action(");
     let uses_android_text_selection = uses_android_selection_start
         || uses_android_selection_end
         || uses_android_set_caret
-        || uses_android_set_selection;
+        || uses_android_set_selection
+        || uses_android_set_ime_action;
     let uses_android_create_notification_channel =
         uses_android && runtime_usage.contains("flux__android_create_notification_channel(");
     let uses_android_notification_permission_granted =
@@ -1518,6 +1521,38 @@ fn emit_runtime_prelude(
             if uses_android_set_caret {
                 out.push_str("static inline bool flux__android_set_caret(int64_t position) { return flux__android_set_selection(position, position); }\n");
             }
+        }
+        if uses_android_set_ime_action {
+            out.push_str("static bool flux__android_set_ime_action(const char *action) {\n");
+            out.push_str("    if (action == NULL) return false;\n");
+            out.push_str("    int action_id = -1;\n");
+            out.push_str("    if (strcmp(action, \"none\") == 0) action_id = 1;\n");
+            out.push_str("    else if (strcmp(action, \"go\") == 0) action_id = 2;\n");
+            out.push_str("    else if (strcmp(action, \"search\") == 0) action_id = 3;\n");
+            out.push_str("    else if (strcmp(action, \"send\") == 0) action_id = 4;\n");
+            out.push_str("    else if (strcmp(action, \"next\") == 0) action_id = 5;\n");
+            out.push_str("    else if (strcmp(action, \"done\") == 0) action_id = 6;\n");
+            out.push_str("    else if (strcmp(action, \"previous\") == 0) action_id = 7;\n");
+            out.push_str("    else return false;\n");
+            out.push_str("    bool detach = false;\n");
+            out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+            out.push_str("    if (env == NULL) return false;\n");
+            out.push_str("    jobject view = flux__android_current_edit_text(env);\n");
+            out.push_str(
+                "    if (view == NULL) { flux__android_release_env(detach); return false; }\n",
+            );
+            out.push_str("    jclass view_class = (*env)->GetObjectClass(env, view);\n");
+            out.push_str("    bool applied = false;\n");
+            out.push_str("    if (view_class != NULL) {\n");
+            out.push_str("        jmethodID set_ime_options = (*env)->GetMethodID(env, view_class, \"setImeOptions\", \"(I)V\");\n");
+            out.push_str("        if (set_ime_options != NULL) { (*env)->CallVoidMethod(env, view, set_ime_options, (jint)action_id); applied = !(*env)->ExceptionCheck(env); }\n");
+            out.push_str("    }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+            out.push_str("    if (view_class != NULL) (*env)->DeleteLocalRef(env, view_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, view);\n");
+            out.push_str("    flux__android_release_env(detach);\n");
+            out.push_str("    return applied;\n");
+            out.push_str("}\n");
         }
     }
     if uses_android_share {
@@ -14710,6 +14745,20 @@ fn emit_qualified_call(
                 let end = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__android_set_selection({}, {})", start.code, end.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "setImeAction" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let action = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_set_ime_action({})", action.code),
                     vec![Type::Bool],
                     None,
                 ));
