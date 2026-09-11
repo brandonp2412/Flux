@@ -485,45 +485,12 @@ impl ControlFlowGraph {
         &self,
         id: ControlFlowDefinitionId,
     ) -> Option<ControlFlowValueId> {
-        if let Some(value) = self.scoped_borrow_sources.get(&id) {
-            return Some(*value);
-        }
-        let ControlFlowDefinitionId::Node { node, index } = id else {
-            return None;
-        };
-        let definition = self.nodes.get(node.0)?.definitions.get(index)?;
-        if !matches!(definition.ty, Type::List(_)) {
-            return None;
-        }
-        let source_node = match self.nodes.get(node.0)?.kind {
-            ControlFlowNodeKind::Destructure { .. } | ControlFlowNodeKind::Loop => node,
-            ControlFlowNodeKind::PatternBindings => {
-                self.edges
-                    .iter()
-                    .find(|edge| {
-                        edge.to == node && matches!(edge.kind, ControlFlowEdgeKind::MatchArm(_))
-                    })?
-                    .from
-            }
-            _ => return None,
-        };
-        self.edges
-            .iter()
-            .filter(|edge| edge.to == source_node && edge.kind == ControlFlowEdgeKind::Next)
-            .find_map(|edge| {
-                let source = self.nodes.get(edge.from.0)?;
-                matches!(
-                    source.kind,
-                    ControlFlowNodeKind::Evaluation(
-                        ControlFlowEvaluationKind::DestructureValue
-                            | ControlFlowEvaluationKind::AssignmentValue
-                            | ControlFlowEvaluationKind::MatchValue
-                            | ControlFlowEvaluationKind::Iterable
-                    )
-                )
-                .then(|| source.values.first().copied())
-                .flatten()
-            })
+        definition_borrow_source_value_from_parts(
+            &self.nodes,
+            &self.edges,
+            &self.scoped_borrow_sources,
+            id,
+        )
     }
 
     pub fn definition_span(&self, id: ControlFlowDefinitionId) -> Option<SourceSpan> {
@@ -809,6 +776,53 @@ impl ControlFlowGraph {
     }
 }
 
+fn definition_borrow_source_value_from_parts(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+    scoped_borrow_sources: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    id: ControlFlowDefinitionId,
+) -> Option<ControlFlowValueId> {
+    if let Some(value) = scoped_borrow_sources.get(&id) {
+        return Some(*value);
+    }
+    let ControlFlowDefinitionId::Node { node, index } = id else {
+        return None;
+    };
+    let definition = nodes.get(node.0)?.definitions.get(index)?;
+    if !matches!(definition.ty, Type::List(_)) {
+        return None;
+    }
+    let source_node = match nodes.get(node.0)?.kind {
+        ControlFlowNodeKind::Destructure { .. } | ControlFlowNodeKind::Loop => node,
+        ControlFlowNodeKind::PatternBindings => {
+            edges
+                .iter()
+                .find(|edge| {
+                    edge.to == node && matches!(edge.kind, ControlFlowEdgeKind::MatchArm(_))
+                })?
+                .from
+        }
+        _ => return None,
+    };
+    edges
+        .iter()
+        .filter(|edge| edge.to == source_node && edge.kind == ControlFlowEdgeKind::Next)
+        .find_map(|edge| {
+            let source = nodes.get(edge.from.0)?;
+            matches!(
+                source.kind,
+                ControlFlowNodeKind::Evaluation(
+                    ControlFlowEvaluationKind::DestructureValue
+                        | ControlFlowEvaluationKind::AssignmentValue
+                        | ControlFlowEvaluationKind::MatchValue
+                        | ControlFlowEvaluationKind::Iterable
+                )
+            )
+            .then(|| source.values.first().copied())
+            .flatten()
+        })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LoopTargets {
     break_target: ControlFlowNodeId,
@@ -878,8 +892,10 @@ impl<'a> ControlFlowBuilder<'a> {
         };
         reclassify_borrowed_list_reborrows(
             &mut self.nodes,
+            &self.edges,
             &self.values,
             &definition_values,
+            &self.scoped_borrow_sources,
             &self.parameters,
             self.signatures,
         );
@@ -2932,8 +2948,10 @@ fn collect_value_uses(
 
 fn reclassify_borrowed_list_reborrows(
     nodes: &mut [ControlFlowNode],
+    edges: &[ControlFlowEdge],
     values: &[ControlFlowValue],
     definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    scoped_borrow_sources: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     parameters: &[ControlFlowParameter],
     signatures: &Signatures,
 ) {
@@ -2943,6 +2961,23 @@ fn reclassify_borrowed_list_reborrows(
         .filter(|(_, parameter)| matches!(signatures.canonical_type(&parameter.ty), Type::List(_)))
         .map(|(index, _)| ControlFlowDefinitionId::Parameter(index))
         .collect::<BTreeSet<_>>();
+    borrowed_definitions.extend(scoped_borrow_sources.keys().copied());
+    for node in nodes.iter() {
+        for (index, definition) in node.definitions.iter().enumerate() {
+            if !matches!(signatures.canonical_type(&definition.ty), Type::List(_)) {
+                continue;
+            }
+            let id = ControlFlowDefinitionId::Node {
+                node: node.id,
+                index,
+            };
+            if definition_borrow_source_value_from_parts(nodes, edges, scoped_borrow_sources, id)
+                .is_some()
+            {
+                borrowed_definitions.insert(id);
+            }
+        }
+    }
 
     loop {
         let mut changed = false;

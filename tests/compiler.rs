@@ -5756,6 +5756,74 @@ fn main() -> i64 {
 }
 
 #[test]
+fn borrowed_list_views_reborrow_without_moving_the_view_binding() {
+    let foreach_alias = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    for row in rows:
+        let alias: i64[] = row
+        print(row[0])
+        print(alias[1])
+        break
+    return 0
+}
+"#;
+    check_source(foreach_alias)
+        .expect("aliasing a borrowed foreach element should be an immutable reborrow");
+    compile_to_c(foreach_alias).expect("borrowed foreach aliases should lower natively");
+
+    let destructured_alias = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let [_, ...middle, _] = values
+    let alias: i64[] = middle
+    print(middle[0])
+    print(alias[0])
+    return 0
+}
+"#;
+    check_source(destructured_alias)
+        .expect("aliasing a borrowed list-rest view should not move the original view binding");
+    compile_to_c(destructured_alias).expect("borrowed list-rest aliases should lower natively");
+
+    let match_alias = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    match values:
+        []:
+            print 0
+        [_, ...tail]:
+            let alias: i64[] = tail
+            print(tail[0])
+            print(alias[0])
+    return 0
+}
+"#;
+    check_source(match_alias)
+        .expect("aliasing a borrowed list-match view should not move the pattern binding");
+    compile_to_c(match_alias).expect("borrowed list-match aliases should lower natively");
+
+    let live_owner_borrow = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let [_, ...middle] = values
+    let alias: i64[] = middle
+    let destination: i64[] = values
+    print(alias[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_owner_borrow)
+        .expect_err("reborrowing a view must still keep the original owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'alias' is still live")
+    }));
+}
+
+#[test]
 fn sibling_branch_alias_names_do_not_cross_contaminate_borrow_provenance() {
     let source = r#"
 fn positive(value: i64) -> bool {
