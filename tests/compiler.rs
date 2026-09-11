@@ -1650,6 +1650,11 @@ fn main() -> i64 {{
     let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
     print(connectError)
     print(net.sendText(socket, "ping"))
+    print(net.setNonblocking(socket, true))
+    let (ready, readyError) = net.waitReadable(socket, 1000)
+    print(ready)
+    print(readyError)
+    print(net.setNonblocking(socket, false))
     let (received, receiveError) = net.receiveText(socket, 64, consume)
     print(received)
     print(receiveError)
@@ -1662,7 +1667,11 @@ fn main() -> i64 {{
     let generated = compile_to_c(&source).expect("socket text I/O should lower on Linux");
     assert!(generated.contains("flux__net_send_text("));
     assert!(generated.contains("flux__net_receive_text("));
+    assert!(generated.contains("flux__net_set_nonblocking("));
+    assert!(generated.contains("flux__net_wait_readable("));
     assert!(generated.contains("void (*callback)(int64_t, const char *)"));
+    assert!(generated.contains("O_NONBLOCK"));
+    assert!(generated.contains("poll(&descriptor"));
     assert!(generated.contains("MSG_NOSIGNAL"));
 
     let root = std::env::temp_dir().join(format!("flux-net-text-{}", std::process::id()));
@@ -1702,7 +1711,7 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "nil\nnil\npong\n4\nnil\nnil\n"
+        "nil\nnil\nnil\ntrue\nnil\nnil\npong\n4\nnil\nnil\n"
     );
 
     let udp_server = UdpSocket::bind("127.0.0.1:0").expect("loopback text UDP socket should bind");
@@ -1773,12 +1782,25 @@ fn main() -> i64 {{
     )
     .expect_err("receive callback shape must be exact");
     assert!(callback_error.message.contains("net.receiveText callback"));
+    let timeout_error = check_source(
+        "fn main() -> i64 {\n    let (ready, failure) = net.waitReadable(1, -2)\n    print(ready)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("invalid constant readiness timeout must fail statically");
+    assert!(
+        timeout_error
+            .message
+            .contains("net.waitReadable timeoutMillis must be -1 or between 0 and 2147483647")
+    );
 
     let unused = r#"
 fn consume(_socket: i64, _text: str) -> void {
 }
 fn hidden(socket: i64) -> void {
     print(net.sendText(socket, "hidden"))
+    print(net.setNonblocking(socket, true))
+    let (ready, readyFailure) = net.waitReadable(socket, 0)
+    print(ready)
+    print(readyFailure)
     let (received, failure) = net.receiveText(socket, 64, consume)
     print(received)
     print(failure)
@@ -1790,6 +1812,8 @@ fn main() -> i64 {
     let unused_generated = compile_to_c(unused).expect("dead socket text I/O should tree-shake");
     assert!(!unused_generated.contains("flux__net_send_text("));
     assert!(!unused_generated.contains("flux__net_receive_text("));
+    assert!(!unused_generated.contains("flux__net_set_nonblocking("));
+    assert!(!unused_generated.contains("flux__net_wait_readable("));
     let _ = fs::remove_dir_all(&root);
 }
 

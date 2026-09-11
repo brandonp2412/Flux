@@ -351,6 +351,8 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__net_") {
         out.push_str("#include <limits.h>\n");
+        out.push_str("#include <fcntl.h>\n");
+        out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
         out.push_str("#include <netdb.h>\n");
         out.push_str("#include <netinet/in.h>\n");
@@ -1870,6 +1872,10 @@ fn emit_runtime_prelude(
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
+    if runtime_usage.contains("flux__net_wait_readable(") {
+        out.push_str("struct flux__net_bool_error { bool v0; const char *v1; };\n");
+        out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
     if runtime_usage.contains("flux__net_tcp_connect(")
         || runtime_usage.contains("flux__net_tcp_listen(")
     {
@@ -1903,6 +1909,12 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__net_receive_text(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_text(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveText maxBytes must be between 1 and 65536\"); char buffer[65537]; ssize_t received; do { received = recv((int)socket_handle, buffer, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive text\"); if (memchr(buffer, '\\0', (size_t)received) != NULL) return flux__net_result(-1, \"received text contains a NUL byte\"); buffer[received] = '\\0'; callback(socket_handle, buffer); return flux__net_result((int64_t)received, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__net_set_nonblocking(") {
+        out.push_str("static inline const char *flux__net_set_nonblocking(int64_t socket_handle, bool enabled) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0) return \"failed to read socket flags\"; int updated = enabled ? flags | O_NONBLOCK : flags & ~O_NONBLOCK; if (updated == flags) return NULL; return fcntl((int)socket_handle, F_SETFL, updated) == 0 ? NULL : \"failed to update socket flags\"; }\n");
+    }
+    if runtime_usage.contains("flux__net_wait_readable(") {
+        out.push_str("static inline struct flux__net_bool_error flux__net_wait_readable(int64_t socket_handle, int64_t timeout_millis) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_bool_result(false, \"invalid socket handle\"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_bool_result(false, \"waitReadable timeoutMillis must be -1 or between 0 and 2147483647\"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLIN, .revents = 0 }; int result; do { descriptor.revents = 0; result = poll(&descriptor, 1, (int)timeout_millis); } while (result < 0 && errno == EINTR); if (result < 0) return flux__net_bool_result(false, \"failed to wait for socket readability\"); if (result == 0) return flux__net_bool_result(false, NULL); if ((descriptor.revents & POLLNVAL) != 0) return flux__net_bool_result(false, \"invalid socket handle\"); if ((descriptor.revents & POLLERR) != 0) return flux__net_bool_result(false, \"socket readiness failed\"); return flux__net_bool_result((descriptor.revents & (POLLIN | POLLHUP)) != 0, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_close(") {
         out.push_str("static inline const char *flux__net_close(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; return close((int)socket_handle) == 0 ? NULL : \"failed to close socket\"; }\n");
@@ -13331,6 +13343,36 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "setNonblocking" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let enabled = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_set_nonblocking({}, {})",
+                        socket_handle.code, enabled.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "waitReadable" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let timeout = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_wait_readable({}, {})",
+                        socket_handle.code, timeout.code
+                    ),
+                    vec![Type::Bool, Type::Error],
+                    Some("flux__net_bool_error".to_string()),
                 ));
             }
             "close" => {
