@@ -1835,6 +1835,115 @@ fn main() -> i64 {
 }
 
 #[test]
+fn udp_peer_text_io_is_typed_borrowed_tree_shaken_and_runnable() {
+    let peer = UdpSocket::bind("127.0.0.1:0").expect("loopback UDP peer should bind");
+    let peer_port = peer.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn consume(_socket: i64, text: str, host: str, port: i64) -> void {{
+    print(text)
+    print(host)
+    print(port)
+}}
+fn main() -> i64 {{
+    let (socket, bindError) = net.udpBind("127.0.0.1", 0)
+    print(bindError)
+    print(net.sendTextTo(socket, "127.0.0.1", {peer_port}, "ping"))
+    let (received, receiveError) = net.receiveTextFrom(socket, 64, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("peer-addressed UDP text I/O should typecheck");
+    let generated = compile_to_c(&source).expect("peer-addressed UDP text I/O should lower");
+    assert!(generated.contains("flux__net_send_text_to("));
+    assert!(generated.contains("flux__net_receive_text_from("));
+    assert!(generated.contains("sendto("));
+    assert!(generated.contains("recvfrom("));
+    assert!(generated.contains("inet_ntop("));
+    assert!(generated.contains("void (*callback)(int64_t, const char *, const char *, int64_t)"));
+
+    let root = std::env::temp_dir().join(format!("flux-udp-peer-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UDP peer fixture should be writable");
+    let source_path = root.join("peer.flux");
+    fs::write(&source_path, &source).expect("UDP peer source should be writable");
+    let binary = root.join("peer");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("UDP peer binary should build");
+    assert!(
+        built.status.success(),
+        "UDP peer build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let mut request = [0u8; 4];
+        let (length, sender) = peer
+            .recv_from(&mut request)
+            .expect("Flux peer send should arrive");
+        assert_eq!(length, 4);
+        assert_eq!(&request, b"ping");
+        peer.send_to(b"pong", sender)
+            .expect("Rust UDP peer should reply");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("UDP peer binary should run");
+    server.join().expect("UDP peer server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        format!("nil\nnil\npong\n127.0.0.1\n{peer_port}\n4\nnil\nnil\n")
+    );
+
+    let port_error = check_source(
+        "fn main() -> i64 {\n    let (socket, failure) = net.udpBind(\"127.0.0.1\", 0)\n    print(net.sendTextTo(socket, \"127.0.0.1\", 0, \"nope\"))\n    return 0\n}\n",
+    )
+    .expect_err("constant peer port zero must fail statically");
+    assert!(
+        port_error
+            .message
+            .contains("net.sendTextTo port must be between 1 and 65535")
+    );
+    let callback_error = check_source(
+        "fn consume(_socket: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextFrom(1, 64, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("peer receive callback shape must be exact");
+    assert!(
+        callback_error
+            .message
+            .contains("net.receiveTextFrom callback")
+    );
+
+    let unused = r#"
+fn consume(_socket: i64, _text: str, _host: str, _port: i64) -> void {
+}
+fn hidden(socket: i64) -> void {
+    print(net.sendTextTo(socket, "127.0.0.1", 9999, "hidden"))
+    let (received, failure) = net.receiveTextFrom(socket, 64, consume)
+    print(received)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead peer-addressed UDP text I/O should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_to("));
+    assert!(!unused_generated.contains("flux__net_receive_text_from("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_multi_readiness_is_typed_native_tree_shaken_and_runnable() {
     let first_listener =
         TcpListener::bind("127.0.0.1:0").expect("first loopback readiness listener should bind");

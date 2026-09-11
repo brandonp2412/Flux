@@ -1200,8 +1200,16 @@ fn add_qualified_namespace_completions(
                 "fn net.sendText(socket: i64, text: str) -> error",
             ),
             (
+                "sendTextTo",
+                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error",
+            ),
+            (
                 "receiveText",
                 "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+            ),
+            (
+                "receiveTextFrom",
+                "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
                 "setNonblocking",
@@ -2474,6 +2482,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "sendTextTo" => {
+                    return Some(signature_help_for_builtin(
+                        "net.sendTextTo",
+                        &["socket: i64", "host: str", "port: i64", "text: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "receiveText" => {
                     return Some(signature_help_for_builtin(
                         "net.receiveText",
@@ -2481,6 +2497,18 @@ fn signature_help_for_document_cached(
                             "socket: i64",
                             "maxBytes: i64",
                             "callback: fn(i64, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveTextFrom" => {
+                    return Some(signature_help_for_builtin(
+                        "net.receiveTextFrom",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "callback: fn(i64, str, str, i64) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
@@ -5776,8 +5804,16 @@ mod tests {
         assert!(net_items.contains("fn net.tcpAccept(listener: i64) -> (i64, error)"));
         assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
         assert!(net_items.contains("fn net.sendText(socket: i64, text: str) -> error"));
+        assert!(
+            net_items.contains(
+                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error"
+            )
+        );
         assert!(net_items.contains(
             "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains("fn net.setNonblocking(socket: i64, enabled: bool) -> error"));
         assert!(
@@ -6549,7 +6585,7 @@ mod tests {
     #[test]
     fn signature_help_supports_network_capabilities() {
         let uri = "file:///tmp/network-signatures.flux";
-        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.sendText(bound, \"hello\"))\n    print(net.setNonblocking(bound, true))\n    let (_ready, _readyError) = net.waitReadable(bound, 0)\n    let (_writable, _writableError) = net.waitWritable(bound, 0)\n    let (_manyReady, _manyReadyError) = net.waitReadableMany([bound], 0, ready)\n    let (_manyWritable, _manyWritableError) = net.waitWritableMany([bound], 0, ready)\n    let (_received, _receiveError) = net.receiveText(bound, 64, consume)\n    print(net.close(bound))\n    return 0\n}\n";
+        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (_tcp, _tcpError) = net.tcpConnect(\"127.0.0.1\", 80)\n    let (listener, _listenError) = net.tcpListen(\"127.0.0.1\", 0, 8)\n    let (_accepted, _acceptError) = net.tcpAccept(listener)\n    let (_udp, _udpError) = net.udpConnect(\"127.0.0.1\", 53)\n    let (bound, _bindError) = net.udpBind(\"127.0.0.1\", 0)\n    let (_port, _portError) = net.localPort(bound)\n    print(net.sendText(bound, \"hello\"))\n    print(net.sendTextTo(bound, \"127.0.0.1\", 53, \"hello\"))\n    print(net.setNonblocking(bound, true))\n    let (_ready, _readyError) = net.waitReadable(bound, 0)\n    let (_writable, _writableError) = net.waitWritable(bound, 0)\n    let (_manyReady, _manyReadyError) = net.waitReadableMany([bound], 0, ready)\n    let (_manyWritable, _manyWritableError) = net.waitWritableMany([bound], 0, ready)\n    let (_received, _receiveError) = net.receiveText(bound, 64, consume)\n    let (_receivedFrom, _receiveFromError) = net.receiveTextFrom(bound, 64, consumeFrom)\n    print(net.close(bound))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -6581,8 +6617,16 @@ mod tests {
                 "fn net.sendText(socket: i64, text: str) -> error",
             ),
             (
+                "net.sendTextTo(",
+                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error",
+            ),
+            (
                 "net.receiveText(",
                 "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+            ),
+            (
+                "net.receiveTextFrom(",
+                "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
                 "net.setNonblocking(",
