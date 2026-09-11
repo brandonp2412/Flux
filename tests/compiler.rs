@@ -19823,6 +19823,71 @@ app DynamicBorderWidth
 }
 
 #[test]
+fn android_radius_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicRadius {
+    state cornerRadius: i64 = 8
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        backgroundColor: "surfaceRaised"
+        radius: cornerRadius
+        radiusTopLeft: 20
+    Button grow at 2,1
+        text: "Grow"
+        onPress: cornerRadius => cornerRadius + 2
+}
+app DynamicRadius
+"#;
+
+    check_source(source).expect("dynamic Android radius should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android radius should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android radius should lower");
+
+    assert!(android.contains("int64_t child_radius = flux__ui_state_cornerRadius"));
+    assert!(android.contains("int64_t refresh_radius = flux__ui_state_cornerRadius"));
+    assert!(android.contains("styleViewRadii"));
+    assert!(android.contains("(Landroid/view/View;FFFF)V"));
+    assert!(android.contains("radius must be non-negative and fit within a 32-bit signed integer"));
+    assert!(android.contains("(jfloat)(INT64_C(20) * flux__ui_density)"));
+    assert!(android.contains("(jfloat)(refresh_radius * flux__ui_density)"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__ui_state_cornerRadius = flux_add_i64"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticRadius {
+    grid columns: 1fr
+    grid rows: auto
+    Text panel at 1,1
+        text: "Panel"
+        backgroundColor: "surfaceRaised"
+        radius: 12
+}
+app StaticRadius
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android radius should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android radius should lower");
+    assert!(!static_android.contains("styleViewRadii"));
+}
+
+#[test]
 fn android_text_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicColor {

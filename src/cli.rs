@@ -4600,6 +4600,14 @@ __FLUX_PICKER_METHODS__
             invalidateSelf();
         }
 
+        void setRadii(float topLeft, float topRight, float bottomRight, float bottomLeft) {
+            radii[0] = radii[1] = Math.max(0.0f, topLeft);
+            radii[2] = radii[3] = Math.max(0.0f, topRight);
+            radii[4] = radii[5] = Math.max(0.0f, bottomRight);
+            radii[6] = radii[7] = Math.max(0.0f, bottomLeft);
+            invalidateSelf();
+        }
+
         @Override
         public void setAlpha(int alpha) {
             this.alpha = Math.max(0, Math.min(255, alpha));
@@ -4675,6 +4683,13 @@ __FLUX_PICKER_METHODS__
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setBorderWidths(top, end, bottom, start);
+        }
+    }
+
+    public void styleViewRadii(View view, float topLeft, float topRight, float bottomRight, float bottomLeft) {
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            ((FluxStyleDrawable)drawable).setRadii(topLeft, topRight, bottomRight, bottomLeft);
         }
     }
 

@@ -4780,19 +4780,41 @@ fn emit_android_native_application(
         let dynamic_border_start_width =
             dynamic_border_width && border_start_width_static.is_none();
         let dynamic_border_end_width = dynamic_border_width && border_end_width_static.is_none();
-        let radius = static_non_negative_style_i64(element, "radius", signatures)?.unwrap_or(0);
-        let radius_top_left =
-            static_non_negative_style_i64(element, "radius_top_left", signatures)?
-                .unwrap_or(radius);
-        let radius_top_right =
-            static_non_negative_style_i64(element, "radius_top_right", signatures)?
-                .unwrap_or(radius);
-        let radius_bottom_left =
-            static_non_negative_style_i64(element, "radius_bottom_left", signatures)?
-                .unwrap_or(radius);
-        let radius_bottom_right =
-            static_non_negative_style_i64(element, "radius_bottom_right", signatures)?
-                .unwrap_or(radius);
+        let radius_property = view_property(element, "radius");
+        let (radius, dynamic_radius) = if let Some(property) = radius_property {
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if value < 0 {
+                    return Err(diag(property.value.span, "radius must be non-negative"));
+                }
+                if value > i64::from(i32::MAX) {
+                    return Err(diag(
+                        property.value.span,
+                        "radius must fit within a 32-bit signed integer",
+                    ));
+                }
+                (value, false)
+            } else {
+                (0, true)
+            }
+        } else {
+            (0, false)
+        };
+        let radius_top_left_static =
+            static_non_negative_style_i64(element, "radius_top_left", signatures)?;
+        let radius_top_right_static =
+            static_non_negative_style_i64(element, "radius_top_right", signatures)?;
+        let radius_bottom_left_static =
+            static_non_negative_style_i64(element, "radius_bottom_left", signatures)?;
+        let radius_bottom_right_static =
+            static_non_negative_style_i64(element, "radius_bottom_right", signatures)?;
+        let radius_top_left = radius_top_left_static.unwrap_or(radius);
+        let radius_top_right = radius_top_right_static.unwrap_or(radius);
+        let radius_bottom_left = radius_bottom_left_static.unwrap_or(radius);
+        let radius_bottom_right = radius_bottom_right_static.unwrap_or(radius);
+        let dynamic_radius_top_left = dynamic_radius && radius_top_left_static.is_none();
+        let dynamic_radius_top_right = dynamic_radius && radius_top_right_static.is_none();
+        let dynamic_radius_bottom_left = dynamic_radius && radius_bottom_left_static.is_none();
+        let dynamic_radius_bottom_right = dynamic_radius && radius_bottom_right_static.is_none();
         let border_style = if let Some(property) = view_property(element, "border_style") {
             let Some(style) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -4894,6 +4916,10 @@ fn emit_android_native_application(
             || dynamic_border_bottom_width
             || dynamic_border_start_width
             || dynamic_border_end_width
+            || dynamic_radius_top_left
+            || dynamic_radius_top_right
+            || dynamic_radius_bottom_left
+            || dynamic_radius_bottom_right
             || radius_top_left > 0
             || radius_top_right > 0
             || radius_bottom_left > 0
@@ -4912,6 +4938,10 @@ fn emit_android_native_application(
             || dynamic_border_bottom_width
             || dynamic_border_start_width
             || dynamic_border_end_width
+            || dynamic_radius_top_left
+            || dynamic_radius_top_right
+            || dynamic_radius_bottom_left
+            || dynamic_radius_bottom_right
             || border_top_color.is_some()
             || border_bottom_color.is_some()
             || border_start_color.is_some()
@@ -5008,6 +5038,31 @@ fn emit_android_native_application(
             } else {
                 format!("INT64_C({border_start_width})")
             };
+            if dynamic_radius {
+                let value = ui_expr_c(
+                    &radius_property
+                        .expect("dynamic radius property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_radius = {value};\n    if (child_radius < 0 || child_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let radius_value = |dynamic: bool, value: i64| {
+                if dynamic {
+                    "child_radius".to_string()
+                } else {
+                    format!("INT64_C({value})")
+                }
+            };
+            let radius_top_left_value = radius_value(dynamic_radius_top_left, radius_top_left);
+            let radius_top_right_value = radius_value(dynamic_radius_top_right, radius_top_right);
+            let radius_bottom_right_value =
+                radius_value(dynamic_radius_bottom_right, radius_bottom_right);
+            let radius_bottom_left_value =
+                radius_value(dynamic_radius_bottom_left, radius_bottom_left);
             out.push_str(
                 "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
@@ -5015,7 +5070,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_view = (*env)->GetMethodID(env, style_activity_class, \"styleView\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFFFFLjava/lang/String;Ljava/lang/String;FFF)V\");\n");
             out.push_str("    if (style_view == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)({border_top_width_value} * flux__ui_density), (jint)({border_end_width_value} * flux__ui_density), (jint)({border_bottom_width_value} * flux__ui_density), (jint)({border_start_width_value} * flux__ui_density), (jfloat)(INT64_C({radius_top_left}) * flux__ui_density), (jfloat)(INT64_C({radius_top_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_right}) * flux__ui_density), (jfloat)(INT64_C({radius_bottom_left}) * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_view, child, child_background, child_border_top, child_border_end, child_border_bottom, child_border_start, (jint)({border_top_width_value} * flux__ui_density), (jint)({border_end_width_value} * flux__ui_density), (jint)({border_bottom_width_value} * flux__ui_density), (jint)({border_start_width_value} * flux__ui_density), (jfloat)({radius_top_left_value} * flux__ui_density), (jfloat)({radius_top_right_value} * flux__ui_density), (jfloat)({radius_bottom_right_value} * flux__ui_density), (jfloat)({radius_bottom_left_value} * flux__ui_density), child_border_style, child_shadow, (jfloat)(INT64_C({shadow_blur}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_x}) * flux__ui_density), (jfloat)(INT64_C({shadow_offset_y}) * flux__ui_density));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, style_activity_class);\n");
             for name in [
@@ -8198,6 +8253,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "background_color"
             | "border_color"
             | "border_width"
+            | "radius"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -8335,6 +8391,7 @@ fn android_ui_element_needs_refresh(
         "background_color",
         "border_color",
         "border_width",
+        "radius",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -8524,6 +8581,35 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_border_widths = (*env)->GetMethodID(env, activity_class, \"styleViewBorderWidths\", \"(Landroid/view/View;IIII)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_border_widths != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_widths, child, (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density), (jint)({start} * flux__ui_density));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "radius", &runtime_names)
+            && let Some(property) = view_property(element, "radius")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let radius_top_left =
+                static_non_negative_style_i64(element, "radius_top_left", signatures)?;
+            let radius_top_right =
+                static_non_negative_style_i64(element, "radius_top_right", signatures)?;
+            let radius_bottom_right =
+                static_non_negative_style_i64(element, "radius_bottom_right", signatures)?;
+            let radius_bottom_left =
+                static_non_negative_style_i64(element, "radius_bottom_left", signatures)?;
+            let radius_value = |value: Option<i64>| {
+                value
+                    .map(|value| format!("INT64_C({value})"))
+                    .unwrap_or_else(|| "refresh_radius".to_string())
+            };
+            let top_left = radius_value(radius_top_left);
+            let top_right = radius_value(radius_top_right);
+            let bottom_right = radius_value(radius_bottom_right);
+            let bottom_left = radius_value(radius_bottom_left);
+            out.push_str(&format!(
+                "                int64_t refresh_radius = {value};\n                if (refresh_radius < 0 || refresh_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+            ));
+            out.push_str("                jmethodID refresh_radii = (*env)->GetMethodID(env, activity_class, \"styleViewRadii\", \"(Landroid/view/View;FFFF)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_radii != NULL) (*env)->CallVoidMethod(env, activity, refresh_radii, child, (jfloat)({top_left} * flux__ui_density), (jfloat)({top_right} * flux__ui_density), (jfloat)({bottom_right} * flux__ui_density), (jfloat)({bottom_left} * flux__ui_density));\n"
             ));
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
