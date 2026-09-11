@@ -3882,6 +3882,80 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_moving_list_owner_while_control_flow_selected_view_is_live() {
+    let enum_match = r#"
+enum Choice {
+    Tail
+    LastTwo
+}
+
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let choice: Choice = Choice.Tail()
+    let view: i64[] = match choice:
+        Choice.Tail(): values[1:]
+        Choice.LastTwo(): values[2:]
+    let destination: i64[] = values
+    print(view[0])
+    print(destination[0])
+    return 0
+}
+"#;
+
+    let errors = check_source_all(enum_match)
+        .expect_err("a live view selected by enum match must keep its owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'view' is still live")
+    }));
+
+    let list_match = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let view: i64[] = match values:
+        []: values[:]
+        [_]: values[:1]
+        [_, ..._]: values[1:]
+    let destination: i64[] = values
+    print(view[0])
+    print(destination[0])
+    return 0
+}
+"#;
+
+    let errors = check_source_all(list_match)
+        .expect_err("a live view selected by list match must keep its owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'view' is still live")
+    }));
+
+    let dead_view = r#"
+enum Choice {
+    Tail
+    LastTwo
+}
+
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30, 40]
+    let choice: Choice = Choice.Tail()
+    let view: i64[] = match choice:
+        Choice.Tail(): values[1:]
+        Choice.LastTwo(): values[2:]
+    print(view[0])
+    let destination: i64[] = values
+    print(destination[0])
+    return 0
+}
+"#;
+
+    check_source(dead_view).expect("a dead match-selected view must not block a later move");
+    compile_to_c(dead_view).expect("moving after a match-selected view's last use should lower");
+}
+
+#[test]
 fn rejects_moving_list_owner_while_zero_copy_view_is_live() {
     let live_slice = r#"
 fn main() -> i64 {

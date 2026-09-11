@@ -12,8 +12,8 @@ Stable overall-progress baseline:
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 462
-- Reported overall progress: **62%**
-- Current net scope growth after the baseline: 48 checkbox items
+- Reported overall progress: **63%**
+- Current net scope growth after the baseline: 49 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -350,6 +350,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
   - [ ] Extend CFG/IR-wide move-state analysis to consuming calls, partial moves, future owned aggregates, and owned resource types.
 - [ ] Prevent dangling borrows.
   - [x] Bootstrap live-view move exclusion for zero-copy list borrows: CFG liveness rejects moving a local list owner while a derived slice, nested-list index/property (`first`/`last`/`single`), `take`, `skip`, `chunked`, list-rest pattern, list-match rest, destructured nested-list element, or transitive view binding remains live, while permitting the move immediately after the borrow's last reachable use. Full first-class lifetime inference and escaping-borrow validation remain pending.
+  - [x] Follow-up: value-producing enum/list `match` results preserve zero-copy list-view provenance through the selected arm, so a live match-selected view prevents moving its owner while a move after the view's last use remains valid.
 - [ ] Prevent aliasing violations.
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.

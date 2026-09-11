@@ -3946,6 +3946,18 @@ fn definition_value_borrows_from(
                 value_depends_on_borrow_source(graph, *argument, source, visiting)
             })
         }
+        ControlFlowValueKind::Match { arms, .. } | ControlFlowValueKind::ListMatch { arms, .. } => {
+            arms.iter()
+                .any(|arm| value_depends_on_borrow_source(graph, *arm, source, visiting))
+        }
+        ControlFlowValueKind::Conditional {
+            then_value,
+            else_value,
+            ..
+        } => {
+            value_depends_on_borrow_source(graph, *then_value, source, visiting)
+                || value_depends_on_borrow_source(graph, *else_value, source, visiting)
+        }
         ControlFlowValueKind::NameRead { definitions, .. } => {
             definitions.iter().any(|definition| match definition {
                 ControlFlowDefinitionId::Parameter(_) => false,
@@ -4000,6 +4012,18 @@ fn value_depends_on_borrow_source(
             arguments.first().is_some_and(|argument| {
                 value_depends_on_borrow_source(graph, *argument, source, visiting)
             })
+        }
+        ControlFlowValueKind::Match { arms, .. } | ControlFlowValueKind::ListMatch { arms, .. } => {
+            arms.iter()
+                .any(|arm| value_depends_on_borrow_source(graph, *arm, source, visiting))
+        }
+        ControlFlowValueKind::Conditional {
+            then_value,
+            else_value,
+            ..
+        } => {
+            value_depends_on_borrow_source(graph, *then_value, source, visiting)
+                || value_depends_on_borrow_source(graph, *else_value, source, visiting)
         }
         _ => false,
     }
