@@ -478,8 +478,8 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
   - [ ] Suspension/restoration, saved-state/configuration lifecycle, multiple-window lifecycle, and capability-rich lifecycle context.
 - [x] Background/foreground transitions for current application targets: typed `onResume` / `onPause` lifecycle callbacks map to GTK window active-state changes on Linux and native Activity resume/pause callbacks on Android, preserving the function/capability model without controller objects.
 - [ ] Multiple windows where the target supports them.
-- [ ] Platform capability discovery.
-  - [x] Android bootstrap exposes `android.sdkInt() -> i64` as a direct NDK-backed runtime capability query, allowing ordinary typed Flux control flow to gate target-specific behavior by the device API level without JNI/reflection or a platform object. Broader feature/capability discovery remains pending.
+- [x] Platform capability discovery for the current native application targets: target-specific capabilities remain ordinary typed functions rather than runtime platform objects, and unsupported target reachability still fails at code generation while unreachable platform-only code tree-shakes safely.
+  - [x] Android exposes `android.sdkInt() -> i64` through the NDK plus `android.hasSystemFeature(feature: str) -> bool` through compiler-owned direct `PackageManager.hasSystemFeature` JNI. Ordinary Flux control flow can therefore gate behavior by API level or any stable Android system-feature identifier without reflection, a plugin registry, or user-authored bridge code; both helpers tree-shake when unreachable and participate in LSP completion/signature help.
 
 # Milestone 9 — UI language and flat layout
 

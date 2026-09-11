@@ -17581,6 +17581,7 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
         root.join("src/main.flux"),
         r#"fn started() -> void {
     print(android.sdkInt())
+    print(android.hasSystemFeature("android.hardware.camera.any"))
     android.vibrate(25)
     android.keepScreenOn(true)
     android.finishActivity()
@@ -17678,6 +17679,12 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("#include <android/api-level.h>"));
     assert!(generated.contains("static inline int64_t flux__android_sdk_int(void)"));
     assert!(generated.contains("android_get_device_api_level()"));
+    assert!(generated.contains("static bool flux__android_has_system_feature"));
+    assert!(generated.contains("\"getPackageManager\""));
+    assert!(generated.contains("\"hasSystemFeature\", \"(Ljava/lang/String;)Z\""));
+    assert!(generated.contains(
+        "flux__android_has_system_feature(\"android.hardware.camera.any\")"
+    ));
     assert!(generated.contains("static JNIEnv *flux__android_get_env(bool *detach)"));
     assert!(generated.contains("AttachCurrentThread"));
     assert!(generated.contains("DetachCurrentThread"));
@@ -17833,6 +17840,7 @@ fn main() -> i64 {
     android.setCaret(1)
     android.setSelection(0, 1)
     android.setImeAction("next")
+    android.hasSystemFeature("android.hardware.camera.any")
     android.permissionGranted("android.permission.CAMERA")
     android.requestPermission("android.permission.CAMERA")
     android.createNotificationChannel("unused", "Unused", "Unused")
@@ -17880,6 +17888,7 @@ app Screen
     assert!(!tree_generated.contains("android/widget/EditText"));
     assert!(!tree_generated.contains("showSoftInput"));
     assert!(!tree_generated.contains("hideSoftInputFromWindow"));
+    assert!(!tree_generated.contains("flux__android_has_system_feature"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
     assert!(!tree_generated.contains("flux__android_request_permission"));
     assert!(!tree_generated.contains("flux__android_create_notification_channel"));
@@ -17893,6 +17902,7 @@ app Screen
     let invalid = r#"
 fn main() -> i64 {
     android.sdkInt(1)
+    android.hasSystemFeature(42)
     android.vibrate("long")
     android.keepScreenOn(1)
     android.finishActivity(1)
@@ -17928,6 +17938,10 @@ fn main() -> i64 {
         error
             .message
             .contains("android.sdkInt expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.hasSystemFeature feature")
+            && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate durationMs")

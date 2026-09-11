@@ -1054,6 +1054,8 @@ fn emit_runtime_prelude(
         || uses_focus_last_in
         || uses_focus_clear;
     let uses_android_sdk_int = uses_android && runtime_usage.contains("flux__android_sdk_int(");
+    let uses_android_has_system_feature =
+        uses_android && runtime_usage.contains("flux__android_has_system_feature(");
     let uses_android_vibrate = uses_android && runtime_usage.contains("flux__android_vibrate(");
     let uses_android_keep_screen_on =
         uses_android && runtime_usage.contains("flux__android_keep_screen_on(");
@@ -1159,7 +1161,8 @@ fn emit_runtime_prelude(
         || uses_android_notify
         || uses_android_notify_url_action
         || uses_android_cancel_notification;
-    let uses_android_platform_api = uses_android_vibrate
+    let uses_android_platform_api = uses_android_has_system_feature
+        || uses_android_vibrate
         || (uses_android_keep_screen_on && uses_android_generated_ui)
         || (uses_android_finish_activity && uses_android_generated_ui)
         || uses_android_background_jobs
@@ -1239,6 +1242,7 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_notifications
+        || uses_android_has_system_feature
         || uses_android_permission_granted
         || uses_android_request_permission
         || uses_android_generated_ui
@@ -2396,6 +2400,44 @@ fn emit_runtime_prelude(
             "    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n",
         );
         out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_android_has_system_feature {
+        out.push_str(
+            "static bool flux__android_has_system_feature(const char *feature_name) {\n",
+        );
+        out.push_str(
+            "    if (feature_name == NULL || feature_name[0] == '\\0' || flux__android_activity == NULL) return false;\n",
+        );
+        out.push_str("    bool detach = false;\n");
+        out.push_str("    JNIEnv *env = flux__android_get_env(&detach);\n");
+        out.push_str("    if (env == NULL) return false;\n");
+        out.push_str("    bool available = false;\n");
+        out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz);\n");
+        out.push_str("    jobject package_manager = NULL;\n");
+        out.push_str("    jclass package_manager_class = NULL;\n");
+        out.push_str("    jstring feature = NULL;\n");
+        out.push_str("    if (activity_class == NULL) goto done;\n");
+        out.push_str("    jmethodID get_package_manager = (*env)->GetMethodID(env, activity_class, \"getPackageManager\", \"()Landroid/content/pm/PackageManager;\");\n");
+        out.push_str("    if (get_package_manager == NULL) goto done;\n");
+        out.push_str("    package_manager = (*env)->CallObjectMethod(env, flux__android_activity->clazz, get_package_manager);\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env) || package_manager == NULL) goto done;\n");
+        out.push_str("    package_manager_class = (*env)->GetObjectClass(env, package_manager);\n");
+        out.push_str("    if (package_manager_class == NULL) goto done;\n");
+        out.push_str("    jmethodID has_feature = (*env)->GetMethodID(env, package_manager_class, \"hasSystemFeature\", \"(Ljava/lang/String;)Z\");\n");
+        out.push_str("    if (has_feature == NULL) goto done;\n");
+        out.push_str("    feature = flux__android_utf8_string(env, feature_name);\n");
+        out.push_str("    if (feature == NULL) goto done;\n");
+        out.push_str("    jboolean result = (*env)->CallBooleanMethod(env, package_manager, has_feature, feature);\n");
+        out.push_str("    if (!(*env)->ExceptionCheck(env)) available = result == JNI_TRUE;\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);\n");
+        out.push_str("    if (feature != NULL) (*env)->DeleteLocalRef(env, feature);\n");
+        out.push_str("    if (package_manager_class != NULL) (*env)->DeleteLocalRef(env, package_manager_class);\n");
+        out.push_str("    if (package_manager != NULL) (*env)->DeleteLocalRef(env, package_manager);\n");
+        out.push_str("    if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class);\n");
+        out.push_str("    flux__android_release_env(detach);\n");
+        out.push_str("    return available;\n");
         out.push_str("}\n");
     }
     if uses_android_permission_granted {
@@ -16150,6 +16192,20 @@ fn emit_qualified_call(
                     ));
                 }
                 return Ok(("flux__android_sdk_int()".to_string(), vec![Type::I64], None));
+            }
+            "hasSystemFeature" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid android platform call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__android_has_system_feature({})", value.code),
+                    vec![Type::Bool],
+                    None,
+                ));
             }
             "permissionGranted" => {
                 if args.len() != 1 {
