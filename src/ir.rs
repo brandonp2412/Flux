@@ -11,6 +11,9 @@ pub struct ControlFlowNodeId(pub usize);
 pub struct ControlFlowValueId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControlFlowValueRegionId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlFlowDefinitionId {
     Parameter(usize),
     Node {
@@ -128,7 +131,7 @@ pub struct ControlFlowValue {
     pub constant: Option<ConstantValue>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlFlowValueUseKind {
     Eager,
     ShortCircuitRight,
@@ -149,6 +152,45 @@ pub struct ControlFlowValueUse {
     pub user: ControlFlowValueId,
     pub value: ControlFlowValueId,
     pub kind: ControlFlowValueUseKind,
+    pub region: Option<ControlFlowValueRegionId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlowValueRegionKind {
+    ShortCircuitRight {
+        condition: ControlFlowValueId,
+        execute_when: bool,
+    },
+    Branch {
+        condition: ControlFlowValueId,
+        selected_when: bool,
+    },
+    MatchGuard {
+        matched: ControlFlowValueId,
+        arm: usize,
+    },
+    MatchArm {
+        matched: ControlFlowValueId,
+        guard: Option<ControlFlowValueId>,
+        arm: usize,
+    },
+    LoopCondition {
+        iterable: ControlFlowValueId,
+    },
+    LoopBody {
+        iterable: ControlFlowValueId,
+        condition: Option<ControlFlowValueId>,
+    },
+    DeferredBody,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlFlowValueRegion {
+    pub id: ControlFlowValueRegionId,
+    pub owner: ControlFlowValueId,
+    pub root: ControlFlowValueId,
+    pub span: SourceSpan,
+    pub kind: ControlFlowValueRegionKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,6 +368,7 @@ pub struct ControlFlowGraph {
     edges: Vec<ControlFlowEdge>,
     values: Vec<ControlFlowValue>,
     value_uses: Vec<ControlFlowValueUse>,
+    value_regions: Vec<ControlFlowValueRegion>,
     reachable_values: BTreeSet<ControlFlowValueId>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
@@ -380,6 +423,23 @@ impl ControlFlowGraph {
 
     pub fn value_uses(&self) -> &[ControlFlowValueUse] {
         &self.value_uses
+    }
+
+    pub fn value_regions(&self) -> &[ControlFlowValueRegion] {
+        &self.value_regions
+    }
+
+    pub fn value_region(&self, id: ControlFlowValueRegionId) -> Option<&ControlFlowValueRegion> {
+        self.value_regions.get(id.0)
+    }
+
+    pub fn regions_owned_by(
+        &self,
+        id: ControlFlowValueId,
+    ) -> impl Iterator<Item = &ControlFlowValueRegion> {
+        self.value_regions
+            .iter()
+            .filter(move |region| region.owner == id)
     }
 
     pub fn uses_from(&self, id: ControlFlowValueId) -> impl Iterator<Item = &ControlFlowValueUse> {
@@ -583,9 +643,13 @@ impl<'a> ControlFlowBuilder<'a> {
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
-        let value_uses = collect_value_uses(&self.values);
-        let reachable_values =
-            compute_reachable_values(&self.values, &value_uses, &move_states_before);
+        let (value_uses, value_regions) = collect_value_uses(&self.values);
+        let reachable_values = compute_reachable_values(
+            &self.values,
+            &value_uses,
+            &value_regions,
+            &move_states_before,
+        );
         populate_immutable_borrows(
             &mut self.nodes,
             &self.values,
@@ -602,6 +666,7 @@ impl<'a> ControlFlowBuilder<'a> {
             edges: self.edges,
             values: self.values,
             value_uses,
+            value_regions,
             reachable_values,
             scoped_definitions: self.scoped_definitions,
             definition_values,
@@ -2304,38 +2369,90 @@ fn bind_list_match_pattern(
     }
 }
 
-fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
+fn push_value_use(
+    uses: &mut Vec<ControlFlowValueUse>,
+    user: ControlFlowValueId,
+    value: ControlFlowValueId,
+    kind: ControlFlowValueUseKind,
+) {
+    uses.push(ControlFlowValueUse {
+        user,
+        value,
+        kind,
+        region: None,
+    });
+}
+
+fn push_value_region_use(
+    values: &[ControlFlowValue],
+    uses: &mut Vec<ControlFlowValueUse>,
+    regions: &mut Vec<ControlFlowValueRegion>,
+    owner: &ControlFlowValue,
+    root: ControlFlowValueId,
+    use_kind: ControlFlowValueUseKind,
+    region_kind: ControlFlowValueRegionKind,
+) {
+    let id = ControlFlowValueRegionId(regions.len());
+    let span = values
+        .get(root.0)
+        .map(|value| value.span)
+        .unwrap_or(owner.span);
+    regions.push(ControlFlowValueRegion {
+        id,
+        owner: owner.id,
+        root,
+        span,
+        kind: region_kind,
+    });
+    uses.push(ControlFlowValueUse {
+        user: owner.id,
+        value: root,
+        kind: use_kind,
+        region: Some(id),
+    });
+}
+
+fn collect_value_uses(
+    values: &[ControlFlowValue],
+) -> (Vec<ControlFlowValueUse>, Vec<ControlFlowValueRegion>) {
     let mut uses = Vec::new();
+    let mut regions = Vec::new();
     for value in values {
-        let mut record = |dependency: ControlFlowValueId, kind: ControlFlowValueUseKind| {
-            uses.push(ControlFlowValueUse {
-                user: value.id,
-                value: dependency,
-                kind,
-            });
-        };
         match &value.kind {
             ControlFlowValueKind::Literal
             | ControlFlowValueKind::NameRead { .. }
             | ControlFlowValueKind::Opaque => {}
             ControlFlowValueKind::AnonymousFunction { body } => {
-                record(*body, ControlFlowValueUseKind::DeferredBody);
+                push_value_region_use(
+                    values,
+                    &mut uses,
+                    &mut regions,
+                    value,
+                    *body,
+                    ControlFlowValueUseKind::DeferredBody,
+                    ControlFlowValueRegionKind::DeferredBody,
+                );
             }
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
                 for argument in arguments {
-                    record(*argument, ControlFlowValueUseKind::Eager);
+                    push_value_use(
+                        &mut uses,
+                        value.id,
+                        *argument,
+                        ControlFlowValueUseKind::Eager,
+                    );
                 }
             }
-            ControlFlowValueKind::InterfacePack { value, .. }
-            | ControlFlowValueKind::ListSpread { value }
-            | ControlFlowValueKind::Field { base: value, .. } => {
-                record(*value, ControlFlowValueUseKind::Eager);
+            ControlFlowValueKind::InterfacePack { value: packed, .. }
+            | ControlFlowValueKind::ListSpread { value: packed }
+            | ControlFlowValueKind::Field { base: packed, .. } => {
+                push_value_use(&mut uses, value.id, *packed, ControlFlowValueUseKind::Eager);
             }
             ControlFlowValueKind::List { items } => {
                 for item in items {
-                    record(*item, ControlFlowValueUseKind::Eager);
+                    push_value_use(&mut uses, value.id, *item, ControlFlowValueUseKind::Eager);
                 }
             }
             ControlFlowValueKind::ListIf {
@@ -2343,15 +2460,42 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
                 value: then_value,
                 else_value,
             } => {
-                record(*condition, ControlFlowValueUseKind::BranchCondition);
-                record(*then_value, ControlFlowValueUseKind::BranchThen);
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *condition,
+                    ControlFlowValueUseKind::BranchCondition,
+                );
+                push_value_region_use(
+                    values,
+                    &mut uses,
+                    &mut regions,
+                    value,
+                    *then_value,
+                    ControlFlowValueUseKind::BranchThen,
+                    ControlFlowValueRegionKind::Branch {
+                        condition: *condition,
+                        selected_when: true,
+                    },
+                );
                 if let Some(else_value) = else_value {
-                    record(*else_value, ControlFlowValueUseKind::BranchElse);
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *else_value,
+                        ControlFlowValueUseKind::BranchElse,
+                        ControlFlowValueRegionKind::Branch {
+                            condition: *condition,
+                            selected_when: false,
+                        },
+                    );
                 }
             }
             ControlFlowValueKind::Index { base, index } => {
-                record(*base, ControlFlowValueUseKind::Eager);
-                record(*index, ControlFlowValueUseKind::Eager);
+                push_value_use(&mut uses, value.id, *base, ControlFlowValueUseKind::Eager);
+                push_value_use(&mut uses, value.id, *index, ControlFlowValueUseKind::Eager);
             }
             ControlFlowValueKind::Slice {
                 base,
@@ -2359,9 +2503,9 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
                 end,
                 step,
             } => {
-                record(*base, ControlFlowValueUseKind::Eager);
+                push_value_use(&mut uses, value.id, *base, ControlFlowValueUseKind::Eager);
                 for bound in [start, end, step].into_iter().flatten() {
-                    record(*bound, ControlFlowValueUseKind::Eager);
+                    push_value_use(&mut uses, value.id, *bound, ControlFlowValueUseKind::Eager);
                 }
             }
             ControlFlowValueKind::ListComprehension {
@@ -2369,18 +2513,44 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
                 value: body,
                 condition,
             } => {
-                record(*iterable, ControlFlowValueUseKind::LoopIterable);
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *iterable,
+                    ControlFlowValueUseKind::LoopIterable,
+                );
                 if let Some(condition) = condition {
-                    record(*condition, ControlFlowValueUseKind::LoopCondition);
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *condition,
+                        ControlFlowValueUseKind::LoopCondition,
+                        ControlFlowValueRegionKind::LoopCondition {
+                            iterable: *iterable,
+                        },
+                    );
                 }
-                record(*body, ControlFlowValueUseKind::LoopBody);
+                push_value_region_use(
+                    values,
+                    &mut uses,
+                    &mut regions,
+                    value,
+                    *body,
+                    ControlFlowValueUseKind::LoopBody,
+                    ControlFlowValueRegionKind::LoopBody {
+                        iterable: *iterable,
+                        condition: *condition,
+                    },
+                );
             }
             ControlFlowValueKind::StructLiteral { base, fields, .. } => {
                 if let Some(base) = base {
-                    record(*base, ControlFlowValueUseKind::Eager);
+                    push_value_use(&mut uses, value.id, *base, ControlFlowValueUseKind::Eager);
                 }
                 for (_, field) in fields {
-                    record(*field, ControlFlowValueUseKind::Eager);
+                    push_value_use(&mut uses, value.id, *field, ControlFlowValueUseKind::Eager);
                 }
             }
             ControlFlowValueKind::Match {
@@ -2393,14 +2563,42 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
                 guards,
                 arms,
             } => {
-                record(*matched, ControlFlowValueUseKind::MatchValue);
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *matched,
+                    ControlFlowValueUseKind::MatchValue,
+                );
                 for (index, guard) in guards.iter().enumerate() {
                     if let Some(guard) = guard {
-                        record(*guard, ControlFlowValueUseKind::MatchGuard(index));
+                        push_value_region_use(
+                            values,
+                            &mut uses,
+                            &mut regions,
+                            value,
+                            *guard,
+                            ControlFlowValueUseKind::MatchGuard(index),
+                            ControlFlowValueRegionKind::MatchGuard {
+                                matched: *matched,
+                                arm: index,
+                            },
+                        );
                     }
                 }
                 for (index, arm) in arms.iter().enumerate() {
-                    record(*arm, ControlFlowValueUseKind::MatchArm(index));
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *arm,
+                        ControlFlowValueUseKind::MatchArm(index),
+                        ControlFlowValueRegionKind::MatchArm {
+                            matched: *matched,
+                            guard: guards.get(index).copied().flatten(),
+                            arm: index,
+                        },
+                    );
                 }
             }
             ControlFlowValueKind::Conditional {
@@ -2408,27 +2606,67 @@ fn collect_value_uses(values: &[ControlFlowValue]) -> Vec<ControlFlowValueUse> {
                 then_value,
                 else_value,
             } => {
-                record(*condition, ControlFlowValueUseKind::BranchCondition);
-                record(*then_value, ControlFlowValueUseKind::BranchThen);
-                record(*else_value, ControlFlowValueUseKind::BranchElse);
-            }
-            ControlFlowValueKind::Unary { operand, .. } => {
-                record(*operand, ControlFlowValueUseKind::Eager);
-            }
-            ControlFlowValueKind::Binary { op, left, right } => {
-                record(*left, ControlFlowValueUseKind::Eager);
-                record(
-                    *right,
-                    if matches!(op, BinOp::And | BinOp::Or) {
-                        ControlFlowValueUseKind::ShortCircuitRight
-                    } else {
-                        ControlFlowValueUseKind::Eager
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *condition,
+                    ControlFlowValueUseKind::BranchCondition,
+                );
+                push_value_region_use(
+                    values,
+                    &mut uses,
+                    &mut regions,
+                    value,
+                    *then_value,
+                    ControlFlowValueUseKind::BranchThen,
+                    ControlFlowValueRegionKind::Branch {
+                        condition: *condition,
+                        selected_when: true,
+                    },
+                );
+                push_value_region_use(
+                    values,
+                    &mut uses,
+                    &mut regions,
+                    value,
+                    *else_value,
+                    ControlFlowValueUseKind::BranchElse,
+                    ControlFlowValueRegionKind::Branch {
+                        condition: *condition,
+                        selected_when: false,
                     },
                 );
             }
+            ControlFlowValueKind::Unary { operand, .. } => {
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *operand,
+                    ControlFlowValueUseKind::Eager,
+                );
+            }
+            ControlFlowValueKind::Binary { op, left, right } => {
+                push_value_use(&mut uses, value.id, *left, ControlFlowValueUseKind::Eager);
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *right,
+                        ControlFlowValueUseKind::ShortCircuitRight,
+                        ControlFlowValueRegionKind::ShortCircuitRight {
+                            condition: *left,
+                            execute_when: matches!(op, BinOp::And),
+                        },
+                    );
+                } else {
+                    push_value_use(&mut uses, value.id, *right, ControlFlowValueUseKind::Eager);
+                }
+            }
         }
     }
-    uses
+    (uses, regions)
 }
 
 fn reclassify_borrowed_list_reborrows(
@@ -2541,6 +2779,7 @@ fn populate_immutable_borrows(
 fn compute_reachable_values(
     values: &[ControlFlowValue],
     uses: &[ControlFlowValueUse],
+    regions: &[ControlFlowValueRegion],
     move_states_before: &[ControlFlowMoveState],
 ) -> BTreeSet<ControlFlowValueId> {
     let mut reachable = BTreeSet::new();
@@ -2559,11 +2798,11 @@ fn compute_reachable_values(
         if !reachable.insert(user_id) {
             continue;
         }
-        let Some(user) = values.get(user_id.0) else {
+        if values.get(user_id.0).is_none() {
             continue;
-        };
+        }
         for usage in uses.iter().filter(|usage| usage.user == user_id) {
-            if value_use_is_reachable(user, *usage, values) {
+            if value_use_is_reachable(*usage, regions, values) {
                 pending.push(usage.value);
             }
         }
@@ -2573,67 +2812,38 @@ fn compute_reachable_values(
 }
 
 fn value_use_is_reachable(
-    user: &ControlFlowValue,
     usage: ControlFlowValueUse,
+    regions: &[ControlFlowValueRegion],
     values: &[ControlFlowValue],
 ) -> bool {
-    match usage.kind {
-        ControlFlowValueUseKind::ShortCircuitRight => {
-            let ControlFlowValueKind::Binary { op, left, .. } = &user.kind else {
-                return true;
-            };
-            !matches!(
-                (
-                    op,
-                    values
-                        .get(left.0)
-                        .and_then(|value| value.source_constant.as_ref()),
-                ),
-                (BinOp::And, Some(ConstantValue::Bool(false)))
-                    | (BinOp::Or, Some(ConstantValue::Bool(true)))
-            )
+    let Some(region) = usage.region.and_then(|id| regions.get(id.0)) else {
+        return true;
+    };
+    match region.kind {
+        ControlFlowValueRegionKind::ShortCircuitRight {
+            condition,
+            execute_when,
         }
-        ControlFlowValueUseKind::BranchThen | ControlFlowValueUseKind::BranchElse => {
-            let condition = match &user.kind {
-                ControlFlowValueKind::ListIf { condition, .. }
-                | ControlFlowValueKind::Conditional { condition, .. } => *condition,
-                _ => return true,
-            };
-            match values
-                .get(condition.0)
-                .and_then(|value| value.source_constant.as_ref())
-            {
-                Some(ConstantValue::Bool(selected_then)) => match usage.kind {
-                    ControlFlowValueUseKind::BranchThen => *selected_then,
-                    ControlFlowValueUseKind::BranchElse => !*selected_then,
-                    _ => unreachable!(),
-                },
-                _ => true,
-            }
-        }
-        ControlFlowValueUseKind::MatchArm(index) => {
-            let guards = match &user.kind {
-                ControlFlowValueKind::Match { guards, .. }
-                | ControlFlowValueKind::ListMatch { guards, .. } => guards,
-                _ => return true,
-            };
-            !matches!(
-                guards
-                    .get(index)
-                    .and_then(|guard| *guard)
-                    .and_then(|guard| values.get(guard.0))
-                    .and_then(|guard| guard.source_constant.as_ref()),
-                Some(ConstantValue::Bool(false))
-            )
-        }
-        ControlFlowValueUseKind::Eager
-        | ControlFlowValueUseKind::BranchCondition
-        | ControlFlowValueUseKind::MatchValue
-        | ControlFlowValueUseKind::MatchGuard(_)
-        | ControlFlowValueUseKind::LoopIterable
-        | ControlFlowValueUseKind::LoopCondition
-        | ControlFlowValueUseKind::LoopBody
-        | ControlFlowValueUseKind::DeferredBody => true,
+        | ControlFlowValueRegionKind::Branch {
+            condition,
+            selected_when: execute_when,
+        } => match values
+            .get(condition.0)
+            .and_then(|value| value.source_constant.as_ref())
+        {
+            Some(ConstantValue::Bool(condition)) => *condition == execute_when,
+            _ => true,
+        },
+        ControlFlowValueRegionKind::MatchArm { guard, .. } => !matches!(
+            guard
+                .and_then(|guard| values.get(guard.0))
+                .and_then(|guard| guard.source_constant.as_ref()),
+            Some(ConstantValue::Bool(false))
+        ),
+        ControlFlowValueRegionKind::MatchGuard { .. }
+        | ControlFlowValueRegionKind::LoopCondition { .. }
+        | ControlFlowValueRegionKind::LoopBody { .. }
+        | ControlFlowValueRegionKind::DeferredBody => true,
     }
 }
 

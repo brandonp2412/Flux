@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowValueKind, ControlFlowValueUseKind,
+    ControlFlowValueKind, ControlFlowValueRegionKind, ControlFlowValueUseKind,
 };
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
@@ -7993,9 +7993,32 @@ fn main() -> i64 {
     assert!(graph.is_value_reachable(root.id));
     assert!(graph.is_value_reachable(left));
     assert!(!graph.is_value_reachable(right));
-    assert!(graph.uses_from(root.id).any(|usage| {
-        usage.value == right && usage.kind == ControlFlowValueUseKind::ShortCircuitRight
-    }));
+    let short_circuit_use = graph
+        .uses_from(root.id)
+        .find(|usage| {
+            usage.value == right && usage.kind == ControlFlowValueUseKind::ShortCircuitRight
+        })
+        .expect("short-circuit RHS should be attached to an explicit IR region");
+    let region = graph
+        .value_region(
+            short_circuit_use
+                .region
+                .expect("short-circuit use should name its region"),
+        )
+        .expect("short-circuit region should exist");
+    assert_eq!(region.owner, root.id);
+    assert_eq!(region.root, right);
+    assert_eq!(
+        region.span,
+        graph.value(right).expect("RHS value should exist").span
+    );
+    assert!(matches!(
+        region.kind,
+        ControlFlowValueRegionKind::ShortCircuitRight {
+            condition,
+            execute_when: true,
+        } if condition == left
+    ));
     assert!(graph.uses_of(right).any(|usage| usage.user == root.id));
 
     let generated = compile_to_c(source).expect("short-circuit program should lower natively");
@@ -8040,12 +8063,35 @@ fn main() -> i64 {
     assert!(graph.is_value_reachable(condition));
     assert!(graph.is_value_reachable(value));
     assert!(!graph.is_value_reachable(else_value));
-    assert!(graph.uses_from(list_if.id).any(|usage| {
-        usage.value == value && usage.kind == ControlFlowValueUseKind::BranchThen
-    }));
-    assert!(graph.uses_from(list_if.id).any(|usage| {
-        usage.value == else_value && usage.kind == ControlFlowValueUseKind::BranchElse
-    }));
+    let then_use = graph
+        .uses_from(list_if.id)
+        .find(|usage| usage.value == value && usage.kind == ControlFlowValueUseKind::BranchThen)
+        .expect("selected list branch should be explicit in IR");
+    let else_use = graph
+        .uses_from(list_if.id)
+        .find(|usage| {
+            usage.value == else_value && usage.kind == ControlFlowValueUseKind::BranchElse
+        })
+        .expect("unselected list branch should remain represented in IR");
+    assert!(matches!(
+        graph
+            .value_region(then_use.region.expect("then branch should name its region"))
+            .map(|region| region.kind),
+        Some(ControlFlowValueRegionKind::Branch {
+            condition: branch_condition,
+            selected_when: true,
+        }) if branch_condition == condition
+    ));
+    assert!(matches!(
+        graph
+            .value_region(else_use.region.expect("else branch should name its region"))
+            .map(|region| region.kind),
+        Some(ControlFlowValueRegionKind::Branch {
+            condition: branch_condition,
+            selected_when: false,
+        }) if branch_condition == condition
+    ));
+    assert_eq!(graph.regions_owned_by(list_if.id).count(), 2);
 
     let generated = compile_to_c(source).expect("static list control should lower natively");
     assert!(generated.contains("flux__fn_live"));
@@ -8349,6 +8395,13 @@ fn main() -> i64 {
         Some(ControlFlowValueKind::Literal)
     ));
 
+    assert!(graph.regions_owned_by(match_value.id).any(|region| {
+        matches!(
+            region.kind,
+            ControlFlowValueRegionKind::MatchArm { arm: 0 | 1, .. }
+        )
+    }));
+
     let comprehension = graph
         .values()
         .iter()
@@ -8377,6 +8430,21 @@ fn main() -> i64 {
     else {
         panic!("comprehension body should retain its multiplication");
     };
+    assert!(graph.regions_owned_by(comprehension.id).any(|region| {
+        matches!(
+            region.kind,
+            ControlFlowValueRegionKind::LoopCondition { .. }
+        )
+    }));
+    assert!(graph.regions_owned_by(comprehension.id).any(|region| {
+        matches!(
+            region.kind,
+            ControlFlowValueRegionKind::LoopBody {
+                condition: Some(_),
+                ..
+            }
+        )
+    }));
     let condition = condition
         .and_then(|condition| graph.value(condition))
         .expect("comprehension filter should retain its condition");

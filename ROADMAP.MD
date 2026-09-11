@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 465
+- Completed baseline units: 466
 - Reported overall progress: **63%**
 - Current net scope growth after the baseline: 53 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -403,10 +403,10 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 Performance acceptance for this milestone is semantic as well as benchmarked: abstractions that can disappear must disappear, required safety checks must remain correct, and representative optimized Flux programs must be continuously compared against equivalent optimized Rust/C baselines so regressions are visible before release.
 
-- [ ] Typed Flux IR with source spans.
+- [x] Typed Flux IR with source spans: every current expression shape is represented by deterministic typed values with source spans/dependencies, and control-dependent nested evaluation now has explicit source-spanned IR regions for short-circuit RHS, branches, match guards/arms, comprehensions, and deferred anonymous-function bodies rather than being recoverable only by re-reading checked AST shape.
   - [x] Bootstrap per-function semantic CFG nodes retain original source spans, function parameter/return types, and explicit typed local-binding metadata while expressions remain in the checked AST.
   - [x] Every normalized statement-level expression evaluation now carries its exact canonical static value shape in CFG/IR, including multi-value calls, loop/match guards, pattern-scoped expressions, redirects, and destructuring sources.
-  - [x] All currently supported nested expression shapes lower into deterministic typed IR values with dependency IDs, including literals/names, unary/binary operations, calls/pipelines, lists/spreads/conditional items, indexing/slicing, struct construction/fields, conditionals, value-producing match/list-match guards and arms, and comprehension iterable/filter/body expressions. Explicit IR control regions for those conditional subexpressions and backend lowering directly from typed IR remain pending.
+  - [x] All currently supported nested expression shapes lower into deterministic typed IR values with dependency IDs, including literals/names, unary/binary operations, calls/pipelines, lists/spreads/conditional items, indexing/slicing, struct construction/fields, conditionals, value-producing match/list-match guards and arms, and comprehension iterable/filter/body expressions. Control-dependent subexpressions now also attach to explicit source-spanned IR regions that carry their governing condition/match/loop/deferred semantics for later backend consumption.
   - [x] Typed value dependencies now classify eager, short-circuit, branch, match, loop, and deferred-body uses and derive per-value reachability from reachable CFG evaluation roots. Source-foldable short-circuit and conditional-list branches prune unselected nested values immediately, while cross-statement propagated constants remain distinct so symbol elimination cannot outrun the bootstrap AST backend before direct typed-IR lowering lands.
 - [ ] Ownership facts represented in IR.
   - [x] Bootstrap CFG action/evaluation nodes carry deterministic binding-read sets plus explicit source/destination/span facts for direct non-copy local moves.
@@ -415,7 +415,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Explicit control-flow graph.
   - [x] The semantic database exposes deterministic per-function structural CFGs for sequential statements, `if`, loops/back-edges, `break`, `continue`, `return`, match-arm dispatch, and `else return` success/error exits.
   - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly, while compile-time primitive conditions and statically empty integer ranges omit impossible branch/body edges.
-  - [ ] Move expression evaluation/value production fully onto typed IR so later optimization no longer depends on checked-AST expression trees; all current expression shapes now have typed value/dependency nodes, while explicit control-flow regions for conditional expression subgraphs and backend consumption of those IR values remain pending.
+  - [ ] Move expression evaluation/value production fully onto typed IR so later optimization no longer depends on checked-AST expression trees; all current expression shapes now have typed value/dependency nodes plus explicit control-dependent regions, while backend consumption of those IR values/regions remains pending.
 - [ ] SSA or equivalent optimization-friendly value representation.
   - [x] Normalized evaluation sites produce deterministic typed value IDs for every single- or multi-value result, with producer node, result index, source span, canonical type, and common nested operand dependencies.
   - [x] CFG nodes now carry explicit typed local-definition facts for ordinary bindings/assignments, multi-value/list/struct destructuring, range/collection loop variables, and statement-match pattern bindings. Backward liveness consumes those normalized definitions rather than special-casing only mutable locals.
