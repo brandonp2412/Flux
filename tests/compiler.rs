@@ -20040,6 +20040,75 @@ app StaticPadding
 }
 
 #[test]
+fn android_margin_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicMargin {
+    state spacing: i64 = 8
+    grid columns: 1fr
+    grid rows: auto auto
+    grid gap: 10
+    Button panel at 1,1
+        text: "Panel"
+        margin: spacing
+        marginTop: 20
+    Button grow at 2,1
+        text: "Grow"
+        onPress: spacing => spacing + 2
+}
+app DynamicMargin
+"#;
+
+    check_source(source).expect("dynamic Android margin should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android margin should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android margin should lower");
+
+    assert!(android.contains("int64_t child_margin = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t refresh_margin = flux__ui_state_spacing"));
+    assert!(android.contains(
+        "margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing"
+    ));
+    assert!(android.contains("refresh_margin_method"));
+    assert!(android.contains("setMargins"));
+    assert!(android.contains("getLayoutParams"));
+    assert!(android.contains("setLayoutParams"));
+    assert!(android.contains("(INT64_C(20) + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("(refresh_margin + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__ui_state_spacing = flux_add_i64"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticMargin {
+    grid columns: 1fr
+    grid rows: auto
+    Text panel at 1,1
+        text: "Panel"
+        margin: 12
+}
+app StaticMargin
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android margin should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android margin should lower");
+    assert!(!static_android.contains("refresh_margin_method"));
+    assert!(!static_android.contains("int64_t child_margin ="));
+}
+
+#[test]
 fn android_text_size_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicText {

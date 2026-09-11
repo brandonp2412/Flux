@@ -6115,35 +6115,87 @@ fn emit_android_native_application(
         out.push_str("    (*env)->SetObjectField(env, params, row_spec_field, row_spec);\n");
         out.push_str("    (*env)->SetObjectField(env, params, column_spec_field, column_spec);\n");
         let gap = view.grid.gap.unwrap_or(12);
-        let margin = view_property(element, "margin")
-            .map(|property| element_margin_value(property, "margin", signatures))
-            .transpose()?
-            .unwrap_or(0);
-        let margin_top = view_property(element, "margin_top")
-            .map(|property| element_margin_value(property, "margin_top", signatures))
-            .transpose()?
-            .unwrap_or(margin);
-        let margin_bottom = view_property(element, "margin_bottom")
-            .map(|property| element_margin_value(property, "margin_bottom", signatures))
-            .transpose()?
-            .unwrap_or(margin);
-        let margin_start = view_property(element, "margin_start")
-            .map(|property| element_margin_value(property, "margin_start", signatures))
-            .transpose()?
-            .unwrap_or(margin);
-        let margin_end = view_property(element, "margin_end")
-            .map(|property| element_margin_value(property, "margin_end", signatures))
-            .transpose()?
-            .unwrap_or(margin);
         let gap_half = i64::from(gap) / 2;
-        if gap > 0 || margin_top > 0 || margin_bottom > 0 || margin_start > 0 || margin_end > 0 {
-            out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density));\n",
-                margin_start.saturating_add(gap_half),
-                margin_top.saturating_add(gap_half),
-                margin_end.saturating_add(gap_half),
-                margin_bottom.saturating_add(gap_half),
-            ));
+        let margin_property = view_property(element, "margin");
+        let (margin, dynamic_margin) = if let Some(property) = margin_property {
+            if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if !(0..=i64::from(i32::MAX)).contains(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        "margin must be between 0 and 2147483647",
+                    ));
+                }
+                (value, false)
+            } else {
+                (0, true)
+            }
+        } else {
+            (0, false)
+        };
+        let margin_top_static = view_property(element, "margin_top")
+            .map(|property| element_margin_value(property, "margin_top", signatures))
+            .transpose()?;
+        let margin_bottom_static = view_property(element, "margin_bottom")
+            .map(|property| element_margin_value(property, "margin_bottom", signatures))
+            .transpose()?;
+        let margin_start_static = view_property(element, "margin_start")
+            .map(|property| element_margin_value(property, "margin_start", signatures))
+            .transpose()?;
+        let margin_end_static = view_property(element, "margin_end")
+            .map(|property| element_margin_value(property, "margin_end", signatures))
+            .transpose()?;
+        let margin_top = margin_top_static.unwrap_or(margin);
+        let margin_bottom = margin_bottom_static.unwrap_or(margin);
+        let margin_start = margin_start_static.unwrap_or(margin);
+        let margin_end = margin_end_static.unwrap_or(margin);
+        let dynamic_margin_top = dynamic_margin && margin_top_static.is_none();
+        let dynamic_margin_bottom = dynamic_margin && margin_bottom_static.is_none();
+        let dynamic_margin_start = dynamic_margin && margin_start_static.is_none();
+        let dynamic_margin_end = dynamic_margin && margin_end_static.is_none();
+        if dynamic_margin_top
+            || dynamic_margin_bottom
+            || dynamic_margin_start
+            || dynamic_margin_end
+            || gap > 0
+            || margin_top > 0
+            || margin_bottom > 0
+            || margin_start > 0
+            || margin_end > 0
+        {
+            if dynamic_margin {
+                let value = ui_expr_c(
+                    &margin_property
+                        .expect("dynamic margin property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    int64_t child_margin = {value};\n    if (child_margin < 0 || child_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+                ));
+                let margin_value = |dynamic: bool, value: i64| {
+                    if dynamic {
+                        "child_margin".to_string()
+                    } else {
+                        format!("INT64_C({value})")
+                    }
+                };
+                let top = margin_value(dynamic_margin_top, margin_top);
+                let bottom = margin_value(dynamic_margin_bottom, margin_bottom);
+                let start = margin_value(dynamic_margin_start, margin_start);
+                let end = margin_value(dynamic_margin_end, margin_end);
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(({start} + INT64_C({gap_half})) * flux__ui_density), (jint)(({top} + INT64_C({gap_half})) * flux__ui_density), (jint)(({end} + INT64_C({gap_half})) * flux__ui_density), (jint)(({bottom} + INT64_C({gap_half})) * flux__ui_density));\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density), (jint)(INT64_C({}) * flux__ui_density));\n",
+                    margin_start.saturating_add(gap_half),
+                    margin_top.saturating_add(gap_half),
+                    margin_end.saturating_add(gap_half),
+                    margin_bottom.saturating_add(gap_half),
+                ));
+            }
         }
         let alignment = |property_name: &str, horizontal: bool| -> Result<i32, Diagnostic> {
             let Some(property) = view_property(element, property_name) else {
@@ -8535,6 +8587,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "border_width"
             | "radius"
             | "padding"
+            | "margin"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -8674,6 +8727,7 @@ fn android_ui_element_needs_refresh(
         "border_width",
         "radius",
         "padding",
+        "margin",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -8920,6 +8974,53 @@ fn emit_android_ui_refresh(
             out.push_str(&format!(
                 "                if (refresh_padding_method != NULL) (*env)->CallVoidMethod(env, child, refresh_padding_method, (jint)({start} * flux__ui_density), (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density));\n"
             ));
+        }
+        if android_ui_property_needs_refresh(element, "margin", &runtime_names)
+            && let Some(property) = view_property(element, "margin")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let margin_top = view_property(element, "margin_top")
+                .map(|property| element_margin_value(property, "margin_top", signatures))
+                .transpose()?;
+            let margin_bottom = view_property(element, "margin_bottom")
+                .map(|property| element_margin_value(property, "margin_bottom", signatures))
+                .transpose()?;
+            let margin_start = view_property(element, "margin_start")
+                .map(|property| element_margin_value(property, "margin_start", signatures))
+                .transpose()?;
+            let margin_end = view_property(element, "margin_end")
+                .map(|property| element_margin_value(property, "margin_end", signatures))
+                .transpose()?;
+            let margin_value = |value: Option<i64>| {
+                value
+                    .map(|value| format!("INT64_C({value})"))
+                    .unwrap_or_else(|| "refresh_margin".to_string())
+            };
+            let top = margin_value(margin_top);
+            let bottom = margin_value(margin_bottom);
+            let start = margin_value(margin_start);
+            let end = margin_value(margin_end);
+            let gap_half = i64::from(view.grid.gap.unwrap_or(12)) / 2;
+            out.push_str(&format!(
+                "                int64_t refresh_margin = {value};\n                if (refresh_margin < 0 || refresh_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+            ));
+            out.push_str("                jmethodID refresh_get_layout_params = (*env)->GetMethodID(env, child_class, \"getLayoutParams\", \"()Landroid/view/ViewGroup$LayoutParams;\");\n");
+            out.push_str("                jobject refresh_layout_params = refresh_get_layout_params == NULL ? NULL : (*env)->CallObjectMethod(env, child, refresh_get_layout_params);\n");
+            out.push_str("                if (refresh_layout_params != NULL && !(*env)->ExceptionCheck(env)) {\n");
+            out.push_str("                    jclass refresh_layout_params_class = (*env)->GetObjectClass(env, refresh_layout_params);\n");
+            out.push_str("                    if (refresh_layout_params_class != NULL) {\n");
+            out.push_str("                        jmethodID refresh_margin_method = (*env)->GetMethodID(env, refresh_layout_params_class, \"setMargins\", \"(IIII)V\");\n");
+            out.push_str(&format!(
+                "                        if (refresh_margin_method != NULL) (*env)->CallVoidMethod(env, refresh_layout_params, refresh_margin_method, (jint)(({start} + INT64_C({gap_half})) * flux__ui_density), (jint)(({top} + INT64_C({gap_half})) * flux__ui_density), (jint)(({end} + INT64_C({gap_half})) * flux__ui_density), (jint)(({bottom} + INT64_C({gap_half})) * flux__ui_density));\n"
+            ));
+            out.push_str("                        (*env)->DeleteLocalRef(env, refresh_layout_params_class);\n");
+            out.push_str("                    }\n");
+            out.push_str("                    jmethodID refresh_set_layout_params = (*env)->GetMethodID(env, child_class, \"setLayoutParams\", \"(Landroid/view/ViewGroup$LayoutParams;)V\");\n");
+            out.push_str("                    if (refresh_set_layout_params != NULL) (*env)->CallVoidMethod(env, child, refresh_set_layout_params, refresh_layout_params);\n");
+            out.push_str(
+                "                    (*env)->DeleteLocalRef(env, refresh_layout_params);\n",
+            );
+            out.push_str("                } else if ((*env)->ExceptionCheck(env)) {\n                    (*env)->ExceptionClear(env);\n                }\n");
         }
         if android_ui_property_needs_refresh(element, "tooltip", &runtime_names)
             && let Some(property) = view_property(element, "tooltip")
