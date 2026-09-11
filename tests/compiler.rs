@@ -10382,6 +10382,91 @@ fn package_sources_receive_stable_package_qualified_module_names() {
 }
 
 #[test]
+fn package_import_namespace_loads_declared_path_dependencies() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-import-namespace-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dependency = root.join("math");
+    fs::create_dir_all(app.join("src")).expect("app package should be writable");
+    fs::create_dir_all(dependency.join("src")).expect("dependency package should be writable");
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath_alias = { path = \"../math\" }\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"flux-math\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(
+        dependency.join("src/helpers.flux"),
+        "pub fn double(value: i64) -> i64 { value * 2 }\n",
+    )
+    .expect("dependency helper should be writable");
+    fs::write(
+        dependency.join("src/lib.flux"),
+        "import \"helpers.flux\"\npub fn answer() -> i64 { double(21) }\n",
+    )
+    .expect("dependency entry should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:math_alias/src/lib.flux\"\nfn main() -> i64 { answer() }\n",
+    )
+    .expect("app entry should be writable");
+
+    let (_, sources) = fluxc::project::load(&app).expect("path dependency import should load");
+    let module_names = sources
+        .iter()
+        .map(|source| source.module_name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        module_names,
+        std::collections::HashSet::from([
+            "sample-app::src::main",
+            "flux-math::src::lib",
+            "flux-math::src::helpers",
+        ])
+    );
+    fluxc::project::check(&app).expect("package dependency imports should typecheck");
+
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:missing/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("invalid app entry should be writable");
+    let errors = fluxc::project::check(&app).expect_err("undeclared package import must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("package dependency 'missing' is not declared in [dependencies]")
+    }));
+
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nremote = \"^1.2.3\"\n",
+    )
+    .expect("registry manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:remote/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
+    )
+    .expect("registry app entry should be writable");
+    let errors = fluxc::project::check(&app)
+        .expect_err("unresolved registry dependency must not pretend to be local");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("package dependency 'remote' requires dependency resolution")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn accepts_flat_grid_views_without_widget_nesting() {
     let source = r#"
 view Dashboard {

@@ -1362,7 +1362,7 @@ fn parse_import(line: &Line) -> Result<ImportDef, Diagnostic> {
     let ExprKind::Str(path) = expression.kind else {
         return Err(diag(
             line.number,
-            "imports use a quoted relative path: import \"file.flux\"",
+            "imports use a quoted module path: import \"file.flux\" or import \"pkg:dependency/module.flux\"",
         ));
     };
     if path.is_empty() {

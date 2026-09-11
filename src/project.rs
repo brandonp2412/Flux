@@ -275,7 +275,17 @@ fn load_report_with_overlays_and_parse_cache(
     overlays: &HashMap<PathBuf, String>,
     parse_cache: Option<&mut ModuleParseCache>,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    let (entry, module_root, package_name) = resolve_project_target(target)?;
+    let (entry, module_root, package_name, dependencies) = resolve_project_target(target)?;
+    let package_scopes = package_name
+        .as_ref()
+        .map(|name| {
+            vec![PackageScope {
+                name: name.clone(),
+                root: module_root.clone(),
+                dependencies,
+            }]
+        })
+        .unwrap_or_default();
     let mut loader = Loader {
         loaded: HashSet::new(),
         stack: Vec::new(),
@@ -283,7 +293,7 @@ fn load_report_with_overlays_and_parse_cache(
         sources: Vec::new(),
         diagnostics: Vec::new(),
         module_root,
-        package_name,
+        package_scopes,
         overlays: overlays.clone(),
         parse_cache,
     };
@@ -365,7 +375,7 @@ pub fn compile_to_c(entry: &Path) -> Result<String, Diagnostic> {
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
-    resolve_project_target(target).map(|(entry, _, _)| entry)
+    resolve_project_target(target).map(|(entry, _, _, _)| entry)
 }
 
 pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -376,7 +386,15 @@ pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>
 
 fn resolve_project_target(
     target: &Path,
-) -> Result<(PathBuf, PathBuf, Option<String>), Vec<Diagnostic>> {
+) -> Result<
+    (
+        PathBuf,
+        PathBuf,
+        Option<String>,
+        BTreeMap<String, PackageDependency>,
+    ),
+    Vec<Diagnostic>,
+> {
     if target.is_dir() || target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
         let manifest_path = if target.is_dir() {
             target.join("flux.toml")
@@ -389,14 +407,19 @@ fn resolve_project_target(
             .parent()
             .expect("canonical manifest path has a parent")
             .to_path_buf();
-        return Ok((manifest.entry, root, Some(manifest.name)));
+        return Ok((
+            manifest.entry,
+            root,
+            Some(manifest.name),
+            manifest.dependencies,
+        ));
     }
     let entry = canonical_source(target, "entry source")?;
     let root = entry
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    Ok((entry, root, None))
+    Ok((entry, root, None, BTreeMap::new()))
 }
 
 pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
@@ -1195,6 +1218,13 @@ fn manifest_diagnostic(source_id: SourceId, line: usize, message: impl Into<Stri
     )
 }
 
+#[derive(Debug, Clone)]
+struct PackageScope {
+    name: String,
+    root: PathBuf,
+    dependencies: BTreeMap<String, PackageDependency>,
+}
+
 struct Loader<'a> {
     loaded: HashSet<PathBuf>,
     stack: Vec<PathBuf>,
@@ -1202,7 +1232,7 @@ struct Loader<'a> {
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
     module_root: PathBuf,
-    package_name: Option<String>,
+    package_scopes: Vec<PackageScope>,
     overlays: HashMap<PathBuf, String>,
     parse_cache: Option<&'a mut ModuleParseCache>,
 }
@@ -1280,7 +1310,30 @@ impl Loader<'_> {
         };
 
         self.stack.push(canonical.clone());
+        let current_package = self.package_scope_for_path(&canonical).cloned();
         for import in &mut parsed.imports {
+            if import.path.starts_with("pkg:") {
+                let Some(current_package) = current_package.as_ref() else {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        import.path_span,
+                        "package imports require a flux.toml package manifest",
+                    ));
+                    continue;
+                };
+                let Some(resolved) =
+                    self.resolve_package_import(current_package, &import.path, import.path_span)
+                else {
+                    continue;
+                };
+                if let Ok(target) = fs::canonicalize(&resolved) {
+                    import.resolved_source_id =
+                        Some(SourceId::from_name(target.to_string_lossy().as_ref()));
+                }
+                self.load_file(&resolved, Some(import.path_span));
+                continue;
+            }
+
             let import_path = Path::new(&import.path);
             if import_path.is_absolute() {
                 self.diagnostics.push(Diagnostic::new(
@@ -1314,10 +1367,14 @@ impl Loader<'_> {
             let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
             let resolved = parent.join(import_path);
             let resolved_canonical = fs::canonicalize(&resolved).ok();
-            if self.package_name.is_some()
+            let package_root = current_package
+                .as_ref()
+                .map(|package| package.root.as_path())
+                .unwrap_or(self.module_root.as_path());
+            if current_package.is_some()
                 && resolved_canonical
                     .as_ref()
-                    .is_some_and(|path| !path.starts_with(&self.module_root))
+                    .is_some_and(|path| !path.starts_with(package_root))
             {
                 self.diagnostics.push(Diagnostic::new(
                     DiagnosticStage::Parse,
@@ -1340,8 +1397,139 @@ impl Loader<'_> {
         }
     }
 
+    fn package_scope_for_path(&self, path: &Path) -> Option<&PackageScope> {
+        self.package_scopes
+            .iter()
+            .filter(|package| path.starts_with(&package.root))
+            .max_by_key(|package| package.root.components().count())
+    }
+
+    fn resolve_package_import(
+        &mut self,
+        current_package: &PackageScope,
+        import_path: &str,
+        span: SourceSpan,
+    ) -> Option<PathBuf> {
+        let rest = import_path
+            .strip_prefix("pkg:")
+            .expect("package import prefix was checked");
+        let Some((dependency_name, module)) = rest.split_once('/') else {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                "package imports use 'pkg:<dependency>/<module.flux>'",
+            ));
+            return None;
+        };
+        if dependency_name.is_empty() || module.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                "package imports require both a dependency name and module path",
+            ));
+            return None;
+        }
+        let module_path = Path::new(module);
+        if module_path.is_absolute()
+            || module_path.extension().and_then(|value| value.to_str()) != Some("flux")
+            || module_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                "package module paths must be normalized relative '.flux' paths",
+            ));
+            return None;
+        }
+        let Some(dependency) = current_package.dependencies.get(dependency_name) else {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                format!("package dependency '{dependency_name}' is not declared in [dependencies]"),
+            ));
+            return None;
+        };
+        let PackageDependency::Path { path } = dependency else {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                format!(
+                    "package dependency '{dependency_name}' requires dependency resolution before it can be imported"
+                ),
+            ));
+            return None;
+        };
+
+        let dependency_manifest = current_package.root.join(path).join("flux.toml");
+        let manifest = match read_manifest(&dependency_manifest) {
+            Ok(manifest) => manifest,
+            Err(diagnostics) => {
+                let detail = diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("invalid dependency manifest");
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    span,
+                    format!("failed to load package dependency '{dependency_name}': {detail}"),
+                ));
+                return None;
+            }
+        };
+        let dependency_root = manifest
+            .path
+            .parent()
+            .expect("canonical manifest path has a parent")
+            .to_path_buf();
+        if let Some(existing) = self
+            .package_scopes
+            .iter()
+            .find(|package| package.name == manifest.name)
+        {
+            if existing.root != dependency_root {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    span,
+                    format!(
+                        "package '{}' resolved to multiple source roots",
+                        manifest.name
+                    ),
+                ));
+                return None;
+            }
+        } else {
+            self.package_scopes.push(PackageScope {
+                name: manifest.name,
+                root: dependency_root.clone(),
+                dependencies: manifest.dependencies,
+            });
+        }
+        let resolved = dependency_root.join(module_path);
+        if fs::canonicalize(&resolved)
+            .ok()
+            .is_some_and(|path| !path.starts_with(&dependency_root))
+        {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticStage::Parse,
+                span,
+                "package imports must remain inside the dependency package root",
+            ));
+            return None;
+        }
+        Some(resolved)
+    }
+
     fn module_name(&self, path: &Path) -> String {
-        let relative = path.strip_prefix(&self.module_root).unwrap_or(path);
+        let package = self.package_scope_for_path(path);
+        let module_root = package
+            .map(|package| package.root.as_path())
+            .unwrap_or(self.module_root.as_path());
+        let relative = path.strip_prefix(module_root).unwrap_or(path);
         let mut segments = relative
             .components()
             .filter_map(|component| component.as_os_str().to_str())
@@ -1353,9 +1541,9 @@ impl Loader<'_> {
             *last = stem.to_string();
         }
         let local = segments.join("::");
-        match &self.package_name {
+        match package.map(|package| package.name.as_str()) {
             Some(package) if !local.is_empty() => format!("{package}::{local}"),
-            Some(package) => package.clone(),
+            Some(package) => package.to_string(),
             None => local,
         }
     }
