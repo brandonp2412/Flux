@@ -10653,9 +10653,85 @@ struct BlockEmitContext<'a> {
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
 }
 
-fn dead_store_rhs_is_discardable(expr: &Expr, signatures: &Signatures) -> bool {
-    typecheck::constant_primitive_value(expr, signatures).is_some()
+fn dead_store_rhs_is_discardable(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> bool {
+    if typecheck::constant_primitive_value(expr, signatures).is_some()
         || matches!(expr.kind, ExprKind::Nil | ExprKind::Var(_))
+    {
+        return true;
+    }
+
+    match &expr.kind {
+        ExprKind::AnonymousFunction { .. } => true,
+        ExprKind::List(items) => items
+            .iter()
+            .all(|item| dead_store_rhs_is_discardable(item, env, signatures)),
+        ExprKind::StructLiteral { base, fields, .. } => {
+            base.as_deref()
+                .is_none_or(|base| dead_store_rhs_is_discardable(base, env, signatures))
+                && fields
+                    .iter()
+                    .all(|field| dead_store_rhs_is_discardable(&field.value, env, signatures))
+        }
+        ExprKind::Field { base, name, .. }
+            if dead_store_rhs_is_discardable(base, env, signatures) =>
+        {
+            match type_of_expr(base, env, signatures)
+                .ok()
+                .map(|ty| signatures.canonical_type(&ty))
+            {
+                Some(Type::Named(_)) => true,
+                Some(Type::List(_)) => match name.as_str() {
+                    "length" | "isEmpty" | "isNotEmpty" => true,
+                    "first" | "last" => static_list_length(base).is_some_and(|len| len > 0),
+                    "single" => static_list_length(base) == Some(1),
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+        ExprKind::Index { base, index } => {
+            dead_store_rhs_is_discardable(base, env, signatures)
+                && dead_store_rhs_is_discardable(index, env, signatures)
+                && resolved_static_list_index(base, index, env, signatures)
+                    .ok()
+                    .flatten()
+                    .is_some()
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            dead_store_rhs_is_discardable(cond, env, signatures)
+                && dead_store_rhs_is_discardable(then_expr, env, signatures)
+                && dead_store_rhs_is_discardable(else_expr, env, signatures)
+        }
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr,
+        } => dead_store_rhs_is_discardable(expr, env, signatures),
+        ExprKind::Binary { left, op, right }
+            if matches!(
+                op,
+                BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+            ) =>
+        {
+            dead_store_rhs_is_discardable(left, env, signatures)
+                && dead_store_rhs_is_discardable(right, env, signatures)
+        }
+        _ => false,
+    }
 }
 
 fn emit_block(
@@ -10678,7 +10754,7 @@ fn emit_block(
             && context
                 .dead_assignment_spans
                 .contains(&source_span_key(stmt.span))
-            && dead_store_rhs_is_discardable(expr, signatures)
+            && dead_store_rhs_is_discardable(expr, env, signatures)
         {
             continue;
         }
@@ -10687,7 +10763,7 @@ fn emit_block(
                 .dead_let_binding_spans
                 .contains(&source_span_key(stmt.span))
             && signatures.is_copy_type(ty)
-            && dead_store_rhs_is_discardable(expr, signatures)
+            && dead_store_rhs_is_discardable(expr, env, signatures)
         {
             continue;
         }
@@ -10701,7 +10777,7 @@ fn emit_block(
                 if context
                     .dead_var_initializer_spans
                     .contains(&source_span_key(stmt.span))
-                    && dead_store_rhs_is_discardable(expr, signatures) =>
+                    && dead_store_rhs_is_discardable(expr, env, signatures) =>
             {
                 out.push_str(&format!(
                     "{pad}{} {};\n",

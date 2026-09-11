@@ -8620,6 +8620,62 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_observed = flux__fn_observe(INT64_C(4))"));
     assert!(generated.contains("flux_add_i64(flux__local_dynamic, INT64_C(1))"));
 
+    let aggregates = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn main() -> i64 {
+    let seed: Pair = Pair { left: 1, right: 2 }
+    let deadLiteral: Pair = Pair { left: 10, right: 20 }
+    if false:
+        print(deadLiteral.left)
+    let deadUpdate: Pair = Pair { ..seed, right: 3 }
+    if false:
+        print(deadUpdate.right)
+    let deadField: i64 = Pair { left: 30, right: 40 }.left
+    if false:
+        print(deadField)
+    let deadIndex: i64 = [6, 7][1]
+    if false:
+        print(deadIndex)
+    let deadLength: i64 = [1, 2, 3].length
+    if false:
+        print(deadLength)
+    let dynamicIndex: i64 = time.unixMillis()
+    let checkedIndex: i64 = [6, 7][dynamicIndex]
+    if false:
+        print(checkedIndex)
+    let checkedNegation: i64 = -dynamicIndex
+    if false:
+        print(checkedNegation)
+    let observed: Pair = Pair { left: observe(4), right: 5 }
+    if false:
+        print(observed.left)
+    return seed.left
+}
+"#;
+    check_source(aggregates).expect("dead Copy aggregate bindings should typecheck");
+    let aggregate_generated =
+        compile_to_c(aggregates).expect("dead Copy aggregates should optimize safely");
+    assert!(!aggregate_generated.contains("flux__local_deadLiteral"));
+    assert!(!aggregate_generated.contains("flux__local_deadUpdate"));
+    assert!(!aggregate_generated.contains("flux__local_deadField"));
+    assert!(!aggregate_generated.contains("flux__local_deadIndex"));
+    assert!(!aggregate_generated.contains("flux__local_deadLength"));
+    assert!(aggregate_generated.contains("flux__local_checkedIndex"));
+    assert!(aggregate_generated.contains("flux_list_at("));
+    assert!(aggregate_generated.contains("flux__local_checkedNegation"));
+    assert!(aggregate_generated.contains("flux_neg_i64(flux__local_dynamicIndex)"));
+    assert!(aggregate_generated.contains("flux__fn_observe(INT64_C(4))"));
+    assert!(aggregate_generated.contains("flux__local_observed"));
+
     let moved_source = r#"
 fn main() -> i64 {
     let source: i64[] = [1, 2]
