@@ -5858,44 +5858,30 @@ fn main() -> i64 {
 }
 
 #[test]
-fn worker_join_children_waits_for_direct_children_and_tree_shakes() {
+fn worker_join_children_waits_for_descendants_and_tree_shakes() {
     let source = r#"
-fn child(channelHandle: i64) -> void {
-    time.sleepMillis(2)
-    let _sendError: error = channel.send(channelHandle, 41)
+fn grandchild() -> void {
+    time.sleepMillis(20)
+    print(41)
 }
-fn parent(channelHandle: i64) -> void {
-    let (_childHandle, startError) = worker.startWith(child, channelHandle)
+fn child() -> void {
+    let (_grandchildHandle, startError) = worker.start(grandchild)
     if startError != nil:
-        let _sendError: error = channel.send(channelHandle, -1)
-        return
-    let joinError: error = worker.joinChildren()
-    if joinError != nil:
-        let _sendError: error = channel.send(channelHandle, -2)
-        return
-    let _sendError: error = channel.send(channelHandle, 42)
+        print(-1)
+}
+fn parent() -> void {
+    let (_childHandle, startError) = worker.start(child)
+    if startError != nil:
+        print(-2)
 }
 fn main() -> i64 {
-    let (channelHandle, createError) = channel.create(2)
-    if createError != nil:
-        return 1
-    let (parentHandle, startError) = worker.startWith(parent, channelHandle)
+    let (_parentHandle, startError) = worker.start(parent)
     if startError != nil:
-        return 2
-    let (first, firstError) = channel.receive(channelHandle)
-    if firstError != nil:
-        return 3
-    let (second, secondError) = channel.receive(channelHandle)
-    if secondError != nil:
-        return 4
-    let joinError: error = worker.join(parentHandle)
+        return 1
+    let joinError: error = worker.joinChildren()
     if joinError != nil:
-        return 5
-    let closeError: error = channel.close(channelHandle)
-    if closeError != nil:
-        return 6
-    print(first)
-    print(second)
+        return 2
+    print(42)
     return 0
 }
 "#;
@@ -5903,7 +5889,8 @@ fn main() -> i64 {
     check_source(source).expect("worker.joinChildren should typecheck");
     let generated = compile_to_c(source).expect("worker.joinChildren should lower natively");
     assert!(generated.contains("static const char *flux__worker_join_children(void)"));
-    assert!(generated.contains("child->parent_id != parent_id"));
+    assert!(generated.contains("static const char *flux__worker_join_tree(int64_t handle)"));
+    assert!(generated.contains("flux__worker_join_tree(child_id)"));
 
     let root = std::env::temp_dir().join(format!(
         "flux-worker-join-children-api-{}",
