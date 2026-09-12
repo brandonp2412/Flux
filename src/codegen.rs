@@ -17198,10 +17198,19 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
         } => true,
         ExprKind::Binary {
             left,
+            op: BinOp::Add,
+            right,
+        } => {
+            constant_i64(left).is_some_and(|value| value > 0)
+                || constant_i64(right).is_some_and(|value| value > 0)
+        }
+        ExprKind::Binary {
+            left,
             op: BinOp::Sub,
             right,
         } => {
-            constant_i64(left) == Some(0)
+            constant_i64(left).is_some_and(|value| value >= 0)
+                || constant_i64(right).is_some_and(|value| value < 0)
                 || matches!(
                     (&left.kind, &right.kind),
                     (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
