@@ -6031,15 +6031,8 @@ fn emit_android_native_application(
         }
         if element.kind == "Button" {
             let primary = match view_property(element, "primary") {
-                Some(property) => {
-                    static_expr_bool(&property.value, signatures).ok_or_else(|| {
-                        diag(
-                            property.value.span,
-                            "bootstrap Android Button.primary must be a compile-time bool value",
-                        )
-                    })?
-                }
-                None => false,
+                Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                None => "false".to_string(),
             };
             out.push_str(
                 "    jclass button_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
@@ -6048,8 +6041,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_button = (*env)->GetMethodID(env, button_style_activity_class, \"styleButton\", \"(Landroid/widget/Button;Z)V\");\n");
             out.push_str("    if (style_button == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, activity, style_button, child, {});\n",
-                if primary { "JNI_TRUE" } else { "JNI_FALSE" }
+                "    (*env)->CallVoidMethod(env, activity, style_button, child, (jboolean)({primary}));\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
             if let Some(property) = view_property(element, "size") {
@@ -6644,6 +6636,9 @@ fn emit_android_native_application(
         } else {
             None
         };
+        let dynamic_button_primary = element.kind == "Button"
+            && view_property(element, "primary")
+                .is_some_and(|property| static_expr_bool(&property.value, signatures).is_none());
         let has_shape_style = border_top_color.is_some()
             || border_bottom_color.is_some()
             || border_start_color.is_some()
@@ -6674,7 +6669,11 @@ fn emit_android_native_application(
             || radius_bottom_left > 0
             || radius_bottom_right > 0
             || has_shadow;
-        if element.kind == "Button" && background_property.is_none() && has_shape_style {
+        if element.kind == "Button"
+            && background_property.is_none()
+            && has_shape_style
+            && !dynamic_button_primary
+        {
             let primary = view_property(element, "primary")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false);
@@ -6682,6 +6681,7 @@ fn emit_android_native_application(
         }
         if background_color.is_some()
             || dynamic_background_color
+            || (dynamic_button_primary && background_property.is_none() && has_shape_style)
             || dynamic_border_color
             || dynamic_border_top_color
             || dynamic_border_bottom_color
@@ -6726,6 +6726,17 @@ fn emit_android_native_application(
                 )?;
                 out.push_str(&format!(
                     "    const char *child_background_value = {value};\n    if (!flux__android_valid_ui_color(child_background_value)) {{ fputs(\"Flux runtime error: backgroundColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\\n\", stderr); abort(); }}\n    jstring child_background = flux__android_utf8_string(env, child_background_value);\n    if (child_background == NULL) return;\n"
+                ));
+            } else if dynamic_button_primary && background_property.is_none() && has_shape_style {
+                let primary = ui_expr_c(
+                    &view_property(element, "primary")
+                        .expect("dynamic Button.primary property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "    const char *child_background_value = ({primary}) ? \"accent\" : \"surfaceRaised\";\n    jstring child_background = flux__android_utf8_string(env, child_background_value);\n    if (child_background == NULL) return;\n"
                 ));
             } else {
                 emit_optional_jstring(out, "child_background", &background_color);
@@ -10475,17 +10486,10 @@ fn emit_linux_gtk_application(
                     ));
                 }
                 if let Some(property) = view_property(element, "primary") {
-                    let Some(primary) = static_expr_bool(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Linux Button.primary must be a compile-time bool value",
-                        ));
-                    };
-                    if primary {
-                        out.push_str(&format!(
-                            "    gtk_widget_add_css_class({variable}, \"suggested-action\");\n"
-                        ));
-                    }
+                    let primary = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({primary}) gtk_widget_add_css_class({variable}, \"suggested-action\"); else gtk_widget_remove_css_class({variable}, \"suggested-action\");\n"
+                    ));
                 }
                 if view_property(element, "on_press").is_some() {
                     out.push_str(&format!(
@@ -11256,6 +11260,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Text", "max_width_chars")
             | ("Button", "text")
             | ("Button", "size")
+            | ("Button", "primary")
             | ("TextInput", "placeholder")
             | ("TextInput", "validation_state")
             | ("Image", "source")
@@ -11429,7 +11434,7 @@ fn android_ui_element_needs_refresh(
             "max_lines",
             "max_width_chars",
         ],
-        "Button" => &["text", "size"],
+        "Button" => &["text", "size", "primary"],
         "TextInput" => &["placeholder", "validation_state"],
         "Image" => &["source", "alt", "fit", "can_shrink"],
         "Toggle" => &["label", "checked"],
@@ -12141,6 +12146,18 @@ fn emit_android_ui_refresh(
                         "                    (*env)->DeleteLocalRef(env, refresh_text_value);\n",
                     );
                     out.push_str("                }\n");
+                }
+                if element.kind == "Button"
+                    && android_ui_property_needs_refresh(element, "primary", &runtime_names)
+                    && let Some(property) = view_property(element, "primary")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let explicit_background = view_property(element, "background_color").is_some();
+                    out.push_str("                jmethodID refresh_button_primary = (*env)->GetMethodID(env, activity_class, \"refreshButtonPrimary\", \"(Landroid/widget/Button;ZZ)V\");\n");
+                    out.push_str(&format!(
+                        "                if (refresh_button_primary != NULL) (*env)->CallVoidMethod(env, activity, refresh_button_primary, child, (jboolean)({value}), (jboolean){});\n",
+                        if explicit_background { "JNI_TRUE" } else { "JNI_FALSE" }
+                    ));
                 }
                 if element.kind == "Button"
                     && android_ui_property_needs_refresh(element, "size", &runtime_names)
@@ -13562,6 +13579,14 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "primary")
+                    && static_expr_bool(&property.value, signatures).is_none()
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) {{ if ({value}) gtk_widget_add_css_class({widget}, \"suggested-action\"); else gtk_widget_remove_css_class({widget}, \"suggested-action\"); }}\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "size")

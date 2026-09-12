@@ -28540,7 +28540,8 @@ view Screen {
     Button action at 3,1
         text: "Press"
         enabled: !expanded && window_is_medium
-        primary: true
+        primary: expanded
+        radius: 12
         onPress: pressed
 }
 app Screen
@@ -28574,8 +28575,14 @@ app Screen
     assert!(generated.contains("setOnClickListener"));
     assert!(generated.contains("styleButton"));
     assert!(generated.contains("(Landroid/widget/Button;Z)V"));
-    assert!(generated.contains("style_button, child, JNI_FALSE"));
-    assert!(generated.contains("style_button, child, JNI_TRUE"));
+    assert!(generated.contains("style_button, child, (jboolean)(false)"));
+    assert!(generated.contains("style_button, child, (jboolean)(flux__ui_state_expanded)"));
+    assert!(generated.contains("refreshButtonPrimary"));
+    assert!(generated.contains("(Landroid/widget/Button;ZZ)V"));
+    assert!(generated.contains("refresh_button_primary"));
+    assert!(generated.contains(
+        "child_background_value = (flux__ui_state_expanded) ? \"accent\" : \"surfaceRaised\""
+    ));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
     assert!(generated.contains("static bool flux__ui_state_expanded = false;"));
     assert!(generated.contains("static const char * flux__ui_derived_label = NULL;"));
@@ -28601,6 +28608,16 @@ app Screen
         "activity->callbacks->onConfigurationChanged = flux__android_on_configuration_changed"
     ));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
+
+    let linux = analysis
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+        .expect("state-driven Button.primary should lower through the native Linux backend");
+    assert!(linux.contains(
+        "if (flux__ui_state_expanded) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
+    ));
+    assert!(
+        linux.contains("else gtk_widget_remove_css_class(flux__ui_action, \"suggested-action\")")
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

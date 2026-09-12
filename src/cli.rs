@@ -5030,6 +5030,32 @@ __FLUX_PICKER_METHODS__
         view.setElevation(0.0f);
     }
 
+    public void refreshButtonPrimary(Button view, boolean primary, boolean explicitBackground) {
+        applyFluxTextLocales(view);
+        int background = parseFluxColor(primary ? "accent" : "surfaceRaised");
+        int label = parseFluxColor(primary ? "onAccent" : "text");
+        int[][] states = new int[][] {
+            new int[] { -android.R.attr.state_enabled },
+            new int[] { android.R.attr.state_pressed },
+            new int[] {}
+        };
+        int pressed = isFluxDarkTheme()
+                ? Color.rgb(Math.min(255, Color.red(background) + 16), Math.min(255, Color.green(background) + 16), Math.min(255, Color.blue(background) + 16))
+                : Color.rgb(Math.max(0, Color.red(background) - 16), Math.max(0, Color.green(background) - 16), Math.max(0, Color.blue(background) - 16));
+        Drawable drawable = view.getBackground();
+        if (drawable instanceof FluxStyleDrawable) {
+            view.setBackgroundTintList(null);
+            if (!explicitBackground) {
+                ((FluxStyleDrawable)drawable).setBackground(primary ? "accent" : "surfaceRaised");
+            }
+        } else {
+            view.setBackgroundTintList(new ColorStateList(states, new int[] { withAlpha(background, 96), pressed, background }));
+        }
+        view.setTextColor(new ColorStateList(states, new int[] { withAlpha(label, 144), label, label }));
+        view.setStateListAnimator(null);
+        view.setElevation(0.0f);
+    }
+
     public void styleTextInput(EditText view, String validationState) {
         applyFluxTextLocales(view);
         int accent = parseFluxColor("accent");
@@ -7794,6 +7820,9 @@ mod tests {
         assert!(activity.contains("drawHorizontalBorder"));
         assert!(activity.contains("drawVerticalBorder"));
         assert!(activity.contains("public void styleView("));
+        assert!(activity.contains("public void refreshButtonPrimary(Button view, boolean primary, boolean explicitBackground)"));
+        assert!(activity.contains("if (drawable instanceof FluxStyleDrawable)"));
+        assert!(activity.contains("if (!explicitBackground)"));
         assert!(activity.contains("String borderTop"));
         assert!(activity.contains("String shadowColor"));
         assert!(activity.contains("void setBorderWidths(int top, int end, int bottom, int start)"));
