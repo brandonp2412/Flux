@@ -8334,6 +8334,18 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::I64, &actual, "worker.cancel handle")?;
                 return Ok(vec![Type::Error]);
             }
+            "cancelChildren" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "worker.cancelChildren expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
             "cancelled" => {
                 if !args.is_empty() {
                     return Err(diag(

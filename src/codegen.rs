@@ -5150,6 +5150,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static const char *flux__async_scope_finish(void) { return flux__worker_join_children(); }\n");
         out.push_str("static int flux__finish_main(int result) { const char *error = flux__worker_join_children(); if (error != NULL) { fputs(\"Flux worker scope error: \", stderr); fputs(error, stderr); fputc('\\n', stderr); return result == 0 ? 1 : result; } return result; }\n");
         out.push_str("static const char *flux__worker_cancel(int64_t handle) { if (handle <= 0) return \"worker.cancel received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *root = flux__worker_find_locked(handle); if (root == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.cancel received an unknown or already joined handle\"; } if (root->parent_id != flux__worker_current_id) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.cancel handle is outside the current worker scope\"; } for (struct flux__worker_state *state = flux__worker_head; state != NULL; state = state->next) { if (state->id == handle || flux__worker_descends_from_locked(state, handle)) state->cancel_requested = true; } pthread_mutex_unlock(&flux__worker_mutex); return NULL; }\n");
+        out.push_str("static void flux__worker_cancel_children(void) { int64_t parent_id = flux__worker_current_id; pthread_mutex_lock(&flux__worker_mutex); for (struct flux__worker_state *state = flux__worker_head; state != NULL; state = state->next) { if (state->parent_id == parent_id) state->cancel_requested = true; } bool changed = true; while (changed) { changed = false; for (struct flux__worker_state *state = flux__worker_head; state != NULL; state = state->next) { if (state->cancel_requested || state->parent_id <= 0) continue; struct flux__worker_state *parent = flux__worker_find_locked(state->parent_id); if (parent != NULL && parent->cancel_requested) { state->cancel_requested = true; changed = true; } } } pthread_mutex_unlock(&flux__worker_mutex); }\n");
         out.push_str("static bool flux__worker_cancelled(void) { int64_t current_id = flux__worker_current_id; if (current_id <= 0) return false; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(current_id); bool cancelled = state != NULL && state->cancel_requested; pthread_mutex_unlock(&flux__worker_mutex); return cancelled; }\n");
     } else {
         if runtime_usage.contains("flux__finish_main(") {
@@ -24702,6 +24703,16 @@ fn emit_qualified_call(
                 return Ok((
                     format!("flux__worker_cancel({})", handle.code),
                     vec![Type::Error],
+                    None,
+                ));
+            }
+            "cancelChildren" => {
+                if !args.is_empty() {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                return Ok((
+                    "flux__worker_cancel_children()".to_string(),
+                    Vec::new(),
                     None,
                 ));
             }
