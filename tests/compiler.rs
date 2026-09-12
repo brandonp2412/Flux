@@ -6069,6 +6069,101 @@ fn main() -> i64 {
 }
 
 #[test]
+fn filesystem_read_text_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let root = std::env::temp_dir().join(format!("flux-fs-read-text-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem read fixture should be writable");
+    let input = root.join("input.txt");
+    fs::write(&input, "hello").expect("filesystem read fixture should be writable");
+    let path = input
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn consume(text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let (bytes, readError) = fs.readText("{path}", 64, consume)
+    print(bytes)
+    print(readError)
+    let (overflowBytes, overflowError) = fs.readText("{path}", 4, consume)
+    print(overflowBytes)
+    print(overflowError)
+    return 0
+}}
+"#
+    );
+
+    check_source(&source).expect("bounded filesystem text reads should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem text reads should lower natively");
+    assert!(generated.contains("struct flux__fs_i64_error"));
+    assert!(generated.contains("static inline struct flux__fs_i64_error flux__fs_read_text"));
+
+    let unused = r#"
+fn consume(text: str) -> void {
+    print(text)
+}
+fn hidden() -> void {
+    let (_bytes, _failure) = fs.readText("/tmp/unused-flux-read", 64, consume)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead filesystem read should lower");
+    assert!(!unused_generated.contains("flux__fs_read_text"));
+
+    let invalid = r#"
+fn wrong(_value: i64) -> void {
+}
+fn main() -> i64 {
+    let (_negativeBytes, _negativeError) = fs.readText("x", -1, wrong)
+    let (_callbackBytes, _callbackError) = fs.readText("x", 1, wrong)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("invalid filesystem reads should fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("fs.readText maxBytes must be between 0 and 65536")
+    }));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("fs.readText callback"))
+    );
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("filesystem read source should be writable");
+    let binary = root.join("fs-read-text");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem read binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem read build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem read binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(lines, ["hello", "5", "nil", "-1", "file exceeds maxBytes"]);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_invalid_typed_shell_operations() {
     let bad_pipe = r#"
 fn text() -> str {

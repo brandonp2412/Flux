@@ -1546,6 +1546,10 @@ fn add_qualified_namespace_completions(
                 "fn fs.removeDirectories(path: str) -> error",
             ),
             (
+                "readText",
+                "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
+            ),
+            (
                 "writeText",
                 "fn fs.writeText(path: str, text: str) -> error",
             ),
@@ -3413,6 +3417,14 @@ fn signature_help_for_document_cached(
                         &format!("fs.{member}"),
                         &["path: str"],
                         "error",
+                        active_parameter,
+                    ));
+                }
+                "readText" => {
+                    return Some(signature_help_for_builtin(
+                        "fs.readText",
+                        &["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -7080,6 +7092,9 @@ mod tests {
         assert!(fs_items.contains("fn fs.exists(path: str) -> bool"));
         assert!(fs_items.contains("fn fs.createDirectories(path: str) -> error"));
         assert!(fs_items.contains("fn fs.removeDirectories(path: str) -> error"));
+        assert!(fs_items.contains(
+            "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"
+        ));
         assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
         assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
         assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
@@ -8501,7 +8516,7 @@ mod tests {
     #[test]
     fn signature_help_supports_filesystem_capabilities() {
         let uri = "file:///tmp/filesystem-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
+        let source = "fn consume(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    let (_bytes, _readError) = fs.readText(\"a\", 64, consume)\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("fs.exists(", "fn fs.exists(path: str) -> bool"),
@@ -8523,6 +8538,10 @@ mod tests {
             (
                 "fs.removeDirectories(",
                 "fn fs.removeDirectories(path: str) -> error",
+            ),
+            (
+                "fs.readText(",
+                "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
             ),
             (
                 "fs.writeText(",
