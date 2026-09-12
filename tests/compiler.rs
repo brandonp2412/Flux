@@ -22021,6 +22021,7 @@ app Form
     .expect("dynamic validation should lower on Android");
     assert!(android.contains("flux__ui_validation_state(flux__ui_state_validation)"));
     assert!(android.contains("refresh_input_style"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
 
     let invalid = r#"
 view Form {
@@ -24186,6 +24187,7 @@ app KeyCard
     assert!(android.contains("\"setFocusableInTouchMode\", \"(Z)V\""));
     assert!(android.contains("(jboolean)(flux__ui_state_keyboardEnabled)"));
     assert!(android.contains("refresh_focusable"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
     assert!(!android.contains("set_focusable, (jboolean)true"));
     assert!(android.contains("request_autofocus"));
     assert!(android.contains("autofocus_focusable"));
@@ -27809,6 +27811,9 @@ app DynamicEdgePadding
     assert!(android.contains("(jint)(refresh_padding_end * flux__ui_density)"));
     assert!(android.contains("flux__ui_state_topSpacing = flux_add_i64"));
     assert!(android.contains("flux__ui_state_endSpacing = flux_add_i64"));
+    assert!(
+        android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1) {")
+    );
     assert!(!android.contains("int64_t child_padding ="));
 }
 
@@ -27875,7 +27880,9 @@ app DynamicMargin
     assert!(android.contains("(refresh_margin_top + INT64_C(5)) * flux__ui_density"));
     assert!(android.contains("(refresh_margin_end + INT64_C(5)) * flux__ui_density"));
     assert!(android.contains("(refresh_margin + INT64_C(5)) * flux__ui_density"));
-    assert!(android.contains("if (changed_state == -1 || changed_state == 0"));
+    assert!(android.contains(
+        "if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2) {"
+    ));
     assert!(android.contains("flux__ui_state_spacing = flux_add_i64"));
     assert!(android.contains("flux__ui_state_topSpacing = flux_add_i64"));
     assert!(android.contains("flux__ui_state_endSpacing = flux_add_i64"));
@@ -28586,6 +28593,9 @@ app DynamicShadow
     assert!(android.contains("shadowOffsetY must fit within a 32-bit signed integer"));
     let panel_id = android_stable_view_id("DynamicShadow", "panel");
     assert!(android.contains(&format!("find_view, (jint){panel_id}")));
+    assert!(android.contains(
+        "if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2 || changed_state == 3) {"
+    ));
 
     let static_source = r#"
 view StaticShadow {

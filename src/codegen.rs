@@ -11021,6 +11021,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
         property_name,
         "visible"
             | "enabled"
+            | "focusable"
             | "clip"
             | "min_width"
             | "min_height"
@@ -11043,8 +11044,20 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "radius_top_right"
             | "radius_bottom_left"
             | "radius_bottom_right"
+            | "shadow_color"
+            | "shadow_blur"
+            | "shadow_offset_x"
+            | "shadow_offset_y"
             | "padding"
+            | "padding_top"
+            | "padding_bottom"
+            | "padding_start"
+            | "padding_end"
             | "margin"
+            | "margin_top"
+            | "margin_bottom"
+            | "margin_start"
+            | "margin_end"
             | "tooltip"
             | "accessibility_label"
             | "accessibility_description"
@@ -11086,6 +11099,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Text", "max_width_chars")
             | ("Button", "text")
             | ("TextInput", "placeholder")
+            | ("TextInput", "validation_state")
             | ("Image", "source")
             | ("Image", "alt")
             | ("Image", "can_shrink")
