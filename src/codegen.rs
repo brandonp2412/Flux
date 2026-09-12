@@ -12865,6 +12865,11 @@ fn ui_expr_c(
                 matches!(op, BinOp::Eq | BinOp::Ne) && ui_expr_is_str(left, view, signatures);
             let left_code = ui_expr_c(left, view, signatures)?;
             let right_code = ui_expr_c(right, view, signatures)?;
+            if let Some(code) =
+                same_checked_negated_binding_comparison_c(*op, left, right, &left_code)
+            {
+                return Ok(code);
+            }
             if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 return Ok(code.to_string());
             }
@@ -18529,6 +18534,39 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
+fn same_checked_negated_binding_comparison_c(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    left_code: &str,
+) -> Option<String> {
+    if !matches!(
+        (&left.kind, &right.kind),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: left_inner,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: right_inner,
+            }
+        ) if matches!(
+            (&left_inner.kind, &right_inner.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        )
+    ) {
+        return None;
+    }
+
+    let result = match op {
+        BinOp::Eq | BinOp::Le | BinOp::Ge => "true",
+        BinOp::Ne | BinOp::Lt | BinOp::Gt => "false",
+        _ => return None,
+    };
+    Some(format!("((void)({left_code}), {result})"))
+}
+
 fn same_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
     match (&left.kind, &right.kind) {
         (ExprKind::Var(left_name), ExprKind::Var(right_name)) => left_name == right_name,
@@ -23426,6 +23464,10 @@ fn emit_expr(
                 } else {
                     format!("(({}).has_value)", emitted_right.code)
                 }
+            } else if let Some(code) =
+                same_checked_negated_binding_comparison_c(*op, left, right, &emitted_left.code)
+            {
+                code
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 code.to_string()
             } else if let Some(code) = boolean_identity_c(

@@ -15555,6 +15555,82 @@ app Counter
 }
 
 #[test]
+fn folds_reflexive_checked_negated_binding_comparisons_after_one_guard() {
+    let source = r#"
+fn equal(value: i64) -> bool {
+    return (-value) == (-value)
+}
+
+fn notEqual(value: i64) -> bool {
+    return (-value) != (-value)
+}
+
+fn less(value: i64) -> bool {
+    return (-value) < (-value)
+}
+
+fn lessEqual(value: i64) -> bool {
+    return (-value) <= (-value)
+}
+
+fn greater(value: i64) -> bool {
+    return (-value) > (-value)
+}
+
+fn greaterEqual(value: i64) -> bool {
+    return (-value) >= (-value)
+}
+
+fn main() -> i64 {
+    print(equal(1))
+    print(notEqual(2))
+    print(less(3))
+    print(lessEqual(4))
+    print(greater(5))
+    print(greaterEqual(6))
+    return 0
+}
+"#;
+
+    check_source(source).expect("reflexive checked-negation comparisons should typecheck");
+    let generated = compile_to_c(source)
+        .expect("reflexive checked-negation comparisons should reuse one checked guard");
+    assert_eq!(
+        generated.matches("flux_neg_i64(flux__local_value)").count(),
+        6,
+        "each comparison should evaluate the checked negation once",
+    );
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), true);"));
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), false);"));
+    assert!(
+        !generated.contains("flux_neg_i64(flux__local_value) == flux_neg_i64(flux__local_value)")
+    );
+    assert!(generated.contains("if (value == INT64_MIN)"));
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "Ready"
+        visible: (-count) == (-count)
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui)
+        .expect("UI reflexive checked-negation comparison should share optimized lowering");
+    assert!(ui_generated.contains("((void)(flux_neg_i64(flux__ui_state_count)), true)"));
+    assert_eq!(
+        ui_generated
+            .matches("flux_neg_i64(flux__ui_state_count)")
+            .count(),
+        1,
+        "UI lowering should evaluate the checked negation once",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1
