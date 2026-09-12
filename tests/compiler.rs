@@ -6138,6 +6138,162 @@ fn main() -> i64 {
 }
 
 #[test]
+fn canonical_file_and_directory_capabilities_are_typed_native_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!("flux-canonical-file-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("canonical file API fixture should be writable");
+    let nested = root.join("nested/a");
+    let content = nested.join("content.txt");
+    let copy = nested.join("copy.txt");
+    let renamed = nested.join("renamed.txt");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(directory.createAll("{}"))
+    print(directory.exists("{}"))
+    print(file.exists("{}"))
+    print(file.write("{}", "one"))
+    print(file.append("{}", "two"))
+    let (size, sizeError) = file.size("{}")
+    print(size)
+    print(sizeError)
+    print(file.exists("{}"))
+    print(directory.exists("{}"))
+    print(file.copy("{}", "{}"))
+    print(file.rename("{}", "{}"))
+    print(file.exists("{}"))
+    print(file.exists("{}"))
+    print(file.remove("{}"))
+    print(file.exists("{}"))
+    print(directory.removeAll("{}"))
+    print(directory.exists("{}"))
+    return 0
+}}
+"#,
+        path(&nested),
+        path(&nested),
+        path(&nested),
+        path(&content),
+        path(&content),
+        path(&content),
+        path(&content),
+        path(&content),
+        path(&content),
+        path(&copy),
+        path(&copy),
+        path(&renamed),
+        path(&copy),
+        path(&renamed),
+        path(&renamed),
+        path(&renamed),
+        path(&nested),
+        path(&nested),
+    );
+
+    check_source(&source).expect("canonical file and directory APIs should typecheck");
+    let generated = compile_to_c(&source).expect("canonical file and directory APIs should lower");
+    assert!(generated.contains("flux__fs_is_file"));
+    assert!(generated.contains("flux__fs_is_directory"));
+    assert!(generated.contains("flux__fs_create_directories"));
+    assert!(generated.contains("flux__fs_write_text"));
+    assert!(generated.contains("flux__fs_append_text"));
+    assert!(generated.contains("flux__fs_file_size"));
+    assert!(generated.contains("flux__fs_copy_file"));
+    assert!(generated.contains("flux__fs_rename"));
+    assert!(generated.contains("flux__fs_remove_file"));
+    assert!(generated.contains("flux__fs_remove_directories"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("canonical file API source should be writable");
+    let binary = root.join("canonical-file-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("canonical file API binary should build");
+    assert!(
+        built.status.success(),
+        "canonical file API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("canonical file API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            "nil", "true", "false", "nil", "nil", "6", "nil", "true", "false", "nil", "nil",
+            "false", "true", "nil", "false", "nil", "false"
+        ]
+    );
+    assert!(!nested.exists());
+
+    let unused = r#"
+fn hidden() -> void {
+    print(file.exists("/tmp/unused-flux-file"))
+    let (_size, _failure) = file.size("/tmp/unused-flux-file")
+    print(file.write("/tmp/unused-flux-file", "unused"))
+    print(directory.createAll("/tmp/unused-flux-directory/nested"))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead canonical filesystem calls should lower");
+    assert!(!unused_generated.contains("flux__fs_is_file"));
+    assert!(!unused_generated.contains("flux__fs_file_size"));
+    assert!(!unused_generated.contains("flux__fs_write_text"));
+    assert!(!unused_generated.contains("flux__fs_create_directories"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    file.exists(1)
+    let (_size, _failure) = file.size(false)
+    file.write("x", 1)
+    file.copy(false, "x")
+    directory.exists(1)
+    directory.create(false)
+    directory.removeAll(42)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid canonical filesystem calls should fail");
+    for label in [
+        "file.exists path",
+        "file.size path",
+        "file.write text",
+        "file.copy source",
+        "directory.exists path",
+        "directory.create path",
+        "directory.removeAll path",
+    ] {
+        assert!(
+            errors.iter().any(
+                |error| error.message.contains(label) && error.message.contains("expected str")
+            ),
+            "missing canonical filesystem diagnostic for {label}: {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn file_read_is_bounded_borrowed_tree_shaken_and_runnable() {
     let root = std::env::temp_dir().join(format!("flux-fs-read-text-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

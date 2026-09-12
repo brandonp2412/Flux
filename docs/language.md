@@ -807,22 +807,24 @@ Locale-sensitive formatting uses callback-scoped borrowed text so formatting doe
 
 ## Filesystem capabilities
 
-Flux exposes a small compiler-owned filesystem surface without requiring an object API or a user-written native bridge:
+Flux exposes a small compiler-owned filesystem surface without requiring an object API or a user-written native bridge. The default spelling keeps ordinary file and directory work short and explicit:
 
 ```flux
-print(fs.exists("cache"))
-print(fs.isFile("cache/data.txt"))
-print(fs.isDirectory("cache"))
-print(fs.createDirectory("cache"))
-print(fs.writeText("cache/data.txt", "hello"))
-print(fs.appendText("cache/data.txt", " world"))
-print(fs.copyFile("cache/data.txt", "cache/backup.txt"))
-print(fs.rename("cache/backup.txt", "cache/archive.txt"))
-print(fs.removeFile("cache/archive.txt"))
-print(fs.removeDirectory("cache"))
+print(directory.createAll("cache/images"))
+print(directory.exists("cache"))
+print(file.write("cache/data.txt", "hello"))
+print(file.append("cache/data.txt", " world"))
+print(file.exists("cache/data.txt"))
+let (bytes, sizeError) = file.size("cache/data.txt")
+print(bytes)
+print(sizeError)
+print(file.copy("cache/data.txt", "cache/backup.txt"))
+print(file.rename("cache/backup.txt", "cache/archive.txt"))
+print(file.remove("cache/archive.txt"))
+print(directory.removeAll("cache"))
 ```
 
-`exists`, `isFile`, and `isDirectory` return `bool`. Mutating operations return Flux `error`: `nil` means success and a non-nil error means the native operation failed. `writeText` truncates or creates a file, while `appendText` appends or creates it. `copyFile` streams bytes through a bounded native buffer and overwrites the destination; a failed copy may therefore leave a partial destination. `rename` uses the target platform's native rename operation. The generated helpers are emitted only when reachable. Reading file contents, directory enumeration, owned path values, and richer error details remain blocked on the owned-string/collection work rather than hiding heap-backed lifetime rules inside this bootstrap API.
+`file.exists` is true only for regular files and `directory.exists` only for directories. `file.size` returns the regular-file byte count plus an explicit `error`; it does not allocate or expose a borrowed result. Mutating operations return Flux `error`: `nil` means success and a non-nil error means the native operation failed. `file.write` truncates or creates a text file, while `file.append` appends or creates it. `file.copy` streams bytes through a bounded native buffer and overwrites the destination; a failed copy may therefore leave a partial destination. `file.rename` uses the target platform's native rename operation. `directory.create` / `directory.remove` operate on one level, while `directory.createAll` / `directory.removeAll` provide recursive behavior. The older `fs.exists`, `fs.isFile`, `fs.isDirectory`, `fs.createDirectory`, `fs.createDirectories`, `fs.removeFile`, `fs.removeDirectory`, `fs.removeDirectories`, `fs.writeText`, `fs.appendText`, `fs.rename`, and `fs.copyFile` spellings remain accepted for compatibility, but the `file.*` / `directory.*` forms are the ordinary API. Generated helpers are emitted only when reachable. Owned file-read results, directory enumeration, owned path values, binary byte I/O, and richer metadata/errors remain blocked on the owned-string/collection work rather than hiding heap-backed lifetime rules inside this bootstrap API.
 
 ## Native time primitives
 
