@@ -10388,7 +10388,8 @@ fn require_known_type(
                 Type::I64 | Type::Bool | Type::Str | Type::Error => Ok(()),
                 Type::Named(name)
                     if (signatures.struct_type(name).is_some()
-                        || signatures.enum_type(name).is_some())
+                        || signatures.enum_type(name).is_some()
+                        || signatures.interface(name).is_some())
                         && signatures.is_copy_type(&actual) =>
                 {
                     Ok(())
@@ -10396,7 +10397,7 @@ fn require_known_type(
                 _ => Err(diag(
                     span,
                     &format!(
-                        "bootstrap optional values require a Copy scalar, struct, or enum; got {}?",
+                        "bootstrap optional values require a Copy scalar, struct, enum, or interface value; got {}?",
                         actual.name()
                     ),
                 )),

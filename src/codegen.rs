@@ -1236,6 +1236,15 @@ pub fn emit_c_for_target_with_source_metadata(
         &reachable_value_types,
         &interface_pack_facts,
     );
+    for interface in &program.interfaces {
+        if reachable_interfaces.contains(&interface.name) {
+            emit_optional_value_definition(
+                &mut out,
+                &Type::Named(interface.name.clone()),
+                signatures,
+            );
+        }
+    }
     out.push_str(&interface_pack_helpers(
         program,
         signatures,

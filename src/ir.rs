@@ -2385,12 +2385,20 @@ fn collect_block_evaluation_types(
             }
             StmtKind::If {
                 cond,
+                binding,
                 body,
                 else_body,
                 ..
             } => {
                 record_evaluation_type(cond, env, signatures, evaluations);
                 let mut then_env = env.clone();
+                if let Some(binding) = binding
+                    && binding.name != "_"
+                    && let Ok(Type::Optional(inner)) =
+                        typecheck::type_of_expr(cond, env, signatures)
+                {
+                    then_env.insert(binding.name.clone(), *inner);
+                }
                 collect_block_evaluation_types(body, &mut then_env, signatures, evaluations);
                 let mut else_env = env.clone();
                 collect_block_evaluation_types(else_body, &mut else_env, signatures, evaluations);

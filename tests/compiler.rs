@@ -27695,6 +27695,77 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_interface_values_are_copy_and_lower_by_value() {
+    let source = r#"
+interface Storage {
+    fn label() -> str
+}
+
+struct MemoryStorage {
+    name: str
+}
+
+impl Storage for MemoryStorage {
+    label: memory_label
+}
+
+fn memory_label(storage: MemoryStorage) -> str {
+    return storage.name
+}
+
+fn maybe_storage(present: bool) -> Storage? {
+    if present:
+        let storage: MemoryStorage = MemoryStorage { name: "ram" }
+        return Storage(storage)
+    return none
+}
+
+fn main() -> i64 {
+    let candidate: Storage? = maybe_storage(true)
+    if let storage = candidate:
+        print(Storage.label(storage))
+    return 0
+}
+"#;
+
+    check_source(source).expect("Copy interface values should support explicit optionals");
+    let generated = compile_to_c(source).expect("optional interface values should lower natively");
+    assert!(generated.contains(
+        "struct flux__optional_named_Storage { bool has_value; struct flux__iface_Storage value; };"
+    ));
+    assert!(generated.contains(".has_value = true"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-interface-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional interface directory should be writable");
+    let c_path = root.join("optional_interface.c");
+    let exe_path = root.join("optional_interface");
+    fs::write(&c_path, generated).expect("generated optional interface C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional interface values");
+    assert!(
+        compile.status.success(),
+        "optional interface C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional interface program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ram\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn null_aware_list_elements_skip_absence_and_lower_natively() {
     let source = r#"
 fn maybe(flag: bool) -> i64? {
@@ -28078,7 +28149,7 @@ fn main() -> i64 {
     let error = check_source(non_copy).expect_err("non-Copy optionals must remain rejected");
     assert!(
         error.message.contains(
-            "bootstrap optional values require a Copy scalar, struct, or enum; got i64[]?"
+            "bootstrap optional values require a Copy scalar, struct, enum, or interface value; got i64[]?"
         ),
         "unexpected diagnostic: {}",
         error.message
