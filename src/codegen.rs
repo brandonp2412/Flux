@@ -14407,6 +14407,17 @@ fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
     Some(await_indices)
 }
 
+fn async_branch_condition_uses_promotion(cond: &Expr) -> bool {
+    let ExprKind::Binary { left, op, right } = &cond.kind else {
+        return false;
+    };
+    matches!(op, BinOp::Eq | BinOp::Ne)
+        && matches!(
+            (&left.kind, &right.kind),
+            (ExprKind::Var(_), ExprKind::None) | (ExprKind::None, ExprKind::Var(_))
+        )
+}
+
 fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
     let await_statements = function
         .body
@@ -14428,9 +14439,7 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     else {
         return None;
     };
-    if binding.is_some()
-        || !matches!(cond.kind, ExprKind::Var(_) | ExprKind::Bool(_))
-        || expr_contains_await(cond)
+    if binding.is_some() || expr_contains_await(cond) || async_branch_condition_uses_promotion(cond)
     {
         return None;
     }

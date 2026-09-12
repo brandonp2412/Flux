@@ -31743,6 +31743,116 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_branch_with_scalar_condition_suspends_without_blocking_worker() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(value: i64, limit: i64, enabled: bool) -> i64 {
+    if enabled && value > limit:
+        let next: i64 = await addOne(value)
+        return next
+    return 0
+}
+
+async fn main() -> i64 {
+    let taken: i64 = await choose(40, 20, true)
+    let skipped: i64 = await choose(10, 20, true)
+    return taken + skipped
+}
+"#;
+
+    check_source(source).expect("scalar branch conditions around await should typecheck");
+    let generated = compile_to_c(source)
+        .expect("scalar branch conditions around await should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(generated.contains("flux__async_start_cont_addOne"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-scalar-condition-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("scalar condition async fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-scalar-condition");
+    fs::write(&source_path, source).expect("scalar condition async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("scalar condition async binary should build");
+    assert!(
+        built.status.success(),
+        "scalar condition async build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("scalar condition async binary should run");
+    assert_eq!(status.code(), Some(41));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn async_await_optional_promotion_branch_retains_safe_fallback() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(value: i64?) -> i64 {
+    if value != none:
+        let next: i64 = await addOne(value)
+        return next
+    return 0
+}
+
+async fn main() -> i64 {
+    return await choose(41)
+}
+"#;
+
+    check_source(source).expect("optional promotion around await should typecheck");
+    let generated = compile_to_c(source)
+        .expect("optional promotion around await should retain the safe fallback");
+    assert!(generated.contains("flux__async_body_choose("));
+    assert!(generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-optional-promotion-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("optional promotion async fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-optional-promotion");
+    fs::write(&source_path, source).expect("optional promotion async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("optional promotion async binary should build");
+    assert!(
+        built.status.success(),
+        "optional promotion async build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("optional promotion async binary should run");
+    assert_eq!(status.code(), Some(42));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn multiple_async_awaits_inside_one_if_branch_suspend_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
