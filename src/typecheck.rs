@@ -9185,11 +9185,14 @@ fn check_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
-    let Some(signature) = signatures.get(name) else {
-        let Some(Type::Function { params, returns }) = env.get(name) else {
+    if let Some(local_ty) = env.get(name) {
+        let Type::Function { params, returns } = local_ty else {
             return Err(diag(
                 span,
-                &format!("unknown function or callable '{name}'"),
+                &format!(
+                    "binding '{name}' has non-callable type '{}'",
+                    signatures.canonical_type(local_ty).name()
+                ),
             ));
         };
         if !named_args.is_empty() {
@@ -9218,6 +9221,13 @@ fn check_call(
             )?;
         }
         return Ok(returns.clone());
+    }
+
+    let Some(signature) = signatures.get(name) else {
+        return Err(diag(
+            span,
+            &format!("unknown function or callable '{name}'"),
+        ));
     };
     require_visible_declaration(
         span,

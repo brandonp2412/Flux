@@ -19566,17 +19566,14 @@ fn emit_expr(
             args,
             named_args,
         } => {
-            let (rendered, returns, callee) = if let Some(signature) = signatures.get(name) {
-                (
-                    emit_call_arguments(signature, args, named_args, env, signatures)?,
-                    signature.returns.clone(),
-                    function_c_name(name),
-                )
-            } else {
-                let Some(Type::Function { params, returns }) = env.get(name) else {
+            let (rendered, returns, callee) = if let Some(local_ty) = env.get(name) {
+                let Type::Function { params, returns } = local_ty else {
                     return Err(diag(
                         expr.span,
-                        &format!("unknown function or callable '{name}' during code generation"),
+                        &format!(
+                            "binding '{name}' has non-callable type '{}' during code generation",
+                            signatures.canonical_type(local_ty).name()
+                        ),
                     ));
                 };
                 if !named_args.is_empty() {
@@ -19596,6 +19593,17 @@ fn emit_expr(
                     rendered.push(emit_expr(arg, env, signatures)?.code);
                 }
                 (rendered, returns.clone(), local_c_name(name))
+            } else if let Some(signature) = signatures.get(name) {
+                (
+                    emit_call_arguments(signature, args, named_args, env, signatures)?,
+                    signature.returns.clone(),
+                    function_c_name(name),
+                )
+            } else {
+                return Err(diag(
+                    expr.span,
+                    &format!("unknown function or callable '{name}' during code generation"),
+                ));
             };
             let ty = match returns.as_slice() {
                 [] => Type::Void,

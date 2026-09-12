@@ -8928,6 +8928,81 @@ fn main() -> i64 {
 }
 
 #[test]
+fn local_callable_bindings_shadow_same_named_top_level_functions() {
+    let source = r#"
+fn transform(value: i64) -> i64 {
+    return value + 100
+}
+
+fn plusOne(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = plusOne
+    let values: i64[] = [41]
+    let mapped: i64[] = map(values, fn(value: i64) { transform(value) })
+    print(transform(1))
+    print(mapped.first)
+    return 0
+}
+"#;
+
+    check_source(source).expect("local callable bindings should shadow top-level functions");
+    let generated = compile_to_c(source)
+        .expect("lexically shadowed local callable should lower as a function-pointer call");
+    assert!(generated.contains("flux__local_transform(INT64_C(1))"));
+    assert!(generated.contains("flux__local_transform(flux__local_value)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-callable-shadowing-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("callable-shadowing temp directory should be writable");
+    let c_path = root.join("shadowing.c");
+    let exe_path = root.join("shadowing");
+    fs::write(&c_path, generated).expect("generated callable-shadowing C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile callable-shadowing C");
+    assert!(
+        compile.status.success(),
+        "callable-shadowing C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("callable-shadowing program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n42\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_callable_shadow = r#"
+fn value(input: i64) -> i64 {
+    return input
+}
+
+fn main() -> i64 {
+    let value: i64 = 3
+    return value(1)
+}
+"#;
+    let error = check_source(non_callable_shadow)
+        .expect_err("a local non-callable binding must shadow the top-level function too");
+    assert!(
+        error
+            .message
+            .contains("binding 'value' has non-callable type 'i64'")
+    );
+}
+
+#[test]
 fn tree_shakes_named_function_values_from_statically_unreachable_control_flow() {
     let source = r#"
 fn live(value: i64) -> i64 {
