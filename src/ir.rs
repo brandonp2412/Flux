@@ -1884,6 +1884,20 @@ impl<'a> ControlFlowBuilder<'a> {
                     }
                 }
             }
+            ExprKind::Field {
+                base,
+                name,
+                optional,
+                ..
+            } if !*optional
+                && matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package")
+                && self
+                    .signatures
+                    .package_constant(expr.span.source_id, name)
+                    .is_some() =>
+            {
+                ControlFlowValueKind::Literal
+            }
             ExprKind::Field { base, name, .. } => self.lower_scalar_expr(producer, base).map_or(
                 ControlFlowValueKind::Opaque,
                 |base| ControlFlowValueKind::Field {
@@ -2606,8 +2620,20 @@ fn record_expr_types(
                 record_expr_types(&field.value, env, signatures, evaluations);
             }
         }
-        ExprKind::Field { base, .. } => {
-            record_expr_types(base, env, signatures, evaluations);
+        ExprKind::Field {
+            base,
+            name,
+            optional,
+            ..
+        } => {
+            if *optional
+                || !matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package")
+                || signatures
+                    .package_constant(expr.span.source_id, name)
+                    .is_none()
+            {
+                record_expr_types(base, env, signatures, evaluations);
+            }
         }
         ExprKind::Match { value, arms } => {
             record_expr_types(value, env, signatures, evaluations);

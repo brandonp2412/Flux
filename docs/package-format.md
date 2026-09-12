@@ -20,11 +20,26 @@ The package-format version covers the schema and semantics of `flux.toml`; it is
 
 ## Compatibility policy
 
-Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]` table, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
+Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]`, `[constants]`, and `[translations]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
 
 `[dependencies]` is an additive version-1 extension. Registry entries use quoted exact/caret/tilde SemVer requirements or `"*"`; local development entries use `{ path = "relative/path" }` and may add `version = "^1.2.3"` (or another supported SemVer requirement) when they must satisfy the same version contract as a registry package; Git development entries use `{ git = "repository-url", rev = "immutable-revision" }`. The manifest parser validates names, source shape, required fields, duplicates, relative local paths, and dependency requirement syntax.
 
 Package imports use the reserved quoted namespace `pkg:<dependency>/<module.flux>`, for example `import "pkg:math/src/lib.flux"`. This is intentionally distinct from ordinary quoted relative imports, so a dependency can never be mistaken for a same-named local source file. Declared local `path` dependencies are loadable now: the dependency must contain its own valid `flux.toml`, imported modules stay inside that dependency root, its ordinary relative imports remain package-local, and loaded source identities use the dependency package's own `[package].name` rather than the caller's dependency alias. When a path dependency declares `version`, Flux applies SemVer precedence and exact/caret/tilde/wildcard matching to the dependency package's `[package].version` before loading imported source. The same resolver deterministically chooses the highest compatible version from a candidate set, ignores build metadata for precedence, and does not admit prerelease candidates for a stable-only requirement. Registry and Git imports remain unavailable until their fetch transports land; the compiler reports that unresolved state instead of falling back to a local path.
+
+## Package constants and resources
+
+`[constants]` declares package-scoped compile-time primitive values. Names use ordinary Flux identifier syntax, and values are `i64`, `bool`, or quoted `str` literals:
+
+```toml
+[constants]
+apiVersion = 3
+debugMenu = false
+productName = "Example"
+```
+
+Flux source reads these values through the explicit `package` namespace, for example `package.apiVersion`. They participate in ordinary constant expressions and parameter defaults and are substituted during compilation, so there is no runtime configuration lookup or generated mutable global. Each package owns its namespace: source loaded from a path dependency resolves `package.*` against that dependency's own `flux.toml`, not the importing application's manifest.
+
+Localized string resources use `[translations]`; `locale.text`, `locale.select`, and `locale.plural` resolve the compiled entries described in the language reference. Both tables are package-owned manifest data rather than platform-specific bridge APIs.
 
 ## Reproducible lockfile
 

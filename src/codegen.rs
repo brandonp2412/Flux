@@ -18916,6 +18916,22 @@ fn emit_expr(
             optional,
             ..
         } => {
+            if !*optional
+                && matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package")
+            {
+                let constant = signatures
+                    .package_constant(expr.span.source_id, name)
+                    .ok_or_else(|| {
+                        diag(
+                            expr.span,
+                            &format!("unknown package constant 'package.{name}'"),
+                        )
+                    })?;
+                return Ok(EmittedExpr {
+                    code: constant_c_value(&constant.value),
+                    ty: constant.ty.clone(),
+                });
+            }
             let static_len = if *optional {
                 None
             } else {
@@ -22409,6 +22425,14 @@ fn fold_primitive_expr(
                 _ => return Ok(None),
             }
         }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } if matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package") => signatures
+            .package_constant(expr.span.source_id, name)
+            .map(|constant| constant.value.clone()),
         _ => None,
     };
     Ok(value)

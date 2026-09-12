@@ -16965,6 +16965,167 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 }
 
 #[test]
+fn package_constants_are_typed_scoped_and_folded_per_package() {
+    let root = std::env::temp_dir().join(format!("flux-package-constants-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dependency = root.join("dep");
+    fs::create_dir_all(app.join("src")).expect("app package should be writable");
+    fs::create_dir_all(dependency.join("src")).expect("dependency package should be writable");
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"constants-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\", version = \"^1.0.0\" }\n\n[constants]\nbase = 10\nenabled = true\ngreeting = \"hello\"\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"constants-dep\"\nversion = \"1.2.0\"\nentry = \"src/lib.flux\"\n\n[constants]\nbase = 32\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(
+        dependency.join("src/lib.flux"),
+        "pub const DEP_BASE: i64 = package.base\npub fn dependencyValue() -> i64 { DEP_BASE }\n",
+    )
+    .expect("dependency source should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:dep/src/lib.flux\"\nconst APP_ENABLED: bool = package.enabled\nfn configured(value: i64 = package.base) -> i64 { value }\nfn main() -> i64 {\n    if APP_ENABLED:\n        print(package.greeting)\n    print(configured() + dependencyValue())\n    return 0\n}\n",
+    )
+    .expect("app source should be writable");
+    fluxc::project::write_lockfile(&app).expect("package lockfile should be writable");
+
+    let generated = fluxc::project::compile_to_c(&app).expect("package constants should compile");
+    assert!(
+        !generated.contains("package."),
+        "package constants must fold away before native lowering"
+    );
+
+    let binary = root.join("app-bin");
+    let build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&app)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("package constant build should run");
+    assert!(
+        build.status.success(),
+        "package constant build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("package constant binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "hello\n42\n");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let analysis = cache
+        .analyze_with_overlays(&app, &std::collections::HashMap::new())
+        .expect("package analysis should cache");
+    let dependency_source = analysis
+        .sources
+        .iter()
+        .find(|source| source.module_name == "constants-dep::src::lib")
+        .expect("dependency source should be loaded");
+    assert_eq!(
+        analysis
+            .signatures
+            .package_constant(dependency_source.source_id, "base")
+            .map(|constant| &constant.value),
+        Some(&fluxc::typecheck::ConstantValue::I64(32))
+    );
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"constants-dep\"\nversion = \"1.2.0\"\nentry = \"src/lib.flux\"\n\n[constants]\nbase = 33\n",
+    )
+    .expect("dependency package constant should be editable");
+    let refreshed = cache
+        .analyze_with_overlays(&app, &std::collections::HashMap::new())
+        .expect("dependency manifest changes must invalidate cached analysis");
+    let dependency_source = refreshed
+        .sources
+        .iter()
+        .find(|source| source.module_name == "constants-dep::src::lib")
+        .expect("dependency source should remain loaded");
+    assert_eq!(
+        refreshed
+            .signatures
+            .package_constant(dependency_source.source_id, "base")
+            .map(|constant| &constant.value),
+        Some(&fluxc::typecheck::ConstantValue::I64(33))
+    );
+    assert_eq!(cache.stats().misses, 2);
+
+    fs::write(
+        app.join("src/main.flux"),
+        "fn main() -> i64 { package.missing }\n",
+    )
+    .expect("invalid package constant source should be writable");
+    let errors = fluxc::project::check(&app).expect_err("unknown package constants must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unknown package constant 'package.missing'")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_manifest_validates_primitive_constants() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-constant-manifest-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("package directory should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("package source should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"constant-types\"\nentry = \"src/main.flux\"\n\n[constants]\nnegative = -7\nenabled = false\nlabel = \"Flux\\nvalue\"\n",
+    )
+    .expect("constant manifest should be writable");
+    let parsed =
+        fluxc::project::read_manifest(&manifest).expect("primitive constants should parse");
+    assert_eq!(
+        parsed.constants.get("negative"),
+        Some(&fluxc::typecheck::ConstantValue::I64(-7))
+    );
+    assert_eq!(
+        parsed.constants.get("enabled"),
+        Some(&fluxc::typecheck::ConstantValue::Bool(false))
+    );
+    assert_eq!(
+        parsed.constants.get("label"),
+        Some(&fluxc::typecheck::ConstantValue::Str(
+            "Flux\nvalue".to_string()
+        ))
+    );
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"constant-types\"\nentry = \"src/main.flux\"\n\n[constants]\nbad-name = 1\nlist = [1]\n",
+    )
+    .expect("invalid constant manifest should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("invalid constant names and values must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("invalid package constant name 'bad-name'")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("invalid package constant 'list'")
+            && error.message.contains("i64, bool, or quoted string")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_sources_receive_stable_package_qualified_module_names() {
     let root = std::env::temp_dir().join(format!("flux-package-modules-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

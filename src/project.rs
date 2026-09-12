@@ -68,6 +68,7 @@ pub struct ProjectAnalysisCacheStats {
 struct CachedProjectAnalysis {
     analysis: ProjectAnalysis,
     manifest_text: Option<String>,
+    package_manifest_texts: BTreeMap<PathBuf, String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -150,6 +151,7 @@ impl ProjectAnalysisCache {
         self.entries.insert(
             key.clone(),
             CachedProjectAnalysis {
+                package_manifest_texts: package_manifest_snapshots(&analysis.sources),
                 analysis: analysis.clone(),
                 manifest_text: manifest_snapshot(&key),
             },
@@ -225,6 +227,7 @@ pub struct PackageManifest {
     pub entry: PathBuf,
     pub path: PathBuf,
     pub dependencies: BTreeMap<String, PackageDependency>,
+    pub constants: BTreeMap<String, typecheck::ConstantValue>,
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
     pub android: AndroidPackageConfig,
 }
@@ -252,12 +255,32 @@ fn manifest_snapshot(target: &Path) -> Option<String> {
         .flatten()
 }
 
+fn package_manifest_snapshots(sources: &[ProjectSource]) -> BTreeMap<PathBuf, String> {
+    let mut manifests = BTreeMap::new();
+    for source in sources {
+        for parent in source.path.ancestors().skip(1) {
+            let manifest = parent.join("flux.toml");
+            if manifest.is_file() {
+                if let Ok(text) = fs::read_to_string(&manifest) {
+                    manifests.insert(manifest, text);
+                }
+                break;
+            }
+        }
+    }
+    manifests
+}
+
 fn cached_analysis_is_current(
     target: &Path,
     entry: &CachedProjectAnalysis,
     overlays: &HashMap<PathBuf, String>,
 ) -> bool {
-    if manifest_snapshot(target) != entry.manifest_text {
+    if manifest_snapshot(target) != entry.manifest_text
+        || entry.package_manifest_texts.iter().any(|(path, expected)| {
+            fs::read_to_string(path).map_or(true, |current| &current != expected)
+        })
+    {
         return false;
     }
     if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
@@ -296,6 +319,7 @@ struct ProjectLoadReport {
     program: Program,
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
+    package_constants: HashMap<SourceId, BTreeMap<String, typecheck::ConstantValue>>,
     translations: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -311,7 +335,7 @@ fn load_report_with_overlays_and_parse_cache(
     overlays: &HashMap<PathBuf, String>,
     parse_cache: Option<&mut ModuleParseCache>,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    let (entry, module_root, package_name, dependencies, translations) =
+    let (entry, module_root, package_name, dependencies, constants, translations) =
         resolve_project_target(target)?;
     let package_scopes = package_name
         .as_ref()
@@ -320,6 +344,7 @@ fn load_report_with_overlays_and_parse_cache(
                 name: name.clone(),
                 root: module_root.clone(),
                 dependencies,
+                constants,
             }]
         })
         .unwrap_or_default();
@@ -329,6 +354,7 @@ fn load_report_with_overlays_and_parse_cache(
         program: Program::default(),
         sources: Vec::new(),
         diagnostics: Vec::new(),
+        package_constants: HashMap::new(),
         module_root,
         package_scopes,
         overlays: overlays.clone(),
@@ -339,6 +365,7 @@ fn load_report_with_overlays_and_parse_cache(
         program: loader.program,
         sources: loader.sources,
         diagnostics: loader.diagnostics,
+        package_constants: loader.package_constants,
         translations,
     })
 }
@@ -372,7 +399,8 @@ fn analyze_with_overlays_report(
     if !report.diagnostics.is_empty() {
         return Err(report.diagnostics);
     }
-    let signatures = typecheck::check_all(&report.program)?;
+    let signatures =
+        typecheck::check_all_with_package_constants(&report.program, &report.package_constants)?;
     Ok(ProjectAnalysis {
         program: report.program,
         signatures,
@@ -393,16 +421,16 @@ pub fn check_with_overlays(
     entry: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> (Vec<Diagnostic>, Vec<ProjectSource>) {
-    let (program, sources) = match load_report_with_overlays(entry, overlays) {
+    let (program, sources, package_constants) = match load_report_with_overlays(entry, overlays) {
         Ok(report) => {
             if !report.diagnostics.is_empty() {
                 return (report.diagnostics, report.sources);
             }
-            (report.program, report.sources)
+            (report.program, report.sources, report.package_constants)
         }
         Err(diagnostics) => return (diagnostics, Vec::new()),
     };
-    match typecheck::check_all(&program) {
+    match typecheck::check_all_with_package_constants(&program, &package_constants) {
         Ok(_) => (Vec::new(), sources),
         Err(diagnostics) => (diagnostics, sources),
     }
@@ -419,7 +447,7 @@ pub fn compile_to_c_header(entry: &Path) -> Result<String, Diagnostic> {
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
-    resolve_project_target(target).map(|(entry, _, _, _, _)| entry)
+    resolve_project_target(target).map(|(entry, _, _, _, _, _)| entry)
 }
 
 pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -436,6 +464,7 @@ fn resolve_project_target(
         PathBuf,
         Option<String>,
         BTreeMap<String, PackageDependency>,
+        BTreeMap<String, typecheck::ConstantValue>,
         BTreeMap<String, BTreeMap<String, String>>,
     ),
     Vec<Diagnostic>,
@@ -458,6 +487,7 @@ fn resolve_project_target(
             root,
             Some(manifest.name),
             manifest.dependencies,
+            manifest.constants,
             manifest.translations,
         ));
     }
@@ -466,7 +496,14 @@ fn resolve_project_target(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    Ok((entry, root, None, BTreeMap::new(), BTreeMap::new()))
+    Ok((
+        entry,
+        root,
+        None,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    ))
 }
 
 pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
@@ -503,6 +540,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
+    let mut constants = BTreeMap::<String, typecheck::ConstantValue>::new();
     let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
     let mut diagnostics = Vec::new();
 
@@ -524,7 +562,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             let table = line[1..line.len() - 1].trim();
             if !matches!(
                 table,
-                "package" | "android" | "dependencies" | "translations"
+                "package" | "android" | "dependencies" | "constants" | "translations"
             ) {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
@@ -619,6 +657,36 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         source_id,
                         line_number,
                         format!("duplicate [dependencies] entry '{key}'"),
+                    ));
+                }
+            }
+            Some("constants") => {
+                if !valid_package_constant_name(key) {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!(
+                            "invalid package constant name '{key}'; names use Flux identifier syntax"
+                        ),
+                    ));
+                    continue;
+                }
+                let value = match parse_package_constant(raw_value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("invalid package constant '{key}': {message}"),
+                        ));
+                        continue;
+                    }
+                };
+                if constants.insert(key.to_string(), value).is_some() {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!("duplicate [constants] entry '{key}'"),
                     ));
                 }
             }
@@ -756,7 +824,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], [translations], or [android]",
+                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], or [android]",
             )),
         }
     }
@@ -934,6 +1002,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         entry: canonical_entry,
         path: canonical_manifest,
         dependencies,
+        constants,
         translations,
     })
 }
@@ -1281,6 +1350,39 @@ fn parse_manifest_inline_string_table(text: &str) -> Result<BTreeMap<String, Str
     Ok(fields)
 }
 
+fn valid_package_constant_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        && !value.starts_with("flux__")
+        && !matches!(
+            value,
+            "fn" | "struct"
+                | "enum"
+                | "type"
+                | "const"
+                | "let"
+                | "match"
+                | "return"
+                | "if"
+                | "elif"
+                | "else"
+                | "for"
+                | "while"
+                | "in"
+                | "var"
+                | "break"
+                | "continue"
+                | "true"
+                | "false"
+                | "nil"
+                | "none"
+                | "error"
+        )
+}
+
 fn valid_dependency_name(value: &str) -> bool {
     let mut chars = value.chars();
     chars.next().is_some_and(|ch| ch.is_ascii_alphanumeric())
@@ -1602,6 +1704,21 @@ fn parse_manifest_string_array(text: &str) -> Result<Vec<String>, String> {
     Ok(values)
 }
 
+fn parse_package_constant(text: &str) -> Result<typecheck::ConstantValue, String> {
+    let text = text.trim();
+    if text.starts_with('"') {
+        return parse_manifest_string(text).map(typecheck::ConstantValue::Str);
+    }
+    match text {
+        "true" => return Ok(typecheck::ConstantValue::Bool(true)),
+        "false" => return Ok(typecheck::ConstantValue::Bool(false)),
+        _ => {}
+    }
+    text.parse::<i64>()
+        .map(typecheck::ConstantValue::I64)
+        .map_err(|_| "values must be an i64, bool, or quoted string literal".to_string())
+}
+
 fn parse_manifest_u32(text: &str) -> Result<u32, String> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("manifest integer values must contain only decimal digits".to_string());
@@ -1743,6 +1860,7 @@ struct PackageScope {
     name: String,
     root: PathBuf,
     dependencies: BTreeMap<String, PackageDependency>,
+    constants: BTreeMap<String, typecheck::ConstantValue>,
 }
 
 struct Loader<'a> {
@@ -1751,6 +1869,7 @@ struct Loader<'a> {
     program: Program,
     sources: Vec<ProjectSource>,
     diagnostics: Vec<Diagnostic>,
+    package_constants: HashMap<SourceId, BTreeMap<String, typecheck::ConstantValue>>,
     module_root: PathBuf,
     package_scopes: Vec<PackageScope>,
     overlays: HashMap<PathBuf, String>,
@@ -1831,6 +1950,10 @@ impl Loader<'_> {
 
         self.stack.push(canonical.clone());
         let current_package = self.package_scope_for_path(&canonical).cloned();
+        if let Some(package) = &current_package {
+            self.package_constants
+                .insert(source_id, package.constants.clone());
+        }
         for import in &mut parsed.imports {
             if import.path.starts_with("pkg:") {
                 let Some(current_package) = current_package.as_ref() else {
@@ -2050,6 +2173,7 @@ impl Loader<'_> {
                 name: manifest.name,
                 root: dependency_root.clone(),
                 dependencies: manifest.dependencies,
+                constants: manifest.constants,
             });
         }
         let resolved = dependency_root.join(module_path);

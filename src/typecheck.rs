@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
     BinOp, ConstantDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
@@ -115,6 +115,7 @@ pub struct Signatures {
     aliases: HashMap<String, Type>,
     alias_visibility: HashMap<String, (SourceSpan, bool)>,
     constants: HashMap<String, ConstantSignature>,
+    package_constants: HashMap<SourceId, BTreeMap<String, ConstantSignature>>,
     module_imports: HashMap<SourceId, HashSet<SourceId>>,
 }
 
@@ -170,6 +171,12 @@ impl Signatures {
 
     pub fn constant(&self, name: &str) -> Option<&ConstantSignature> {
         self.constants.get(name)
+    }
+
+    pub fn package_constant(&self, source_id: SourceId, name: &str) -> Option<&ConstantSignature> {
+        self.package_constants
+            .get(&source_id)
+            .and_then(|constants| constants.get(name))
     }
 
     pub fn canonical_type(&self, ty: &Type) -> Type {
@@ -249,8 +256,36 @@ pub fn check(program: &Program) -> Result<Signatures, Diagnostic> {
 }
 
 pub fn check_all(program: &Program) -> Result<Signatures, Vec<Diagnostic>> {
+    check_all_with_package_constants(program, &HashMap::new())
+}
+
+pub fn check_all_with_package_constants(
+    program: &Program,
+    package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
+) -> Result<Signatures, Vec<Diagnostic>> {
+    let package_constants = package_constants
+        .iter()
+        .map(|(source_id, constants)| {
+            let constants = constants
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.clone(),
+                        ConstantSignature {
+                            public: true,
+                            ty: value.ty(),
+                            value: value.clone(),
+                            span: SourceSpan::line(1).with_source(*source_id),
+                        },
+                    )
+                })
+                .collect();
+            (*source_id, constants)
+        })
+        .collect();
     let mut signatures = Signatures {
         module_imports: module_import_closure(program),
+        package_constants,
         ..Signatures::default()
     };
     let mut diagnostics = Vec::new();
@@ -6053,6 +6088,19 @@ pub fn type_of_expr(
             name_span,
             optional,
         } => {
+            if !*optional
+                && matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package")
+            {
+                return signatures
+                    .package_constant(expr.span.source_id, name)
+                    .map(|constant| constant.ty.clone())
+                    .ok_or_else(|| {
+                        diag(
+                            *name_span,
+                            &format!("unknown package constant 'package.{name}'"),
+                        )
+                    });
+            }
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
             let (base_ty, optional_result) = if *optional {
                 let Type::Optional(inner) = base_ty else {
@@ -9259,6 +9307,20 @@ fn evaluate_default_expr(
             let right = evaluate_default_expr(right, signatures)?;
             evaluate_constant_binary(expr.span, *op, left, right)
         }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } if matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package") => signatures
+            .package_constant(expr.span.source_id, name)
+            .map(|constant| constant.value.clone())
+            .ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!("unknown package constant 'package.{name}'"),
+                )
+            }),
         ExprKind::Nil
         | ExprKind::None
         | ExprKind::AnonymousFunction { .. }
@@ -9409,6 +9471,20 @@ fn evaluate_constant_expr(
             let right = evaluate_constant_expr(right, definitions, signatures, cache, stack)?;
             evaluate_constant_binary(expr.span, *op, left, right)
         }
+        ExprKind::Field {
+            base,
+            name,
+            optional: false,
+            ..
+        } if matches!(&base.kind, ExprKind::Var(namespace) if namespace == "package") => signatures
+            .package_constant(expr.span.source_id, name)
+            .map(|constant| constant.value.clone())
+            .ok_or_else(|| {
+                diag(
+                    expr.span,
+                    &format!("unknown package constant 'package.{name}'"),
+                )
+            }),
         ExprKind::Nil
         | ExprKind::None
         | ExprKind::AnonymousFunction { .. }
