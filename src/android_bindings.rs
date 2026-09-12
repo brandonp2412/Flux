@@ -27,6 +27,7 @@ pub struct AndroidBinding {
     pub params: &'static [AndroidBindingParam],
     pub returns: AndroidBindingReturn,
     pub minimum_sdk: u32,
+    pub optional_runtime_suffix: Option<&'static str>,
 }
 
 const I64_JOB_ID: AndroidBindingParam = AndroidBindingParam {
@@ -200,6 +201,19 @@ macro_rules! binding {
             params: $params,
             returns: AndroidBindingReturn::$returns,
             minimum_sdk: 21,
+            optional_runtime_suffix: None,
+        }
+    };
+}
+
+macro_rules! binding_with_optional_runtime_suffix {
+    ($name:literal, $params:expr, $returns:ident, $suffix:literal) => {
+        AndroidBinding {
+            name: $name,
+            params: $params,
+            returns: AndroidBindingReturn::$returns,
+            minimum_sdk: 21,
+            optional_runtime_suffix: Some($suffix),
         }
     };
 }
@@ -219,8 +233,8 @@ pub const ANDROID_BINDINGS: &[AndroidBinding] = &[
     binding!("setClipboardText", TEXT, Void),
     binding!("showKeyboard", NO_PARAMS, Void),
     binding!("hideKeyboard", NO_PARAMS, Void),
-    binding!("focusNext", WRAP, Void),
-    binding!("focusPrevious", WRAP, Void),
+    binding_with_optional_runtime_suffix!("focusNext", WRAP, Void, "_wrap"),
+    binding_with_optional_runtime_suffix!("focusPrevious", WRAP, Void, "_wrap"),
     binding!("focusFirst", NO_PARAMS, Void),
     binding!("focusLast", NO_PARAMS, Void),
     binding!("clearFocus", NO_PARAMS, Void),
@@ -294,6 +308,18 @@ impl AndroidBinding {
         }
         name
     }
+
+    pub fn runtime_symbol_for_arity(&self, arity: usize) -> Option<String> {
+        let required = self.required_param_count();
+        if arity < required || arity > self.params.len() {
+            return None;
+        }
+        let mut symbol = self.runtime_symbol_stem();
+        if arity > required {
+            symbol.push_str(self.optional_runtime_suffix?);
+        }
+        Some(symbol)
+    }
 }
 
 #[cfg(test)]
@@ -307,7 +333,21 @@ mod tests {
         for binding in ANDROID_BINDINGS {
             assert!(names.insert(binding.name));
             assert!(binding.minimum_sdk >= 21);
-            assert!(binding.required_param_count() <= binding.params.len());
+            let required = binding.required_param_count();
+            assert!(required <= binding.params.len());
+            assert!(binding.runtime_symbol_for_arity(required).is_some());
+            assert!(
+                (required..=binding.params.len())
+                    .all(|arity| binding.runtime_symbol_for_arity(arity).is_some())
+            );
+            if required > 0 {
+                assert!(binding.runtime_symbol_for_arity(required - 1).is_none());
+            }
+            assert!(
+                binding
+                    .runtime_symbol_for_arity(binding.params.len() + 1)
+                    .is_none()
+            );
         }
     }
 
@@ -326,6 +366,33 @@ mod tests {
                 .unwrap()
                 .runtime_symbol_stem(),
             "flux__android_notify_url_action"
+        );
+        assert_eq!(
+            binding_named("focusNext")
+                .unwrap()
+                .runtime_symbol_for_arity(0)
+                .as_deref(),
+            Some("flux__android_focus_next")
+        );
+        assert_eq!(
+            binding_named("focusNext")
+                .unwrap()
+                .runtime_symbol_for_arity(1)
+                .as_deref(),
+            Some("flux__android_focus_next_wrap")
+        );
+        assert_eq!(
+            binding_named("notify")
+                .unwrap()
+                .runtime_symbol_for_arity(4)
+                .as_deref(),
+            Some("flux__android_notify")
+        );
+        assert!(
+            binding_named("notify")
+                .unwrap()
+                .runtime_symbol_for_arity(3)
+                .is_none()
         );
     }
 
