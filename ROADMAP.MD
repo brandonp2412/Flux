@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 519
+- Completed baseline units: 520
 - Reported overall progress: **70%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -369,7 +369,7 @@ The ownership track now has an explicit compiler-level copyability classificatio
 - [ ] Deterministic destruction/resource release.
 - [ ] Safe closures/captures under the ownership model.
 - [ ] Thread-safety/sendability rules.
-- [ ] Narrow, explicit `unsafe` escape hatch only where necessary.
+- [x] Narrow, explicit `unsafe` escape hatch only where necessary: the bootstrap language reserves `unsafe` for native FFI declarations, where `unsafe extern c` is accepted only for borrowed `str`/`error` results whose foreign pointer lifetime Flux cannot prove. Safe scalar/void imports reject unnecessary `unsafe`, and undefined aggregate/owned/function/interface ABI shapes remain rejected rather than being admitted by the escape hatch.
 - [x] First bootstrap borrow checker over normalized semantics/IR rather than parser syntax: direct non-copy moves, immutable non-copy reads, borrowed list-parameter reborrows, path-sensitive move state, zero-copy list/view borrow provenance, and use-after-move diagnostics are derived from CFG/typed-value/reaching-definition facts. Borrow-source provenance is now queried directly through `ControlFlowGraph` rather than being reconstructed inside the type checker, keeping this ownership fact on the normalized IR boundary. Full borrow/reference types, inferred lifetimes, mutable aliasing, dangling-borrow prevention, partial moves, and drop semantics remain tracked explicitly above rather than being implied complete.
 
 # Milestone 5 — Standard library and built-in concrete containers

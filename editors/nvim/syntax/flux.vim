@@ -2,7 +2,7 @@ if exists("b:current_syntax")
   finish
 endif
 
-syntax keyword fluxKeyword fn return if elif else for while break continue match interface impl import pub type view app state grid at span
+syntax keyword fluxKeyword fn return if elif else for while break continue match interface impl import pub extern unsafe type view app state grid at span
 syntax keyword fluxDeclaration let var const struct enum
 syntax keyword fluxBoolean true false nil
 syntax keyword fluxType i64 bool str error void

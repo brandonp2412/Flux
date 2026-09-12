@@ -99,6 +99,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn unsafe_extern_c_is_narrow_explicit_and_lifetime_scoped() {
+    let source = r#"
+unsafe extern c "getenv" fn nativeEnv(name: str) -> str
+
+fn main() -> i64 {
+    print(nativeEnv("PATH"))
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("explicit unsafe import should permit a borrowed native string result");
+    let formatted = fluxc::formatter::format_source(source).expect("unsafe extern C should format");
+    assert!(formatted.contains("unsafe extern c \"getenv\" fn nativeEnv(name: str) -> str"));
+    let generated =
+        compile_to_c(source).expect("unsafe borrowed-string import should lower on Linux");
+    assert!(generated.contains("extern const char * getenv("));
+    assert!(generated.contains("getenv(\"PATH\")"));
+
+    let unnecessary = r#"
+unsafe extern c "labs" fn nativeAbs(value: i64) -> i64
+
+fn main() -> i64 {
+    return nativeAbs(21)
+}
+"#;
+    let errors = check_source_all(unnecessary)
+        .expect_err("safe native signatures should reject unnecessary unsafe declarations");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unsafe extern C is unnecessary for this signature")
+    }));
+
+    let unsupported = r#"
+unsafe extern c "native_values" fn nativeValues() -> i64[]
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(unsupported)
+        .expect_err("unsafe must not invent an ABI for ownership-sensitive aggregate results");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("extern C return type 'i64[]' is unsupported")
+    }));
+}
+
+#[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
     let source = r#"
 fn add(a: i64, b: i64) -> i64 {

@@ -849,11 +849,13 @@ pub fn check_all_with_package_constants(
             }
             if function.foreign_symbol.is_some()
                 && !extern_c_return_type_supported(&canonical_return)
+                && !(function.unsafe_foreign
+                    && extern_c_unsafe_return_type_supported(&canonical_return))
             {
                 diagnostics.push(diag(
                     span,
                     &format!(
-                        "extern C return type '{}' is unsupported; current native imports return only i64, bool, or void so borrowed/owned foreign lifetimes cannot escape unsafely",
+                        "extern C return type '{}' is unsupported; safe native imports return only i64, bool, or void, while 'unsafe extern c' additionally permits borrowed str/error results with caller-guaranteed native lifetimes",
                         canonical_return.name()
                     ),
                 ));
@@ -863,6 +865,20 @@ pub fn check_all_with_package_constants(
             {
                 diagnostics.push(diagnostic);
             }
+        }
+        if function.unsafe_foreign
+            && !function
+                .returns
+                .iter()
+                .any(|ty| extern_c_unsafe_return_type_supported(&signatures.canonical_type(ty)))
+        {
+            diagnostics.push(
+                diag(
+                    function.keyword_span,
+                    "unsafe extern C is unnecessary for this signature; use ordinary 'extern c'",
+                )
+                .with_note("the unsafe import form is reserved for borrowed str/error results whose native lifetime Flux cannot prove"),
+            );
         }
         signatures.insert_function(
             function.name.clone(),
@@ -2881,6 +2897,10 @@ fn extern_c_param_type_supported(ty: &Type) -> bool {
 
 fn extern_c_return_type_supported(ty: &Type) -> bool {
     matches!(ty, Type::I64 | Type::Bool | Type::Void)
+}
+
+fn extern_c_unsafe_return_type_supported(ty: &Type) -> bool {
+    matches!(ty, Type::Str | Type::Error)
 }
 
 fn check_function_all(

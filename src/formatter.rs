@@ -419,10 +419,15 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     }
     let params = param_parts.join(", ");
     if let Some(symbol) = &function.foreign_symbol {
+        let unsafe_prefix = if function.unsafe_foreign {
+            "unsafe "
+        } else {
+            ""
+        };
         lines.insert(
             function.line,
             format!(
-                "{visibility}extern c \"{symbol}\" fn {}({params}) -> {}",
+                "{visibility}{unsafe_prefix}extern c \"{symbol}\" fn {}({params}) -> {}",
                 function.name,
                 format_return_types(&function.returns)
             ),

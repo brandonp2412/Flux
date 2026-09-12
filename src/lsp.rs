@@ -651,6 +651,8 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "type",
     "const",
     "pub",
+    "extern",
+    "unsafe",
     "import",
     "view",
     "app",
@@ -4759,6 +4761,8 @@ fn is_flux_keyword(word: &str) -> bool {
             | "type"
             | "const"
             | "pub"
+            | "extern"
+            | "unsafe"
             | "import"
             | "view"
             | "app"
@@ -9794,6 +9798,8 @@ mod tests {
         let source = "type Count = i64\nfn main() -> i64 { 0 }\n";
         let json = JsonValue::Array(completion_items(source)).to_json();
         assert!(json.contains("\"label\":\"while\""));
+        assert!(json.contains("\"label\":\"extern\""));
+        assert!(json.contains("\"label\":\"unsafe\""));
         assert!(json.contains("\"label\":\"route\""));
         assert!(json.contains("\"label\":\"i64\""));
         assert!(json.contains("\"label\":\"Count\""));

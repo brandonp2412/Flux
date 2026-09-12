@@ -338,6 +338,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
         functions.push(Function {
             public,
             foreign_symbol: None,
+            unsafe_foreign: false,
             name,
             name_span,
             keyword_span: SourceSpan::new(function_line, 1 + visibility_offset, 2),
@@ -2681,6 +2682,7 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
     Ok(Some(Function {
         public,
         foreign_symbol: None,
+        unsafe_foreign: false,
         name: header.name,
         name_span: header.name_span,
         keyword_span: SourceSpan::new(line.number, line.indent + 1 + visibility_offset, 2),
@@ -2702,7 +2704,11 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
 
 fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
     let (text, public, visibility_offset) = split_visibility(&line.text);
-    let Some(rest) = text.strip_prefix("extern c ") else {
+    let (rest, unsafe_foreign) = if let Some(rest) = text.strip_prefix("unsafe extern c ") {
+        (rest, true)
+    } else if let Some(rest) = text.strip_prefix("extern c ") {
+        (rest, false)
+    } else {
         return Ok(None);
     };
     let Some(rest) = rest.strip_prefix('"') else {
@@ -2750,6 +2756,7 @@ fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> 
     Ok(Some(Function {
         public,
         foreign_symbol: Some(symbol.to_string()),
+        unsafe_foreign,
         name: header.name,
         name_span: header.name_span,
         keyword_span: SourceSpan::new(line.number, 1 + visibility_offset + prefix_offset, 2),
@@ -4882,6 +4889,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "break"
             | "continue"
             | "extern"
+            | "unsafe"
             | "true"
             | "false"
             | "nil"
