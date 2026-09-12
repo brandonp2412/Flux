@@ -406,6 +406,7 @@ fn format_grid_tracks(tracks: &[GridTrack]) -> String {
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     let visibility = if function.public { "pub " } else { "" };
+    let async_prefix = if function.asynchronous { "async " } else { "" };
     let mut param_parts = Vec::new();
     let mut emitted_named_marker = false;
     for param in &function.params {
@@ -449,7 +450,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         lines.insert(
             function.line,
             format!(
-                "{visibility}fn {}({params}) -> {} {{ {} }}",
+                "{visibility}{async_prefix}fn {}({params}) -> {} {{ {} }}",
                 function.name,
                 format_return_types(&function.returns),
                 format_expr(expression, 0)
@@ -460,7 +461,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     lines.insert(
         function.line,
         format!(
-            "{visibility}fn {}({params}) -> {} {{",
+            "{visibility}{async_prefix}fn {}({params}) -> {} {{",
             function.name,
             format_return_types(&function.returns)
         ),
@@ -1031,6 +1032,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Nil => "nil".to_string(),
         ExprKind::None => "none".to_string(),
         ExprKind::Var(name) => name.clone(),
+        ExprKind::Await(awaited) => format!("await {}", format_expr(awaited, 7)),
         ExprKind::AnonymousFunction {
             params,
             return_type,

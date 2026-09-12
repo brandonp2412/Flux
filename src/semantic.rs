@@ -349,6 +349,9 @@ fn collect_expr_pattern_symbols(
     signatures: &Signatures,
 ) {
     match &expr.kind {
+        ExprKind::Await(awaited) => {
+            collect_expr_pattern_symbols(awaited, symbols, signatures);
+        }
         ExprKind::AnonymousFunction { params, body, .. } => {
             for param in params {
                 symbols.push(SemanticSymbol {

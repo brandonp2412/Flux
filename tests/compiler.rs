@@ -30633,6 +30633,117 @@ fn main() -> i64 {
 }
 
 #[test]
+fn async_await_frontend_preserves_declared_results_and_blocks_fake_lowering() {
+    let source = r#"
+async fn loadCode(value: i64) -> (i64, error) {
+    return value * 2, nil
+}
+
+async fn main() -> i64 {
+    let (code, _failure) = await loadCode(21)
+    return code
+}
+"#;
+
+    check_source(source)
+        .expect("async functions and await should typecheck as a front-end contract");
+    let formatted = fluxc::formatter::format_source(source).expect("async source should format");
+    assert!(formatted.contains("async fn loadCode(value: i64) -> (i64, error) {"));
+    assert!(formatted.contains("let (code, _failure) = await loadCode(21)"));
+
+    let lowering = compile_to_c(source).expect_err(
+        "reachable await must not be compiled synchronously before task lowering exists",
+    );
+    assert!(
+        lowering
+            .message
+            .contains("async/await native task lowering is not implemented yet"),
+        "unexpected async lowering diagnostic: {}",
+        lowering.message
+    );
+
+    let no_suspension = r#"
+async fn main() -> i64 {
+    return 0
+}
+"#;
+    check_source(no_suspension).expect("an async function does not require an await expression");
+    let lowering = compile_to_c(no_suspension)
+        .expect_err("async functions must not silently lower as synchronous functions");
+    assert!(
+        lowering
+            .message
+            .contains("async/await native task lowering is not implemented yet")
+    );
+
+    let public_async = r#"
+pub async fn compute(value: i64) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let header = compile_to_c_header(public_async)
+        .expect_err("public async functions must not masquerade as synchronous C ABI exports");
+    assert!(header.message.contains(
+        "async functions cannot be emitted through the C ABI before native task lowering exists"
+    ));
+
+    let missing_await = r#"
+async fn loadCode(value: i64) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    return loadCode(21)
+}
+"#;
+    let errors = check_source_all(missing_await)
+        .expect_err("calling an async function without await must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("async function 'loadCode' must be awaited")
+    }));
+
+    let outside_async = r#"
+fn loadCode(value: i64) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    return await loadCode(21)
+}
+"#;
+    let errors = check_source_all(outside_async)
+        .expect_err("await outside an async function must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("await is only valid inside an async function")
+    }));
+
+    let await_sync = r#"
+fn loadCode(value: i64) -> i64 {
+    return value
+}
+
+async fn main() -> i64 {
+    return await loadCode(21)
+}
+"#;
+    let errors =
+        check_source_all(await_sync).expect_err("awaiting a synchronous function must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("function 'loadCode' is synchronous and cannot be awaited")
+    }));
+}
+
+#[test]
 fn supports_explicit_mutable_bindings_and_while_loops() {
     let source = r#"
 fn main() -> i64 {

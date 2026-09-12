@@ -309,7 +309,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 
 ## Async/generator ergonomics
 
-Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model. The intended source model is native `async fn` plus `await`: an async function keeps its ordinary declared return shape, calling it creates compiler-owned task state, and `await` yields those declared values directly. Flux should not require a source-level `Future<T>`/`Promise<T>` generic or user-visible completion callback to express ordinary asynchronous work.
+Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model. The intended source model is native `async fn` plus `await`: an async function keeps its ordinary declared return shape, calling it creates compiler-owned task state, and `await` yields those declared values directly. Flux should not require a source-level `Future<T>`/`Promise<T>` generic or user-visible completion callback to express ordinary asynchronous work. The bootstrap front end now parses and formats `async fn`/`await`, preserves ordinary single- and multi-value return shapes including explicit `error`, requires direct async calls to be awaited from an async context, and deliberately rejects reachable `await` during native code generation until the compiler-owned task/state-machine lowering exists.
 
 - [ ] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
 - [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.

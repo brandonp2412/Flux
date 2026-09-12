@@ -11,6 +11,7 @@ use crate::ir::ControlFlowGraph;
 pub struct Signature {
     pub public: bool,
     pub foreign_symbol: Option<String>,
+    pub asynchronous: bool,
     pub params: Vec<Type>,
     pub param_details: Vec<ParamSignature>,
     pub returns: Vec<Type>,
@@ -579,6 +580,7 @@ pub fn check_all_with_package_constants(
                 Signature {
                     public: true,
                     foreign_symbol: None,
+                    asynchronous: false,
                     params: param_details.iter().map(|param| param.ty.clone()).collect(),
                     param_details,
                     returns: function
@@ -885,6 +887,7 @@ pub fn check_all_with_package_constants(
             Signature {
                 public: function.public,
                 foreign_symbol: function.foreign_symbol.clone(),
+                asynchronous: function.asynchronous,
                 params: param_details.iter().map(|param| param.ty.clone()).collect(),
                 param_details,
                 returns: function
@@ -2960,6 +2963,9 @@ fn check_function_all(
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
+    if function.asynchronous {
+        env.insert("flux__async_context".to_string(), Type::Bool);
+    }
     let return_types = function
         .returns
         .iter()
@@ -3479,7 +3485,9 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(&field.value, reads);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_expr_reads(base, reads);
         }
         ExprKind::Match { value, arms } => {
@@ -5075,6 +5083,7 @@ fn type_of_anonymous_function(
     } else {
         HashMap::new()
     };
+    lambda_env.remove("flux__async_context");
     for param in params {
         require_known_type(param.type_span, &param.ty, signatures)?;
         let ty = signatures.canonical_type(&param.ty);
@@ -5261,6 +5270,12 @@ pub fn type_of_expr(
                 return Ok(constant.ty.clone());
             }
             if let Some(signature) = signatures.get(name) {
+                if signature.asynchronous {
+                    return Err(diag(
+                        expr.span,
+                        "async functions are not first-class values; invoke them directly with await",
+                    ));
+                }
                 if signature.foreign_symbol.is_some() {
                     return Err(diag(
                         expr.span,
@@ -5284,6 +5299,20 @@ pub fn type_of_expr(
                 expr.span,
                 &format!("unknown binding, constant, or function '{name}'"),
             ))
+        }
+        ExprKind::Await(awaited) => {
+            let returns = check_await(expr.span, awaited, env, signatures)?;
+            match returns.as_slice() {
+                [] => Ok(Type::Void),
+                [ty] => Ok(ty.clone()),
+                _ => Err(diag(
+                    expr.span,
+                    &format!(
+                        "awaited function returns {} values; use a destructuring binding",
+                        returns.len()
+                    ),
+                )),
+            }
         }
         ExprKind::AnonymousFunction { .. } => {
             type_of_anonymous_function(expr, env, signatures, false)
@@ -6505,6 +6534,7 @@ pub(crate) fn value_types_of_expr(
             };
             value_types_of_expr(&call, env, signatures)
         }
+        ExprKind::Await(awaited) => check_await(expr.span, awaited, env, signatures),
         ExprKind::Call { name, .. }
             if signatures.interface(name).is_some()
                 || matches!(
@@ -9276,6 +9306,63 @@ fn check_qualified_call(
     )
 }
 
+fn check_await(
+    span: SourceSpan,
+    awaited: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    if !env.contains_key("flux__async_context") {
+        return Err(diag(span, "await is only valid inside an async function"));
+    }
+    let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &awaited.kind
+    else {
+        return Err(diag(
+            awaited.span,
+            "await currently requires a direct async function call",
+        ));
+    };
+    if env.contains_key(name) {
+        return Err(diag(
+            awaited.span,
+            "await currently requires a directly named async function, not a function value",
+        ));
+    }
+    let Some(signature) = signatures.get(name) else {
+        return Err(diag(
+            awaited.span,
+            &format!("unknown async function '{name}'"),
+        ));
+    };
+    if !signature.asynchronous {
+        return Err(diag(
+            awaited.span,
+            &format!("function '{name}' is synchronous and cannot be awaited"),
+        ));
+    }
+    require_visible_declaration(
+        awaited.span,
+        signature.span,
+        signature.public,
+        "function",
+        name,
+        signatures,
+    )?;
+    check_declared_call(
+        awaited.span,
+        name,
+        signature,
+        args,
+        named_args,
+        env,
+        signatures,
+    )
+}
+
 fn check_call(
     span: SourceSpan,
     name: &str,
@@ -9328,6 +9415,12 @@ fn check_call(
             &format!("unknown function or callable '{name}'"),
         ));
     };
+    if signature.asynchronous {
+        return Err(
+            diag(span, &format!("async function '{name}' must be awaited"))
+                .with_note("use 'await function(...)' from inside an async function"),
+        );
+    }
     require_visible_declaration(
         span,
         signature.span,
@@ -9597,6 +9690,7 @@ fn evaluate_default_expr(
             }),
         ExprKind::Nil
         | ExprKind::None
+        | ExprKind::Await(_)
         | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }
@@ -9761,6 +9855,7 @@ fn evaluate_constant_expr(
             }),
         ExprKind::Nil
         | ExprKind::None
+        | ExprKind::Await(_)
         | ExprKind::AnonymousFunction { .. }
         | ExprKind::Call { .. }
         | ExprKind::ShellCall { .. }

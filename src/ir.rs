@@ -1617,6 +1617,10 @@ impl<'a> ControlFlowBuilder<'a> {
                 name: name.clone(),
                 definitions: self.scoped_definition_for(name).into_iter().collect(),
             },
+            ExprKind::Await(awaited) => {
+                let _ = self.lower_scalar_expr(producer, awaited);
+                ControlFlowValueKind::Opaque
+            }
             ExprKind::AnonymousFunction { params, body, .. } => {
                 let definitions = params
                     .iter()
@@ -2526,6 +2530,9 @@ fn record_expr_types(
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
+        ExprKind::Await(awaited) => {
+            record_expr_types(awaited, env, signatures, evaluations);
+        }
         ExprKind::AnonymousFunction { params, body, .. } => {
             let mut nested = env.clone();
             for param in params {

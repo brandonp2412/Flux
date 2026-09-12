@@ -100,6 +100,12 @@ pub fn emit_c_header_with_module_names(
         .collect::<HashMap<_, _>>();
 
     for function in &public_functions {
+        if function.asynchronous {
+            return Err(diag(
+                function.keyword_span,
+                "async functions cannot be emitted through the C ABI before native task lowering exists",
+            ));
+        }
         for param in &function.params {
             if !ffi_header_type_supported(&param.ty, signatures) {
                 return Err(diag(
@@ -14274,7 +14280,9 @@ fn collect_interface_names_from_expr(
                 collect_interface_names_from_expr(&field.value, signatures, reachable, pending);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_interface_names_from_expr(base, signatures, reachable, pending);
         }
         ExprKind::Match { value, arms } => {
@@ -14477,7 +14485,9 @@ fn collect_enum_variant_refs_from_expr(
                 collect_enum_variant_refs_from_expr(&field.value, signatures, variants);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_enum_variant_refs_from_expr(base, signatures, variants);
         }
         ExprKind::Match { value, arms } => {
@@ -14946,7 +14956,9 @@ fn collect_value_type_names_from_expr(
                 );
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
         }
         ExprKind::Match { value, arms } => {
@@ -15270,7 +15282,9 @@ fn collect_interface_pack_facts_from_expr(
                 collect_interface_pack_facts_from_expr(&field.value, env, signatures, facts);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_interface_pack_facts_from_expr(base, env, signatures, facts);
         }
         ExprKind::Match { value, arms } => {
@@ -15784,7 +15798,9 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_interface_dispatch_refs_from_expr(
                 base,
                 env,
@@ -16001,7 +16017,9 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(&arg.value, known, references);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_named_function_refs_from_expr(base, known, references);
         }
         ExprKind::Match { value, arms } => {
@@ -16282,9 +16300,9 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
                 collect_function_helpers_from_expr(&field.value, functions);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
-            collect_function_helpers_from_expr(base, functions)
-        }
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => collect_function_helpers_from_expr(base, functions),
         ExprKind::Match { value, arms } => {
             collect_function_helpers_from_expr(value, functions);
             for arm in arms {
@@ -16352,6 +16370,13 @@ fn emit_function(
     temp_counter: &mut usize,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
+    if function.asynchronous {
+        return Err(diag(
+            function.keyword_span,
+            "async/await native task lowering is not implemented yet",
+        )
+        .with_note("reachable async functions require compiler-owned task/state-machine lowering and must never be emitted as synchronous native functions"));
+    }
     let reachable_spans = cfg
         .nodes()
         .iter()
@@ -20516,6 +20541,13 @@ fn emit_expr(
             code: "0".to_string(),
             ty: Type::Optional(Box::new(Type::Void)),
         },
+        ExprKind::Await(_) => {
+            return Err(diag(
+                expr.span,
+                "async/await native task lowering is not implemented yet",
+            )
+            .with_note("the async/await front end is checked, but reachable await expressions require compiler-owned task/state-machine lowering before native code generation"));
+        }
         ExprKind::Var(name) => {
             if let Some(ty) = env.get(name) {
                 EmittedExpr {
@@ -23388,6 +23420,11 @@ fn emit_multi_expr(
             };
             emit_multi_expr(&call, env, signatures)
         }
+        ExprKind::Await(_) => Err(diag(
+            expr.span,
+            "async/await native task lowering is not implemented yet",
+        )
+        .with_note("the async/await front end is checked, but reachable await expressions require compiler-owned task/state-machine lowering before native code generation")),
         ExprKind::Call {
             name,
             args,
@@ -24283,7 +24320,9 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(&field.value, signatures, emitted, helpers);
             }
         }
-        ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
+        ExprKind::Field { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Await(base) => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
         }
         ExprKind::Match { value, arms } => {

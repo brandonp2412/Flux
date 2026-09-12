@@ -419,6 +419,7 @@ pub struct Function {
     pub public: bool,
     pub foreign_symbol: Option<String>,
     pub unsafe_foreign: bool,
+    pub asynchronous: bool,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,
@@ -702,6 +703,7 @@ pub enum ExprKind {
     Nil,
     None,
     Var(String),
+    Await(Box<Expr>),
     AnonymousFunction {
         params: Vec<Param>,
         return_type: Option<Type>,

@@ -300,6 +300,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             }
         };
         let FunctionHeader {
+            asynchronous,
             name,
             name_span,
             params,
@@ -339,6 +340,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             public,
             foreign_symbol: None,
             unsafe_foreign: false,
+            asynchronous,
             name,
             name_span,
             keyword_span: SourceSpan::new(function_line, 1 + visibility_offset, 2),
@@ -709,6 +711,7 @@ fn attach_block_source(body: &mut [Stmt], source_id: SourceId) {
 fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
     expr.span = expr.span.with_source(source_id);
     match &mut expr.kind {
+        ExprKind::Await(awaited) => attach_expr_source(awaited, source_id),
         ExprKind::AnonymousFunction { params, body, .. } => {
             for param in params {
                 param.name_span = param.name_span.with_source(source_id);
@@ -1019,6 +1022,7 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
     }
     expr.span.column += offset;
     match &mut expr.kind {
+        ExprKind::Await(awaited) => shift_expr_columns(awaited, offset),
         ExprKind::AnonymousFunction { params, body, .. } => {
             for param in params {
                 param.name_span.column += offset;
@@ -2679,7 +2683,7 @@ fn comment_marker(input: &str) -> Option<usize> {
 
 fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
     let (text, public, visibility_offset) = split_visibility(&line.text);
-    if !text.starts_with("fn ") || !text.ends_with('}') {
+    if !(text.starts_with("fn ") || text.starts_with("async fn ")) || !text.ends_with('}') {
         return Ok(None);
     }
     let Some(open_offset) = text.find('{') else {
@@ -2714,6 +2718,7 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
         public,
         foreign_symbol: None,
         unsafe_foreign: false,
+        asynchronous: header.asynchronous,
         name: header.name,
         name_span: header.name_span,
         keyword_span: SourceSpan::new(line.number, line.indent + 1 + visibility_offset, 2),
@@ -2788,6 +2793,7 @@ fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> 
         public,
         foreign_symbol: Some(symbol.to_string()),
         unsafe_foreign,
+        asynchronous: false,
         name: header.name,
         name_span: header.name_span,
         keyword_span: SourceSpan::new(line.number, 1 + visibility_offset + prefix_offset, 2),
@@ -2803,6 +2809,7 @@ fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> 
 }
 
 struct FunctionHeader {
+    asynchronous: bool,
     name: String,
     name_span: SourceSpan,
     params: Vec<Param>,
@@ -2812,10 +2819,14 @@ struct FunctionHeader {
 }
 
 fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Diagnostic> {
-    let Some(rest) = input.strip_prefix("fn ") else {
+    let (rest, asynchronous, prefix_len) = if let Some(rest) = input.strip_prefix("async fn ") {
+        (rest, true, 9usize)
+    } else if let Some(rest) = input.strip_prefix("fn ") {
+        (rest, false, 3usize)
+    } else {
         return Err(diag(
             line,
-            "expected function declaration starting with 'fn'",
+            "expected function declaration starting with 'fn' or 'async fn'",
         ));
     };
     let Some(open) = rest.find('(') else {
@@ -2824,7 +2835,11 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     let raw_name = &rest[..open];
     let name = raw_name.trim();
     validate_identifier(name, line)?;
-    let name_span = SourceSpan::new(line, 4 + raw_name.find(name).unwrap_or(0), name.len());
+    let name_span = SourceSpan::new(
+        line,
+        prefix_len + 1 + raw_name.find(name).unwrap_or(0),
+        name.len(),
+    );
 
     let Some(close) = find_matching_paren(rest, open) else {
         return Err(diag(line, "expected ')' after function parameters"));
@@ -2859,7 +2874,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
 
     let mut params = Vec::new();
     if !params_src.trim().is_empty() {
-        let params_base_column = 4 + open + 1;
+        let params_base_column = prefix_len + 1 + open + 1;
         let raw_params = split_top_level_commas_with_offsets(params_src);
         let mut named_only = false;
         let mut saw_named_marker = false;
@@ -2935,6 +2950,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     }
 
     Ok(FunctionHeader {
+        asynchronous,
         name: name.to_string(),
         name_span,
         params,
@@ -4921,6 +4937,8 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "continue"
             | "extern"
             | "unsafe"
+            | "async"
+            | "await"
             | "true"
             | "false"
             | "nil"
@@ -4942,6 +4960,7 @@ enum TokenKind {
     Nil,
     None,
     Fn,
+    Await,
     Let,
     If,
     Else,
@@ -5558,6 +5577,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "nil" => TokenKind::Nil,
                 "none" => TokenKind::None,
                 "fn" => TokenKind::Fn,
+                "await" => TokenKind::Await,
                 "let" => TokenKind::Let,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
@@ -5690,6 +5710,24 @@ impl ExprParser<'_> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Await)
+        ) {
+            let await_span = self.tokens[self.index].span;
+            self.index += 1;
+            let awaited = self.parse_unary()?;
+            let span = SourceSpan::new(
+                self.line,
+                await_span.column,
+                awaited.span.column + awaited.span.length - await_span.column,
+            );
+            return Ok(Expr {
+                line: self.line,
+                span,
+                kind: ExprKind::Await(Box::new(awaited)),
+            });
+        }
         if matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
             Some(TokenKind::Minus)
