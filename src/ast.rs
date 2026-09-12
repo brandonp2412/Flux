@@ -157,6 +157,7 @@ pub struct Program {
     pub enums: Vec<EnumDef>,
     pub constants: Vec<ConstantDef>,
     pub application: Option<ApplicationDef>,
+    pub routes: Vec<RouteDef>,
     pub views: Vec<ViewDef>,
     pub functions: Vec<Function>,
 }
@@ -300,6 +301,17 @@ pub struct ApplicationDef {
     pub view_span: SourceSpan,
     pub keyword_span: SourceSpan,
     pub metadata: Vec<ApplicationMetadataField>,
+    pub line: usize,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteDef {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub view_name: String,
+    pub view_span: SourceSpan,
+    pub keyword_span: SourceSpan,
     pub line: usize,
     pub span: SourceSpan,
 }

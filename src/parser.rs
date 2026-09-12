@@ -4,9 +4,9 @@ use crate::ast::{
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
     ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm,
     MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp, Program, RelationalPattern,
-    ShellRedirect, ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField,
-    StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement,
-    ViewProperty, ViewState, ViewStateTransition,
+    RouteDef, ShellRedirect, ShellRedirectMode, Stmt, StmtKind, StructDef, StructField,
+    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef,
+    ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -115,6 +115,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let mut enums = Vec::new();
     let mut constants = Vec::new();
     let mut application = None;
+    let mut routes = Vec::new();
     let mut views = Vec::new();
     let mut functions = Vec::new();
     let mut index = 0;
@@ -155,6 +156,23 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             match parse_application(line) {
                 Ok(definition) if application.is_none() => application = Some(definition),
                 Ok(_) => diagnostics.push(diag(line.number, "program may declare only one app")),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+            index += 1;
+            continue;
+        }
+
+        if declaration_text.starts_with("route ") {
+            if public {
+                diagnostics.push(diag(
+                    line.number,
+                    "route declarations cannot be declared pub",
+                ));
+                index += 1;
+                continue;
+            }
+            match parse_route(line) {
+                Ok(route) => routes.push(route),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
             index += 1;
@@ -329,6 +347,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             enums,
             constants,
             application,
+            routes,
             views,
             functions,
         })
@@ -359,6 +378,12 @@ fn attach_program_source(program: &mut Program, source_id: SourceId) {
             field.name_span = field.name_span.with_source(source_id);
             attach_expr_source(&mut field.value, source_id);
         }
+    }
+    for route in &mut program.routes {
+        route.span = route.span.with_source(source_id);
+        route.keyword_span = route.keyword_span.with_source(source_id);
+        route.name_span = route.name_span.with_source(source_id);
+        route.view_span = route.view_span.with_source(source_id);
     }
     for alias in &mut program.aliases {
         alias.span = alias.span.with_source(source_id);
@@ -1268,6 +1293,7 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
                 || text.starts_with("struct ")
                 || text.starts_with("enum ")
                 || text.starts_with("app ")
+                || text.starts_with("route ")
                 || text.starts_with("type ")
                 || text.starts_with("const ")
                 || text.starts_with("view ")
@@ -1278,6 +1304,42 @@ fn recover_after_malformed_declaration(lines: &[Line], mut index: usize) -> usiz
         index += 1;
     }
     index
+}
+
+fn parse_route(line: &Line) -> Result<RouteDef, Diagnostic> {
+    let Some(raw) = line.text.strip_prefix("route ") else {
+        return Err(diag(line.number, "expected route declaration"));
+    };
+    let Some((name_raw, view_raw)) = raw.split_once('=') else {
+        return Err(diag(
+            line.number,
+            "route declarations use 'route name = ViewName'",
+        ));
+    };
+    if view_raw.contains('=') {
+        return Err(diag(
+            line.number,
+            "route declarations contain exactly one '='",
+        ));
+    }
+    let name = name_raw.trim();
+    let view_name = view_raw.trim();
+    validate_identifier(name, line.number)?;
+    validate_identifier(view_name, line.number)?;
+    let name_offset = line.text.find(name).unwrap_or(6);
+    let view_offset = line
+        .text
+        .rfind(view_name)
+        .unwrap_or(name_offset + name.len() + 3);
+    Ok(RouteDef {
+        name: name.to_string(),
+        name_span: SourceSpan::new(line.number, name_offset + 1, name.len()),
+        view_name: view_name.to_string(),
+        view_span: SourceSpan::new(line.number, view_offset + 1, view_name.len()),
+        keyword_span: SourceSpan::new(line.number, 1, 5),
+        line: line.number,
+        span: line.span(),
+    })
 }
 
 fn parse_application(line: &Line) -> Result<ApplicationDef, Diagnostic> {

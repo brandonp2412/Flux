@@ -21,6 +21,7 @@ pub enum SymbolKind {
     EnumVariant,
     Struct,
     StructField,
+    Route,
     View,
     ViewState,
     ViewDerived,
@@ -163,6 +164,14 @@ impl SemanticDatabase {
                     span: field.name_span,
                 });
             }
+        }
+        for route in &program.routes {
+            symbols.push(SemanticSymbol {
+                name: route.name.clone(),
+                kind: SymbolKind::Route,
+                ty: None,
+                span: route.name_span,
+            });
         }
         for view in &program.views {
             symbols.push(SemanticSymbol {

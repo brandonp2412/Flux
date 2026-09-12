@@ -2350,6 +2350,7 @@ impl Loader<'_> {
         self.program.structs.append(&mut program.structs);
         self.program.enums.append(&mut program.enums);
         self.program.constants.append(&mut program.constants);
+        self.program.routes.append(&mut program.routes);
         if let Some(application) = program.application.take() {
             if self.program.application.is_some() {
                 self.diagnostics.push(Diagnostic::new(

@@ -1039,6 +1039,7 @@ pub fn check_all_with_package_constants(
     }
 
     validate_views(program, &signatures, &mut diagnostics);
+    validate_routes(program, &signatures, &mut diagnostics);
 
     if let Some(application) = &program.application {
         match program
@@ -1765,6 +1766,50 @@ fn valid_application_id(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     })
+}
+
+fn validate_routes(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+    let view_defs = program
+        .views
+        .iter()
+        .map(|view| (view.name.as_str(), view))
+        .collect::<HashMap<_, _>>();
+    let mut route_names = HashSet::new();
+    for route in &program.routes {
+        if !route_names.insert(route.name.as_str()) {
+            diagnostics.push(diag(
+                route.name_span,
+                &format!("duplicate route '{}'", route.name),
+            ));
+            continue;
+        }
+        let Some(view) = view_defs.get(route.view_name.as_str()).copied() else {
+            diagnostics.push(diag(
+                route.view_span,
+                &format!("unknown route target view '{}'", route.view_name),
+            ));
+            continue;
+        };
+        if let Err(diagnostic) = require_visible_declaration(
+            route.view_span,
+            view.name_span,
+            view.public,
+            "view",
+            &view.name,
+            signatures,
+        ) {
+            diagnostics.push(diagnostic);
+        }
+        if !view.params.is_empty() {
+            diagnostics.push(diag(
+                route.view_span,
+                &format!(
+                    "route '{}' target view '{}' must not declare parameters until route parameters are implemented",
+                    route.name, route.view_name
+                ),
+            ));
+        }
+    }
 }
 
 fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {

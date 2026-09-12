@@ -19,6 +19,12 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     for import in &program.imports {
         formatted.insert(import.line, format!("import {:?}", import.path));
     }
+    for route in &program.routes {
+        formatted.insert(
+            route.line,
+            format!("route {} = {}", route.name, route.view_name),
+        );
+    }
     if let Some(application) = &program.application {
         let metadata = application
             .metadata

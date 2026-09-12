@@ -25555,6 +25555,112 @@ fn main() -> i64 { 0 }
 }
 
 #[test]
+fn typed_routes_bind_zero_parameter_views_without_runtime_route_objects() {
+    let source = r#"
+view Home {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Home"
+}
+view Settings {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Settings"
+}
+route home = Home
+route settings = Settings
+app Home
+"#;
+    check_source(source).expect("typed route declarations should bind declared views");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("typed routes should participate in semantic analysis");
+    assert_eq!(database.program().routes.len(), 2);
+    assert_eq!(database.program().routes[0].name, "home");
+    assert_eq!(database.program().routes[0].view_name, "Home");
+    assert!(
+        database
+            .symbols_named("home")
+            .any(|symbol| { symbol.kind == fluxc::semantic::SymbolKind::Route })
+    );
+    let formatted =
+        fluxc::formatter::format_source(source).expect("routes should format canonically");
+    assert!(formatted.contains("route home = Home\n"));
+    assert!(formatted.contains("route settings = Settings\n"));
+    let generated =
+        compile_to_c(source).expect("route declarations should not add a runtime object");
+    assert!(!generated.contains("route home"));
+    assert!(!generated.contains("route settings"));
+
+    let unknown = r#"
+view Home {
+    grid columns: 1fr
+    grid rows: auto
+}
+route missing = Missing
+app Home
+"#;
+    let errors = check_source_all(unknown).expect_err("unknown route target must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("unknown route target view 'Missing'")
+    }));
+
+    let parameterized = r#"
+view Detail(id: i64) {
+    grid columns: 1fr
+    grid rows: auto
+}
+route detail = Detail
+fn main() -> i64 { 0 }
+"#;
+    let errors = check_source_all(parameterized)
+        .expect_err("route parameters remain a separate navigation milestone");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("target view 'Detail' must not declare parameters until route parameters are implemented")
+    }));
+
+    let duplicate = r#"
+view Home {
+    grid columns: 1fr
+    grid rows: auto
+}
+route home = Home
+route home = Home
+fn main() -> i64 { 0 }
+"#;
+    let errors = check_source_all(duplicate).expect_err("duplicate route identities must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("duplicate route 'home'"))
+    );
+
+    let root = std::env::temp_dir().join(format!("flux-routes-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("route import fixture should be writable");
+    fs::write(
+        root.join("routes.flux"),
+        "view Imported {\n    grid columns: 1fr\n    grid rows: auto\n}\nroute imported = Imported\n",
+    )
+    .expect("route dependency should be writable");
+    let entry = root.join("main.flux");
+    fs::write(
+        &entry,
+        "import \"routes.flux\"\nview Home {\n    grid columns: 1fr\n    grid rows: auto\n}\napp Home\n",
+    )
+    .expect("route entry should be writable");
+    fluxc::project::check(&entry).expect("route declarations should merge across imports");
+    let (program, _) = fluxc::project::load(&entry).expect("route project should load");
+    assert!(program.routes.iter().any(|route| route.name == "imported"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn validates_flat_grid_bounds_and_rejects_accidental_overlap() {
     let valid = r#"
 view Dashboard {

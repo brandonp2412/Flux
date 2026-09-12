@@ -654,6 +654,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "import",
     "view",
     "app",
+    "route",
     "state",
     "derived",
     "true",
@@ -4555,6 +4556,7 @@ fn semantic_symbol_kind(kind: crate::semantic::SymbolKind) -> SemanticTokenKind 
         | SymbolKind::MutableBinding
         | SymbolKind::PatternBinding
         | SymbolKind::LoopVariable
+        | SymbolKind::Route
         | SymbolKind::ViewState
         | SymbolKind::ViewDerived
         | SymbolKind::ViewElement => SemanticTokenKind::Variable,
@@ -4592,6 +4594,7 @@ fn is_flux_keyword(word: &str) -> bool {
             | "import"
             | "view"
             | "app"
+            | "route"
             | "state"
             | "derived"
             | "grid"
@@ -5734,6 +5737,7 @@ fn hover_description(
         SymbolKind::Enum => format!("enum {}", symbol.name),
         SymbolKind::EnumVariant => typed_symbol("variant", symbol),
         SymbolKind::Struct => format!("struct {}", symbol.name),
+        SymbolKind::Route => format!("route {}", symbol.name),
         SymbolKind::View => format!("view {}", symbol.name),
         SymbolKind::ViewElement => format!("element {}", symbol.name),
     }
@@ -9440,6 +9444,7 @@ mod tests {
         let source = "type Count = i64\nfn main() -> i64 { 0 }\n";
         let json = JsonValue::Array(completion_items(source)).to_json();
         assert!(json.contains("\"label\":\"while\""));
+        assert!(json.contains("\"label\":\"route\""));
         assert!(json.contains("\"label\":\"i64\""));
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
