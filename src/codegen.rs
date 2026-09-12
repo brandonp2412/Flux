@@ -5143,8 +5143,11 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static const char *flux__worker_join(int64_t handle) { if (handle <= 0) return \"worker.join received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join received an unknown or already joined handle\"; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join is already waiting for this handle\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join failed to join the native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *scope_error = state->scope_error; struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return scope_error; }\n");
         out.push_str("static const char *flux__worker_join_tree(int64_t handle) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return NULL; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren found a descendant already being joined\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren failed to join a descendant native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *scope_error = state->scope_error; pthread_mutex_unlock(&flux__worker_mutex); if (scope_error != NULL) return scope_error; while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != handle) child = child->next; if (child == NULL) { struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return NULL; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return error; } } }\n");
         out.push_str("static const char *flux__worker_join_children(void) { int64_t parent_id = flux__worker_current_id; while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != parent_id) child = child->next; if (child == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return NULL; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL) return error; } }\n");
+        out.push_str("static int flux__finish_main(int result) { const char *error = flux__worker_join_children(); if (error != NULL) { fputs(\"Flux worker scope error: \", stderr); fputs(error, stderr); fputc('\\n', stderr); return result == 0 ? 1 : result; } return result; }\n");
         out.push_str("static const char *flux__worker_cancel(int64_t handle) { if (handle <= 0) return \"worker.cancel received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *root = flux__worker_find_locked(handle); if (root == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.cancel received an unknown or already joined handle\"; } for (struct flux__worker_state *state = flux__worker_head; state != NULL; state = state->next) { if (state->id == handle || flux__worker_descends_from_locked(state, handle)) state->cancel_requested = true; } pthread_mutex_unlock(&flux__worker_mutex); return NULL; }\n");
         out.push_str("static bool flux__worker_cancelled(void) { int64_t current_id = flux__worker_current_id; if (current_id <= 0) return false; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(current_id); bool cancelled = state != NULL && state->cancel_requested; pthread_mutex_unlock(&flux__worker_mutex); return cancelled; }\n");
+    } else if runtime_usage.contains("flux__finish_main(") {
+        out.push_str("#define flux__finish_main(result) (result)\n");
     }
 
     if runtime_usage.contains("flux__channel_") {
@@ -17597,7 +17600,7 @@ fn emit_async_task_runtime(
 
     if function.name == "main" {
         out.push_str(&format!(
-            "int main(void) {{\n    return (int){await_name}({start_name}());\n}}\n"
+            "int main(void) {{\n    return flux__finish_main((int){await_name}({start_name}()));\n}}\n"
         ));
     }
 }
@@ -19970,6 +19973,8 @@ fn emit_block(
                         "{pad}flux__task->result = {target};\n{pad}{}(flux__task);\n{pad}return;\n",
                         async_finish_c_name(&context.current_function.name)
                     ));
+                } else if context.current_function.name == "main" {
+                    out.push_str(&format!("{pad}return flux__finish_main({target});\n"));
                 } else {
                     out.push_str(&format!("{pad}return {target};\n"));
                 }
@@ -19982,6 +19987,8 @@ fn emit_block(
                         "{pad}flux__task->result = {value};\n{pad}{}(flux__task);\n{pad}return;\n",
                         async_finish_c_name(&context.current_function.name)
                     ));
+                } else if context.current_function.name == "main" {
+                    out.push_str(&format!("{pad}return flux__finish_main({value});\n"));
                 } else {
                     out.push_str(&format!("{pad}return {value};\n"));
                 }

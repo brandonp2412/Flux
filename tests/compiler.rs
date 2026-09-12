@@ -5892,6 +5892,8 @@ fn main() -> i64 {
     assert!(generated.contains("static const char *flux__worker_join_children(void)"));
     assert!(generated.contains("static const char *flux__worker_join_tree(int64_t handle)"));
     assert!(generated.contains("flux__worker_join_tree(child_id)"));
+    assert!(generated.contains("static int flux__finish_main(int result)"));
+    assert!(generated.contains("return flux__finish_main("));
 
     let root = std::env::temp_dir().join(format!(
         "flux-worker-join-children-api-{}",
@@ -5920,6 +5922,85 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
 
+    let automatic_root_scope = r#"
+fn grandchild() -> void {
+    time.sleepMillis(20)
+    print(43)
+}
+fn child() -> void {
+    let (_grandchildHandle, startError) = worker.start(grandchild)
+    if startError != nil:
+        print(-3)
+}
+fn main() -> i64 {
+    let (_childHandle, startError) = worker.start(child)
+    if startError != nil:
+        return 1
+    return 0
+}
+"#;
+    let automatic_generated = compile_to_c(automatic_root_scope)
+        .expect("root worker scope should lower with automatic cleanup");
+    assert!(automatic_generated.contains("return flux__finish_main("));
+    let automatic_source_path = root.join("automatic-root.flux");
+    fs::write(&automatic_source_path, automatic_root_scope)
+        .expect("automatic root worker source should be writable");
+    let automatic_binary = root.join("automatic-root-worker-scope");
+    let automatic_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&automatic_source_path)
+        .arg("-o")
+        .arg(&automatic_binary)
+        .output()
+        .expect("automatic root worker binary should build");
+    assert!(
+        automatic_built.status.success(),
+        "automatic root worker build failed: {}",
+        String::from_utf8_lossy(&automatic_built.stderr)
+    );
+    let automatic_run = Command::new(&automatic_binary)
+        .output()
+        .expect("automatic root worker binary should run");
+    assert!(automatic_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&automatic_run.stdout), "43\n");
+
+    let async_root_scope = r#"
+fn child() -> void {
+    time.sleepMillis(20)
+    print(44)
+}
+async fn main() -> i64 {
+    let (_childHandle, startError) = worker.start(child)
+    if startError != nil:
+        return 1
+    return 0
+}
+"#;
+    let async_generated =
+        compile_to_c(async_root_scope).expect("async root worker scope should lower with cleanup");
+    assert!(async_generated.contains("return flux__finish_main((int)flux__async_await_main("));
+    let async_source_path = root.join("async-root.flux");
+    fs::write(&async_source_path, async_root_scope)
+        .expect("async root worker source should be writable");
+    let async_binary = root.join("async-root-worker-scope");
+    let async_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&async_source_path)
+        .arg("-o")
+        .arg(&async_binary)
+        .output()
+        .expect("async root worker binary should build");
+    assert!(
+        async_built.status.success(),
+        "async root worker build failed: {}",
+        String::from_utf8_lossy(&async_built.stderr)
+    );
+    let async_run = Command::new(&async_binary)
+        .output()
+        .expect("async root worker binary should run");
+    assert!(async_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&async_run.stdout), "44\n");
+
     let invalid = r#"
 fn main() -> i64 {
     print(worker.joinChildren(1))
@@ -5943,6 +6024,7 @@ fn main() -> i64 {
 "#;
     let dead_generated = compile_to_c(dead).expect("dead joinChildren helper should tree-shake");
     assert!(!dead_generated.contains("flux__worker_join_children("));
+    assert!(dead_generated.contains("#define flux__finish_main(result) (result)"));
     assert!(!dead_generated.contains("#include <pthread.h>"));
 
     let _ = fs::remove_dir_all(&root);
