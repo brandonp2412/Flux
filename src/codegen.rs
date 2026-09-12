@@ -14488,6 +14488,7 @@ struct AsyncContinuationPlan {
     branch_await: Option<AsyncBranchAwaitPlan>,
     while_await: Option<AsyncWhileAwaitPlan>,
     for_range_await: Option<AsyncForRangeAwaitPlan>,
+    match_await: Option<AsyncMatchAwaitPlan>,
 }
 
 #[derive(Clone)]
@@ -14507,6 +14508,12 @@ struct AsyncWhileAwaitPlan {
 struct AsyncForRangeAwaitPlan {
     statement_index: usize,
     body_await_indices: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct AsyncMatchAwaitPlan {
+    statement_index: usize,
+    arm_await_indices: Vec<Vec<usize>>,
 }
 
 fn expr_contains_await(expr: &Expr) -> bool {
@@ -14843,6 +14850,45 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     }
 }
 
+fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
+    let await_statements = function
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .collect::<Vec<_>>();
+    let [statement_index] = await_statements.as_slice() else {
+        return None;
+    };
+    let statement_index = *statement_index;
+    let StmtKind::Match { value, arms } = &function.body[statement_index].kind else {
+        return None;
+    };
+    if expr_contains_await(value) || arms.is_empty() {
+        return None;
+    }
+    let mut seen_variants = HashSet::new();
+    let mut arm_await_indices = Vec::with_capacity(arms.len());
+    let mut any_await = false;
+    for arm in arms {
+        if arm.guard.is_some()
+            || !seen_variants.insert(arm.variant.as_str())
+            || arm.patterns.iter().any(|pattern| {
+                !matches!(pattern, MatchPattern::Binding(_) | MatchPattern::Struct(_))
+            })
+        {
+            return None;
+        }
+        let await_indices = block_direct_await_indices(&arm.body)?;
+        any_await |= !await_indices.is_empty();
+        arm_await_indices.push(await_indices);
+    }
+    any_await.then_some(AsyncMatchAwaitPlan {
+        statement_index,
+        arm_await_indices,
+    })
+}
+
 fn collect_async_saved_locals(
     block: &[Stmt],
     through_index: usize,
@@ -14943,6 +14989,73 @@ fn collect_async_saved_locals(
     Some(())
 }
 
+fn collect_async_struct_pattern_bindings(
+    pattern: &crate::ast::StructPattern,
+    signatures: &Signatures,
+    env: &mut HashMap<String, Type>,
+    locals: &mut BTreeMap<String, Type>,
+) -> Option<()> {
+    let definition = signatures.struct_type(&pattern.struct_name)?;
+    for field in &pattern.fields {
+        let field_signature = definition.field(&field.field)?;
+        if let Some(nested) = &field.nested {
+            collect_async_struct_pattern_bindings(nested, signatures, env, locals)?;
+            continue;
+        }
+        if field.binding.name == "_" {
+            continue;
+        }
+        let ty = signatures.canonical_type(&field_signature.ty);
+        if !signatures.is_copy_type(&ty)
+            || locals
+                .get(&field.binding.name)
+                .is_some_and(|existing| existing != &ty)
+        {
+            return None;
+        }
+        env.insert(field.binding.name.clone(), ty.clone());
+        locals.insert(field.binding.name.clone(), ty);
+    }
+    Some(())
+}
+
+fn collect_async_match_arm_bindings(
+    arm: &crate::ast::MatchArm,
+    signatures: &Signatures,
+    env: &mut HashMap<String, Type>,
+    locals: &mut BTreeMap<String, Type>,
+) -> Option<()> {
+    let definition = signatures.enum_type(&arm.enum_name)?;
+    let variant = definition.variant(&arm.variant)?;
+    if variant.payloads.len() != arm.patterns.len() {
+        return None;
+    }
+    for (pattern, payload_ty) in arm.patterns.iter().zip(&variant.payloads) {
+        match pattern {
+            MatchPattern::Binding(binding) => {
+                if binding.name == "_" {
+                    continue;
+                }
+                let ty = signatures.canonical_type(payload_ty);
+                if !signatures.is_copy_type(&ty)
+                    || locals
+                        .get(&binding.name)
+                        .is_some_and(|existing| existing != &ty)
+                {
+                    return None;
+                }
+                env.insert(binding.name.clone(), ty.clone());
+                locals.insert(binding.name.clone(), ty);
+            }
+            MatchPattern::Struct(pattern) => {
+                collect_async_struct_pattern_bindings(pattern, signatures, env, locals)?;
+            }
+            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => return None,
+        }
+    }
+    Some(())
+}
+
 fn async_continuation_plan(
     function: &Function,
     signatures: &Signatures,
@@ -14976,6 +15089,11 @@ fn async_continuation_plan(
         .then_some(())
         .filter(|_| while_await.is_none())
         .and_then(|_| async_for_range_await_plan(function));
+    let match_await = branch_await
+        .is_none()
+        .then_some(())
+        .filter(|_| while_await.is_none() && for_range_await.is_none())
+        .and_then(|_| async_match_await_plan(function));
     if function
         .body
         .iter()
@@ -14983,6 +15101,7 @@ fn async_continuation_plan(
         && branch_await.is_none()
         && while_await.is_none()
         && for_range_await.is_none()
+        && match_await.is_none()
     {
         return None;
     }
@@ -14996,7 +15115,10 @@ fn async_continuation_plan(
                 .is_some_and(|while_plan| while_plan.statement_index == stmt_index)
             || for_range_await
                 .as_ref()
-                .is_some_and(|for_plan| for_plan.statement_index == stmt_index);
+                .is_some_and(|for_plan| for_plan.statement_index == stmt_index)
+            || match_await
+                .as_ref()
+                .is_some_and(|match_plan| match_plan.statement_index == stmt_index);
         if stmt_contains_await(stmt) && !specially_lowered {
             let await_expr = direct_await_expr(stmt)?;
             let (callee, _, _) = direct_await_call(await_expr)?;
@@ -15099,6 +15221,29 @@ fn async_continuation_plan(
                 )?;
             }
         }
+        if let Some(match_plan) = match_await
+            .as_ref()
+            .filter(|match_plan| match_plan.statement_index == stmt_index)
+        {
+            let StmtKind::Match { arms, .. } = &stmt.kind else {
+                return None;
+            };
+            for (arm, await_indices) in arms.iter().zip(&match_plan.arm_await_indices) {
+                let Some(last_await) = await_indices.last().copied() else {
+                    continue;
+                };
+                let mut arm_env = env.clone();
+                collect_async_match_arm_bindings(arm, signatures, &mut arm_env, &mut locals)?;
+                collect_async_saved_locals(
+                    &arm.body,
+                    last_await,
+                    &arm_env,
+                    signatures,
+                    &mut locals,
+                    &mut mutable,
+                )?;
+            }
+        }
 
         match &stmt.kind {
             StmtKind::Let { name, ty, .. } => {
@@ -15180,6 +15325,7 @@ fn async_continuation_plan(
         branch_await,
         while_await,
         for_range_await,
+        match_await,
     })
 }
 
@@ -19365,6 +19511,338 @@ fn emit_async_for_range_continuation_function(
     Ok(())
 }
 
+fn emit_async_match_tail(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    match_plan: &AsyncMatchAwaitPlan,
+    outer_env: &HashMap<String, Type>,
+    outer_mutable: &HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let pad = "            ";
+    let mut tail_env = outer_env.clone();
+    let mut tail_mutable = outer_mutable.clone();
+    emit_block(
+        out,
+        &function.body[match_plan.statement_index + 1..],
+        3,
+        &mut tail_env,
+        &mut tail_mutable,
+        signatures,
+        temp_counter,
+        context,
+    )?;
+    if function.returns.is_empty() {
+        out.push_str(&format!(
+            "{pad}{}(flux__task);\n{pad}return;\n",
+            async_finish_c_name(&function.name)
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+        ));
+    }
+    Ok(())
+}
+
+fn emit_async_match_arm_bindings(
+    out: &mut String,
+    pad: &str,
+    temp: &str,
+    arm: &crate::ast::MatchArm,
+    signatures: &Signatures,
+    env: &mut HashMap<String, Type>,
+) -> Result<(), Diagnostic> {
+    let definition = signatures.enum_type(&arm.enum_name).ok_or_else(|| {
+        diag(
+            arm.enum_span,
+            "async match continuation enum disappeared after type checking",
+        )
+    })?;
+    let variant = definition.variant(&arm.variant).ok_or_else(|| {
+        diag(
+            arm.variant_span,
+            "async match continuation variant disappeared after type checking",
+        )
+    })?;
+    for (index, (pattern, payload_ty)) in arm.patterns.iter().zip(&variant.payloads).enumerate() {
+        let payload_access = format!(
+            "{temp}.payload.{}.v{index}",
+            enum_payload_member_name(&arm.variant)
+        );
+        match pattern {
+            MatchPattern::Binding(binding) => {
+                if binding.name == "_" {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "{pad}{} {} = {payload_access};\n",
+                    c_type(payload_ty, signatures),
+                    local_c_name(&binding.name)
+                ));
+                env.insert(binding.name.clone(), payload_ty.clone());
+            }
+            MatchPattern::Struct(pattern) => {
+                let Type::Named(struct_name) = signatures.canonical_type(payload_ty) else {
+                    return Err(diag(
+                        pattern.struct_span,
+                        "async match struct pattern requires a struct payload",
+                    ));
+                };
+                emit_struct_pattern_bindings(
+                    out,
+                    pad,
+                    &pattern.fields,
+                    &struct_name,
+                    &payload_access,
+                    &mut PatternBindingEmitContext {
+                        env,
+                        signatures,
+                        dead_definitions: None,
+                    },
+                )?;
+            }
+            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
+                return Err(diag(
+                    arm.span,
+                    "refutable pattern reached async match continuation lowering",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn emit_async_match_continuation_function(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    match_plan: &AsyncMatchAwaitPlan,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let StmtKind::Match { value, arms } = &function.body[match_plan.statement_index].kind else {
+        return Err(diag(
+            function.body[match_plan.statement_index].span,
+            "async match continuation plan no longer points at a match statement",
+        ));
+    };
+    let task_name = async_task_c_name(&function.name);
+    let mut state_context = context;
+    state_context.async_state_machine = true;
+    out.push_str(&async_resume_prototype(function));
+    out.push_str(" {\n");
+    out.push_str(&format!(
+        "    struct {task_name} *flux__task = (struct {task_name} *)flux__context;\n"
+    ));
+    out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
+    out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
+    out.push_str("    switch (flux__task->state) {\n");
+
+    let mut outer_env = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+        .collect::<HashMap<_, _>>();
+    let mut outer_mutable = plan.mutable.clone();
+    out.push_str("        case 0: {\n");
+    let pad = "            ";
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_block(
+        out,
+        &function.body[..match_plan.statement_index],
+        3,
+        &mut outer_env,
+        &mut outer_mutable,
+        signatures,
+        temp_counter,
+        state_context,
+    )?;
+    let emitted_value = emit_expr(value, &outer_env, signatures)?;
+    let Type::Named(enum_name) = &emitted_value.ty else {
+        return Err(diag(
+            value.span,
+            "async match continuation requires an enum value",
+        ));
+    };
+    let temp = format!("flux__async_match_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct {} {temp} = {};\n",
+        struct_c_name(enum_name),
+        emitted_value.code
+    ));
+    out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
+
+    let mut next_state = 1usize;
+    let mut resume_envs = Vec::with_capacity(arms.len());
+    for (arm_index, (arm, await_indices)) in
+        arms.iter().zip(&match_plan.arm_await_indices).enumerate()
+    {
+        out.push_str(&format!(
+            "{pad}    case {}: {{\n",
+            enum_tag_value_name(enum_name, &arm.variant)
+        ));
+        let mut arm_env = outer_env.clone();
+        let mut arm_mutable = outer_mutable.clone();
+        emit_async_match_arm_bindings(
+            out,
+            &format!("{pad}        "),
+            &temp,
+            arm,
+            signatures,
+            &mut arm_env,
+        )?;
+        if let Some(first_await) = await_indices.first().copied() {
+            emit_block(
+                out,
+                &arm.body[..first_await],
+                5,
+                &mut arm_env,
+                &mut arm_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            let awaited_stmt = &arm.body[first_await];
+            emit_source_line(out, awaited_stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                "                    ",
+                awaited_stmt,
+                next_state,
+                function,
+                plan,
+                &arm_env,
+                signatures,
+            )?;
+            resume_envs.push(Some((arm_index, next_state, arm_env, arm_mutable)));
+            next_state += await_indices.len();
+        } else {
+            emit_block(
+                out,
+                &arm.body,
+                5,
+                &mut arm_env,
+                &mut arm_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            emit_async_match_tail(
+                out,
+                function,
+                signatures,
+                match_plan,
+                &outer_env,
+                &outer_mutable,
+                temp_counter,
+                state_context,
+            )?;
+            resume_envs.push(None);
+        }
+        out.push_str(&format!("{pad}    }}\n"));
+    }
+    out.push_str(&format!(
+        "{pad}    default: fputs(\"Flux runtime error: invalid async match tag\\n\", stderr); abort();\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str("        }\n");
+
+    for resume in resume_envs.into_iter().flatten() {
+        let (arm_index, first_state, mut arm_env, mut arm_mutable) = resume;
+        let arm = &arms[arm_index];
+        let await_indices = &match_plan.arm_await_indices[arm_index];
+        let mut previous_await = await_indices[0];
+        let mut segment_start = previous_await + 1;
+        for offset in 0..await_indices.len() {
+            let state = first_state + offset;
+            out.push_str(&format!("        case {state}: {{\n"));
+            for (index, param) in function.params.iter().enumerate() {
+                out.push_str(&format!(
+                    "{pad}{} {} = flux__task->arg_{index};\n",
+                    c_type(&param.ty, signatures),
+                    local_c_name(&param.name)
+                ));
+            }
+            for (name, ty) in &plan.locals {
+                if arm_env.contains_key(name) {
+                    out.push_str(&format!(
+                        "{pad}{} {} = flux__task->{};\n",
+                        c_type(ty, signatures),
+                        local_c_name(name),
+                        async_saved_local_field_name(name)
+                    ));
+                }
+            }
+            let awaited_stmt = &arm.body[previous_await];
+            emit_async_completed_await(
+                out,
+                pad,
+                awaited_stmt,
+                function,
+                &mut arm_env,
+                &mut arm_mutable,
+                signatures,
+                temp_counter,
+            )?;
+            let next_await = await_indices.get(offset + 1).copied();
+            let segment_end = next_await.unwrap_or(arm.body.len());
+            emit_block(
+                out,
+                &arm.body[segment_start..segment_end],
+                3,
+                &mut arm_env,
+                &mut arm_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            if let Some(next_await_index) = next_await {
+                let next_stmt = &arm.body[next_await_index];
+                emit_source_line(out, next_stmt.span, context.source_paths);
+                emit_async_suspend(
+                    out,
+                    pad,
+                    next_stmt,
+                    state + 1,
+                    function,
+                    plan,
+                    &arm_env,
+                    signatures,
+                )?;
+                previous_await = next_await_index;
+                segment_start = next_await_index + 1;
+            } else {
+                emit_async_match_tail(
+                    out,
+                    function,
+                    signatures,
+                    match_plan,
+                    &outer_env,
+                    &outer_mutable,
+                    temp_counter,
+                    state_context,
+                )?;
+            }
+            out.push_str("        }\n");
+        }
+    }
+
+    out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
+    out.push_str("    }\n}\n");
+    Ok(())
+}
+
 fn emit_async_continuation_function(
     out: &mut String,
     function: &Function,
@@ -19402,6 +19880,17 @@ fn emit_async_continuation_function(
             signatures,
             plan,
             for_plan,
+            temp_counter,
+            context,
+        );
+    }
+    if let Some(match_plan) = &plan.match_await {
+        return emit_async_match_continuation_function(
+            out,
+            function,
+            signatures,
+            plan,
+            match_plan,
             temp_counter,
             context,
         );

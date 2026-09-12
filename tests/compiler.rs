@@ -33299,6 +33299,105 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_inside_enum_match_suspends_without_blocking_worker() {
+    let source = r#"
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(choice: Choice) -> i64 {
+    var total: i64 = 1
+    match choice:
+        Choice.Value(value):
+            total = await addOne(value)
+            total = await addOne(total)
+        Choice.Empty():
+            total = 4
+    return total
+}
+
+async fn main() -> i64 {
+    let selected: i64 = await choose(Choice.Value(40))
+    let empty: i64 = await choose(Choice.Empty())
+    return selected + empty
+}
+"#;
+
+    check_source(source).expect("await inside enum match arms should remain supported");
+    let generated =
+        compile_to_c(source).expect("enum match awaits should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(
+        !generated
+            .contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_value))")
+    );
+
+    let guarded_source = r#"
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(choice: Choice) -> i64 {
+    match choice:
+        Choice.Value(value) if value > 0:
+            return await addOne(value)
+        Choice.Value(value):
+            return value
+        Choice.Empty():
+            return 0
+}
+
+async fn main() -> i64 {
+    return await choose(Choice.Value(40))
+}
+"#;
+    let guarded_generated = compile_to_c(guarded_source)
+        .expect("guarded match awaits should retain the safe blocking fallback");
+    assert!(guarded_generated.contains("flux__async_body_choose("));
+
+    let root = std::env::temp_dir().join(format!("flux-async-match-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async match fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-match");
+    fs::write(&source_path, source).expect("async match source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async match fixture should build");
+    assert!(
+        built.status.success(),
+        "async match fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async match fixture should run");
+    assert_eq!(status.code(), Some(46));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_branch_with_scalar_condition_suspends_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
