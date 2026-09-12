@@ -15754,6 +15754,116 @@ app Status
 }
 
 #[test]
+fn folds_reflexive_pure_checked_i64_expressions_after_one_evaluation() {
+    let source = r#"
+fn addEqual(value: i64) -> bool {
+    return (value + 1) == (value + 1)
+}
+
+fn subLess(value: i64) -> bool {
+    return (value - 2) < (value - 2)
+}
+
+fn mulGreaterEqual(value: i64) -> bool {
+    return (value * 3) >= (value * 3)
+}
+
+fn divNotEqual(value: i64, divisor: i64) -> bool {
+    return (value / divisor) != (value / divisor)
+}
+
+fn nestedEqual(value: i64, factor: i64) -> bool {
+    return ((value + 1) * factor) == ((value + 1) * factor)
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectfulEqual(value: i64) -> bool {
+    return (observe(value) + 1) == (observe(value) + 1)
+}
+
+fn main() -> i64 {
+    print(addEqual(1))
+    print(subLess(3))
+    print(mulGreaterEqual(4))
+    print(divNotEqual(8, 2))
+    print(nestedEqual(5, 6))
+    print(effectfulEqual(7))
+    return 0
+}
+"#;
+
+    check_source(source).expect("reflexive pure checked arithmetic should typecheck");
+    let generated = compile_to_c(source)
+        .expect("reflexive pure checked arithmetic should evaluate each expression once");
+    assert!(
+        generated.contains("return ((void)(flux_add_i64(flux__local_value, INT64_C(1))), true);")
+    );
+    assert!(
+        generated.contains("return ((void)(flux_sub_i64(flux__local_value, INT64_C(2))), false);")
+    );
+    assert!(
+        generated.contains("return ((void)(flux_mul_i64(flux__local_value, INT64_C(3))), true);")
+    );
+    assert!(
+        generated.contains(
+            "return ((void)(flux_div_i64(flux__local_value, flux__local_divisor)), false);"
+        )
+    );
+    assert!(generated.contains(
+        "return ((void)(flux_mul_i64(flux_add_i64(flux__local_value, INT64_C(1)), flux__local_factor)), true);"
+    ));
+    assert_eq!(
+        generated
+            .matches("flux_add_i64(flux__local_value, INT64_C(1))")
+            .count(),
+        2,
+        "the add-only and nested comparisons should each emit one checked addition",
+    );
+    assert_eq!(
+        generated
+            .matches("flux_div_i64(flux__local_value, flux__local_divisor)")
+            .count(),
+        1,
+        "the reflexive dynamic division should retain one authoritative checked division",
+    );
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful repeated expressions must retain both source evaluations",
+    );
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "Ready"
+        visible: (count + 1) == (count + 1)
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI reflexive checked arithmetic should share optimized lowering");
+    assert!(
+        ui_generated.contains("((void)(flux_add_i64(flux__ui_state_count, INT64_C(1))), true)")
+    );
+    assert_eq!(
+        ui_generated
+            .matches("flux_add_i64(flux__ui_state_count, INT64_C(1))")
+            .count(),
+        1,
+        "UI lowering should evaluate the checked arithmetic expression once",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1

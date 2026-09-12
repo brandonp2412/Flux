@@ -12914,6 +12914,11 @@ fn ui_expr_c(
             {
                 return Ok(code);
             }
+            if let Some(code) =
+                same_checked_i64_expression_comparison_c(*op, left, right, &left_code)
+            {
+                return Ok(code);
+            }
             if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 return Ok(code.to_string());
             }
@@ -18738,6 +18743,70 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
+fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
+    match (&left.kind, &right.kind) {
+        (ExprKind::Int(left), ExprKind::Int(right)) => left == right,
+        (ExprKind::Var(left), ExprKind::Var(right)) => left == right,
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: left,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: right,
+            },
+        ) => same_pure_i64_expression(left, right),
+        (
+            ExprKind::Binary {
+                left: left_left,
+                op: left_op,
+                right: left_right,
+            },
+            ExprKind::Binary {
+                left: right_left,
+                op: right_op,
+                right: right_right,
+            },
+        ) if left_op == right_op
+            && matches!(left_op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
+        {
+            same_pure_i64_expression(left_left, right_left)
+                && same_pure_i64_expression(left_right, right_right)
+        }
+        _ => false,
+    }
+}
+
+fn same_checked_i64_expression_comparison_c(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    left_code: &str,
+) -> Option<String> {
+    if !matches!(
+        left.kind,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            ..
+        } | ExprKind::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+            ..
+        }
+    ) || !same_pure_i64_expression(left, right)
+    {
+        return None;
+    }
+
+    let result = match op {
+        BinOp::Eq | BinOp::Le | BinOp::Ge => "true",
+        BinOp::Ne | BinOp::Lt | BinOp::Gt => "false",
+        _ => return None,
+    };
+
+    Some(format!("((void)({left_code}), {result})"))
+}
+
 fn same_checked_negated_binding_comparison_c(
     op: BinOp,
     left: &Expr,
@@ -23678,6 +23747,10 @@ fn emit_expr(
                 }
             } else if let Some(code) =
                 same_checked_negated_binding_comparison_c(*op, left, right, &emitted_left.code)
+            {
+                code
+            } else if let Some(code) =
+                same_checked_i64_expression_comparison_c(*op, left, right, &emitted_left.code)
             {
                 code
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
