@@ -11388,9 +11388,86 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_c_header_aggregates_with_nested_unsupported_ffi_types() {
-    let function_field = r#"
+fn emits_c_header_for_copy_aggregates_containing_safe_callbacks() {
+    let source = r#"
 pub type Mapper = fn(i64) -> i64
+
+pub struct CallbackBox {
+    callback: Mapper
+}
+
+pub enum MaybeMapper {
+    None
+    Some(Mapper)
+}
+
+pub fn chooseBox(value: CallbackBox) -> CallbackBox {
+    return value
+}
+
+pub fn chooseMapper(value: MaybeMapper) -> MaybeMapper {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("ABI-safe callback fields should remain Copy and cross the C ABI by value");
+    let callback_typedef = header
+        .find("typedef int64_t (*flux__fn_i64__to__i64)(int64_t);")
+        .expect("callback function-pointer typedef should be emitted");
+    let alias_typedef = header
+        .find("typedef flux__fn_i64__to__i64 flux__alias_Mapper;")
+        .expect("public callback alias should be emitted");
+    let struct_definition = header
+        .find("struct flux__type_CallbackBox {")
+        .expect("callback-containing struct should be emitted");
+    assert!(callback_typedef < alias_typedef && alias_typedef < struct_definition);
+    assert!(header.contains("flux__alias_Mapper flux__field_callback;"));
+    assert!(header.contains("flux__alias_Mapper v0;"));
+    assert!(header.contains(
+        "struct flux__type_CallbackBox flux__fn_chooseBox(struct flux__type_CallbackBox flux__local_value);"
+    ));
+    assert!(header.contains(
+        "struct flux__type_MaybeMapper flux__fn_chooseMapper(struct flux__type_MaybeMapper flux__local_value);"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-c-callback-aggregate-header-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary callback aggregate header directory should be writable");
+    let header_path = root.join("flux_callback_aggregate_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header)
+        .expect("generated callback aggregate header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_callback_aggregate_api.h\"\nstatic int64_t plus_one(int64_t value) { return value + 1; }\nstruct flux__type_CallbackBox probe(void) { struct flux__type_CallbackBox value = { .flux__field_callback = plus_one }; return flux__fn_chooseBox(value); }\n",
+    )
+    .expect("callback aggregate C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the callback aggregate ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated callback aggregate ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rejects_c_header_aggregates_containing_ownership_sensitive_callbacks() {
+    let source = r#"
+pub type Mapper = fn(i64[]) -> i64
 
 pub struct CallbackBox {
     callback: Mapper
@@ -11404,31 +11481,10 @@ fn main() -> i64 {
     return 0
 }
 "#;
-    let error = compile_to_c_header(function_field)
-        .expect_err("function values nested in Copy structs must not leak into the C ABI");
+    let error = compile_to_c_header(source)
+        .expect_err("aggregate callback fields must still reject borrowed list signatures");
     assert_eq!(error.stage, DiagnosticStage::Codegen);
     assert!(error.message.contains("unsupported FFI type 'CallbackBox'"));
-
-    let function_payload = r#"
-pub type Mapper = fn(i64) -> i64
-
-pub enum MaybeMapper {
-    None
-    Some(Mapper)
-}
-
-pub fn choose(value: MaybeMapper) -> MaybeMapper {
-    return value
-}
-
-fn main() -> i64 {
-    return 0
-}
-"#;
-    let error = compile_to_c_header(function_payload)
-        .expect_err("function values nested in Copy enums must not leak into the C ABI");
-    assert_eq!(error.stage, DiagnosticStage::Codegen);
-    assert!(error.message.contains("unsupported FFI type 'MaybeMapper'"));
 }
 
 #[test]

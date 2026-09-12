@@ -146,6 +146,58 @@ pub fn emit_c_header_with_module_names(
     if !public_value_defs.is_empty() {
         out.push('\n');
     }
+    for optional in &public_optional_types {
+        out.push_str(&format!(
+            "struct {};\n",
+            public_optional_names
+                .get(optional)
+                .expect("supported public C-header optional has a stable wrapper name")
+        ));
+    }
+    if !public_optional_types.is_empty() {
+        out.push('\n');
+    }
+
+    emit_c_header_function_type_typedefs(
+        &mut out,
+        program,
+        &public_value_defs,
+        &public_ffi_aliases,
+        &public_value_names,
+        &public_optional_names,
+        signatures,
+    )?;
+
+    for alias in ordered_public_scalar_aliases(program, &public_ffi_aliases)
+        .into_iter()
+        .filter(|alias| {
+            matches!(
+                signatures.canonical_type(&alias.target),
+                Type::Function { .. }
+            )
+        })
+    {
+        out.push_str(&format!(
+            "typedef {} flux__alias_{};\n",
+            c_header_type(
+                &alias.target,
+                &public_ffi_aliases,
+                &public_value_names,
+                &public_optional_names,
+                signatures,
+            ),
+            alias.name
+        ));
+    }
+    if program.aliases.iter().any(|alias| {
+        public_ffi_aliases.contains(&alias.name)
+            && matches!(
+                signatures.canonical_type(&alias.target),
+                Type::Function { .. }
+            )
+    }) {
+        out.push('\n');
+    }
 
     let mut emitted_optional_types = HashSet::new();
     for optional in &public_optional_types {
@@ -221,16 +273,15 @@ pub fn emit_c_header_with_module_names(
         "every supported public C-header optional must have an emitted wrapper"
     );
 
-    emit_c_header_function_type_typedefs(
-        &mut out,
-        program,
-        &public_ffi_aliases,
-        &public_value_names,
-        &public_optional_names,
-        signatures,
-    )?;
-
-    for alias in ordered_public_scalar_aliases(program, &public_ffi_aliases) {
+    for alias in ordered_public_scalar_aliases(program, &public_ffi_aliases)
+        .into_iter()
+        .filter(|alias| {
+            !matches!(
+                signatures.canonical_type(&alias.target),
+                Type::Function { .. }
+            )
+        })
+    {
         out.push_str(&format!(
             "typedef {} flux__alias_{};\n",
             c_header_type(
@@ -367,12 +418,17 @@ fn ffi_header_type_supported_inner(
             }
             let supported = if let Some(definition) = signatures.struct_type(&name) {
                 definition.fields.iter().all(|field| {
-                    ffi_header_type_supported_inner(&field.ty, signatures, visiting, false)
+                    ffi_header_type_supported_inner(&field.ty, signatures, visiting, allow_function)
                 })
             } else if let Some(definition) = signatures.enum_type(&name) {
                 definition.variants.iter().all(|variant| {
                     variant.payloads.iter().all(|payload| {
-                        ffi_header_type_supported_inner(payload, signatures, visiting, false)
+                        ffi_header_type_supported_inner(
+                            payload,
+                            signatures,
+                            visiting,
+                            allow_function,
+                        )
                     })
                 })
             } else {
@@ -390,7 +446,9 @@ fn ffi_header_type_supported_inner(
         }
         Type::Optional(inner) => match signatures.canonical_type(&inner) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
-            Type::Named(_) => ffi_header_type_supported_inner(&inner, signatures, visiting, false),
+            Type::Named(_) => {
+                ffi_header_type_supported_inner(&inner, signatures, visiting, allow_function)
+            }
             Type::Void | Type::List(_) | Type::Optional(_) | Type::Function { .. } => false,
         },
         Type::Void | Type::List(_) | Type::Function { .. } => false,
@@ -526,11 +584,48 @@ fn emit_c_header_optional_definition(
 fn emit_c_header_function_type_typedefs(
     out: &mut String,
     program: &Program,
+    public_value_defs: &[ValueDef<'_>],
     public_ffi_aliases: &HashSet<String>,
     public_value_names: &HashMap<String, String>,
     public_optional_names: &HashMap<Type, String>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
+    fn collect_nested_function_types(
+        ty: &Type,
+        signatures: &Signatures,
+        types: &mut HashSet<Type>,
+        visiting: &mut HashSet<String>,
+    ) {
+        match signatures.canonical_type(ty) {
+            Type::Function { .. } => {
+                if ffi_header_type_supported(ty, signatures) {
+                    types.insert(signatures.canonical_type(ty));
+                }
+            }
+            Type::Named(name) => {
+                if !visiting.insert(name.clone()) {
+                    return;
+                }
+                if let Some(definition) = signatures.struct_type(&name) {
+                    for field in &definition.fields {
+                        collect_nested_function_types(&field.ty, signatures, types, visiting);
+                    }
+                } else if let Some(definition) = signatures.enum_type(&name) {
+                    for variant in &definition.variants {
+                        for payload in &variant.payloads {
+                            collect_nested_function_types(payload, signatures, types, visiting);
+                        }
+                    }
+                }
+                visiting.remove(&name);
+            }
+            Type::Optional(inner) => {
+                collect_nested_function_types(&inner, signatures, types, visiting)
+            }
+            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) => {}
+        }
+    }
+
     let mut types = HashSet::new();
     for alias in program.aliases.iter().filter(|alias| alias.public) {
         let ty = signatures.canonical_type(&alias.target);
@@ -538,6 +633,32 @@ fn emit_c_header_function_type_typedefs(
             && ffi_header_type_supported(&alias.target, signatures)
         {
             types.insert(ty);
+        }
+    }
+    for definition in public_value_defs {
+        match definition {
+            ValueDef::Struct(definition) => {
+                for field in &definition.fields {
+                    collect_nested_function_types(
+                        &field.ty,
+                        signatures,
+                        &mut types,
+                        &mut HashSet::new(),
+                    );
+                }
+            }
+            ValueDef::Enum(definition) => {
+                for variant in &definition.variants {
+                    for payload in &variant.payloads {
+                        collect_nested_function_types(
+                            &payload.ty,
+                            signatures,
+                            &mut types,
+                            &mut HashSet::new(),
+                        );
+                    }
+                }
+            }
         }
     }
     for function in program
