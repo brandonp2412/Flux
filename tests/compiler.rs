@@ -24983,6 +24983,47 @@ app StaticTextWidth
 }
 
 #[test]
+fn android_minimum_size_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicMinimumSize {
+    state extent: i64 = 48
+    grid columns: 1fr
+    grid rows: auto auto
+    Button action at 1,1
+        text: "Resize"
+        minWidth: extent
+        minHeight: extent
+    Button grow at 2,1
+        text: "Grow"
+        onPress: extent => extent + 8
+}
+app DynamicMinimumSize
+"#;
+
+    check_source(source).expect("dynamic Android minimum sizes should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android minimum sizes should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android minimum sizes should lower");
+
+    assert!(android.contains("int64_t child_min_width = flux__ui_state_extent"));
+    assert!(android.contains("int64_t child_min_height = flux__ui_state_extent"));
+    assert!(android.contains("int64_t refresh_min_width = flux__ui_state_extent"));
+    assert!(android.contains("int64_t refresh_min_height = flux__ui_state_extent"));
+    assert!(android.contains("minWidth must be between 1 and 2147483647"));
+    assert!(android.contains("minHeight must be between 1 and 2147483647"));
+    assert!(android.contains("setMinimumWidth"));
+    assert!(android.contains("setMinimumHeight"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+}
+
+#[test]
 fn android_background_color_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicBackground {

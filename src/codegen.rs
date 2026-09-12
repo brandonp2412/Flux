@@ -5644,12 +5644,21 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_enabled, (jboolean)({value}));\n"
             ));
         }
-        if let Some(min_width) = static_minimum_size(element, "min_width", signatures)? {
+        if let Some(property) = view_property(element, "min_width") {
             out.push_str("    jmethodID set_min_width = (*env)->GetMethodID(env, child_class, \"setMinimumWidth\", \"(I)V\");\n");
             out.push_str("    if (set_min_width == NULL) return;\n");
-            out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_density));\n"
-            ));
+            if static_expr_i64(&property.value, signatures).is_some() {
+                let min_width = static_minimum_size(element, "min_width", signatures)?
+                    .expect("static minimum width property exists");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(INT64_C({min_width}) * flux__ui_density));\n"
+                ));
+            } else {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    int64_t child_min_width = {value};\n    if (child_min_width < 1 || child_min_width > INT32_MAX) {{ fputs(\"Flux runtime error: minWidth must be between 1 and 2147483647\\n\", stderr); abort(); }}\n    (*env)->CallVoidMethod(env, child, set_min_width, (jint)(child_min_width * flux__ui_density));\n"
+                ));
+            }
         }
         let row_start_for_defaults = element.row.saturating_sub(1) as usize;
         let row_end_for_defaults = row_start_for_defaults + element.row_span as usize;
@@ -5661,19 +5670,33 @@ fn emit_android_native_application(
                 rows.iter()
                     .all(|track| matches!(track, crate::ast::GridTrack::Units(_)))
             });
-        let min_height = static_minimum_size(element, "min_height", signatures)?.or_else(|| {
+        let min_height = if let Some(property) = view_property(element, "min_height") {
+            if static_expr_i64(&property.value, signatures).is_some() {
+                let min_height = static_minimum_size(element, "min_height", signatures)?
+                    .expect("static minimum height property exists");
+                Some((format!("INT64_C({min_height})"), false))
+            } else {
+                Some((ui_expr_c(&property.value, view, signatures)?, true))
+            }
+        } else {
             (matches!(
                 element.kind.as_str(),
                 "Button" | "TextInput" | "Toggle" | "Radio"
             ) && !rows_are_explicitly_fixed)
-                .then_some(48)
-        });
-        if let Some(min_height) = min_height {
+                .then(|| ("INT64_C(48)".to_string(), false))
+        };
+        if let Some((min_height, dynamic)) = min_height {
             out.push_str("    jmethodID set_min_height = (*env)->GetMethodID(env, child_class, \"setMinimumHeight\", \"(I)V\");\n");
             out.push_str("    if (set_min_height == NULL) return;\n");
-            out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(INT64_C({min_height}) * flux__ui_density));\n"
-            ));
+            if dynamic {
+                out.push_str(&format!(
+                    "    int64_t child_min_height = {min_height};\n    if (child_min_height < 1 || child_min_height > INT32_MAX) {{ fputs(\"Flux runtime error: minHeight must be between 1 and 2147483647\\n\", stderr); abort(); }}\n    (*env)->CallVoidMethod(env, child, set_min_height, (jint)(child_min_height * flux__ui_density));\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)({min_height} * flux__ui_density));\n"
+                ));
+            }
         }
         let static_color = |property_name: &str| -> Result<Option<String>, Diagnostic> {
             let Some(property) = view_property(element, property_name) else {
@@ -9997,6 +10020,8 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
         "visible"
             | "enabled"
             | "clip"
+            | "min_width"
+            | "min_height"
             | "background_color"
             | "border_color"
             | "border_width"
@@ -10139,6 +10164,8 @@ fn android_ui_element_needs_refresh(
         "visible",
         "enabled",
         "focusable",
+        "min_width",
+        "min_height",
         "background_color",
         "border_color",
         "border_width",
@@ -10262,6 +10289,29 @@ fn emit_android_ui_refresh(
             out.push_str(&format!(
                 "                if (refresh_enabled != NULL) (*env)->CallVoidMethod(env, child, refresh_enabled, (jboolean)({value}));\n"
             ));
+        }
+        for (property_name, local_name, method_name, source_name) in [
+            (
+                "min_width",
+                "refresh_min_width",
+                "setMinimumWidth",
+                "minWidth",
+            ),
+            (
+                "min_height",
+                "refresh_min_height",
+                "setMinimumHeight",
+                "minHeight",
+            ),
+        ] {
+            if android_ui_property_needs_refresh(element, property_name, &runtime_names)
+                && let Some(property) = view_property(element, property_name)
+            {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                int64_t {local_name} = {value};\n                if ({local_name} < 1 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n                jmethodID {local_name}_method = (*env)->GetMethodID(env, child_class, \"{method_name}\", \"(I)V\");\n                if ({local_name}_method != NULL) (*env)->CallVoidMethod(env, child, {local_name}_method, (jint)({local_name} * flux__ui_density));\n"
+                ));
+            }
         }
         if android_ui_property_needs_refresh(element, "background_color", &runtime_names)
             && let Some(property) = view_property(element, "background_color")
