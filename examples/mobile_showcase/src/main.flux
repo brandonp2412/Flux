@@ -1,17 +1,17 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 104 36 104 1fr
+    grid columns: 1fr 104 44 104 1fr
     grid rows: auto auto auto auto auto auto auto
-    grid gap: 10
-    grid padding: 22
+    grid gap: 9
+    grid padding: 20
     grid scroll: true
     grid overlay: true
 
     Text brand at 1,1 span columns 3
         text: "♥︎  HORSE TINDER"
         color: "#FF5268"
-        size: 21
+        size: 22
         bold: true
         letterSpacing: 1
 
@@ -28,14 +28,14 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 345
+        minHeight: 326
         backgroundColor: "#13151B"
-        borderColor: "#303642"
+        borderColor: "#353B47"
         borderWidth: 1
-        radius: 28
-        shadowColor: "#00000066"
-        shadowBlur: 10
-        shadowOffsetY: 4
+        radius: 30
+        shadowColor: "#00000055"
+        shadowBlur: 8
+        shadowOffsetY: 3
 
     Text profileName at 3,1 span columns 3
         text: "Buttercup, 7"
@@ -46,14 +46,14 @@ view HorseTinder {
     Text matchBadge at 3,4 span columns 2
         text: "98% MATCH"
         color: "#FF93A0"
-        size: 11
+        size: 12
         bold: true
         letterSpacing: 1
         textAlign: "center"
         alignY: "center"
         padding: 8
-        backgroundColor: "#30151D"
-        borderColor: "#61303B"
+        backgroundColor: "#35151F"
+        borderColor: "#6A3340"
         borderWidth: 1
         radius: 999
 
@@ -95,15 +95,15 @@ view HorseTinder {
         wrap: true
         maxLines: 3
         lineHeightPercent: 142
-        padding: 16
+        padding: 15
         backgroundColor: "#11151B"
-        borderColor: "#2B313D"
+        borderColor: "#303744"
         borderWidth: 1
-        radius: 18
+        radius: 20
 
     Button pass at 7,2
         text: "✕"
-        size: 50
+        size: 52
         accessibilityLabel: "Pass on Buttercup"
         minWidth: 100
         maxWidth: 100
@@ -112,8 +112,8 @@ view HorseTinder {
         focusable: true
         padding: 0
         radius: 50
-        backgroundColor: "#171B23"
-        borderColor: "#3F4653"
+        backgroundColor: "#161A22"
+        borderColor: "#4A5260"
         borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
@@ -122,7 +122,7 @@ view HorseTinder {
 
     Button like at 7,4
         text: "♥︎"
-        size: 54
+        size: 56
         accessibilityLabel: "Like Buttercup"
         minWidth: 100
         maxWidth: 100
@@ -133,7 +133,7 @@ view HorseTinder {
         padding: 0
         radius: 50
         backgroundColor: "#FF4458"
-        borderColor: "#FF7181"
+        borderColor: "#FF8592"
         borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
