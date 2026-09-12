@@ -14299,6 +14299,78 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_division_after_matching_constant_multiplication() {
+    let source = r#"
+const FACTOR: i64 = 7
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn multiplyThenDivide(value: i64) -> i64 {
+    return (value * FACTOR) / FACTOR
+}
+
+fn multiplyLeftThenDivide(value: i64) -> i64 {
+    return (FACTOR * value) / FACTOR
+}
+
+fn multiplyThenDivideEffect(value: i64) -> i64 {
+    return (observe(value) * FACTOR) / FACTOR
+}
+
+fn main() -> i64 {
+    print(multiplyThenDivide(10))
+    print(multiplyLeftThenDivide(11))
+    return multiplyThenDivideEffect(12)
+}
+"#;
+
+    check_source(source).expect("matching multiplication/division should typecheck");
+    let generated = compile_to_c(source)
+        .expect("matching multiplication/division should remove the outer division guard");
+    assert!(generated.contains("flux_mul_i64("));
+    assert!(!generated.contains("flux_div_i64("));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful multiplicands must still evaluate exactly once",
+    );
+
+    let unmatched = r#"
+fn keepGuard(value: i64, divisor: i64) -> i64 {
+    return (value * 7) / divisor
+}
+
+fn main() -> i64 {
+    return keepGuard(9, 3)
+}
+"#;
+    let unmatched_generated =
+        compile_to_c(unmatched).expect("unmatched division should still lower");
+    assert!(unmatched_generated.contains("flux_div_i64("));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 14
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count * 7) / 7
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI matching multiplication/division should share lowering");
+    assert!(ui_generated.contains("flux_mul_i64(flux__ui_state_count, INT64_C(7))"));
+    assert!(!ui_generated.contains("flux_div_i64("));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
