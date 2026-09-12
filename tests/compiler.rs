@@ -27981,6 +27981,55 @@ app StaticBorder
 }
 
 #[test]
+fn android_side_border_colors_refresh_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicSideBorders {
+    state topStroke: str = "accent"
+    state endStroke: str = "outline"
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "danger"
+        borderTopColor: topStroke
+        borderEndColor: endStroke
+        borderWidth: 2
+    Button swap at 2,1
+        text: "Swap"
+        onPress: topStroke => "success"
+}
+app DynamicSideBorders
+"#;
+
+    check_source(source).expect("dynamic Android side border colors should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android side border colors should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android side border colors should lower");
+
+    assert!(android.contains("const char *child_border_top_value = flux__ui_state_topStroke"));
+    assert!(android.contains("const char *child_border_end_value = flux__ui_state_endStroke"));
+    assert!(android.contains("const char *refresh_border_top_value = flux__ui_state_topStroke"));
+    assert!(android.contains("const char *refresh_border_end_value = flux__ui_state_endStroke"));
+    assert!(android.contains(
+        "borderTopColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+    ));
+    assert!(android.contains(
+        "borderEndColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+    ));
+    assert!(android.contains("flux__android_utf8_string(env, \"danger\")"));
+    assert!(
+        android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1) {")
+    );
+    assert!(android.contains("styleViewBorderColors"));
+}
+
+#[test]
 fn android_border_width_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicBorderWidth {
