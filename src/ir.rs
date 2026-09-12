@@ -1617,10 +1617,20 @@ impl<'a> ControlFlowBuilder<'a> {
                 name: name.clone(),
                 definitions: self.scoped_definition_for(name).into_iter().collect(),
             },
-            ExprKind::Await(awaited) => {
-                let _ = self.lower_expr_values(producer, awaited, false);
-                ControlFlowValueKind::Opaque
-            }
+            ExprKind::Await(awaited) => match &awaited.kind {
+                ExprKind::Call {
+                    name,
+                    args,
+                    named_args,
+                } => ControlFlowValueKind::Call {
+                    callee: name.clone(),
+                    arguments: self.lower_call_arguments(producer, args, named_args),
+                },
+                _ => {
+                    let _ = self.lower_scalar_expr(producer, awaited);
+                    ControlFlowValueKind::Opaque
+                }
+            },
             ExprKind::AnonymousFunction { params, body, .. } => {
                 let definitions = params
                     .iter()
@@ -2304,6 +2314,9 @@ fn collect_evaluation_types(
         .iter()
         .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
         .collect::<HashMap<_, _>>();
+    if function.asynchronous {
+        env.insert("flux__async_context".to_string(), Type::Bool);
+    }
     let mut evaluations = Vec::new();
     collect_block_evaluation_types(&function.body, &mut env, signatures, &mut evaluations);
     evaluations
@@ -2764,6 +2777,11 @@ fn record_expr_types(
     }
 
     if let Ok(types) = typecheck::value_types_of_expr(expr, env, signatures) {
+        let types = if types.is_empty() && matches!(expr.kind, ExprKind::Await(_)) {
+            vec![Type::Void]
+        } else {
+            types
+        };
         evaluations.push((
             expr.span,
             types

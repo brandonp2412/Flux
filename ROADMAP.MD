@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 526
+- Completed baseline units: 527
 - Reported overall progress: **71%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -309,11 +309,11 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 
 ## Async/generator ergonomics
 
-Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model. The intended source model is native `async fn` plus `await`: an async function keeps its ordinary declared return shape, calling it creates compiler-owned task state, and `await` yields those declared values directly. Flux should not require a source-level `Future<T>`/`Promise<T>` generic or user-visible completion callback to express ordinary asynchronous work. The bootstrap front end now parses and formats `async fn`/`await`, preserves ordinary single- and multi-value return shapes including explicit `error`, requires direct async calls to be awaited from an async context, and deliberately rejects reachable `await` during native code generation until the compiler-owned task/state-machine lowering exists.
+Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model. The intended source model is native `async fn` plus `await`: an async function keeps its ordinary declared return shape, calling it creates compiler-owned task state, and `await` yields those declared values directly. Flux should not require a source-level `Future<T>`/`Promise<T>` generic or user-visible completion callback to express ordinary asynchronous work. The bootstrap compiler now lowers reachable `async fn` declarations to compiler-owned native task structs with copied arguments, private pthread-backed execution, declared result storage, and deterministic join/free at direct `await`; zero-, single-, and multi-value return shapes including explicit `error` remain ordinary Flux values. Native regression coverage builds/runs async programs end to end and covers nested and void awaits. Await currently blocks while joining the child native task; true parent-task suspension/resumption around pending operations remains deliberately tracked by the unchecked suspension item below rather than being implied complete.
 
-- [ ] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
+- [x] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
 - [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
-- [ ] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
+- [x] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
 - [ ] Streams/sequences as explicit types/capabilities.
 - [ ] Generator functions.
 - [ ] `yield` / `yield from` equivalent if it fits ownership rules.

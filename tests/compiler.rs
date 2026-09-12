@@ -30900,6 +30900,62 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn nested_and_void_async_awaits_remain_reachable_and_runnable() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn mark() -> void {
+    return
+}
+
+async fn loadCode(value: i64) -> (i64, error) {
+    let next: i64 = await addOne(value)
+    return next * 2, nil
+}
+
+async fn main() -> i64 {
+    await mark()
+    let (code, _failure) = await loadCode(20)
+    return code
+}
+"#;
+
+    check_source(source).expect("nested and void awaits should typecheck");
+    let generated = compile_to_c(source).expect("nested and void awaits should lower natively");
+    assert!(generated.contains("struct flux__async_task_addOne"));
+    assert!(generated.contains("struct flux__async_task_mark"));
+    assert!(generated.contains("struct flux__async_task_loadCode"));
+    assert!(generated.contains("flux__async_await_addOne"));
+    assert!(generated.contains("flux__async_await_mark"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-nested-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("nested async fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-nested");
+    fs::write(&source_path, source).expect("nested async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("nested async fixture should build");
+    assert!(
+        built.status.success(),
+        "nested async fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("nested async fixture should run");
+    assert_eq!(status.code(), Some(42));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn supports_explicit_mutable_bindings_and_while_loops() {
     let source = r#"
 fn main() -> i64 {
