@@ -13388,6 +13388,136 @@ app Status
 }
 
 #[test]
+fn eliminates_nested_complementary_boolean_short_circuit_work() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn contradictAnd(value: bool) -> bool {
+    return value && (!value && observe(value))
+}
+
+fn tautologyOr(value: bool) -> bool {
+    return value || (!value || observe(value))
+}
+
+fn contradictNegatedAnd(value: bool) -> bool {
+    return !value && (value && observe(value))
+}
+
+fn tautologyNegatedOr(value: bool) -> bool {
+    return !value || (value || observe(value))
+}
+
+fn symmetricAnd(value: bool, other: bool) -> bool {
+    return value && (other && !value)
+}
+
+fn symmetricOr(value: bool, other: bool) -> bool {
+    return value || (other || !value)
+}
+
+fn keepEffectAnd(value: bool) -> bool {
+    return value && (observe(value) && !value)
+}
+
+fn keepEffectOr(value: bool) -> bool {
+    return value || (observe(value) || !value)
+}
+
+fn main() -> i64 {
+    print(contradictAnd(true))
+    print(tautologyOr(false))
+    print(contradictNegatedAnd(false))
+    print(tautologyNegatedOr(true))
+    print(symmetricAnd(true, true))
+    print(symmetricOr(false, false))
+    print(keepEffectAnd(true))
+    print(keepEffectOr(false))
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested complementary boolean proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("nested complementary boolean proofs should lower without redundant work");
+    assert!(generated.contains("return ((void)(flux__local_value), false);"));
+    assert!(generated.contains("return ((void)(flux__local_value), true);"));
+    assert!(generated.contains("return ((void)((!flux__local_value)), false);"));
+    assert!(generated.contains("return ((void)((!flux__local_value)), true);"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful nested operands must remain only where source evaluation can reach them",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-nested-complement-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested-complement directory should be writable");
+    let c_path = root.join("nested-complement.c");
+    let exe_path = root.join("nested-complement");
+    fs::write(&c_path, &generated).expect("generated nested-complement C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested-complement C");
+    assert!(
+        compile.status.success(),
+        "nested-complement C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested-complement program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "false\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\nfalse\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state active: bool = true
+    state other: bool = false
+    Text first at 1,1
+        text: "One"
+        visible: active && (!active && other)
+    Text second at 2,1
+        text: "Two"
+        visible: active || (!active || other)
+    Text third at 3,1
+        text: "Three"
+        visible: active && (other && !active)
+    Text fourth at 4,1
+        text: "Four"
+        visible: !active || (other || active)
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui)
+        .expect("UI nested complementary boolean proofs should share native lowering");
+    assert!(ui_generated.contains("((void)(flux__ui_state_active), false)"));
+    assert!(ui_generated.contains("((void)(flux__ui_state_active), true)"));
+    assert!(ui_generated.contains("((void)((!(flux__ui_state_active))), true)"));
+    assert!(!ui_generated.contains("flux__ui_state_other && (!(flux__ui_state_active))"));
+    assert!(!ui_generated.contains("flux__ui_state_other || flux__ui_state_active"));
+}
+
+#[test]
 fn eliminates_redundant_double_boolean_negation() {
     let source = r#"
 fn observe(value: bool) -> bool {

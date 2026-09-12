@@ -15247,6 +15247,26 @@ fn same_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
     }
 }
 
+fn complementary_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            ExprKind::Var(left_name),
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Var(right_name),
+        ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
+        _ => false,
+    }
+}
+
 fn boolean_absorption_operand_is_discardable(expr: &Expr, signatures: &Signatures) -> bool {
     matches!(
         typecheck::constant_primitive_value(expr, signatures),
@@ -15273,24 +15293,7 @@ fn boolean_identity_c(
     let right_constant = typecheck::constant_primitive_value(right, signatures);
 
     if matches!(op, BinOp::Eq | BinOp::Ne) {
-        let complementary_binding = match (&left.kind, &right.kind) {
-            (
-                ExprKind::Var(left_name),
-                ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: right_inner,
-                },
-            ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
-            (
-                ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: left_inner,
-                },
-                ExprKind::Var(right_name),
-            ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
-            _ => false,
-        };
-        if complementary_binding {
+        if complementary_boolean_binding_term(left, right) {
             return Some(
                 if matches!(op, BinOp::Eq) {
                     "false"
@@ -15370,24 +15373,36 @@ fn boolean_identity_c(
         return Some(left_code.to_string());
     }
 
-    let complementary_binding = match (&left.kind, &right.kind) {
-        (
-            ExprKind::Var(left_name),
-            ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: right_inner,
-            },
-        ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
-        (
-            ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: left_inner,
-            },
-            ExprKind::Var(right_name),
-        ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
-        _ => false,
+    let nested_complement_result = match &right.kind {
+        ExprKind::Binary {
+            left: nested_left,
+            op: nested_op,
+            right: nested_right,
+        } if matches!(
+            (op, *nested_op),
+            (BinOp::And, BinOp::And) | (BinOp::Or, BinOp::Or)
+        ) =>
+        {
+            let nested_complement_is_unconditionally_reached =
+                complementary_boolean_binding_term(left, nested_left);
+            let nested_complement_follows_discardable_work =
+                complementary_boolean_binding_term(left, nested_right)
+                    && boolean_absorption_operand_is_discardable(nested_left, signatures);
+            if nested_complement_is_unconditionally_reached
+                || nested_complement_follows_discardable_work
+            {
+                Some(matches!(op, BinOp::Or))
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
-    if complementary_binding {
+    if let Some(result) = nested_complement_result {
+        return Some(format!("((void)({left_code}), {result})"));
+    }
+
+    if complementary_boolean_binding_term(left, right) {
         let result = if matches!(op, BinOp::And) {
             "false"
         } else {
