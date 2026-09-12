@@ -31313,8 +31313,12 @@ async fn mark() -> void {
     return
 }
 
+async fn forwarded(value: i64) -> i64 {
+    return await addOne(value)
+}
+
 async fn loadCode(value: i64) -> (i64, error) {
-    let next: i64 = await addOne(value)
+    let next: i64 = await forwarded(value)
     return next * 2, nil
 }
 
@@ -31329,11 +31333,16 @@ async fn main() -> i64 {
     let generated = compile_to_c(source).expect("nested and void awaits should lower natively");
     assert!(generated.contains("struct flux__async_task_addOne"));
     assert!(generated.contains("struct flux__async_task_mark"));
+    assert!(generated.contains("struct flux__async_task_forwarded"));
     assert!(generated.contains("struct flux__async_task_loadCode"));
     assert!(generated.contains("flux__async_await_addOne"));
     assert!(generated.contains("flux__async_await_mark"));
+    assert!(generated.contains("flux__async_resume_forwarded"));
     assert!(generated.contains("flux__async_resume_loadCode"));
-    assert!(generated.contains("flux__async_start_cont_addOne"));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_forwarded, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_body_forwarded("));
     assert!(generated.contains("flux__async_start_cont_mark"));
     assert!(!generated.contains("pthread_join("));
 
@@ -31363,30 +31372,115 @@ async fn main() -> i64 {
 }
 
 #[test]
-fn async_await_inside_control_flow_keeps_safe_blocking_fallback() {
+fn async_await_inside_if_branches_suspends_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
     return value + 1
 }
 
 async fn choose(flag: bool) -> i64 {
+    var total: i64 = 1
+    if flag:
+        total = total + 39
+        let value: i64 = await addOne(total)
+        total = value
+        return total + 1
+    return total + 2
+}
+
+async fn chooseElse(flag: bool) -> i64 {
+    if flag:
+        return 5
+    else:
+        let value: i64 = await addOne(40)
+        return value + 2
+}
+
+async fn fallthrough(flag: bool) -> i64 {
+    var total: i64 = 1
     if flag:
         let value: i64 = await addOne(40)
-        return value + 1
-    return 0
+        total = value
+    else:
+        total = 2
+    return total + 1
 }
 
 async fn main() -> i64 {
-    return await choose(true)
+    let first: i64 = await choose(true)
+    let second: i64 = await chooseElse(false)
+    let skippedThen: i64 = await choose(false)
+    let skippedElse: i64 = await chooseElse(true)
+    let resumedFallthrough: i64 = await fallthrough(true)
+    let skippedFallthrough: i64 = await fallthrough(false)
+    return first + second + skippedThen + skippedElse + resumedFallthrough + skippedFallthrough
 }
 "#;
 
-    check_source(source).expect("await inside control flow should remain supported");
-    let generated = compile_to_c(source).expect("fallback await lowering should remain native");
-    assert!(generated.contains("flux__async_body_choose"));
-    assert!(generated.contains("flux__async_await_addOne(flux__async_start_addOne(INT64_C(40)))"));
+    check_source(source).expect("await inside if branches should remain supported");
+    let generated = compile_to_c(source).expect("branch await lowering should remain native");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("flux__async_resume_chooseElse"));
+    assert!(generated.contains("flux__async_resume_fallthrough"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(!generated.contains("flux__async_body_chooseElse("));
+    assert!(!generated.contains("flux__async_body_fallthrough("));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(INT64_C(40), flux__async_resume_chooseElse, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne(INT64_C(40)))"));
     assert!(generated.contains("pthread_cond_wait"));
     assert!(!generated.contains("pthread_join("));
+
+    let root = std::env::temp_dir().join(format!("flux-async-if-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async if fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async if source should be writable");
+    let binary = root.join("async-if");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async if binary should build");
+    assert!(
+        built.status.success(),
+        "async if build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async if binary should run");
+    assert_eq!(status.code(), Some(138));
+    let _ = fs::remove_dir_all(&root);
+
+    let fallback_source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn loopOnce() -> i64 {
+    var value: i64 = 0
+    while value == 0:
+        value = await addOne(value)
+    return value
+}
+
+async fn main() -> i64 {
+    return await loopOnce()
+}
+"#;
+    let fallback = compile_to_c(fallback_source)
+        .expect("awaits in loops should retain the safe blocking fallback");
+    assert!(fallback.contains("flux__async_body_loopOnce"));
+    assert!(
+        fallback.contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_value))")
+    );
 }
 
 #[test]
