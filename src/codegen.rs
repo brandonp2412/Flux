@@ -14850,6 +14850,53 @@ fn boolean_identity_c(
         return Some(left_code.to_string());
     }
 
+    let absorbed_nested_binding = match (&left.kind, &right.kind) {
+        (
+            ExprKind::Var(left_name),
+            ExprKind::Binary {
+                left: nested_left,
+                op: nested_op,
+                ..
+            },
+        ) if matches!(
+            (op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        ) =>
+        {
+            matches!(&nested_left.kind, ExprKind::Var(nested_name) if left_name == nested_name)
+        }
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Binary {
+                left: nested_left,
+                op: nested_op,
+                ..
+            },
+        ) if matches!(
+            (op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        ) =>
+        {
+            matches!(
+                (&left_inner.kind, &nested_left.kind),
+                (
+                    ExprKind::Var(left_name),
+                    ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: nested_inner,
+                    },
+                ) if matches!(&nested_inner.kind, ExprKind::Var(nested_name) if left_name == nested_name)
+            )
+        }
+        _ => false,
+    };
+    if absorbed_nested_binding {
+        return Some(left_code.to_string());
+    }
+
     let complementary_binding = match (&left.kind, &right.kind) {
         (
             ExprKind::Var(left_name),

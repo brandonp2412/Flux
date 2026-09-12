@@ -12912,6 +12912,79 @@ app Status
 }
 
 #[test]
+fn eliminates_absorbed_nested_same_binding_boolean_work() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn absorbAnd(value: bool) -> bool {
+    return value && (value || observe(value))
+}
+
+fn absorbOr(value: bool) -> bool {
+    return value || (value && observe(value))
+}
+
+fn absorbNegatedAnd(value: bool) -> bool {
+    return !value && (!value || observe(value))
+}
+
+fn absorbNegatedOr(value: bool) -> bool {
+    return !value || (!value && observe(value))
+}
+
+fn keepEffect(value: bool) -> bool {
+    return value && (observe(value) || value)
+}
+
+fn main() -> i64 {
+    print(absorbAnd(true))
+    print(absorbOr(false))
+    print(absorbNegatedAnd(true))
+    print(absorbNegatedOr(false))
+    print(keepEffect(true))
+    return 0
+}
+"#;
+
+    check_source(source).expect("boolean absorption proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("boolean absorption proofs should lower without redundant work");
+    assert!(generated.contains("static inline bool flux__fn_absorbAnd"));
+    assert!(generated.contains("static inline bool flux__fn_absorbOr"));
+    assert!(generated.contains("return flux__local_value;"));
+    assert!(generated.contains("return (!flux__local_value);"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "only the non-absorbed source form may retain the effectful nested operand",
+    );
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = true
+    Text first at 1,1
+        text: "One"
+        visible: active && (active || !active)
+    Text second at 2,1
+        text: "Two"
+        visible: !active || (!active && active)
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI boolean absorption should share native lowering");
+    assert!(!ui_generated.contains("flux__ui_state_active && ("));
+    assert!(!ui_generated.contains("(!(flux__ui_state_active)) || ("));
+}
+
+#[test]
 fn eliminates_redundant_double_boolean_negation() {
     let source = r#"
 fn observe(value: bool) -> bool {
