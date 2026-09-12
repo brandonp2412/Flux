@@ -5719,6 +5719,141 @@ fn main() -> i64 {
     assert!(!dead_generated.contains("flux__worker_start("));
     assert!(!dead_generated.contains("flux__worker_join("));
 
+    let start_with_only = r#"
+fn work(_value: i64) -> void {
+}
+fn main() -> i64 {
+    let (handle, startError) = worker.startWith(work, 7)
+    print(handle)
+    print(startError)
+    return 0
+}
+"#;
+    check_source(start_with_only).expect("worker.startWith should typecheck independently");
+    let start_with_generated =
+        compile_to_c(start_with_only).expect("worker.startWith should lower independently");
+    assert!(start_with_generated.contains("#include <pthread.h>"));
+    assert!(start_with_generated.contains("flux__worker_start_with"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bounded_channels_pass_i64_values_between_workers_and_tree_shake() {
+    let source = r#"
+fn produce(channelHandle: i64) -> void {
+    let firstError: error = channel.send(channelHandle, 41)
+    if firstError != nil:
+        print(firstError)
+        return
+    let secondError: error = channel.send(channelHandle, 42)
+    if secondError != nil:
+        print(secondError)
+}
+fn main() -> i64 {
+    let (channelHandle, createError) = channel.create(1)
+    if createError != nil:
+        return 1
+    let (workerHandle, startError) = worker.startWith(produce, channelHandle)
+    if startError != nil:
+        print(channel.close(channelHandle))
+        return 2
+    let (first, firstError) = channel.receive(channelHandle)
+    if firstError != nil:
+        return 3
+    let (second, secondError) = channel.receive(channelHandle)
+    if secondError != nil:
+        return 4
+    let joinError: error = worker.join(workerHandle)
+    if joinError != nil:
+        return 5
+    let closeError: error = channel.close(channelHandle)
+    if closeError != nil:
+        return 6
+    print(first)
+    print(second)
+    return 0
+}
+"#;
+
+    check_source(source).expect("bounded channel worker fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("bounded channel worker fixture should lower natively");
+    assert!(generated.contains("static struct flux__channel_i64_error flux__channel_create"));
+    assert!(generated.contains("static const char *flux__channel_send"));
+    assert!(generated.contains("static struct flux__channel_i64_error flux__channel_receive"));
+    assert!(generated.contains("static const char *flux__channel_close"));
+    assert!(generated.contains("flux__worker_start_with"));
+    assert!(generated.contains("pthread_cond_wait"));
+
+    let root = std::env::temp_dir().join(format!("flux-channel-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("channel API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("channel API source should be writable");
+    let binary = root.join("channel-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("channel API binary should build");
+    assert!(
+        built.status.success(),
+        "channel API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("channel API binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
+
+    let invalid_capacity = r#"
+fn main() -> i64 {
+    let (handle, createError) = channel.create(0)
+    print(handle)
+    print(createError)
+    return 0
+}
+"#;
+    let capacity_error =
+        check_source(invalid_capacity).expect_err("invalid constant channel capacity must fail");
+    assert!(
+        capacity_error
+            .message
+            .contains("channel.create capacity must be between 1 and 65536")
+    );
+
+    let invalid_send = r#"
+fn main() -> i64 {
+    print(channel.send(1, false))
+    return 0
+}
+"#;
+    let send_error = check_source(invalid_send).expect_err("non-i64 channel values must fail");
+    assert!(
+        send_error
+            .message
+            .contains("channel.send value: expected i64")
+    );
+
+    let dead = r#"
+fn hidden() -> void {
+    let (handle, createError) = channel.create(1)
+    print(handle)
+    print(createError)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    check_source(dead).expect("dead channel fixture should typecheck");
+    let dead_generated = compile_to_c(dead).expect("dead channel fixture should lower safely");
+    assert!(!dead_generated.contains("#include <pthread.h>"));
+    assert!(!dead_generated.contains("flux__channel_create("));
+
     let _ = fs::remove_dir_all(&root);
 }
 

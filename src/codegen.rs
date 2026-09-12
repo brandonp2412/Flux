@@ -1529,6 +1529,7 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__worker_")
+        || runtime_usage.contains("flux__channel_")
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
@@ -1546,7 +1547,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
-    if runtime_usage.contains("flux__worker_") {
+    if runtime_usage.contains("flux__worker_") || runtime_usage.contains("flux__channel_") {
         out.push_str("#include <pthread.h>\n");
     }
     if runtime_usage.contains("struct flux__optional_i64") {
@@ -5056,16 +5057,32 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         }
     }
 
-    if runtime_usage.contains("flux__worker_start(") || runtime_usage.contains("flux__worker_join(")
-    {
+    if runtime_usage.contains("flux__worker_") {
         out.push_str("struct flux__worker_i64_error { int64_t v0; const char *v1; };\n");
-        out.push_str("struct flux__worker_state { int64_t id; pthread_t thread; void (*entry)(void); bool joining; struct flux__worker_state *next; };\n");
+        out.push_str("struct flux__worker_state { int64_t id; pthread_t thread; void (*entry)(void); void (*entry_i64)(int64_t); int64_t argument; bool has_argument; bool joining; struct flux__worker_state *next; };\n");
         out.push_str("static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
         out.push_str("static struct flux__worker_state *flux__worker_head = NULL;\n");
         out.push_str("static int64_t flux__worker_next_id = INT64_C(1);\n");
-        out.push_str("static void *flux__worker_main(void *opaque) { struct flux__worker_state *state = (struct flux__worker_state *)opaque; state->entry(); return NULL; }\n");
-        out.push_str("static struct flux__worker_i64_error flux__worker_start(void (*entry)(void)) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL) { result.v1 = \"worker.start received an invalid work function\"; return result; } struct flux__worker_state *state = malloc(sizeof(*state)); if (state == NULL) { result.v1 = \"worker.start could not allocate worker state\"; return result; } state->entry = entry; state->joining = false; pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_id <= 0) { pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker handle space exhausted\"; return result; } state->id = flux__worker_next_id++; state->next = flux__worker_head; flux__worker_head = state; pthread_mutex_unlock(&flux__worker_mutex); int create_result = pthread_create(&state->thread, NULL, flux__worker_main, state); if (create_result != 0) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker.start failed to create a native thread\"; return result; } result.v0 = state->id; return result; }\n");
+        out.push_str("static void *flux__worker_main(void *opaque) { struct flux__worker_state *state = (struct flux__worker_state *)opaque; if (state->has_argument) state->entry_i64(state->argument); else state->entry(); return NULL; }\n");
+        out.push_str("static struct flux__worker_i64_error flux__worker_start(void (*entry)(void)) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL) { result.v1 = \"worker.start received an invalid work function\"; return result; } struct flux__worker_state *state = malloc(sizeof(*state)); if (state == NULL) { result.v1 = \"worker.start could not allocate worker state\"; return result; } state->entry = entry; state->entry_i64 = NULL; state->argument = 0; state->has_argument = false; state->joining = false; pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_id <= 0) { pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker handle space exhausted\"; return result; } state->id = flux__worker_next_id++; state->next = flux__worker_head; flux__worker_head = state; pthread_mutex_unlock(&flux__worker_mutex); int create_result = pthread_create(&state->thread, NULL, flux__worker_main, state); if (create_result != 0) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker.start failed to create a native thread\"; return result; } result.v0 = state->id; return result; }\n");
+        out.push_str("static struct flux__worker_i64_error flux__worker_start_with(void (*entry)(int64_t), int64_t argument) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL) { result.v1 = \"worker.startWith received an invalid work function\"; return result; } struct flux__worker_state *state = malloc(sizeof(*state)); if (state == NULL) { result.v1 = \"worker.startWith could not allocate worker state\"; return result; } state->entry = NULL; state->entry_i64 = entry; state->argument = argument; state->has_argument = true; state->joining = false; pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_id <= 0) { pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker handle space exhausted\"; return result; } state->id = flux__worker_next_id++; state->next = flux__worker_head; flux__worker_head = state; pthread_mutex_unlock(&flux__worker_mutex); int create_result = pthread_create(&state->thread, NULL, flux__worker_main, state); if (create_result != 0) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker.startWith failed to create a native thread\"; return result; } result.v0 = state->id; return result; }\n");
         out.push_str("static const char *flux__worker_join(int64_t handle) { if (handle <= 0) return \"worker.join received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_head; while (state != NULL && state->id != handle) state = state->next; if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join received an unknown or already joined handle\"; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join is already waiting for this handle\"; } state->joining = true; pthread_mutex_unlock(&flux__worker_mutex); if (pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join failed to join the native thread\"; } pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return NULL; }\n");
+    }
+
+    if runtime_usage.contains("flux__channel_") {
+        out.push_str(r#"struct flux__channel_i64_error { int64_t v0; const char *v1; };
+struct flux__channel_state { int64_t id; size_t capacity; size_t head; size_t length; int64_t *values; bool closed; size_t active; pthread_mutex_t mutex; pthread_cond_t can_send; pthread_cond_t can_receive; pthread_cond_t idle; struct flux__channel_state *next; };
+static pthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct flux__channel_state *flux__channel_head = NULL;
+static int64_t flux__channel_next_id = INT64_C(1);
+static struct flux__channel_i64_error flux__channel_result(int64_t value, const char *error) { struct flux__channel_i64_error result = { .v0 = value, .v1 = error }; return result; }
+static struct flux__channel_state *flux__channel_acquire(int64_t handle) { if (handle <= 0) return NULL; pthread_mutex_lock(&flux__channel_registry_mutex); struct flux__channel_state *state = flux__channel_head; while (state != NULL && state->id != handle) state = state->next; if (state == NULL) { pthread_mutex_unlock(&flux__channel_registry_mutex); return NULL; } pthread_mutex_lock(&state->mutex); state->active += 1; pthread_mutex_unlock(&flux__channel_registry_mutex); return state; }
+static void flux__channel_release_locked(struct flux__channel_state *state) { state->active -= 1; if (state->active == 0) pthread_cond_signal(&state->idle); pthread_mutex_unlock(&state->mutex); }
+static struct flux__channel_i64_error flux__channel_create(int64_t capacity) { if (capacity < 1 || capacity > 65536) return flux__channel_result(0, "channel.create capacity must be between 1 and 65536"); struct flux__channel_state *state = calloc(1, sizeof(*state)); if (state == NULL) return flux__channel_result(0, "channel.create could not allocate channel state"); state->values = malloc((size_t)capacity * sizeof(int64_t)); if (state->values == NULL) { free(state); return flux__channel_result(0, "channel.create could not allocate channel storage"); } state->capacity = (size_t)capacity; if (pthread_mutex_init(&state->mutex, NULL) != 0) { free(state->values); free(state); return flux__channel_result(0, "channel.create could not initialize channel mutex"); } if (pthread_cond_init(&state->can_send, NULL) != 0) { pthread_mutex_destroy(&state->mutex); free(state->values); free(state); return flux__channel_result(0, "channel.create could not initialize sender condition"); } if (pthread_cond_init(&state->can_receive, NULL) != 0) { pthread_cond_destroy(&state->can_send); pthread_mutex_destroy(&state->mutex); free(state->values); free(state); return flux__channel_result(0, "channel.create could not initialize receiver condition"); } if (pthread_cond_init(&state->idle, NULL) != 0) { pthread_cond_destroy(&state->can_receive); pthread_cond_destroy(&state->can_send); pthread_mutex_destroy(&state->mutex); free(state->values); free(state); return flux__channel_result(0, "channel.create could not initialize idle condition"); } pthread_mutex_lock(&flux__channel_registry_mutex); if (flux__channel_next_id <= 0) { pthread_mutex_unlock(&flux__channel_registry_mutex); pthread_cond_destroy(&state->idle); pthread_cond_destroy(&state->can_receive); pthread_cond_destroy(&state->can_send); pthread_mutex_destroy(&state->mutex); free(state->values); free(state); return flux__channel_result(0, "channel handle space exhausted"); } state->id = flux__channel_next_id++; state->next = flux__channel_head; flux__channel_head = state; pthread_mutex_unlock(&flux__channel_registry_mutex); return flux__channel_result(state->id, NULL); }
+static const char *flux__channel_send(int64_t handle, int64_t value) { struct flux__channel_state *state = flux__channel_acquire(handle); if (state == NULL) return "channel.send received an invalid or closed handle"; while (state->length == state->capacity && !state->closed) pthread_cond_wait(&state->can_send, &state->mutex); if (state->closed) { flux__channel_release_locked(state); return "channel.send cannot send to a closed channel"; } size_t tail = (state->head + state->length) % state->capacity; state->values[tail] = value; state->length += 1; pthread_cond_signal(&state->can_receive); flux__channel_release_locked(state); return NULL; }
+static struct flux__channel_i64_error flux__channel_receive(int64_t handle) { struct flux__channel_state *state = flux__channel_acquire(handle); if (state == NULL) return flux__channel_result(0, "channel.receive received an invalid or closed handle"); while (state->length == 0 && !state->closed) pthread_cond_wait(&state->can_receive, &state->mutex); if (state->length == 0) { flux__channel_release_locked(state); return flux__channel_result(0, "channel.receive reached a closed channel"); } int64_t value = state->values[state->head]; state->head = (state->head + 1) % state->capacity; state->length -= 1; pthread_cond_signal(&state->can_send); flux__channel_release_locked(state); return flux__channel_result(value, NULL); }
+static const char *flux__channel_close(int64_t handle) { if (handle <= 0) return "channel.close received an invalid handle"; pthread_mutex_lock(&flux__channel_registry_mutex); struct flux__channel_state **cursor = &flux__channel_head; while (*cursor != NULL && (*cursor)->id != handle) cursor = &(*cursor)->next; struct flux__channel_state *state = *cursor; if (state == NULL) { pthread_mutex_unlock(&flux__channel_registry_mutex); return "channel.close received an unknown or already closed handle"; } pthread_mutex_lock(&state->mutex); *cursor = state->next; state->closed = true; pthread_cond_broadcast(&state->can_send); pthread_cond_broadcast(&state->can_receive); pthread_mutex_unlock(&flux__channel_registry_mutex); while (state->active != 0) pthread_cond_wait(&state->idle, &state->mutex); pthread_mutex_unlock(&state->mutex); pthread_cond_destroy(&state->idle); pthread_cond_destroy(&state->can_receive); pthread_cond_destroy(&state->can_send); pthread_mutex_destroy(&state->mutex); free(state->values); free(state); return NULL; }
+"#);
     }
 
     if runtime_usage.contains("flux__time_unix_millis(")
@@ -22034,6 +22051,18 @@ fn emit_qualified_call(
                     Some("flux__worker_i64_error".to_string()),
                 ));
             }
+            "startWith" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                let entry = emit_expr(&args[0], env, signatures)?;
+                let argument = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__worker_start_with({}, {})", entry.code, argument.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__worker_i64_error".to_string()),
+                ));
+            }
             "join" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid worker call reached code generation"));
@@ -22046,6 +22075,59 @@ fn emit_qualified_call(
                 ));
             }
             _ => return Err(diag(span, "unknown worker call reached code generation")),
+        }
+    }
+    if namespace == "channel" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid channel call reached code generation"));
+        }
+        match name {
+            "create" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid channel call reached code generation"));
+                }
+                let capacity = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__channel_create({})", capacity.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__channel_i64_error".to_string()),
+                ));
+            }
+            "send" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid channel call reached code generation"));
+                }
+                let handle = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__channel_send({}, {})", handle.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "receive" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid channel call reached code generation"));
+                }
+                let handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__channel_receive({})", handle.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__channel_i64_error".to_string()),
+                ));
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid channel call reached code generation"));
+                }
+                let handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__channel_close({})", handle.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown channel call reached code generation")),
         }
     }
     if namespace == "time" {

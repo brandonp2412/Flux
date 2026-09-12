@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 523
+- Completed baseline units: 524
 - Reported overall progress: **71%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -411,8 +411,8 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Cancellation propagation.
 - [ ] Timers.
   - [x] Bootstrap blocking monotonic deadline timer with `time.sleepUntilMonotonic(deadlineMillis)`: the absolute `i64` deadline composes directly with `time.monotonicMillis()`, already-expired deadlines return immediately, native lowering rechecks the monotonic clock around EINTR-safe sleeps to avoid cumulative relative-sleep drift, LSP completion/signature help expose the contract, and unreachable timer support tree-shakes completely. Asynchronous task-integrated timers remain pending with the task/structured-concurrency model.
-- [ ] Channels/message passing.
-- [x] Worker/thread execution for the current capture-free bootstrap: `worker.start(work: fn() -> void) -> (i64, error)` launches compiler-owned work on a native pthread and `worker.join(handle) -> error` waits exactly once through an opaque handle registry with explicit invalid/unknown/already-joined failures. The worker entry contract cannot capture outer locals, so borrowed application storage is not smuggled across the thread boundary; native pthread/runtime support tree-shakes when unreachable and LSP completion/signature help expose the API. Task results/argument transfer, channels, cancellation, structured concurrency, and broader sendability remain tracked by their dedicated concurrency items rather than being implied by this primitive.
+- [x] Bounded channel/message passing for the current Copy-scalar bootstrap: `channel.create(capacity) -> (i64, error)` creates a compiler-owned bounded FIFO, `channel.send(handle, value) -> error` and `channel.receive(handle) -> (i64, error)` transfer `i64` values with native blocking backpressure, and `channel.close(handle) -> error` wakes blocked operations and deterministically releases channel storage once in-flight operations leave. Capacity is bounded to `1..=65536`, invalid/closed handles fail explicitly, the pthread runtime tree-shakes when unreachable, and LSP completion/signature help expose the API. Richer payload types remain naturally sequenced behind their ownership/sendability rules rather than requiring source generics.
+- [x] Worker/thread execution for the current capture-free bootstrap: `worker.start(work: fn() -> void) -> (i64, error)` launches compiler-owned work on a native pthread, `worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)` passes one Copy scalar argument without capture, and `worker.join(handle) -> error` waits exactly once through an opaque handle registry with explicit invalid/unknown/already-joined failures. The worker entry contract cannot capture outer locals, so borrowed application storage is not smuggled across the thread boundary; native pthread/runtime support tree-shakes when unreachable and LSP completion/signature help expose the API. Task results, cancellation, structured concurrency, and broader sendability remain tracked by their dedicated concurrency items rather than being implied by this primitive.
 - [ ] Data-race prevention integrated with ownership.
 - [ ] Event-loop integration for UI targets.
 - [ ] Server-oriented high-throughput I/O runtime.

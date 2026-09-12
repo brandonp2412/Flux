@@ -8098,6 +8098,28 @@ fn check_qualified_call(
                 require_type(args[0].span, &expected, &actual, "worker.start work")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "startWith" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("worker.startWith expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::I64],
+                    returns: Vec::new(),
+                };
+                require_type(args[0].span, &expected, &actual, "worker.startWith work")?;
+                let argument = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &argument,
+                    "worker.startWith argument",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "join" => {
                 if args.len() != 1 {
                     return Err(diag(
@@ -8113,6 +8135,82 @@ fn check_qualified_call(
                 return Err(diag(
                     *name_span,
                     &format!("worker module has no function '{name}'"),
+                ));
+            }
+        }
+    }
+    if namespace == "channel" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("channel.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "create" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("channel.create expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let capacity = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &capacity,
+                    "channel.create capacity",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[0], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[0].span,
+                        "channel.create capacity must be between 1 and 65536",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "send" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("channel.send expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "channel.send handle")?;
+                let value = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &value, "channel.send value")?;
+                return Ok(vec![Type::Error]);
+            }
+            "receive" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("channel.receive expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "channel.receive handle")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("channel.close expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "channel.close handle")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("channel module has no function '{name}'"),
                 ));
             }
         }

@@ -1485,9 +1485,47 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "startWith",
+            3,
+            "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "join",
             3,
             "fn worker.join(handle: i64) -> error",
+        );
+        return true;
+    }
+    if namespace == "channel" {
+        push_completion_item(
+            items,
+            seen,
+            "create",
+            3,
+            "fn channel.create(capacity: i64) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "send",
+            3,
+            "fn channel.send(handle: i64, value: i64) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "receive",
+            3,
+            "fn channel.receive(handle: i64) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "close",
+            3,
+            "fn channel.close(handle: i64) -> error",
         );
         return true;
     }
@@ -3188,9 +3226,54 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "startWith" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.startWith",
+                        &["work: fn(i64) -> void", "argument: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
                 "join" => {
                     return Some(signature_help_for_builtin(
                         "worker.join",
+                        &["handle: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "channel" {
+            match member {
+                "create" => {
+                    return Some(signature_help_for_builtin(
+                        "channel.create",
+                        &["capacity: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "send" => {
+                    return Some(signature_help_for_builtin(
+                        "channel.send",
+                        &["handle: i64", "value: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "receive" => {
+                    return Some(signature_help_for_builtin(
+                        "channel.receive",
+                        &["handle: i64"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "close" => {
+                    return Some(signature_help_for_builtin(
+                        "channel.close",
                         &["handle: i64"],
                         "error",
                         active_parameter,
@@ -8250,15 +8333,24 @@ mod tests {
         ))
         .to_json();
         assert!(completion_items.contains("fn worker.start(work: fn() -> void) -> (i64, error)"));
+        assert!(
+            completion_items.contains(
+                "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)"
+            )
+        );
         assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
 
         let uri = "file:///tmp/worker-signatures.flux";
-        let source = "fn work() -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    print(worker.join(handle))\n    return 0\n}\n";
+        let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
                 "worker.start(",
                 "fn worker.start(work: fn() -> void) -> (i64, error)",
+            ),
+            (
+                "worker.startWith(",
+                "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)",
             ),
             ("worker.join(", "fn worker.join(handle: i64) -> error"),
         ] {
@@ -8277,6 +8369,69 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("worker call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn completion_and_signature_help_support_channel_capabilities() {
+        let completion_uri = "file:///tmp/channel-completion.flux";
+        let completion_source = "fn main() -> i64 {\n    channel.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(completion_uri.to_string(), completion_source.to_string())]);
+        let completion_line = completion_source
+            .lines()
+            .position(|line| line.trim() == "channel.")
+            .expect("channel completion line should exist");
+        let completion_line_source = completion_source.lines().nth(completion_line).unwrap();
+        let completion_items = JsonValue::Array(completion_items_at_cursor(
+            completion_uri,
+            completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(completion_line_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(completion_items.contains("fn channel.create(capacity: i64) -> (i64, error)"));
+        assert!(completion_items.contains("fn channel.send(handle: i64, value: i64) -> error"));
+        assert!(completion_items.contains("fn channel.receive(handle: i64) -> (i64, error)"));
+        assert!(completion_items.contains("fn channel.close(handle: i64) -> error"));
+
+        let uri = "file:///tmp/channel-signatures.flux";
+        let source = "fn main() -> i64 {\n    let (handle, createError) = channel.create(1)\n    print(createError)\n    print(channel.send(handle, 1))\n    let (value, receiveError) = channel.receive(handle)\n    print(value)\n    print(receiveError)\n    print(channel.close(handle))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "channel.create(",
+                "fn channel.create(capacity: i64) -> (i64, error)",
+            ),
+            (
+                "channel.send(",
+                "fn channel.send(handle: i64, value: i64) -> error",
+            ),
+            (
+                "channel.receive(",
+                "fn channel.receive(handle: i64) -> (i64, error)",
+            ),
+            ("channel.close(", "fn channel.close(handle: i64) -> error"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("channel call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("channel call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }
