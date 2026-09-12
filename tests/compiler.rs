@@ -32595,6 +32595,107 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_inside_for_ranges_suspends_without_blocking_worker() {
+    let source = r#"
+async fn add(value: i64, amount: i64) -> i64 {
+    return value + amount
+}
+
+async fn sumRange(start: i64, end: i64) -> i64 {
+    var total: i64 = 0
+    for index in start..end:
+        total = await add(total, index)
+    return total
+}
+
+async fn sumInclusive(start: i64, end: i64) -> i64 {
+    var total: i64 = 0
+    for index in start..=end:
+        total = await add(total, index)
+    return total
+}
+
+async fn countInclusive(start: i64, end: i64) -> i64 {
+    var total: i64 = 0
+    for _index in start..=end:
+        total = await add(total, 1)
+    return total
+}
+
+async fn main() -> i64 {
+    let exclusive: i64 = await sumRange(1, 4)
+    let inclusive: i64 = await sumInclusive(1, 3)
+    let emptyExclusive: i64 = await sumRange(5, 5)
+    let emptyInclusive: i64 = await sumInclusive(3, 2)
+    let maxInclusive: i64 = await countInclusive(9223372036854775807, 9223372036854775807)
+    return exclusive + inclusive + emptyExclusive + emptyInclusive + maxInclusive
+}
+"#;
+
+    check_source(source).expect("await inside range loops should remain supported");
+    let generated =
+        compile_to_c(source).expect("direct awaits in range loops should use continuation states");
+    assert!(generated.contains("flux__async_resume_sumRange"));
+    assert!(generated.contains("flux__async_resume_sumInclusive"));
+    assert!(generated.contains("flux__async_resume_countInclusive"));
+    assert!(!generated.contains("flux__async_body_sumRange("));
+    assert!(!generated.contains("flux__async_body_sumInclusive("));
+    assert!(!generated.contains("flux__async_body_countInclusive("));
+    assert!(generated.contains("saved_flux__async_range_end"));
+    assert!(generated.contains(
+        "flux__async_start_cont_add(flux__local_total, flux__local_index, flux__async_resume_sumRange, flux__task)"
+    ));
+    assert!(!generated.contains(
+        "flux__async_await_add(flux__async_start_add(flux__local_total, flux__local_index))"
+    ));
+
+    let root = std::env::temp_dir().join(format!("flux-async-for-range-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async for-range fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async for-range source should be writable");
+    let binary = root.join("async-for-range");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async for-range binary should build");
+    assert!(
+        built.status.success(),
+        "async for-range build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async for-range binary should run");
+    assert_eq!(status.code(), Some(13));
+    let _ = fs::remove_dir_all(&root);
+
+    let loop_control_source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn withContinue() -> i64 {
+    var total: i64 = 0
+    for _index in 0..1:
+        total = await addOne(total)
+        continue
+    return total
+}
+
+async fn main() -> i64 {
+    return await withContinue()
+}
+"#;
+    let loop_control_generated = compile_to_c(loop_control_source)
+        .expect("range-loop control awaits should retain the safe blocking fallback");
+    assert!(loop_control_generated.contains("flux__async_body_withContinue"));
+}
+
+#[test]
 fn async_await_branch_with_scalar_condition_suspends_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
