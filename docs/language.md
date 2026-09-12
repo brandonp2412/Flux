@@ -849,6 +849,28 @@ print(time.utcWeekday(timestamp))
 
 UTC calendar conversion remains allocation-free. `time.utcUnixMillis(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `utcWeekday` uses ISO numbering (`1` Monday through `7` Sunday), and `utcDayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
 
+## Native worker threads
+
+Flux can run independent capture-free work on a native worker thread without exposing a thread object or callback-shaped result API:
+
+```flux
+fn rebuildIndex() -> void {
+    print(41)
+}
+
+fn main() -> i64 {
+    let (workerHandle, startError) = worker.start(rebuildIndex)
+    if startError != nil:
+        return 1
+    let joinError: error = worker.join(workerHandle)
+    if joinError != nil:
+        return 2
+    return 0
+}
+```
+
+`worker.start` accepts exactly `fn() -> void` and returns an opaque `i64` handle plus an explicit Flux `error`. `worker.join` waits for that handle once and returns an explicit `error`; unknown, invalid, or already-joined handles fail rather than becoming unchecked native thread operations. The compiler-owned native registry and pthread support are emitted only when reachable. Because ordinary stored closures still cannot capture outer locals, this bootstrap cannot smuggle borrowed local storage across a thread boundary. Task results, argument transfer, channels, cancellation, structured concurrency, and the `async`/`await` task model remain separate concurrency work.
+
 ## Performance and safety contract
 
 Flux targets safe Rust-class native performance. Release builds are expected to stay in the C/C++/Rust performance class while preserving Flux's memory-safety guarantees. The language therefore has no mandatory VM, garbage collector, interpreter, or cross-platform widget-emulation runtime.

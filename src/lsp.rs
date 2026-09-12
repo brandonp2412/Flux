@@ -1474,6 +1474,23 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "worker" {
+        push_completion_item(
+            items,
+            seen,
+            "start",
+            3,
+            "fn worker.start(work: fn() -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "join",
+            3,
+            "fn worker.join(handle: i64) -> error",
+        );
+        return true;
+    }
     if namespace == "time" {
         push_completion_item(items, seen, "unixMillis", 3, "fn time.unixMillis() -> i64");
         push_completion_item(
@@ -3385,6 +3402,27 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "locale.formatDateTime",
                         &["unixMillis: i64", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "worker" {
+            match member {
+                "start" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.start",
+                        &["work: fn() -> void"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "join" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.join",
+                        &["handle: i64"],
                         "error",
                         active_parameter,
                     ));
@@ -8627,6 +8665,59 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("locale call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn completion_and_signature_help_support_worker_capabilities() {
+        let completion_uri = "file:///tmp/worker-completion.flux";
+        let completion_source = "fn main() -> i64 {\n    worker.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(completion_uri.to_string(), completion_source.to_string())]);
+        let completion_line = completion_source
+            .lines()
+            .position(|line| line.trim() == "worker.")
+            .expect("worker completion line should exist");
+        let completion_line_source = completion_source.lines().nth(completion_line).unwrap();
+        let completion_items = JsonValue::Array(completion_items_at_cursor(
+            completion_uri,
+            completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(completion_line_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(completion_items.contains("fn worker.start(work: fn() -> void) -> (i64, error)"));
+        assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
+
+        let uri = "file:///tmp/worker-signatures.flux";
+        let source = "fn work() -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    print(worker.join(handle))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "worker.start(",
+                "fn worker.start(work: fn() -> void) -> (i64, error)",
+            ),
+            ("worker.join(", "fn worker.join(handle: i64) -> error"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("worker call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("worker call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

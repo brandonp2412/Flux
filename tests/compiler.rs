@@ -5619,6 +5619,110 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_threads_are_typed_native_tree_shaken_and_runnable() {
+    let source = r#"
+fn work() -> void {
+    print(41)
+}
+fn main() -> i64 {
+    let (handle, startError) = worker.start(work)
+    if startError != nil:
+        return 1
+    let joinError: error = worker.join(handle)
+    if joinError != nil:
+        return 2
+    print(42)
+    return 0
+}
+"#;
+
+    check_source(source).expect("worker start/join should typecheck");
+    let generated = compile_to_c(source).expect("worker start/join should lower natively");
+    assert!(generated.contains("#include <pthread.h>"));
+    assert!(generated.contains("static struct flux__worker_i64_error flux__worker_start"));
+    assert!(generated.contains("static const char *flux__worker_join"));
+    assert!(generated.contains("pthread_create(&state->thread"));
+    assert!(generated.contains("pthread_join(state->thread"));
+
+    let root = std::env::temp_dir().join(format!("flux-worker-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker API source should be writable");
+    let binary = root.join("worker-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker API binary should build");
+    assert!(
+        built.status.success(),
+        "worker API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker API binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
+
+    let invalid_start = r#"
+fn wrong(value: i64) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let (handle, startError) = worker.start(wrong)
+    print(handle)
+    print(startError)
+    return 0
+}
+"#;
+    let start_error =
+        check_source(invalid_start).expect_err("invalid worker work function must fail");
+    assert!(
+        start_error
+            .message
+            .contains("worker.start work: expected fn() -> void")
+    );
+
+    let invalid_join = r#"
+fn main() -> i64 {
+    print(worker.join(false))
+    return 0
+}
+"#;
+    let join_error = check_source(invalid_join).expect_err("invalid worker handle must fail");
+    assert!(
+        join_error
+            .message
+            .contains("worker.join handle: expected i64")
+    );
+
+    let dead = r#"
+fn work() -> void {
+    print(1)
+}
+fn hidden() -> void {
+    let (handle, startError) = worker.start(work)
+    print(handle)
+    print(startError)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    check_source(dead).expect("dead worker fixture should typecheck");
+    let dead_generated = compile_to_c(dead).expect("dead worker fixture should lower safely");
+    assert!(!dead_generated.contains("#include <pthread.h>"));
+    assert!(!dead_generated.contains("flux__worker_start("));
+    assert!(!dead_generated.contains("flux__worker_join("));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_time_capabilities_are_typed_runtime_checked_and_tree_shaken() {
     let source = r#"
 fn main() -> i64 {

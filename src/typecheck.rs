@@ -8075,6 +8075,48 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "worker" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("worker.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "start" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("worker.start expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                let expected = Type::Function {
+                    params: Vec::new(),
+                    returns: Vec::new(),
+                };
+                require_type(args[0].span, &expected, &actual, "worker.start work")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "join" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("worker.join expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &actual, "worker.join handle")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("worker module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "time" {
         if !named_args.is_empty() {
             return Err(diag(

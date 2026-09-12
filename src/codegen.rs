@@ -1528,6 +1528,7 @@ fn emit_runtime_prelude(
         out.push_str("#define _XOPEN_SOURCE 700\n");
     }
     if runtime_usage.contains("flux__time_")
+        || runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
@@ -1544,6 +1545,9 @@ fn emit_runtime_prelude(
     out.push_str("#include <string.h>\n");
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
+    }
+    if runtime_usage.contains("flux__worker_") {
+        out.push_str("#include <pthread.h>\n");
     }
     if runtime_usage.contains("struct flux__optional_i64") {
         out.push_str("struct flux__optional_i64 { bool has_value; int64_t value; };\n");
@@ -5050,6 +5054,18 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         if uses_locale_format_date_time {
             out.push_str("static const char *flux__locale_format_date_time(int64_t unix_millis, void (*callback)(const char *)) { if (flux__android_activity == NULL) return \"Android activity is unavailable for locale formatting\"; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return \"failed to attach Android locale formatter\"; const char *error = NULL; jclass date_class = (*env)->FindClass(env, \"java/util/Date\"); jmethodID date_ctor = date_class != NULL ? (*env)->GetMethodID(env, date_class, \"<init>\", \"(J)V\") : NULL; jobject date = date_ctor != NULL ? (*env)->NewObject(env, date_class, date_ctor, (jlong)unix_millis) : NULL; jclass format_class = (*env)->FindClass(env, \"java/text/DateFormat\"); jmethodID factory = format_class != NULL ? (*env)->GetStaticMethodID(env, format_class, \"getDateTimeInstance\", \"()Ljava/text/DateFormat;\") : NULL; jobject formatter = factory != NULL ? (*env)->CallStaticObjectMethod(env, format_class, factory) : NULL; jmethodID format = format_class != NULL ? (*env)->GetMethodID(env, format_class, \"format\", \"(Ljava/util/Date;)Ljava/lang/String;\") : NULL; jstring text = formatter != NULL && format != NULL && date != NULL ? (jstring)(*env)->CallObjectMethod(env, formatter, format, date) : NULL; if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); error = \"Android date formatter failed\"; } else error = flux__android_locale_emit(text, callback, env); if (text != NULL) (*env)->DeleteLocalRef(env, text); if (formatter != NULL) (*env)->DeleteLocalRef(env, formatter); if (format_class != NULL) (*env)->DeleteLocalRef(env, format_class); if (date != NULL) (*env)->DeleteLocalRef(env, date); if (date_class != NULL) (*env)->DeleteLocalRef(env, date_class); flux__android_release_env(detach); return error; }\n");
         }
+    }
+
+    if runtime_usage.contains("flux__worker_start(") || runtime_usage.contains("flux__worker_join(")
+    {
+        out.push_str("struct flux__worker_i64_error { int64_t v0; const char *v1; };\n");
+        out.push_str("struct flux__worker_state { int64_t id; pthread_t thread; void (*entry)(void); bool joining; struct flux__worker_state *next; };\n");
+        out.push_str("static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
+        out.push_str("static struct flux__worker_state *flux__worker_head = NULL;\n");
+        out.push_str("static int64_t flux__worker_next_id = INT64_C(1);\n");
+        out.push_str("static void *flux__worker_main(void *opaque) { struct flux__worker_state *state = (struct flux__worker_state *)opaque; state->entry(); return NULL; }\n");
+        out.push_str("static struct flux__worker_i64_error flux__worker_start(void (*entry)(void)) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL) { result.v1 = \"worker.start received an invalid work function\"; return result; } struct flux__worker_state *state = malloc(sizeof(*state)); if (state == NULL) { result.v1 = \"worker.start could not allocate worker state\"; return result; } state->entry = entry; state->joining = false; pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_id <= 0) { pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker handle space exhausted\"; return result; } state->id = flux__worker_next_id++; state->next = flux__worker_head; flux__worker_head = state; pthread_mutex_unlock(&flux__worker_mutex); int create_result = pthread_create(&state->thread, NULL, flux__worker_main, state); if (create_result != 0) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); result.v1 = \"worker.start failed to create a native thread\"; return result; } result.v0 = state->id; return result; }\n");
+        out.push_str("static const char *flux__worker_join(int64_t handle) { if (handle <= 0) return \"worker.join received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_head; while (state != NULL && state->id != handle) state = state->next; if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join received an unknown or already joined handle\"; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join is already waiting for this handle\"; } state->joining = true; pthread_mutex_unlock(&flux__worker_mutex); if (pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join failed to join the native thread\"; } pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return NULL; }\n");
     }
 
     if runtime_usage.contains("flux__time_unix_millis(")
@@ -22001,6 +22017,36 @@ fn emit_qualified_call(
             _ => return Err(diag(span, "unknown locale call reached code generation")),
         };
         return Ok((format!("{helper}()"), vec![Type::Str], None));
+    }
+    if namespace == "worker" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid worker call reached code generation"));
+        }
+        match name {
+            "start" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                let entry = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__worker_start({})", entry.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__worker_i64_error".to_string()),
+                ));
+            }
+            "join" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                let handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__worker_join({})", handle.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown worker call reached code generation")),
+        }
     }
     if namespace == "time" {
         if !named_args.is_empty() {
