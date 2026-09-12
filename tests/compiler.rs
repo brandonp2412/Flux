@@ -24465,6 +24465,91 @@ fn main() -> i64 {
 }
 
 #[test]
+fn portable_sheets_are_typed_native_tree_shaken_and_target_checked() {
+    let source = r#"
+fn started() -> void {
+    dialog.sheet("Details", "Native sheet")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable sheet should typecheck");
+    let linux = compile_to_c(source).expect("portable sheet should lower on Linux");
+    assert!(
+        linux.contains("static void flux__dialog_sheet(const char *title, const char *message)")
+    );
+    assert!(linux.contains("GTK_BUTTONS_CLOSE"));
+    assert!(linux.contains("gtk_window_set_resizable(GTK_WINDOW(dialog), FALSE)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable sheet app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable sheet should lower on Android");
+    assert!(android.contains("flux__dialog_sheet(\"Details\", \"Native sheet\")"));
+    assert!(android.contains("\"setGravity\", \"(I)V\""));
+    assert!(android.contains("\"setLayout\", \"(II)V\""));
+    assert!(android.contains("(*env)->CallVoidMethod(env, window, set_gravity, (jint)80)"));
+    assert!(!android.contains("gtk_message_dialog_new"));
+
+    let unused = r#"
+fn unused() -> void {
+    dialog.sheet("Unused", "Hidden")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable sheet code should tree-shake");
+    assert!(!tree_shaken.contains("flux__dialog_sheet"));
+
+    let headless = r#"
+fn main() -> i64 {
+    dialog.sheet("Nope", "Headless")
+    return 0
+}
+"#;
+    check_source(headless).expect("sheet API should retain target-independent static typing");
+    let error = compile_to_c(headless).expect_err("sheet requires an application backend");
+    assert!(
+        error
+            .message
+            .contains("dialog.* APIs require an application target")
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    dialog.sheet(42, "message")
+    dialog.sheet("Title", false)
+    dialog.sheet("missing")
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("sheet arguments must be statically typed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.sheet title") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("dialog.sheet message") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dialog.sheet expects 2 arguments, got 1")
+    }));
+}
+
+#[test]
 fn portable_confirm_dialogs_dispatch_typed_callbacks_on_native_backends() {
     let source = r#"
 fn confirmed() -> void {

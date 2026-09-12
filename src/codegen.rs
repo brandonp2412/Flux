@@ -1667,6 +1667,7 @@ fn emit_runtime_prelude(
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
+    let uses_dialog_sheet = runtime_usage.contains("flux__dialog_sheet(");
     let uses_dialog_confirm = runtime_usage.contains("flux__dialog_confirm(");
     let uses_dialog_choose = runtime_usage.contains("flux__dialog_choose(");
     let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
@@ -1822,7 +1823,11 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_read_clipboard_text
-        || (uses_android && (uses_dialog_alert || uses_dialog_confirm || uses_dialog_choose))
+        || (uses_android
+            && (uses_dialog_alert
+                || uses_dialog_sheet
+                || uses_dialog_confirm
+                || uses_dialog_choose))
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -1909,7 +1914,11 @@ fn emit_runtime_prelude(
     if uses_android_open_url
         || uses_android_share
         || uses_android_set_clipboard_text
-        || (uses_android && (uses_dialog_alert || uses_dialog_confirm || uses_dialog_choose))
+        || (uses_android
+            && (uses_dialog_alert
+                || uses_dialog_sheet
+                || uses_dialog_confirm
+                || uses_dialog_choose))
         || uses_android_notifications
         || uses_android_has_system_feature
         || uses_android_permission_granted
@@ -2673,6 +2682,10 @@ fn emit_runtime_prelude(
         out.push_str("static void flux__dialog_alert_response(GtkDialog *dialog, gint response, gpointer data) { (void)response; (void)data; gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
         out.push_str("static void flux__dialog_alert(const char *title, const char *message) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_alert_response), NULL); gtk_window_present(GTK_WINDOW(dialog)); }\n");
     }
+    if uses_dialog_sheet && uses_gtk {
+        out.push_str("static void flux__dialog_sheet_response(GtkDialog *dialog, gint response, gpointer data) { (void)response; (void)data; gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
+        out.push_str("static void flux__dialog_sheet(const char *title, const char *message) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); gtk_window_set_resizable(GTK_WINDOW(dialog), FALSE); g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_sheet_response), NULL); gtk_window_present(GTK_WINDOW(dialog)); }\n");
+    }
     if uses_dialog_confirm && uses_gtk {
         out.push_str("typedef struct { void (*callback)(void); } flux__dialog_confirm_context;\n");
         out.push_str("static void flux__dialog_confirm_response(GtkDialog *dialog, gint response, gpointer data) { flux__dialog_confirm_context *context = (flux__dialog_confirm_context *)data; if (response == GTK_RESPONSE_ACCEPT && context != NULL && context->callback != NULL) context->callback(); g_free(context); gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
@@ -2906,6 +2919,23 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->CallObjectMethod(env, builder, set_title, title_string); (*env)->CallObjectMethod(env, builder, set_message, message_string); (*env)->CallObjectMethod(env, builder, set_positive, ok_string, NULL); if ((*env)->ExceptionCheck(env)) goto done; dialog = (*env)->CallObjectMethod(env, builder, show);\n");
         out.push_str("done:\n");
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (dialog != NULL) (*env)->DeleteLocalRef(env, dialog); if (ok_string != NULL) (*env)->DeleteLocalRef(env, ok_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (builder != NULL) (*env)->DeleteLocalRef(env, builder); if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class); flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_dialog_sheet && uses_android {
+        out.push_str("static void flux__dialog_sheet(const char *title, const char *message) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return;\n");
+        out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+        out.push_str("    jclass builder_class = NULL; jclass dialog_class = NULL; jclass window_class = NULL; jobject builder = NULL; jobject dialog = NULL; jobject window = NULL; jstring title_string = NULL; jstring message_string = NULL; jstring close_string = NULL;\n");
+        out.push_str("    builder_class = (*env)->FindClass(env, \"android/app/AlertDialog$Builder\"); if (builder_class == NULL) goto done;\n");
+        out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, builder_class, \"<init>\", \"(Landroid/content/Context;)V\"); if (ctor == NULL) goto done;\n");
+        out.push_str("    builder = (*env)->NewObject(env, builder_class, ctor, flux__android_activity->clazz); if ((*env)->ExceptionCheck(env) || builder == NULL) goto done;\n");
+        out.push_str("    title_string = flux__android_utf8_string(env, title == NULL ? \"\" : title); message_string = flux__android_utf8_string(env, message == NULL ? \"\" : message); close_string = (*env)->NewStringUTF(env, \"Close\"); if (title_string == NULL || message_string == NULL || close_string == NULL) goto done;\n");
+        out.push_str("    jmethodID set_title = (*env)->GetMethodID(env, builder_class, \"setTitle\", \"(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;\"); jmethodID set_message = (*env)->GetMethodID(env, builder_class, \"setMessage\", \"(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;\"); jmethodID set_positive = (*env)->GetMethodID(env, builder_class, \"setPositiveButton\", \"(Ljava/lang/CharSequence;Landroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;\"); jmethodID show = (*env)->GetMethodID(env, builder_class, \"show\", \"()Landroid/app/AlertDialog;\"); if (set_title == NULL || set_message == NULL || set_positive == NULL || show == NULL) goto done;\n");
+        out.push_str("    (*env)->CallObjectMethod(env, builder, set_title, title_string); (*env)->CallObjectMethod(env, builder, set_message, message_string); (*env)->CallObjectMethod(env, builder, set_positive, close_string, NULL); if ((*env)->ExceptionCheck(env)) goto done; dialog = (*env)->CallObjectMethod(env, builder, show); if ((*env)->ExceptionCheck(env) || dialog == NULL) goto done;\n");
+        out.push_str("    dialog_class = (*env)->GetObjectClass(env, dialog); if (dialog_class == NULL) goto done; jmethodID get_window = (*env)->GetMethodID(env, dialog_class, \"getWindow\", \"()Landroid/view/Window;\"); if (get_window == NULL) goto done; window = (*env)->CallObjectMethod(env, dialog, get_window); if ((*env)->ExceptionCheck(env) || window == NULL) goto done;\n");
+        out.push_str("    window_class = (*env)->GetObjectClass(env, window); if (window_class == NULL) goto done; jmethodID set_gravity = (*env)->GetMethodID(env, window_class, \"setGravity\", \"(I)V\"); jmethodID set_layout = (*env)->GetMethodID(env, window_class, \"setLayout\", \"(II)V\"); if (set_gravity == NULL || set_layout == NULL) goto done; (*env)->CallVoidMethod(env, window, set_gravity, (jint)80); (*env)->CallVoidMethod(env, window, set_layout, (jint)-1, (jint)-2);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (window_class != NULL) (*env)->DeleteLocalRef(env, window_class); if (window != NULL) (*env)->DeleteLocalRef(env, window); if (dialog_class != NULL) (*env)->DeleteLocalRef(env, dialog_class); if (dialog != NULL) (*env)->DeleteLocalRef(env, dialog); if (close_string != NULL) (*env)->DeleteLocalRef(env, close_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (builder != NULL) (*env)->DeleteLocalRef(env, builder); if (builder_class != NULL) (*env)->DeleteLocalRef(env, builder_class); flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
     if uses_dialog_confirm && uses_android {
@@ -22233,6 +22263,15 @@ fn emit_qualified_call(
                 let message = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__dialog_alert({}, {})", title.code, message.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "sheet" if args.len() == 2 => {
+                let title = emit_expr(&args[0], env, signatures)?;
+                let message = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__dialog_sheet({}, {})", title.code, message.code),
                     Vec::new(),
                     None,
                 ));

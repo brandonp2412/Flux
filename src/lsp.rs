@@ -1653,6 +1653,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "sheet",
+            3,
+            "fn dialog.sheet(title: str, message: str) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
             "confirm",
             3,
             "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void, *, cancelLabel: str = \"Cancel\", confirmLabel: str = \"OK\") -> void",
@@ -3598,6 +3605,14 @@ fn signature_help_for_document_cached(
                 "alert" => {
                     return Some(signature_help_for_builtin(
                         "dialog.alert",
+                        &["title: str", "message: str"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "sheet" => {
+                    return Some(signature_help_for_builtin(
+                        "dialog.sheet",
                         &["title: str", "message: str"],
                         "void",
                         active_parameter,
@@ -9064,6 +9079,7 @@ mod tests {
         ))
         .to_json();
         assert!(items.contains("fn dialog.alert(title: str, message: str) -> void"));
+        assert!(items.contains("fn dialog.sheet(title: str, message: str) -> void"));
         assert!(items.contains("dialog.confirm"));
         assert!(items.contains("dialog.choose"));
         assert!(items.contains("onChoose: fn(i64) -> void"));
@@ -9091,6 +9107,27 @@ mod tests {
         .expect("dialog alert should have signature help")
         .to_json();
         assert!(help.contains("fn dialog.alert(title: str, message: str) -> void"));
+
+        let sheet_source = "fn main() -> i64 {\n    dialog.sheet(\"Details\", \"Native sheet\")\n    return 0\n}\n";
+        let sheet_documents = HashMap::from([(uri.to_string(), sheet_source.to_string())]);
+        let needle = "dialog.sheet(";
+        let line_index = sheet_source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("dialog sheet line should exist");
+        let line = sheet_source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            sheet_source,
+            &sheet_documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("dialog sheet should have signature help")
+        .to_json();
+        assert!(help.contains("fn dialog.sheet(title: str, message: str) -> void"));
 
         let confirm_source = "fn accepted() -> void {\n    print(\"accepted\")\n}\nfn main() -> i64 {\n    dialog.confirm(\"Flux\", \"Continue?\", accepted)\n    return 0\n}\n";
         let confirm_documents = HashMap::from([(uri.to_string(), confirm_source.to_string())]);
