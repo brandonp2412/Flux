@@ -260,6 +260,20 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             continue;
         }
 
+        match parse_extern_c_function(line) {
+            Ok(Some(function)) => {
+                functions.push(function);
+                index += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                index = recover_after_malformed_declaration(&lines, index + 1);
+                continue;
+            }
+        }
+
         match parse_single_expression_function(line) {
             Ok(Some(function)) => {
                 functions.push(function);
@@ -323,6 +337,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
 
         functions.push(Function {
             public,
+            foreign_symbol: None,
             name,
             name_span,
             keyword_span: SourceSpan::new(function_line, 1 + visibility_offset, 2),
@@ -2665,6 +2680,7 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
     let expression_span = expression.span;
     Ok(Some(Function {
         public,
+        foreign_symbol: None,
         name: header.name,
         name_span: header.name_span,
         keyword_span: SourceSpan::new(line.number, line.indent + 1 + visibility_offset, 2),
@@ -2679,6 +2695,70 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
             kind: StmtKind::Return(vec![expression]),
         }],
         expression_body: true,
+        line: line.number,
+        span: line.span(),
+    }))
+}
+
+fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
+    let (text, public, visibility_offset) = split_visibility(&line.text);
+    let Some(rest) = text.strip_prefix("extern c ") else {
+        return Ok(None);
+    };
+    let Some(rest) = rest.strip_prefix('"') else {
+        return Err(diag(
+            line.number,
+            "extern C declarations require a quoted native symbol after 'extern c'",
+        ));
+    };
+    let Some(close_quote) = rest.find('"') else {
+        return Err(diag(
+            line.number,
+            "extern C declarations require a closing quote around the native symbol",
+        ));
+    };
+    let symbol = &rest[..close_quote];
+    let mut symbol_chars = symbol.chars();
+    let valid_symbol = symbol_chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && symbol_chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric());
+    if !valid_symbol {
+        return Err(diag(
+            line.number,
+            "extern C symbols must be ordinary C identifiers",
+        ));
+    }
+    let after_symbol = &rest[close_quote + 1..];
+    let function_source = after_symbol.trim_start();
+    if !function_source.starts_with("fn ") {
+        return Err(diag(
+            line.number,
+            "extern C declarations require a Flux function signature after the native symbol",
+        ));
+    }
+    if function_source.contains('{') || function_source.contains('}') {
+        return Err(diag(
+            line.number,
+            "extern C declarations do not have Flux function bodies",
+        ));
+    }
+    let prefix_offset = text.len() - function_source.len();
+    let header_source = format!("{function_source} {{");
+    let mut header = parse_function_header(&header_source, line.number)?;
+    shift_function_header(&mut header, visibility_offset + prefix_offset);
+    Ok(Some(Function {
+        public,
+        foreign_symbol: Some(symbol.to_string()),
+        name: header.name,
+        name_span: header.name_span,
+        keyword_span: SourceSpan::new(line.number, 1 + visibility_offset + prefix_offset, 2),
+        params: header.params,
+        returns: header.returns,
+        return_span: header.return_span,
+        return_type_spans: header.return_type_spans,
+        body: Vec::new(),
+        expression_body: false,
         line: line.number,
         span: line.span(),
     }))
@@ -4801,6 +4881,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "var"
             | "break"
             | "continue"
+            | "extern"
             | "true"
             | "false"
             | "nil"

@@ -52,9 +52,9 @@ libraries = ["sqlite3", "ssl"]
 search_paths = ["native/lib"]
 ```
 
-`plugin` marks the package as a native/plugin package for tooling and future package-resolution policy; it defaults to `false`. `libraries` records logical native library names without embedding platform linker flags. Names are restricted to portable ASCII linker-name characters, sorted, and de-duplicated. `search_paths` records package-relative native library locations, rejects absolute paths and `.`/`..` traversal, resolves against the package root, and is likewise normalized deterministically.
+`plugin` marks the package as a native/plugin package for tooling and future package-resolution policy; it defaults to `false`. `libraries` records logical native library names without accepting arbitrary linker command fragments. Names are restricted to portable ASCII linker-name characters, sorted, and de-duplicated. `search_paths` records package-relative native library locations, rejects absolute paths and `.`/`..` traversal, resolves against the package root, and is likewise normalized deterministically.
 
-This table is metadata only. It does not silently add linker flags or load foreign code. Stable C/native imports, ownership-safe FFI, and per-platform package implementations remain explicit Milestone 19 work, so package metadata cannot bypass Flux's binding or ownership rules.
+For Linux native compilation, package-aware build, run, test, debug, profile, and packaging flows translate these validated values into compiler-owned library search and `-l` linker arguments. They pair with typed `extern c "symbol" fn ...` declarations in Flux source; the manifest alone never creates callable symbols or bypasses the compiler's restricted native-import type checks. Native libraries are linked but are not automatically bundled for redistribution. Android and other platform bindings remain separate compiler-owned integrations, and ownership-sensitive FFI shapes remain rejected until their cross-boundary lifetime rules are explicit.
 
 ## Reproducible lockfile
 

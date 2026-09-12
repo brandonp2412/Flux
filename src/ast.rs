@@ -415,6 +415,7 @@ pub struct ViewStateTransition {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub public: bool,
+    pub foreign_symbol: Option<String>,
     pub name: String,
     pub name_span: SourceSpan,
     pub keyword_span: SourceSpan,

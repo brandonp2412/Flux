@@ -30,6 +30,75 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn extern_c_imports_lower_to_exact_native_symbols_with_safe_boundaries() {
+    let source = r#"
+extern c "flux_test_double" fn nativeDouble(value: i64) -> i64
+
+fn main() -> i64 {
+    return nativeDouble(21)
+}
+"#;
+
+    check_source(source).expect("safe extern C import should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("extern C source should format");
+    assert!(formatted.contains("extern c \"flux_test_double\" fn nativeDouble(value: i64) -> i64"));
+    let generated = compile_to_c(source).expect("extern C import should lower on Linux");
+    assert!(generated.contains("extern int64_t flux_test_double("));
+    assert!(generated.contains("flux_test_double(INT64_C(21))"));
+    assert!(!generated.contains("flux__fn_nativeDouble("));
+
+    let program = fluxc::parser::parse(source).expect("extern C source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("extern C source should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("the Linux native-library import path must not leak onto Android");
+    assert!(android.message.contains("require the Linux target"));
+}
+
+#[test]
+fn extern_c_imports_reject_ownership_sensitive_shapes_and_function_values() {
+    let returning_borrowed = r#"
+extern c "native_text" fn nativeText() -> str
+
+fn main() -> i64 {
+    print(nativeText())
+    return 0
+}
+"#;
+    let errors = check_source_all(returning_borrowed)
+        .expect_err("borrowed foreign pointers must not escape through extern C returns");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("extern C return type 'str' is unsupported")
+    }));
+
+    let as_value = r#"
+extern c "native_double" fn nativeDouble(value: i64) -> i64
+
+fn apply(callback: fn(i64) -> i64, value: i64) -> i64 {
+    return callback(value)
+}
+
+fn main() -> i64 {
+    return apply(nativeDouble, 21)
+}
+"#;
+    let errors = check_source_all(as_value).expect_err(
+        "foreign calls should require an ordinary Flux wrapper before escaping as values",
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("extern C functions may only be called directly")
+    }));
+}
+
+#[test]
 fn accepts_hybrid_function_braces_and_indented_control_flow() {
     let source = r#"
 fn add(a: i64, b: i64) -> i64 {

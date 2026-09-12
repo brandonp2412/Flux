@@ -34,7 +34,9 @@ pub fn emit_c_header_with_module_names(
     let public_functions = program
         .functions
         .iter()
-        .filter(|function| function.public && function.name != "main")
+        .filter(|function| {
+            function.public && function.name != "main" && function.foreign_symbol.is_none()
+        })
         .collect::<Vec<_>>();
     let public_ffi_aliases = program
         .aliases
@@ -1062,6 +1064,16 @@ pub fn emit_c_for_target_with_source_metadata(
         reachable_value_types = next_value_types;
         interface_pack_facts = next_pack_facts;
     }
+    if target != NativeTarget::Linux
+        && program.functions.iter().any(|function| {
+            function.foreign_symbol.is_some() && reachable_functions.contains(&function.name)
+        })
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "extern C native-library imports currently require the Linux target; Android platform access must use compiler-owned Android bindings",
+        ));
+    }
     let reachable_enum_variants =
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
     let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
@@ -1072,7 +1084,7 @@ pub fn emit_c_for_target_with_source_metadata(
     }
     let mut temp_counter = 0usize;
     for function in &program.functions {
-        if reachable_functions.contains(&function.name) {
+        if reachable_functions.contains(&function.name) && function.foreign_symbol.is_none() {
             let cfg = function_ir
                 .get(&function.name)
                 .expect("all parsed functions have cached typed IR");
@@ -1296,6 +1308,7 @@ pub fn emit_c_for_target_with_source_metadata(
             out.push_str(&function_prototype(function, signatures));
             if function.public
                 && function.name != "main"
+                && function.foreign_symbol.is_none()
                 && let Some(symbol) = abi_export_symbol(function, source_modules)
             {
                 out.push_str(&format!(" __asm__(\"{symbol}\")"));
@@ -12806,6 +12819,9 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    if let Some(symbol) = &function.foreign_symbol {
+        return format!("extern {ret} {symbol}({params})");
+    }
     let linkage = if function.name != "main" && !function.public {
         "static inline "
     } else {
@@ -19926,7 +19942,10 @@ fn emit_expr(
                 (
                     emit_call_arguments(signature, args, named_args, env, signatures)?,
                     signature.returns.clone(),
-                    function_c_name(name),
+                    signature
+                        .foreign_symbol
+                        .clone()
+                        .unwrap_or_else(|| function_c_name(name)),
                 )
             } else {
                 return Err(diag(

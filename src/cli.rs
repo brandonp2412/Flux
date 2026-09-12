@@ -445,6 +445,7 @@ fn run() -> Result<(), CliError> {
             }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Release)?;
+            let native_package = native_package_config_for_target(path)?;
             let sources = validate_project(path)?;
             let generated = match fluxc::project::compile_to_c(path) {
                 Ok(generated) => generated,
@@ -471,6 +472,7 @@ fn run() -> Result<(), CliError> {
                 options.mode,
                 NativeInstrumentation::None,
                 &options.native_target,
+                native_package.as_ref(),
                 false,
             )?;
             println!("built ({}): {}", options.mode.name(), output.display());
@@ -1182,7 +1184,13 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
             }
         }
         PackageFormat::Container => {
-            build_container_context(&generated, &output, options.mode, &options.native_target)?;
+            build_container_context(
+                &generated,
+                &output,
+                options.mode,
+                &options.native_target,
+                &manifest.native,
+            )?;
         }
         PackageFormat::Systemd => {
             build_systemd_bundle(
@@ -1191,10 +1199,17 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 &output,
                 options.mode,
                 &options.native_target,
+                &manifest.native,
             )?;
         }
         PackageFormat::Static => {
-            build_static_executable(&generated, &output, options.mode, &options.native_target)?;
+            build_static_executable(
+                &generated,
+                &output,
+                options.mode,
+                &options.native_target,
+                &manifest.native,
+            )?;
         }
     }
     println!("packaged ({}): {}", options.mode.name(), output.display());
@@ -1217,6 +1232,7 @@ fn build_package_directory(
         mode,
         NativeInstrumentation::None,
         native_target,
+        Some(&manifest.native),
         false,
     ) {
         let _ = fs::remove_dir_all(output);
@@ -1236,6 +1252,7 @@ fn build_static_executable(
     output: &Path,
     mode: BuildMode,
     native_target: &NativeTargetOptions,
+    native_package: &fluxc::project::NativePackageConfig,
 ) -> Result<(), CliError> {
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
@@ -1253,6 +1270,7 @@ fn build_static_executable(
         mode,
         NativeInstrumentation::None,
         native_target,
+        Some(native_package),
         true,
     )
     .map_err(|error| {
@@ -1267,6 +1285,7 @@ fn build_container_context(
     output: &Path,
     mode: BuildMode,
     native_target: &NativeTargetOptions,
+    native_package: &fluxc::project::NativePackageConfig,
 ) -> Result<(), CliError> {
     fs::create_dir_all(output).map_err(|error| {
         format!(
@@ -1281,6 +1300,7 @@ fn build_container_context(
         mode,
         NativeInstrumentation::None,
         native_target,
+        Some(native_package),
         false,
     ) {
         let _ = fs::remove_dir_all(output);
@@ -1302,6 +1322,7 @@ fn build_systemd_bundle(
     output: &Path,
     mode: BuildMode,
     native_target: &NativeTargetOptions,
+    native_package: &fluxc::project::NativePackageConfig,
 ) -> Result<(), CliError> {
     if service_name.is_empty()
         || !service_name
@@ -1326,6 +1347,7 @@ fn build_systemd_bundle(
         mode,
         NativeInstrumentation::None,
         native_target,
+        Some(native_package),
         false,
     ) {
         let _ = fs::remove_dir_all(output);
@@ -1542,15 +1564,17 @@ fn run_tests_inner(
             }
         };
         let binary = test_binary_path(index);
+        let native_package = native_package_config_for_target(test)?;
         if options.coverage {
             build_native_instrumented(
                 &generated,
                 &binary,
                 options.mode,
                 NativeInstrumentation::Coverage,
+                native_package.as_ref(),
             )?;
         } else {
-            build_native(&generated, &binary, options.mode)?;
+            build_native(&generated, &binary, options.mode, native_package.as_ref())?;
         }
         let raw_profile =
             coverage_dir.map(|directory| directory.join(format!("test-{index}.profraw")));
@@ -1908,7 +1932,13 @@ fn debug_target(options: &DebugOptions) -> Result<(), CliError> {
         }
     };
     let binary = debug_binary_path();
-    build_native(&generated, &binary, BuildMode::Debug)?;
+    let native_package = native_package_config_for_target(&options.target)?;
+    build_native(
+        &generated,
+        &binary,
+        BuildMode::Debug,
+        native_package.as_ref(),
+    )?;
     let support = debug_support_path();
     if let Err(error) = fs::write(&support, FLUX_GDB_SUPPORT) {
         let _ = fs::remove_file(&binary);
@@ -2167,6 +2197,7 @@ fn profile_cpu_target(target: &Path) -> Result<(), CliError> {
         }
     };
     let binary = profile_binary_path();
+    let native_package = native_package_config_for_target(target)?;
     let data_dir = profile_data_dir();
     if data_dir.exists() {
         fs::remove_dir_all(&data_dir).map_err(|error| {
@@ -2187,6 +2218,7 @@ fn profile_cpu_target(target: &Path) -> Result<(), CliError> {
         &binary,
         BuildMode::Profile,
         NativeInstrumentation::Gprof,
+        native_package.as_ref(),
     )?;
 
     eprintln!("profile: running instrumented native binary");
@@ -2272,11 +2304,13 @@ fn profile_allocation_target(target: &Path) -> Result<(), CliError> {
         }
     };
     let binary = profile_binary_path();
+    let native_package = native_package_config_for_target(target)?;
     build_native_instrumented(
         &generated,
         &binary,
         BuildMode::Profile,
         NativeInstrumentation::None,
+        native_package.as_ref(),
     )?;
 
     eprintln!("profile: running native binary under glibc memusage");
@@ -2312,11 +2346,13 @@ fn profile_leak_target(target: &Path) -> Result<(), CliError> {
         }
     };
     let binary = profile_binary_path();
+    let native_package = native_package_config_for_target(target)?;
     build_native_instrumented(
         &generated,
         &binary,
         BuildMode::Profile,
         NativeInstrumentation::AddressSanitizer,
+        native_package.as_ref(),
     )
     .map_err(|message| {
         format!("Flux leak profiling requires Clang AddressSanitizer support: {message}")
@@ -2368,6 +2404,7 @@ fn profile_sampling_target(target: &Path) -> Result<(), CliError> {
         }
     };
     let binary = profile_binary_path();
+    let native_package = native_package_config_for_target(target)?;
     let data = profile_sampling_data_path();
     let _ = fs::remove_file(&data);
     build_native_instrumented(
@@ -2375,6 +2412,7 @@ fn profile_sampling_target(target: &Path) -> Result<(), CliError> {
         &binary,
         BuildMode::Profile,
         NativeInstrumentation::None,
+        native_package.as_ref(),
     )?;
 
     eprintln!("profile: sampling optimized native binary with Linux perf");
@@ -2687,7 +2725,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         };
         generation += 1;
         let next_binary = development_binary_path(generation);
-        if let Err(message) = build_native(&generated, &next_binary, mode) {
+        let native_package = native_package_config_for_target(target)?;
+        if let Err(message) = build_native(&generated, &next_binary, mode, native_package.as_ref())
+        {
             write_development_status(target, "compile_error", generation, mode, &message);
             status_state = "compile_error";
             eprintln!("reload: {message}");
@@ -2793,7 +2833,8 @@ fn start_development_build(
         }
     };
     let binary = development_binary_path(generation);
-    build_native(&generated, &binary, mode)?;
+    let native_package = native_package_config_for_target(target)?;
+    build_native(&generated, &binary, mode, native_package.as_ref())?;
     let child = spawn_development_binary(&binary)?;
     let watch_paths = project_watch_paths(target, &sources);
     Ok((Some(child), binary, watch_paths))
@@ -5958,13 +5999,45 @@ fn default_binary_path(source: &Path) -> PathBuf {
     path
 }
 
-fn build_native(c_source: &str, output: &Path, mode: BuildMode) -> Result<(), String> {
+fn native_package_config_for_target(
+    target: &Path,
+) -> Result<Option<fluxc::project::NativePackageConfig>, CliError> {
+    let manifest_path = if target.is_dir() {
+        Some(target.join("flux.toml"))
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        Some(target.to_path_buf())
+    } else {
+        None
+    };
+    let Some(manifest_path) = manifest_path else {
+        return Ok(None);
+    };
+    fluxc::project::read_manifest(&manifest_path)
+        .map(|manifest| Some(manifest.native))
+        .map_err(|diagnostics| {
+            CliError::Message(
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })
+}
+
+fn build_native(
+    c_source: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
+) -> Result<(), String> {
     build_native_configured(
         c_source,
         output,
         mode,
         NativeInstrumentation::None,
         &NativeTargetOptions::default(),
+        native_package,
         false,
     )
 }
@@ -5974,6 +6047,7 @@ fn build_native_instrumented(
     output: &Path,
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
 ) -> Result<(), String> {
     build_native_configured(
         c_source,
@@ -5981,6 +6055,7 @@ fn build_native_instrumented(
         mode,
         instrumentation,
         &NativeTargetOptions::default(),
+        native_package,
         false,
     )
 }
@@ -5991,6 +6066,7 @@ fn build_native_configured(
     mode: BuildMode,
     instrumentation: NativeInstrumentation,
     native_target: &NativeTargetOptions,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
     static_link: bool,
 ) -> Result<(), String> {
     if let Some(sysroot) = native_target.sysroot.as_deref()
@@ -6030,6 +6106,23 @@ fn build_native_configured(
     native_cflags.extend(sqlite_cflags);
     let mut native_libs = gtk_libs;
     native_libs.extend(sqlite_libs);
+    if let Some(native_package) = native_package {
+        native_libs.extend(
+            native_package
+                .search_paths
+                .iter()
+                .map(|path| format!("-L{}", path.display())),
+        );
+        native_libs.extend(
+            native_package
+                .libraries
+                .iter()
+                .map(|library| format!("-l{library}")),
+        );
+    }
+    let cache_enabled = native_package.map_or(true, |native_package| {
+        native_package.libraries.is_empty() && native_package.search_paths.is_empty()
+    });
     let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
     let cache = native_build_cache_path_configured(
         c_source,
@@ -6041,7 +6134,7 @@ fn build_native_configured(
         &native_libs,
         static_link,
     );
-    if cache.is_file() && native_cache_entry_is_valid(&cache) {
+    if cache_enabled && cache.is_file() && native_cache_entry_is_valid(&cache) {
         fs::copy(&cache, output).map_err(|error| {
             format!(
                 "failed to restore native build cache '{}' to '{}': {error}",
@@ -6051,7 +6144,7 @@ fn build_native_configured(
         })?;
         return Ok(());
     }
-    if cache.exists() {
+    if cache_enabled && cache.exists() {
         let _ = fs::remove_file(&cache);
         let _ = fs::remove_file(native_cache_metadata_path(&cache));
     }
@@ -6109,7 +6202,8 @@ fn build_native_configured(
             String::from_utf8_lossy(&output_result.stderr)
         ));
     }
-    if let Some(parent) = cache.parent()
+    if cache_enabled
+        && let Some(parent) = cache.parent()
         && fs::create_dir_all(parent).is_ok()
     {
         let temporary_cache = cache.with_extension(format!("tmp-{}", std::process::id()));
@@ -6306,12 +6400,13 @@ mod tests {
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_publish_options,
-        build_native_instrumented, build_options, debug_options, demangle_profile_symbols,
-        display_flux_symbol, json_string, native_build_cache_path_configured,
-        native_cache_entry_is_valid, output_with_timeout, package_artifact_name, package_options,
-        parse_adb_devices, profile_options, profile_report_addresses, select_android_run_target,
-        split_symbols_options, symbolize_options, test_options, validate_android_publish_manifest,
-        waydroid_status_is_running, write_native_cache_metadata,
+        build_native_configured, build_native_instrumented, build_options, debug_options,
+        demangle_profile_symbols, display_flux_symbol, json_string,
+        native_build_cache_path_configured, native_cache_entry_is_valid,
+        native_package_config_for_target, output_with_timeout, package_artifact_name,
+        package_options, parse_adb_devices, profile_options, profile_report_addresses,
+        select_android_run_target, split_symbols_options, symbolize_options, test_options,
+        validate_android_publish_manifest, waydroid_status_is_running, write_native_cache_metadata,
     };
 
     #[test]
@@ -6383,6 +6478,7 @@ mod tests {
             &binary,
             BuildMode::Profile,
             NativeInstrumentation::AddressSanitizer,
+            None,
         )
         .expect("AddressSanitizer profile binary should build");
         let output = std::process::Command::new(&binary)
@@ -6570,6 +6666,59 @@ mod tests {
         assert_ne!(plain, sysrooted);
         assert_ne!(plain, different_clang);
         assert_ne!(plain, different_gtk);
+    }
+
+    #[test]
+    fn native_package_libraries_and_search_paths_link_real_linux_symbols() {
+        let root =
+            std::env::temp_dir().join(format!("flux-native-package-link-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("native"))
+            .expect("native link test directory should be writable");
+        let native_source = root.join("native/native.c");
+        let native_library = root.join("native/libfluxnative.so");
+        std::fs::write(
+            &native_source,
+            "#include <stdint.h>\nint64_t flux_native_double(int64_t value) { return value * 2; }\n",
+        )
+        .expect("native test source should be writable");
+        let clang = std::process::Command::new("clang")
+            .args(["-shared", "-fPIC"])
+            .arg(&native_source)
+            .arg("-o")
+            .arg(&native_library)
+            .status()
+            .expect("clang should build the native test library");
+        assert!(clang.success());
+
+        std::fs::write(root.join("main.flux"), "fn main() -> i64 { return 0 }\n")
+            .expect("native package entry should be writable");
+        std::fs::write(
+            root.join("flux.toml"),
+            "[package]\nformat_version = 1\nname = \"native-link-test\"\nentry = \"main.flux\"\n\n[native]\nplugin = true\nlibraries = [\"fluxnative\"]\nsearch_paths = [\"native\"]\n",
+        )
+        .expect("native package manifest should be writable");
+        let native = native_package_config_for_target(&root)
+            .unwrap_or_else(|_| panic!("native package manifest should parse"))
+            .expect("package target should expose native config");
+
+        let binary = root.join("app");
+        let generated = "#include <stdint.h>\nextern int64_t flux_native_double(int64_t);\nint main(void) { return (int)flux_native_double(21); }\n";
+        build_native_configured(
+            generated,
+            &binary,
+            BuildMode::Release,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            Some(&native),
+            false,
+        )
+        .expect("manifest native library flags should reach clang");
+        let status = std::process::Command::new(&binary)
+            .env("LD_LIBRARY_PATH", root.join("native"))
+            .status()
+            .expect("linked native test executable should run");
+        assert_eq!(status.code(), Some(42));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

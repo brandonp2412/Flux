@@ -10,6 +10,7 @@ use crate::ir::ControlFlowGraph;
 #[derive(Debug, Clone)]
 pub struct Signature {
     pub public: bool,
+    pub foreign_symbol: Option<String>,
     pub params: Vec<Type>,
     pub param_details: Vec<ParamSignature>,
     pub returns: Vec<Type>,
@@ -577,6 +578,7 @@ pub fn check_all_with_package_constants(
                 function.name.clone(),
                 Signature {
                     public: true,
+                    foreign_symbol: None,
                     params: param_details.iter().map(|param| param.ty.clone()).collect(),
                     param_details,
                     returns: function
@@ -679,6 +681,7 @@ pub fn check_all_with_package_constants(
     }
     signatures.constants = constant_cache;
 
+    let mut foreign_symbols = HashMap::<String, SourceSpan>::new();
     for function in &program.functions {
         if matches!(
             function.name.as_str(),
@@ -750,6 +753,31 @@ pub fn check_all_with_package_constants(
             ));
             continue;
         }
+        if let Some(symbol) = &function.foreign_symbol {
+            if function.name == "main" {
+                diagnostics.push(diag(
+                    function.name_span,
+                    "fn main cannot be imported through extern C",
+                ));
+                continue;
+            }
+            if let Some(previous) = foreign_symbols.insert(symbol.clone(), function.name_span) {
+                diagnostics.push(
+                    diag(
+                        function.name_span,
+                        &format!("duplicate extern C symbol '{symbol}'"),
+                    )
+                    .with_label(previous, "native symbol was already imported here"),
+                );
+                continue;
+            }
+            if function.returns.len() > 1 {
+                diagnostics.push(diag(
+                    function.return_span,
+                    "extern C functions currently support zero or one return value",
+                ));
+            }
+        }
         let mut param_details = Vec::with_capacity(function.params.len());
         for param in &function.params {
             if let Err(diagnostic) = require_known_type(param.type_span, &param.ty, &signatures) {
@@ -762,6 +790,16 @@ pub fn check_all_with_package_constants(
                 diagnostics.push(diagnostic);
             }
             let ty = signatures.canonical_type(&param.ty);
+            if function.foreign_symbol.is_some() && !extern_c_param_type_supported(&ty) {
+                diagnostics.push(diag(
+                    param.type_span,
+                    &format!(
+                        "extern C parameter '{}' has unsupported type '{}'; current native imports accept only i64, bool, str, and error",
+                        param.name,
+                        ty.name()
+                    ),
+                ));
+            }
             let default = if let Some(default) = &param.default {
                 match evaluate_default_expr(default, &signatures) {
                     Ok(value) => {
@@ -802,10 +840,22 @@ pub fn check_all_with_package_constants(
             if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                 diagnostics.push(diagnostic);
             }
-            if matches!(signatures.canonical_type(ty), Type::List(_)) {
+            let canonical_return = signatures.canonical_type(ty);
+            if matches!(canonical_return, Type::List(_)) {
                 diagnostics.push(diag(
                     span,
                     "list values cannot be returned from functions until collection ownership is implemented",
+                ));
+            }
+            if function.foreign_symbol.is_some()
+                && !extern_c_return_type_supported(&canonical_return)
+            {
+                diagnostics.push(diag(
+                    span,
+                    &format!(
+                        "extern C return type '{}' is unsupported; current native imports return only i64, bool, or void so borrowed/owned foreign lifetimes cannot escape unsafely",
+                        canonical_return.name()
+                    ),
                 ));
             }
             if function.public
@@ -818,6 +868,7 @@ pub fn check_all_with_package_constants(
             function.name.clone(),
             Signature {
                 public: function.public,
+                foreign_symbol: function.foreign_symbol.clone(),
                 params: param_details.iter().map(|param| param.ty.clone()).collect(),
                 param_details,
                 returns: function
@@ -914,6 +965,13 @@ pub fn check_all_with_package_constants(
                 ));
                 continue;
             };
+            if function.foreign_symbol.is_some() {
+                diagnostics.push(diag(
+                    mapping.function_span,
+                    "extern C functions cannot implement Flux interface capabilities; wrap the native call in an ordinary Flux function first",
+                ));
+                continue;
+            }
             if let Err(diagnostic) = require_visible_declaration(
                 mapping.function_span,
                 function.span,
@@ -2813,11 +2871,22 @@ fn grid_elements_overlap(left: &crate::ast::ViewElement, right: &crate::ast::Vie
         && u64::from(right.column) <= left_column_end
 }
 
+fn extern_c_param_type_supported(ty: &Type) -> bool {
+    matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error)
+}
+
+fn extern_c_return_type_supported(ty: &Type) -> bool {
+    matches!(ty, Type::I64 | Type::Bool | Type::Void)
+}
+
 fn check_function_all(
     function: &Function,
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if function.foreign_symbol.is_some() {
+        return;
+    }
     let mut env = HashMap::new();
     let mut mutable = HashSet::new();
     for param in &function.params {
@@ -5124,6 +5193,12 @@ pub fn type_of_expr(
                 return Ok(constant.ty.clone());
             }
             if let Some(signature) = signatures.get(name) {
+                if signature.foreign_symbol.is_some() {
+                    return Err(diag(
+                        expr.span,
+                        "extern C functions may only be called directly; wrap the native call in a Flux function before passing it as a value",
+                    ));
+                }
                 require_visible_declaration(
                     expr.span,
                     signature.span,

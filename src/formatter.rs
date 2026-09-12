@@ -418,6 +418,17 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         param_parts.push(format!("{}: {}{default}", param.name, param.ty.name()));
     }
     let params = param_parts.join(", ");
+    if let Some(symbol) = &function.foreign_symbol {
+        lines.insert(
+            function.line,
+            format!(
+                "{visibility}extern c \"{symbol}\" fn {}({params}) -> {}",
+                function.name,
+                format_return_types(&function.returns)
+            ),
+        );
+        return;
+    }
     if function.expression_body {
         let expression = function
             .body
