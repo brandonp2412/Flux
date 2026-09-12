@@ -15550,6 +15550,22 @@ fn negateZeroMultiply(value: i64) -> i64 {
     return -(value * 0)
 }
 
+fn negateNonPowerOfTwoMultiply(value: i64) -> i64 {
+    return -(value * 3)
+}
+
+fn negateNonPowerOfTwoMultiplyLeft(value: i64) -> i64 {
+    return -(6 * value)
+}
+
+fn retainPowerOfTwoMultiply(value: i64) -> i64 {
+    return -(value * 2)
+}
+
+fn retainNegativePowerOfTwoMultiply(value: i64) -> i64 {
+    return -(value * -2)
+}
+
 fn negatePositiveAdd(value: i64) -> i64 {
     return -(value + 7)
 }
@@ -15587,14 +15603,18 @@ fn main() -> i64 {
     print(negateSelfDivision(2))
     print(negateSelfSubtraction(3))
     print(negateZeroMultiply(4))
-    print(negatePositiveAdd(5))
-    print(negatePositiveAddLeft(6))
-    print(negateNegativeSubtract(7))
-    print(negateNonnegativeLeftSubtract(8))
-    print(retainPotentialMin(9))
-    print(retainNegativeAdd(10))
-    print(retainPositiveSubtract(11))
-    print(retainNegativeLeftSubtract(12))
+    print(negateNonPowerOfTwoMultiply(5))
+    print(negateNonPowerOfTwoMultiplyLeft(6))
+    print(retainPowerOfTwoMultiply(7))
+    print(retainNegativePowerOfTwoMultiply(8))
+    print(negatePositiveAdd(9))
+    print(negatePositiveAddLeft(10))
+    print(negateNegativeSubtract(11))
+    print(negateNonnegativeLeftSubtract(12))
+    print(retainPotentialMin(13))
+    print(retainNegativeAdd(14))
+    print(retainPositiveSubtract(15))
+    print(retainNegativeLeftSubtract(16))
     return 0
 }
 "#;
@@ -15604,11 +15624,15 @@ fn main() -> i64 {
         .expect("bounded-result negation proofs should remove only redundant guards");
     assert_eq!(
         generated.matches("flux_neg_i64(").count(),
-        5,
-        "the helper definition plus additive forms that can still produce i64::MIN must retain checked negation",
+        7,
+        "the helper definition plus forms that can still produce i64::MIN must retain checked negation",
     );
     assert!(generated.contains("flux_div_self_i64(flux__local_value)"));
     assert!(generated.contains("(flux__local_value) / INT64_C(2)"));
+    assert!(generated.contains("-(flux_mul_i64(flux__local_value, INT64_C(3)))"));
+    assert!(generated.contains("-(flux_mul_i64(INT64_C(6), flux__local_value))"));
+    assert!(generated.contains("flux_neg_i64(flux_mul_i64(flux__local_value, INT64_C(2)))"));
+    assert!(generated.contains("flux_neg_i64(flux_mul_i64(flux__local_value, INT64_C(-2)))"));
     assert!(generated.contains("-(flux_add_i64(flux__local_value, INT64_C(7)))"));
     assert!(generated.contains("-(flux_add_i64(INT64_C(7), flux__local_value))"));
     assert!(generated.contains("-(flux_sub_i64(flux__local_value, INT64_C(-7)))"));
@@ -15623,14 +15647,14 @@ view Counter {
     grid rows: auto
     state count: i64 = 4
     Button action at 1,1
-        text: "Shift"
-        onPress: count => -(count + 7)
+        text: "Scale"
+        onPress: count => -(count * 3)
 }
 app Counter
 "#;
     let ui_generated = compile_to_c(ui).expect("UI bounded-result negation should share lowering");
     assert!(!ui_generated.contains("flux_neg_i64("));
-    assert!(ui_generated.contains("-(flux_add_i64(flux__ui_state_count, INT64_C(7)))"));
+    assert!(ui_generated.contains("-(flux_mul_i64(flux__ui_state_count, INT64_C(3)))"));
 }
 
 #[test]

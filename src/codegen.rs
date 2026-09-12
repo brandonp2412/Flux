@@ -18424,8 +18424,11 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
             op: BinOp::Mul,
             right,
         } => {
-            matches!(constant_i64(left), Some(0 | -1))
-                || matches!(constant_i64(right), Some(0 | -1))
+            let constant_factor_excludes_min = |factor: i64| {
+                factor == 0 || factor == -1 || !factor.unsigned_abs().is_power_of_two()
+            };
+            constant_i64(left).is_some_and(constant_factor_excludes_min)
+                || constant_i64(right).is_some_and(constant_factor_excludes_min)
         }
         ExprKind::Binary {
             left,
