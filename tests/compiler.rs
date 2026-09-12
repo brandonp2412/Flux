@@ -20519,6 +20519,43 @@ app Screen
 }
 
 #[test]
+fn linux_minimum_size_constraints_refresh_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicMinimumSize {
+    state extent: i64 = 48
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Button action at 1,1
+        text: "Resize"
+        minWidth: extent
+        minHeight: extent
+    Button grow at 2,1
+        text: "Grow"
+        onPress: extent => extent + 8
+    Text viewport at 3,1
+        text: "Responsive"
+        minWidth: windowWidth
+}
+app DynamicMinimumSize
+"#;
+
+    check_source(source).expect("dynamic Linux minimum sizes should typecheck");
+    let generated = compile_to_c(source).expect("dynamic Linux minimum sizes should lower");
+
+    assert!(generated.contains("int64_t flux__min_width_action = flux__ui_state_extent"));
+    assert!(generated.contains("int64_t flux__min_height_action = flux__ui_state_extent"));
+    assert!(generated.contains("int64_t refresh_min_width_action = flux__ui_state_extent"));
+    assert!(generated.contains("int64_t refresh_min_height_action = flux__ui_state_extent"));
+    assert!(generated.contains("int64_t flux__min_width_viewport = flux__ui_window_width"));
+    assert!(generated.contains("int64_t refresh_min_width_viewport = flux__ui_window_width"));
+    assert!(generated.contains("minWidth must be between 1 and 2147483647"));
+    assert!(generated.contains("minHeight must be between 1 and 2147483647"));
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_action, flux__min_width_action, flux__min_height_action)"));
+    assert!(generated.contains("gtk_widget_set_size_request(flux__ui_action, refresh_min_width_action, refresh_min_height_action)"));
+    assert!(generated.contains("flux__ui_refresh_changed(0)"));
+}
+
+#[test]
 fn flow_layout_auto_places_flat_siblings_on_linux_and_android() {
     let source = r#"
 view Actions {

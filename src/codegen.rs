@@ -11702,6 +11702,83 @@ fn emit_ui_refresh(
                 "    if ({widget} != NULL) gtk_widget_set_focusable({widget}, {value});\n"
             ));
         }
+        let dynamic_min_width = view_property(element, "min_width")
+            .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+        let dynamic_min_height = view_property(element, "min_height")
+            .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+        if dynamic_min_width.is_some() || dynamic_min_height.is_some() {
+            let layout_widget = if view_property(element, "layout_transition_ms").is_some() {
+                linux_ui_layout_c_name(element)
+            } else {
+                widget.clone()
+            };
+            let fixed_width = view
+                .grid
+                .columns
+                .get(element.column.saturating_sub(1) as usize)
+                .and_then(|track| match track {
+                    crate::ast::GridTrack::Units(value) => Some(i64::from(*value)),
+                    _ => None,
+                });
+            let fixed_height = view
+                .grid
+                .rows
+                .get(element.row.saturating_sub(1) as usize)
+                .and_then(|track| match track {
+                    crate::ast::GridTrack::Units(value) => Some(i64::from(*value)),
+                    _ => None,
+                });
+            let width = if let Some(property) = dynamic_min_width {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    int64_t refresh_min_width_{} = {value};\n    if (refresh_min_width_{} < 1 || refresh_min_width_{} > INT32_MAX) {{ fputs(\"Flux runtime error: minWidth must be between 1 and 2147483647\\n\", stderr); abort(); }}\n",
+                    element.name, element.name, element.name
+                ));
+                match fixed_width {
+                    Some(fixed) => format!(
+                        "(refresh_min_width_{} > INT64_C({fixed}) ? refresh_min_width_{} : INT64_C({fixed}))",
+                        element.name, element.name
+                    ),
+                    None => format!("refresh_min_width_{}", element.name),
+                }
+            } else {
+                static_minimum_size(element, "min_width", signatures)?
+                    .map(|minimum| fixed_width.map_or(minimum, |fixed| fixed.max(minimum)))
+                    .or(fixed_width)
+                    .map_or_else(|| "-1".to_string(), |value| value.to_string())
+            };
+            let height = if let Some(property) = dynamic_min_height {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    int64_t refresh_min_height_{} = {value};\n    if (refresh_min_height_{} < 1 || refresh_min_height_{} > INT32_MAX) {{ fputs(\"Flux runtime error: minHeight must be between 1 and 2147483647\\n\", stderr); abort(); }}\n",
+                    element.name, element.name, element.name
+                ));
+                match fixed_height {
+                    Some(fixed) => format!(
+                        "(refresh_min_height_{} > INT64_C({fixed}) ? refresh_min_height_{} : INT64_C({fixed}))",
+                        element.name, element.name
+                    ),
+                    None => format!("refresh_min_height_{}", element.name),
+                }
+            } else {
+                let minimum =
+                    static_minimum_size(element, "min_height", signatures)?.or_else(|| {
+                        (fixed_height.is_none()
+                            && matches!(
+                                element.kind.as_str(),
+                                "Button" | "TextInput" | "Toggle" | "Radio"
+                            ))
+                        .then_some(40)
+                    });
+                minimum
+                    .map(|minimum| fixed_height.map_or(minimum, |fixed| fixed.max(minimum)))
+                    .or(fixed_height)
+                    .map_or_else(|| "-1".to_string(), |value| value.to_string())
+            };
+            out.push_str(&format!(
+                "    if ({layout_widget} != NULL) gtk_widget_set_size_request({layout_widget}, {width}, {height});\n"
+            ));
+        }
         emit_dynamic_transform_refresh(out, element, view, signatures)?;
         let widget = content_widget;
         match element.kind.as_str() {
@@ -12412,30 +12489,77 @@ fn emit_grid_sizing(
         crate::ast::GridTrack::Units(value) => Some(i64::from(*value)),
         _ => None,
     });
-    let min_width = static_minimum_size(element, "min_width", signatures)?;
-    let min_height = static_minimum_size(element, "min_height", signatures)?.or_else(|| {
-        (fixed_height.is_none()
-            && matches!(
-                element.kind.as_str(),
-                "Button" | "TextInput" | "Toggle" | "Radio"
-            ))
-        .then_some(40)
-    });
-    let width = match (fixed_width, min_width) {
+    let min_width_property = view_property(element, "min_width");
+    let min_height_property = view_property(element, "min_height");
+    let dynamic_min_width = min_width_property
+        .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+    let dynamic_min_height = min_height_property
+        .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+    let min_width = if dynamic_min_width.is_some() {
+        None
+    } else {
+        static_minimum_size(element, "min_width", signatures)?
+    };
+    let min_height = if dynamic_min_height.is_some() {
+        None
+    } else {
+        static_minimum_size(element, "min_height", signatures)?.or_else(|| {
+            (fixed_height.is_none()
+                && matches!(
+                    element.kind.as_str(),
+                    "Button" | "TextInput" | "Toggle" | "Radio"
+                ))
+            .then_some(40)
+        })
+    };
+    let static_width = match (fixed_width, min_width) {
         (Some(fixed), Some(minimum)) => Some(fixed.max(minimum)),
         (fixed, minimum) => fixed.or(minimum),
     };
-    let height = match (fixed_height, min_height) {
+    let static_height = match (fixed_height, min_height) {
         (Some(fixed), Some(minimum)) => Some(fixed.max(minimum)),
         (fixed, minimum) => fixed.or(minimum),
     };
-    if width.is_some() || height.is_some() {
-        out.push_str(&format!(
-            "    gtk_widget_set_size_request({variable}, {}, {});\n",
-            width.unwrap_or(-1),
-            height.unwrap_or(-1),
-        ));
+    if dynamic_min_width.is_none() && dynamic_min_height.is_none() {
+        if static_width.is_some() || static_height.is_some() {
+            out.push_str(&format!(
+                "    gtk_widget_set_size_request({variable}, {}, {});\n",
+                static_width.unwrap_or(-1),
+                static_height.unwrap_or(-1),
+            ));
+        }
+        return Ok(());
     }
+
+    let width = if let Some(property) = dynamic_min_width {
+        let value = ui_expr_c(&property.value, view, signatures)?;
+        let local = format!("flux__min_width_{}", element.name);
+        out.push_str(&format!(
+            "    int64_t {local} = {value};\n    if ({local} < 1 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: minWidth must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+        ));
+        fixed_width.map_or_else(
+            || local.clone(),
+            |fixed| format!("({local} > INT64_C({fixed}) ? {local} : INT64_C({fixed}))"),
+        )
+    } else {
+        static_width.map_or_else(|| "-1".to_string(), |value| value.to_string())
+    };
+    let height = if let Some(property) = dynamic_min_height {
+        let value = ui_expr_c(&property.value, view, signatures)?;
+        let local = format!("flux__min_height_{}", element.name);
+        out.push_str(&format!(
+            "    int64_t {local} = {value};\n    if ({local} < 1 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: minHeight must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+        ));
+        fixed_height.map_or_else(
+            || local.clone(),
+            |fixed| format!("({local} > INT64_C({fixed}) ? {local} : INT64_C({fixed}))"),
+        )
+    } else {
+        static_height.map_or_else(|| "-1".to_string(), |value| value.to_string())
+    };
+    out.push_str(&format!(
+        "    gtk_widget_set_size_request({variable}, {width}, {height});\n"
+    ));
     Ok(())
 }
 
