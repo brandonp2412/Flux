@@ -16407,6 +16407,118 @@ app Counter
 }
 
 #[test]
+fn reuses_equivalent_checked_negation_expressions() {
+    let source = r#"
+const ZERO: i64 = 0
+const NEG_ONE: i64 = -1
+
+fn unaryEqualsSubtract(value: i64) -> bool {
+    return -value == (ZERO - value)
+}
+
+fn multiplyEqualsDivide(value: i64) -> bool {
+    return (NEG_ONE * value) == (value / NEG_ONE)
+}
+
+fn subtractEquivalent(value: i64) -> i64 {
+    return (ZERO - value) - (value / NEG_ONE)
+}
+
+fn addEquivalent(value: i64) -> i64 {
+    return -value + (NEG_ONE * value)
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectfulComparison(value: i64) -> bool {
+    return -observe(value) == (ZERO - observe(value))
+}
+
+fn main() -> i64 {
+    print(unaryEqualsSubtract(5))
+    print(multiplyEqualsDivide(6))
+    print(subtractEquivalent(7))
+    print(addEquivalent(8))
+    print(effectfulComparison(9))
+    return 0
+}
+"#;
+
+    check_source(source).expect("equivalent checked negation forms should typecheck");
+    let generated = compile_to_c(source)
+        .expect("equivalent checked negation forms should share authoritative checks");
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), true);"));
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), INT64_C(0));"));
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux_neg_i64(flux__local_value); flux_add_i64(flux__checked_reuse, flux__checked_reuse); });"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful equivalent-looking negations must retain both source evaluations",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-equivalent-checked-negation-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary equivalent checked negation directory should be writable");
+    let c_path = root.join("equivalent-checked-negation.c");
+    let exe_path = root.join("equivalent-checked-negation");
+    fs::write(&c_path, &generated)
+        .expect("generated equivalent checked negation C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile equivalent checked negation forms");
+    assert!(
+        compile.status.success(),
+        "equivalent checked negation C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("equivalent checked negation program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\n0\n-16\n9\n9\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 2
+    Button action at 1,1
+        text: "Negate twice"
+        onPress: count => -count + (0 - count)
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI checked negation equivalence should share optimized lowering");
+    assert!(ui_generated.contains("__extension__ ({ int64_t flux__checked_reuse = flux_neg_i64(flux__ui_state_count); flux_add_i64(flux__checked_reuse, flux__checked_reuse); })"));
+    assert_eq!(
+        ui_generated
+            .matches("flux_neg_i64(flux__ui_state_count)")
+            .count(),
+        1,
+        "UI lowering should evaluate one authoritative checked negation",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1

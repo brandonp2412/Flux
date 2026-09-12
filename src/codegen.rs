@@ -13054,7 +13054,7 @@ fn ui_expr_c(
                 return Ok(code);
             }
             if let Some(code) =
-                same_checked_i64_expression_comparison_c(*op, left, right, &left_code)
+                same_checked_i64_expression_comparison_c(*op, left, right, &left_code, signatures)
             {
                 return Ok(code);
             }
@@ -13075,7 +13075,7 @@ fn ui_expr_c(
                 return Ok(format!("({right_code} {} {other_code})", c_operator(*op)));
             }
             if let Some(code) =
-                same_checked_i64_expression_arithmetic_c(*op, left, right, &left_code)
+                same_checked_i64_expression_arithmetic_c(*op, left, right, &left_code, signatures)
             {
                 return Ok(code);
             }
@@ -19719,7 +19719,49 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
-fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
+fn checked_negation_operand<'a>(expr: &'a Expr, signatures: &Signatures) -> Option<&'a Expr> {
+    let constant_i64 = |expr: &Expr| match typecheck::constant_primitive_value(expr, signatures) {
+        Some(ConstantValue::I64(value)) => Some(value),
+        _ => None,
+    };
+
+    match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => Some(expr),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Sub,
+            right,
+        } if constant_i64(left) == Some(0) => Some(right),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } if constant_i64(left) == Some(-1) => Some(right),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } if constant_i64(right) == Some(-1) => Some(left),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Div,
+            right,
+        } if constant_i64(right) == Some(-1) => Some(left),
+        _ => None,
+    }
+}
+
+fn same_pure_i64_expression(left: &Expr, right: &Expr, signatures: &Signatures) -> bool {
+    if let (Some(left), Some(right)) = (
+        checked_negation_operand(left, signatures),
+        checked_negation_operand(right, signatures),
+    ) {
+        return same_pure_i64_expression(left, right, signatures);
+    }
+
     match (&left.kind, &right.kind) {
         (ExprKind::Int(left), ExprKind::Int(right)) => left == right,
         (ExprKind::Var(left), ExprKind::Var(right)) => left == right,
@@ -19732,7 +19774,7 @@ fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
                 op: UnaryOp::Neg,
                 expr: right,
             },
-        ) => same_pure_i64_expression(left, right),
+        ) => same_pure_i64_expression(left, right, signatures),
         (
             ExprKind::Binary {
                 left: left_left,
@@ -19747,12 +19789,12 @@ fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
         ) if left_op == right_op
             && matches!(left_op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
-            let same_order = same_pure_i64_expression(left_left, right_left)
-                && same_pure_i64_expression(left_right, right_right);
+            let same_order = same_pure_i64_expression(left_left, right_left, signatures)
+                && same_pure_i64_expression(left_right, right_right, signatures);
             same_order
                 || (matches!(left_op, BinOp::Add | BinOp::Mul)
-                    && same_pure_i64_expression(left_left, right_right)
-                    && same_pure_i64_expression(left_right, right_left))
+                    && same_pure_i64_expression(left_left, right_right, signatures)
+                    && same_pure_i64_expression(left_right, right_left, signatures))
         }
         _ => false,
     }
@@ -19763,6 +19805,7 @@ fn same_checked_i64_expression_arithmetic_c(
     left: &Expr,
     right: &Expr,
     left_code: &str,
+    signatures: &Signatures,
 ) -> Option<String> {
     if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
         || !matches!(
@@ -19775,7 +19818,7 @@ fn same_checked_i64_expression_arithmetic_c(
                 ..
             }
         )
-        || !same_pure_i64_expression(left, right)
+        || !same_pure_i64_expression(left, right, signatures)
     {
         return None;
     }
@@ -19798,6 +19841,7 @@ fn same_checked_i64_expression_comparison_c(
     left: &Expr,
     right: &Expr,
     left_code: &str,
+    signatures: &Signatures,
 ) -> Option<String> {
     if !matches!(
         left.kind,
@@ -19808,7 +19852,7 @@ fn same_checked_i64_expression_comparison_c(
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
             ..
         }
-    ) || !same_pure_i64_expression(left, right)
+    ) || !same_pure_i64_expression(left, right, signatures)
     {
         return None;
     }
@@ -24764,9 +24808,13 @@ fn emit_expr(
                 same_checked_negated_binding_comparison_c(*op, left, right, &emitted_left.code)
             {
                 code
-            } else if let Some(code) =
-                same_checked_i64_expression_comparison_c(*op, left, right, &emitted_left.code)
-            {
+            } else if let Some(code) = same_checked_i64_expression_comparison_c(
+                *op,
+                left,
+                right,
+                &emitted_left.code,
+                signatures,
+            ) {
                 code
             } else if let Some(code) = same_binding_comparison_c(*op, left, right) {
                 code.to_string()
@@ -24790,9 +24838,13 @@ fn emit_expr(
                     c_operator(*op),
                     other.code
                 )
-            } else if let Some(code) =
-                same_checked_i64_expression_arithmetic_c(*op, left, right, &emitted_left.code)
-            {
+            } else if let Some(code) = same_checked_i64_expression_arithmetic_c(
+                *op,
+                left,
+                right,
+                &emitted_left.code,
+                signatures,
+            ) {
                 code
             } else if let Some(code) = checked_i64_identity_c(
                 *op,
