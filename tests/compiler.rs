@@ -23653,10 +23653,11 @@ view Gallery {
     grid columns: 1fr
     grid rows: auto auto
     state alternate: bool = false
+    state imageFit: str = "cover"
     Image artwork at 1,1
         source: "default.png"
         alt: "Cover"
-        fit: "cover"
+        fit: imageFit
         can_shrink: alternate
         min_width: 240
         min_height: 160
@@ -23671,7 +23672,10 @@ app Gallery
     assert!(generated.contains("flux__ui_image_source_path"));
     assert!(generated.contains("gtk_picture_new_for_filename"));
     assert!(generated.contains("gtk_picture_set_alternative_text"));
-    assert!(generated.contains("GTK_CONTENT_FIT_COVER"));
+    assert!(generated.contains("const char *child_image_fit_value = flux__ui_state_imageFit"));
+    assert!(generated.contains("GtkContentFit child_image_fit"));
+    assert!(generated.contains("const char *refresh_image_fit_value = flux__ui_state_imageFit"));
+    assert!(generated.contains("gtk_picture_set_content_fit"));
     assert!(generated.contains("gtk_picture_set_can_shrink"));
     assert!(
         generated.contains(
@@ -27933,19 +27937,23 @@ fn android_native_ui_lowers_image_source_fit_alt_and_state_refresh() {
         root.join("src/main.flux"),
         r#"view Gallery {
     state compact: bool = false
+    state fitMode: str = "contain"
     derived source: str = "cover.png"
     grid columns: 1fr
-    grid rows: 1fr auto
+    grid rows: 1fr auto auto
     Image artwork at 1,1
         source: source
         alt: "Cover art"
-        fit: "cover"
+        fit: fitMode
         can_shrink: compact
         min_width: 240
         min_height: 160
     Button resize at 2,1
         text: "Resize"
         on_press: compact => !compact
+    Button crop at 3,1
+        text: "Crop"
+        on_press: fitMode => "cover"
 }
 app Gallery
 "#,
@@ -27960,7 +27968,13 @@ app Gallery
     assert!(generated.contains("configureImage"));
     assert!(generated.contains("cover.png"));
     assert!(generated.contains("Cover art"));
-    assert!(generated.contains("\"cover\""));
+    assert!(generated.contains("flux__ui_state_fitMode"));
+    assert!(generated.contains("const char *child_image_fit_value = flux__ui_state_fitMode"));
+    assert!(generated.contains("const char *refresh_image_fit_value = flux__ui_state_fitMode"));
+    assert!(generated.contains("styleImageFit"));
+    assert!(
+        generated.contains("Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'")
+    );
     assert!(generated.contains("flux__ui_state_compact"));
     assert!(generated.contains("setMinimumWidth"));
     assert!(generated.contains("setMinimumHeight"));
@@ -27970,6 +27984,10 @@ app Gallery
     )));
     assert!(generated.contains("refresh_image_can_shrink"));
     assert!(!generated.contains("refresh_image_source"));
+    let crop_id = android_stable_view_id("Gallery", "crop");
+    assert!(generated.contains(&format!(
+        "case {crop_id}: flux__ui_state_fitMode = \"cover\"; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 1); break;"
+    )));
 
     let _ = fs::remove_dir_all(&root);
 }

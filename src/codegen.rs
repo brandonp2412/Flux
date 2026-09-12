@@ -5895,24 +5895,26 @@ fn emit_android_native_application(
             };
             let fit = match view_property(element, "fit") {
                 Some(property) => {
-                    let Some(value) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android Image.fit must be a compile-time string",
+                    if let Some(value) = static_expr_str(&property.value, signatures) {
+                        if !matches!(
+                            value.as_str(),
+                            "fill" | "contain" | "cover" | "scaleDown" | "scale_down"
+                        ) {
+                            return Err(diag(
+                                property.value.span,
+                                "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
+                            ));
+                        }
+                        c_string(&value)
+                    } else {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "    const char *child_image_fit_value = {value};\n    if (strcmp(child_image_fit_value, \"fill\") != 0 && strcmp(child_image_fit_value, \"contain\") != 0 && strcmp(child_image_fit_value, \"cover\") != 0 && strcmp(child_image_fit_value, \"scaleDown\") != 0 && strcmp(child_image_fit_value, \"scale_down\") != 0) {{ fputs(\"Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\\n\", stderr); abort(); }}\n"
                         ));
-                    };
-                    if !matches!(
-                        value.as_str(),
-                        "fill" | "contain" | "cover" | "scaleDown" | "scale_down"
-                    ) {
-                        return Err(diag(
-                            property.value.span,
-                            "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
-                        ));
+                        "child_image_fit_value".to_string()
                     }
-                    value
                 }
-                None => "contain".to_string(),
+                None => c_string("contain"),
             };
             let can_shrink = match view_property(element, "can_shrink") {
                 Some(property) => ui_expr_c(&property.value, view, signatures)?,
@@ -5925,8 +5927,7 @@ fn emit_android_native_application(
                 "    jstring child_image_alt = flux__android_utf8_string(env, {alt});\n"
             ));
             out.push_str(&format!(
-                "    jstring child_image_fit = flux__android_utf8_string(env, {});\n",
-                c_string(&fit)
+                "    jstring child_image_fit = flux__android_utf8_string(env, {fit});\n"
             ));
             out.push_str("    if (child_image_source == NULL || child_image_alt == NULL || child_image_fit == NULL) return;\n");
             out.push_str(
@@ -10221,27 +10222,28 @@ fn emit_linux_gtk_application(
                     ));
                 }
                 if let Some(property) = view_property(element, "fit") {
-                    let Some(fit) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "Image.fit must be a compile-time string",
+                    if let Some(fit) = static_expr_str(&property.value, signatures) {
+                        let fit = match fit.as_str() {
+                            "fill" => "GTK_CONTENT_FIT_FILL",
+                            "contain" => "GTK_CONTENT_FIT_CONTAIN",
+                            "cover" => "GTK_CONTENT_FIT_COVER",
+                            "scaleDown" | "scale_down" => "GTK_CONTENT_FIT_SCALE_DOWN",
+                            _ => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
+                                ));
+                            }
+                        };
+                        out.push_str(&format!(
+                            "    gtk_picture_set_content_fit(GTK_PICTURE({variable}), {fit});\n"
                         ));
-                    };
-                    let fit = match fit.as_str() {
-                        "fill" => "GTK_CONTENT_FIT_FILL",
-                        "contain" => "GTK_CONTENT_FIT_CONTAIN",
-                        "cover" => "GTK_CONTENT_FIT_COVER",
-                        "scaleDown" | "scale_down" => "GTK_CONTENT_FIT_SCALE_DOWN",
-                        _ => {
-                            return Err(diag(
-                                property.value.span,
-                                "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
-                            ));
-                        }
-                    };
-                    out.push_str(&format!(
-                        "    gtk_picture_set_content_fit(GTK_PICTURE({variable}), {fit});\n"
-                    ));
+                    } else {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "    const char *child_image_fit_value = {value};\n    GtkContentFit child_image_fit;\n    if (strcmp(child_image_fit_value, \"fill\") == 0) child_image_fit = GTK_CONTENT_FIT_FILL;\n    else if (strcmp(child_image_fit_value, \"contain\") == 0) child_image_fit = GTK_CONTENT_FIT_CONTAIN;\n    else if (strcmp(child_image_fit_value, \"cover\") == 0) child_image_fit = GTK_CONTENT_FIT_COVER;\n    else if (strcmp(child_image_fit_value, \"scaleDown\") == 0 || strcmp(child_image_fit_value, \"scale_down\") == 0) child_image_fit = GTK_CONTENT_FIT_SCALE_DOWN;\n    else {{ fputs(\"Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\\n\", stderr); abort(); }}\n    gtk_picture_set_content_fit(GTK_PICTURE({variable}), child_image_fit);\n"
+                        ));
+                    }
                 }
             }
             "Radio" => {
@@ -11129,6 +11131,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("TextInput", "validation_state")
             | ("Image", "source")
             | ("Image", "alt")
+            | ("Image", "fit")
             | ("Image", "can_shrink")
             | ("Toggle", "label")
             | ("Toggle", "checked")
@@ -11296,7 +11299,7 @@ fn android_ui_element_needs_refresh(
         ],
         "Button" => &["text", "size"],
         "TextInput" => &["placeholder", "validation_state"],
-        "Image" => &["source", "alt", "can_shrink"],
+        "Image" => &["source", "alt", "fit", "can_shrink"],
         "Toggle" => &["label", "checked"],
         "Radio" => &["label", "selected"],
         _ => &[],
@@ -12208,6 +12211,7 @@ fn emit_android_ui_refresh(
                 let source_dynamic =
                     android_ui_property_needs_refresh(element, "source", &runtime_names);
                 let alt_dynamic = android_ui_property_needs_refresh(element, "alt", &runtime_names);
+                let fit_dynamic = android_ui_property_needs_refresh(element, "fit", &runtime_names);
                 let can_shrink_dynamic =
                     android_ui_property_needs_refresh(element, "can_shrink", &runtime_names);
                 if source_dynamic {
@@ -12220,8 +12224,15 @@ fn emit_android_ui_refresh(
                         .transpose()?
                         .unwrap_or_else(|| c_string(""));
                     let fit = view_property(element, "fit")
-                        .and_then(|property| static_expr_str(&property.value, signatures))
-                        .unwrap_or_else(|| "contain".to_string());
+                        .map(|property| {
+                            if let Some(value) = static_expr_str(&property.value, signatures) {
+                                Ok(c_string(&value))
+                            } else {
+                                ui_expr_c(&property.value, view, signatures)
+                            }
+                        })
+                        .transpose()?
+                        .unwrap_or_else(|| c_string("contain"));
                     let can_shrink = view_property(element, "can_shrink")
                         .map(|property| ui_expr_c(&property.value, view, signatures))
                         .transpose()?
@@ -12232,9 +12243,18 @@ fn emit_android_ui_refresh(
                     out.push_str(&format!(
                         "                jstring refresh_image_alt = flux__android_utf8_string(env, {alt});\n"
                     ));
+                    if fit_dynamic {
+                        out.push_str(&format!(
+                            "                const char *refresh_image_fit_value = {fit};\n                if (strcmp(refresh_image_fit_value, \"fill\") != 0 && strcmp(refresh_image_fit_value, \"contain\") != 0 && strcmp(refresh_image_fit_value, \"cover\") != 0 && strcmp(refresh_image_fit_value, \"scaleDown\") != 0 && strcmp(refresh_image_fit_value, \"scale_down\") != 0) {{ fputs(\"Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\\n\", stderr); abort(); }}\n"
+                        ));
+                    }
+                    let fit_value = if fit_dynamic {
+                        "refresh_image_fit_value".to_string()
+                    } else {
+                        fit
+                    };
                     out.push_str(&format!(
-                        "                jstring refresh_image_fit = flux__android_utf8_string(env, {});\n",
-                        c_string(&fit)
+                        "                jstring refresh_image_fit = flux__android_utf8_string(env, {fit_value});\n"
                     ));
                     out.push_str("                if (refresh_image_source != NULL && refresh_image_alt != NULL && refresh_image_fit != NULL) {\n");
                     out.push_str("                    jmethodID refresh_image = (*env)->GetMethodID(env, activity_class, \"configureImage\", \"(Landroid/widget/ImageView;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V\");\n");
@@ -12246,6 +12266,12 @@ fn emit_android_ui_refresh(
                     out.push_str("                if (refresh_image_alt != NULL) (*env)->DeleteLocalRef(env, refresh_image_alt);\n");
                     out.push_str("                if (refresh_image_fit != NULL) (*env)->DeleteLocalRef(env, refresh_image_fit);\n");
                 } else {
+                    if fit_dynamic && let Some(property) = view_property(element, "fit") {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "                const char *refresh_image_fit_value = {value};\n                if (strcmp(refresh_image_fit_value, \"fill\") != 0 && strcmp(refresh_image_fit_value, \"contain\") != 0 && strcmp(refresh_image_fit_value, \"cover\") != 0 && strcmp(refresh_image_fit_value, \"scaleDown\") != 0 && strcmp(refresh_image_fit_value, \"scale_down\") != 0) {{ fputs(\"Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\\n\", stderr); abort(); }}\n                jstring refresh_image_fit = flux__android_utf8_string(env, refresh_image_fit_value);\n                if (refresh_image_fit != NULL) {{\n                    jmethodID refresh_image_fit_method = (*env)->GetMethodID(env, activity_class, \"styleImageFit\", \"(Landroid/widget/ImageView;Ljava/lang/String;)V\");\n                    if (refresh_image_fit_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_image_fit_method, child, refresh_image_fit);\n                    (*env)->DeleteLocalRef(env, refresh_image_fit);\n                }}\n"
+                        ));
+                    }
                     if can_shrink_dynamic
                         && let Some(property) = view_property(element, "can_shrink")
                     {
@@ -13259,6 +13285,14 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_picture_set_can_shrink(GTK_PICTURE({widget}), {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "fit")
+                    && static_expr_str(&property.value, signatures).is_none()
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    const char *refresh_image_fit_value = {value};\n    GtkContentFit refresh_image_fit;\n    if (strcmp(refresh_image_fit_value, \"fill\") == 0) refresh_image_fit = GTK_CONTENT_FIT_FILL;\n    else if (strcmp(refresh_image_fit_value, \"contain\") == 0) refresh_image_fit = GTK_CONTENT_FIT_CONTAIN;\n    else if (strcmp(refresh_image_fit_value, \"cover\") == 0) refresh_image_fit = GTK_CONTENT_FIT_COVER;\n    else if (strcmp(refresh_image_fit_value, \"scaleDown\") == 0 || strcmp(refresh_image_fit_value, \"scale_down\") == 0) refresh_image_fit = GTK_CONTENT_FIT_SCALE_DOWN;\n    else {{ fputs(\"Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\\n\", stderr); abort(); }}\n    if ({widget} != NULL) gtk_picture_set_content_fit(GTK_PICTURE({widget}), refresh_image_fit);\n"
                     ));
                 }
             }

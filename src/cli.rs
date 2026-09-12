@@ -5116,12 +5116,16 @@ __FLUX_PICKER_METHODS__
         if (maxWidthChars >= 0) view.setMaxEms(maxWidthChars == 0 ? Integer.MAX_VALUE : maxWidthChars);
     }
 
-    public void configureImage(ImageView view, String source, String fit, String alt, boolean canShrink) {
-        view.setAdjustViewBounds(canShrink);
+    public void styleImageFit(ImageView view, String fit) {
         if ("fill".equals(fit)) view.setScaleType(ImageView.ScaleType.FIT_XY);
         else if ("cover".equals(fit)) view.setScaleType(ImageView.ScaleType.CENTER_CROP);
         else if ("scaleDown".equals(fit) || "scale_down".equals(fit)) view.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         else view.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    }
+
+    public void configureImage(ImageView view, String source, String fit, String alt, boolean canShrink) {
+        view.setAdjustViewBounds(canShrink);
+        styleImageFit(view, fit);
         view.setContentDescription(alt);
         if (source == null || source.isEmpty()) {
             view.setImageDrawable(null);
@@ -7310,6 +7314,8 @@ mod tests {
     #[test]
     fn android_activity_loads_portable_asset_images() {
         let activity = android_activity_java_source("");
+        assert!(activity.contains("public void styleImageFit(ImageView view, String fit)"));
+        assert!(activity.contains("styleImageFit(view, fit);"));
         assert!(activity.contains("source.startsWith(\"asset://\")"));
         assert!(activity.contains("getAssets().open(assetName)"));
         assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(stream)"));
