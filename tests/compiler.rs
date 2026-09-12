@@ -28260,6 +28260,8 @@ fn android_radius_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicRadius {
     state cornerRadius: i64 = 8
+    state topRightRadius: i64 = 10
+    state bottomLeftRadius: i64 = 12
     grid columns: 1fr
     grid rows: auto auto
     Button panel at 1,1
@@ -28267,6 +28269,8 @@ view DynamicRadius {
         backgroundColor: "surfaceRaised"
         radius: cornerRadius
         radiusTopLeft: 20
+        radiusTopRight: topRightRadius
+        radiusBottomLeft: bottomLeftRadius
     Button grow at 2,1
         text: "Grow"
         onPress: cornerRadius => cornerRadius + 2
@@ -28286,15 +28290,65 @@ app DynamicRadius
     .expect("dynamic Android radius should lower");
 
     assert!(android.contains("int64_t child_radius = flux__ui_state_cornerRadius"));
+    assert!(android.contains("int64_t child_radius_top_right = flux__ui_state_topRightRadius"));
+    assert!(android.contains("int64_t child_radius_bottom_left = flux__ui_state_bottomLeftRadius"));
     assert!(android.contains("int64_t refresh_radius = flux__ui_state_cornerRadius"));
+    assert!(android.contains("int64_t refresh_radius_top_right = flux__ui_state_topRightRadius"));
+    assert!(
+        android.contains("int64_t refresh_radius_bottom_left = flux__ui_state_bottomLeftRadius")
+    );
     assert!(android.contains("styleViewRadii"));
     assert!(android.contains("(Landroid/view/View;FFFF)V"));
     assert!(android.contains("radius must be non-negative and fit within a 32-bit signed integer"));
+    assert!(
+        android
+            .contains("radiusTopRight must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(
+        android.contains(
+            "radiusBottomLeft must be non-negative and fit within a 32-bit signed integer"
+        )
+    );
     assert!(android.contains("(jfloat)(INT64_C(20) * flux__ui_density)"));
+    assert!(android.contains("(jfloat)(refresh_radius_top_right * flux__ui_density)"));
     assert!(android.contains("(jfloat)(refresh_radius * flux__ui_density)"));
-    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("(jfloat)(refresh_radius_bottom_left * flux__ui_density)"));
+    assert!(android.contains(
+        "if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2) {"
+    ));
     assert!(android.contains("flux__ui_state_cornerRadius = flux_add_i64"));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let corner_only_source = r#"
+view DynamicCornerOnly {
+    state cornerRadius: i64 = 7
+    grid columns: 1fr
+    grid rows: auto
+    Text panel at 1,1
+        text: "Panel"
+        radiusTopLeft: cornerRadius
+}
+app DynamicCornerOnly
+"#;
+    let corner_only_database =
+        fluxc::semantic::SemanticDatabase::analyze(corner_only_source, SourceId::UNKNOWN)
+            .expect("dynamic Android corner-only radius should analyze");
+    let corner_only_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        corner_only_database.program(),
+        corner_only_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android corner-only radius should lower");
+    assert!(
+        corner_only_android.contains("int64_t child_radius_top_left = flux__ui_state_cornerRadius")
+    );
+    assert!(
+        corner_only_android
+            .contains("int64_t refresh_radius_top_left = flux__ui_state_cornerRadius")
+    );
+    assert!(!corner_only_android.contains("int64_t child_radius ="));
+    assert!(!corner_only_android.contains("int64_t refresh_radius ="));
 
     let static_source = r#"
 view StaticRadius {

@@ -6412,22 +6412,46 @@ fn emit_android_native_application(
         } else {
             (0, false)
         };
-        let radius_top_left_static =
-            static_non_negative_style_i64(element, "radius_top_left", signatures)?;
-        let radius_top_right_static =
-            static_non_negative_style_i64(element, "radius_top_right", signatures)?;
-        let radius_bottom_left_static =
-            static_non_negative_style_i64(element, "radius_bottom_left", signatures)?;
-        let radius_bottom_right_static =
-            static_non_negative_style_i64(element, "radius_bottom_right", signatures)?;
+        let radius_corner = |property_name: &str| -> Result<(Option<i64>, bool), Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok((None, false));
+            };
+            let Some(value) = static_expr_i64(&property.value, signatures) else {
+                return Ok((None, true));
+            };
+            if value < 0 {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be non-negative"),
+                ));
+            }
+            if value > i64::from(i32::MAX) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must fit within a 32-bit signed integer"),
+                ));
+            }
+            Ok((Some(value), false))
+        };
+        let (radius_top_left_static, radius_top_left_dynamic) = radius_corner("radius_top_left")?;
+        let (radius_top_right_static, radius_top_right_dynamic) =
+            radius_corner("radius_top_right")?;
+        let (radius_bottom_left_static, radius_bottom_left_dynamic) =
+            radius_corner("radius_bottom_left")?;
+        let (radius_bottom_right_static, radius_bottom_right_dynamic) =
+            radius_corner("radius_bottom_right")?;
         let radius_top_left = radius_top_left_static.unwrap_or(radius);
         let radius_top_right = radius_top_right_static.unwrap_or(radius);
         let radius_bottom_left = radius_bottom_left_static.unwrap_or(radius);
         let radius_bottom_right = radius_bottom_right_static.unwrap_or(radius);
-        let dynamic_radius_top_left = dynamic_radius && radius_top_left_static.is_none();
-        let dynamic_radius_top_right = dynamic_radius && radius_top_right_static.is_none();
-        let dynamic_radius_bottom_left = dynamic_radius && radius_bottom_left_static.is_none();
-        let dynamic_radius_bottom_right = dynamic_radius && radius_bottom_right_static.is_none();
+        let dynamic_radius_top_left = radius_top_left_dynamic
+            || (view_property(element, "radius_top_left").is_none() && dynamic_radius);
+        let dynamic_radius_top_right = radius_top_right_dynamic
+            || (view_property(element, "radius_top_right").is_none() && dynamic_radius);
+        let dynamic_radius_bottom_left = radius_bottom_left_dynamic
+            || (view_property(element, "radius_bottom_left").is_none() && dynamic_radius);
+        let dynamic_radius_bottom_right = radius_bottom_right_dynamic
+            || (view_property(element, "radius_bottom_right").is_none() && dynamic_radius);
         let border_style_property = view_property(element, "border_style");
         let (border_style, dynamic_border_style) = if let Some(property) = border_style_property {
             if let Some(style) = static_expr_str(&property.value, signatures) {
@@ -6836,7 +6860,16 @@ fn emit_android_native_application(
                 border_start_width_dynamic,
                 dynamic_border_start_width,
             )?;
-            if dynamic_radius {
+            let use_dynamic_radius_base = dynamic_radius
+                && [
+                    "radius_top_left",
+                    "radius_top_right",
+                    "radius_bottom_right",
+                    "radius_bottom_left",
+                ]
+                .iter()
+                .any(|name| view_property(element, name).is_none());
+            if use_dynamic_radius_base {
                 let value = ui_expr_c(
                     &radius_property
                         .expect("dynamic radius property exists")
@@ -6848,19 +6881,51 @@ fn emit_android_native_application(
                     "    int64_t child_radius = {value};\n    if (child_radius < 0 || child_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
                 ));
             }
-            let radius_value = |dynamic: bool, value: i64| {
-                if dynamic {
-                    "child_radius".to_string()
+            let mut radius_value = |property_name: &str,
+                                    direct_dynamic: bool,
+                                    effective_dynamic: bool,
+                                    value: i64|
+             -> Result<String, Diagnostic> {
+                if direct_dynamic {
+                    let property = view_property(element, property_name)
+                        .expect("dynamic corner radius property exists");
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let variable = format!("child_{property_name}");
+                    out.push_str(&format!(
+                        "    int64_t {variable} = {value};\n    if ({variable} < 0 || {variable} > INT32_MAX) {{ fputs(\"Flux runtime error: {} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n",
+                        typecheck::internal_name_to_source(property_name)
+                    ));
+                    Ok(variable)
+                } else if effective_dynamic {
+                    Ok("child_radius".to_string())
                 } else {
-                    format!("INT64_C({value})")
+                    Ok(format!("INT64_C({value})"))
                 }
             };
-            let radius_top_left_value = radius_value(dynamic_radius_top_left, radius_top_left);
-            let radius_top_right_value = radius_value(dynamic_radius_top_right, radius_top_right);
-            let radius_bottom_right_value =
-                radius_value(dynamic_radius_bottom_right, radius_bottom_right);
-            let radius_bottom_left_value =
-                radius_value(dynamic_radius_bottom_left, radius_bottom_left);
+            let radius_top_left_value = radius_value(
+                "radius_top_left",
+                radius_top_left_dynamic,
+                dynamic_radius_top_left,
+                radius_top_left,
+            )?;
+            let radius_top_right_value = radius_value(
+                "radius_top_right",
+                radius_top_right_dynamic,
+                dynamic_radius_top_right,
+                radius_top_right,
+            )?;
+            let radius_bottom_right_value = radius_value(
+                "radius_bottom_right",
+                radius_bottom_right_dynamic,
+                dynamic_radius_bottom_right,
+                radius_bottom_right,
+            )?;
+            let radius_bottom_left_value = radius_value(
+                "radius_bottom_left",
+                radius_bottom_left_dynamic,
+                dynamic_radius_bottom_left,
+                radius_bottom_left,
+            )?;
             out.push_str(
                 "    jclass style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
@@ -10971,6 +11036,10 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "border_end_width"
             | "border_style"
             | "radius"
+            | "radius_top_left"
+            | "radius_top_right"
+            | "radius_bottom_left"
+            | "radius_bottom_right"
             | "padding"
             | "margin"
             | "tooltip"
@@ -11127,6 +11196,10 @@ fn android_ui_element_needs_refresh(
         "border_end_width",
         "border_style",
         "radius",
+        "radius_top_left",
+        "radius_top_right",
+        "radius_bottom_left",
+        "radius_bottom_right",
         "shadow_color",
         "shadow_blur",
         "shadow_offset_x",
@@ -11451,30 +11524,74 @@ fn emit_android_ui_refresh(
                 "                const char *refresh_border_style_value = {value};\n                if (strcmp(refresh_border_style_value, \"none\") != 0 && strcmp(refresh_border_style_value, \"solid\") != 0 && strcmp(refresh_border_style_value, \"dashed\") != 0 && strcmp(refresh_border_style_value, \"dotted\") != 0 && strcmp(refresh_border_style_value, \"double\") != 0) {{ fputs(\"Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\\n\", stderr); abort(); }}\n                jstring refresh_border_style = flux__android_utf8_string(env, refresh_border_style_value);\n                if (refresh_border_style != NULL) {{\n                    jmethodID refresh_border_style_method = (*env)->GetMethodID(env, activity_class, \"styleViewBorderStyle\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n                    if (refresh_border_style_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_style_method, child, refresh_border_style);\n                    (*env)->DeleteLocalRef(env, refresh_border_style);\n                }}\n"
             ));
         }
-        if android_ui_property_needs_refresh(element, "radius", &runtime_names)
-            && let Some(property) = view_property(element, "radius")
+        let dynamic_radius = android_ui_property_needs_refresh(element, "radius", &runtime_names);
+        let dynamic_radius_top_left =
+            android_ui_property_needs_refresh(element, "radius_top_left", &runtime_names);
+        let dynamic_radius_top_right =
+            android_ui_property_needs_refresh(element, "radius_top_right", &runtime_names);
+        let dynamic_radius_bottom_left =
+            android_ui_property_needs_refresh(element, "radius_bottom_left", &runtime_names);
+        let dynamic_radius_bottom_right =
+            android_ui_property_needs_refresh(element, "radius_bottom_right", &runtime_names);
+        if dynamic_radius
+            || dynamic_radius_top_left
+            || dynamic_radius_top_right
+            || dynamic_radius_bottom_left
+            || dynamic_radius_bottom_right
         {
-            let value = ui_expr_c(&property.value, view, signatures)?;
-            let radius_top_left =
-                static_non_negative_style_i64(element, "radius_top_left", signatures)?;
-            let radius_top_right =
-                static_non_negative_style_i64(element, "radius_top_right", signatures)?;
-            let radius_bottom_right =
-                static_non_negative_style_i64(element, "radius_bottom_right", signatures)?;
-            let radius_bottom_left =
-                static_non_negative_style_i64(element, "radius_bottom_left", signatures)?;
-            let radius_value = |value: Option<i64>| {
-                value
-                    .map(|value| format!("INT64_C({value})"))
-                    .unwrap_or_else(|| "refresh_radius".to_string())
+            let radius_property = view_property(element, "radius");
+            let use_dynamic_radius_base = dynamic_radius
+                && [
+                    "radius_top_left",
+                    "radius_top_right",
+                    "radius_bottom_right",
+                    "radius_bottom_left",
+                ]
+                .iter()
+                .any(|name| view_property(element, name).is_none());
+            if use_dynamic_radius_base {
+                let value = ui_expr_c(
+                    &radius_property
+                        .expect("dynamic radius property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "                int64_t refresh_radius = {value};\n                if (refresh_radius < 0 || refresh_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let mut radius_value = |property_name: &str,
+                                    dynamic: bool|
+             -> Result<String, Diagnostic> {
+                if dynamic {
+                    let property = view_property(element, property_name)
+                        .expect("dynamic corner radius property exists");
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let variable = format!("refresh_{property_name}");
+                    out.push_str(&format!(
+                        "                int64_t {variable} = {value};\n                if ({variable} < 0 || {variable} > INT32_MAX) {{ fputs(\"Flux runtime error: {} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n",
+                        typecheck::internal_name_to_source(property_name)
+                    ));
+                    Ok(variable)
+                } else if let Some(value) =
+                    static_non_negative_style_i64(element, property_name, signatures)?
+                {
+                    Ok(format!("INT64_C({value})"))
+                } else if dynamic_radius {
+                    Ok("refresh_radius".to_string())
+                } else if let Some(property) = radius_property {
+                    let value = static_expr_i64(&property.value, signatures)
+                        .expect("non-dynamic radius is statically evaluable");
+                    Ok(format!("INT64_C({value})"))
+                } else {
+                    Ok("INT64_C(0)".to_string())
+                }
             };
-            let top_left = radius_value(radius_top_left);
-            let top_right = radius_value(radius_top_right);
-            let bottom_right = radius_value(radius_bottom_right);
-            let bottom_left = radius_value(radius_bottom_left);
-            out.push_str(&format!(
-                "                int64_t refresh_radius = {value};\n                if (refresh_radius < 0 || refresh_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
-            ));
+            let top_left = radius_value("radius_top_left", dynamic_radius_top_left)?;
+            let top_right = radius_value("radius_top_right", dynamic_radius_top_right)?;
+            let bottom_right = radius_value("radius_bottom_right", dynamic_radius_bottom_right)?;
+            let bottom_left = radius_value("radius_bottom_left", dynamic_radius_bottom_left)?;
             out.push_str("                jmethodID refresh_radii = (*env)->GetMethodID(env, activity_class, \"styleViewRadii\", \"(Landroid/view/View;FFFF)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_radii != NULL) (*env)->CallVoidMethod(env, activity, refresh_radii, child, (jfloat)({top_left} * flux__ui_density), (jfloat)({top_right} * flux__ui_density), (jfloat)({bottom_right} * flux__ui_density), (jfloat)({bottom_left} * flux__ui_density));\n"
