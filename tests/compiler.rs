@@ -10504,7 +10504,7 @@ fn main() -> i64 {
     assert!(generated.contains("static int64_t flux__lambda_0_"));
     assert!(generated.contains("return flux_mul_i64(flux__local_value, INT64_C(2));"));
     assert!(generated.contains("flux__fn_i64__to__i64 flux__local_double = flux__lambda_0_"));
-    assert!(generated.contains("return flux__fn_apply(flux__lambda_0_"));
+    assert!(generated.contains("return flux__finish_main(flux__fn_apply(flux__lambda_0_"));
 }
 
 #[test]
