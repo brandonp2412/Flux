@@ -32301,28 +32301,79 @@ async fn main() -> i64 {
     assert_eq!(status.code(), Some(138));
     let _ = fs::remove_dir_all(&root);
 
-    let fallback_source = r#"
+    let loop_source = r#"
 async fn addOne(value: i64) -> i64 {
     return value + 1
 }
 
-async fn loopOnce() -> i64 {
+async fn loopTwice() -> i64 {
     var value: i64 = 0
-    while value == 0:
+    while value < 4:
+        value = await addOne(value)
         value = await addOne(value)
     return value
 }
 
 async fn main() -> i64 {
-    return await loopOnce()
+    return await loopTwice()
 }
 "#;
-    let fallback = compile_to_c(fallback_source)
-        .expect("awaits in loops should retain the safe blocking fallback");
-    assert!(fallback.contains("flux__async_body_loopOnce"));
+    let loop_generated = compile_to_c(loop_source)
+        .expect("direct awaits in while bodies should lower to continuation states");
+    assert!(loop_generated.contains("flux__async_resume_loopTwice"));
+    assert!(!loop_generated.contains("flux__async_body_loopTwice("));
+    assert!(loop_generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_loopTwice, flux__task)"
+    ));
     assert!(
-        fallback.contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_value))")
+        !loop_generated
+            .contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_value))")
     );
+
+    let loop_root = std::env::temp_dir().join(format!("flux-async-while-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&loop_root);
+    fs::create_dir_all(&loop_root).expect("async while fixture should be writable");
+    let loop_source_path = loop_root.join("main.flux");
+    fs::write(&loop_source_path, loop_source).expect("async while source should be writable");
+    let loop_binary = loop_root.join("async-while");
+    let loop_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&loop_source_path)
+        .arg("-o")
+        .arg(&loop_binary)
+        .output()
+        .expect("async while binary should build");
+    assert!(
+        loop_built.status.success(),
+        "async while build failed: {}",
+        String::from_utf8_lossy(&loop_built.stderr)
+    );
+    let loop_status = Command::new(&loop_binary)
+        .status()
+        .expect("async while binary should run");
+    assert_eq!(loop_status.code(), Some(4));
+    let _ = fs::remove_dir_all(&loop_root);
+
+    let loop_control_source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn withContinue() -> i64 {
+    var value: i64 = 0
+    while value < 1:
+        value = await addOne(value)
+        continue
+    return value
+}
+
+async fn main() -> i64 {
+    return await withContinue()
+}
+"#;
+    let loop_control_generated = compile_to_c(loop_control_source)
+        .expect("loop-control awaits should retain the safe blocking fallback");
+    assert!(loop_control_generated.contains("flux__async_body_withContinue"));
 }
 
 #[test]
