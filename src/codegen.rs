@@ -12974,6 +12974,11 @@ fn ui_expr_c(
                 return Ok(format!("({right_code} {} {other_code})", c_operator(*op)));
             }
             if let Some(code) =
+                same_checked_i64_expression_arithmetic_c(*op, left, right, &left_code)
+            {
+                return Ok(code);
+            }
+            if let Some(code) =
                 checked_i64_identity_c(*op, left, right, &left_code, &right_code, signatures)
             {
                 return Ok(code);
@@ -19589,6 +19594,41 @@ fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
     }
 }
 
+fn same_checked_i64_expression_arithmetic_c(
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    left_code: &str,
+) -> Option<String> {
+    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+        || !matches!(
+            left.kind,
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                ..
+            } | ExprKind::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                ..
+            }
+        )
+        || !same_pure_i64_expression(left, right)
+    {
+        return None;
+    }
+
+    match op {
+        BinOp::Add => Some(format!(
+            "__extension__ ({{ int64_t flux__checked_reuse = {left_code}; flux_add_i64(flux__checked_reuse, flux__checked_reuse); }})"
+        )),
+        BinOp::Sub => Some(format!("((void)({left_code}), INT64_C(0))")),
+        BinOp::Mul => Some(format!(
+            "__extension__ ({{ int64_t flux__checked_reuse = {left_code}; flux_mul_i64(flux__checked_reuse, flux__checked_reuse); }})"
+        )),
+        BinOp::Div => Some(format!("flux_div_self_i64({left_code})")),
+        _ => None,
+    }
+}
+
 fn same_checked_i64_expression_comparison_c(
     op: BinOp,
     left: &Expr,
@@ -24586,6 +24626,10 @@ fn emit_expr(
                     c_operator(*op),
                     other.code
                 )
+            } else if let Some(code) =
+                same_checked_i64_expression_arithmetic_c(*op, left, right, &emitted_left.code)
+            {
+                code
             } else if let Some(code) = checked_i64_identity_c(
                 *op,
                 left,

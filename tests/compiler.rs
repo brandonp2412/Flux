@@ -16192,6 +16192,128 @@ app Status
 }
 
 #[test]
+fn reuses_equivalent_pure_checked_i64_arithmetic_operands() {
+    let source = r#"
+fn addEquivalent(value: i64, offset: i64) -> i64 {
+    return (value + offset) + (offset + value)
+}
+
+fn subtractEquivalent(value: i64, factor: i64) -> i64 {
+    return (value * factor) - (factor * value)
+}
+
+fn multiplyEquivalent(value: i64, offset: i64) -> i64 {
+    return (value + offset) * (offset + value)
+}
+
+fn divideEquivalent(value: i64, offset: i64) -> i64 {
+    return (value + offset) / (offset + value)
+}
+
+fn nestedSubtract(value: i64, offset: i64, factor: i64) -> i64 {
+    return ((value + offset) * factor) - (factor * (offset + value))
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectfulSubtract(value: i64, offset: i64) -> i64 {
+    return (observe(value) + offset) - (offset + observe(value))
+}
+
+fn main() -> i64 {
+    print(addEquivalent(2, 3))
+    print(subtractEquivalent(3, 4))
+    print(multiplyEquivalent(2, 3))
+    print(divideEquivalent(3, 4))
+    print(nestedSubtract(2, 3, 4))
+    print(effectfulSubtract(5, 6))
+    return 0
+}
+"#;
+
+    check_source(source).expect("equivalent pure checked arithmetic operands should typecheck");
+    let generated = compile_to_c(source)
+        .expect("equivalent pure checked arithmetic operands should reuse one evaluation");
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux_add_i64(flux__local_value, flux__local_offset); flux_add_i64(flux__checked_reuse, flux__checked_reuse); });"));
+    assert!(generated.contains(
+        "return ((void)(flux_mul_i64(flux__local_value, flux__local_factor)), INT64_C(0));"
+    ));
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux_add_i64(flux__local_value, flux__local_offset); flux_mul_i64(flux__checked_reuse, flux__checked_reuse); });"));
+    assert!(generated.contains(
+        "return flux_div_self_i64(flux_add_i64(flux__local_value, flux__local_offset));"
+    ));
+    assert!(generated.contains("return ((void)(flux_mul_i64(flux_add_i64(flux__local_value, flux__local_offset), flux__local_factor)), INT64_C(0));"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful equivalent-looking operands must retain both source evaluations",
+    );
+    assert!(generated.contains("flux_sub_i64(flux_add_i64(flux__fn_observe(flux__local_value), flux__local_offset), flux_add_i64(flux__local_offset, flux__fn_observe(flux__local_value)))"));
+    assert!(generated.contains("flux_div_self_i64(int64_t value) { if (value == 0)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-equivalent-checked-arithmetic-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary equivalent checked arithmetic directory should be writable");
+    let c_path = root.join("equivalent-checked-arithmetic.c");
+    let exe_path = root.join("equivalent-checked-arithmetic");
+    fs::write(&c_path, &generated)
+        .expect("generated equivalent checked arithmetic C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile equivalent checked arithmetic");
+    assert!(
+        compile.status.success(),
+        "equivalent checked arithmetic C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("equivalent checked arithmetic program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "10\n0\n25\n1\n0\n5\n5\n0\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 2
+    Button action at 1,1
+        text: "Square"
+        onPress: count => (count + 1) * (1 + count)
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI equivalent checked arithmetic should share optimized lowering");
+    assert!(ui_generated.contains("__extension__ ({ int64_t flux__checked_reuse = flux_add_i64(flux__ui_state_count, INT64_C(1)); flux_mul_i64(flux__checked_reuse, flux__checked_reuse); })"));
+    assert_eq!(
+        ui_generated
+            .matches("flux_add_i64(flux__ui_state_count, INT64_C(1))")
+            .count(),
+        1,
+        "UI lowering should evaluate equivalent checked operands once",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1
