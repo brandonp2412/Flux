@@ -14686,7 +14686,6 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     let statement_index = *statement_index;
     let StmtKind::If {
         cond,
-        binding,
         body,
         else_body,
         ..
@@ -14694,7 +14693,7 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     else {
         return None;
     };
-    if binding.is_some() || expr_contains_await(cond) {
+    if expr_contains_await(cond) {
         return None;
     }
     let then_await_indices = block_direct_await_indices(body)?;
@@ -14940,16 +14939,39 @@ fn async_continuation_plan(
             .filter(|branch| branch.statement_index == stmt_index)
         {
             let StmtKind::If {
-                body, else_body, ..
+                cond,
+                binding,
+                body,
+                else_body,
+                ..
             } = &stmt.kind
             else {
                 return None;
             };
+            let mut then_env = env.clone();
+            if let Some(binding) = binding
+                && binding.name != "_"
+            {
+                let condition_ty = typecheck::type_of_expr(cond, &env, signatures).ok()?;
+                let Type::Optional(inner) = signatures.canonical_type(&condition_ty) else {
+                    return None;
+                };
+                let inner = signatures.canonical_type(&inner);
+                if !signatures.is_copy_type(&inner)
+                    || locals
+                        .get(&binding.name)
+                        .is_some_and(|existing| existing != &inner)
+                {
+                    return None;
+                }
+                then_env.insert(binding.name.clone(), inner.clone());
+                locals.insert(binding.name.clone(), inner);
+            }
             if let Some(last_await) = branch.then_await_indices.last().copied() {
                 collect_async_saved_locals(
                     body,
                     last_await,
-                    &env,
+                    &then_env,
                     signatures,
                     &mut locals,
                     &mut mutable,
@@ -18427,6 +18449,7 @@ fn emit_async_branch_continuation_function(
 ) -> Result<(), Diagnostic> {
     let StmtKind::If {
         cond,
+        binding,
         body,
         else_body,
         ..
@@ -18477,14 +18500,35 @@ fn emit_async_branch_continuation_function(
     )?;
     let outer_env = env.clone();
     let outer_mutable = mutable.clone();
-    let promotion = optional_presence_promotion(cond, &env, &mutable, signatures).map(
-        |(name, inner, present_in_then)| {
+    let promotion = binding
+        .is_none()
+        .then(|| optional_presence_promotion(cond, &env, &mutable, signatures))
+        .flatten()
+        .map(|(name, inner, present_in_then)| {
             let temp = format!("flux__optional_promotion_{}", *temp_counter);
             *temp_counter += 1;
             (name, inner, present_in_then, temp)
-        },
-    );
-    let condition = if let Some((name, inner, present_in_then, temp)) = &promotion {
+        });
+    let mut optional_binding = None;
+    let condition = if let Some(binding) = binding {
+        let optional = emit_expr(cond, &env, signatures)?;
+        let Type::Optional(inner) = signatures.canonical_type(&optional.ty) else {
+            return Err(diag(
+                cond.span,
+                "non-optional value reached async optional pattern code generation",
+            ));
+        };
+        let inner = signatures.canonical_type(&inner);
+        let temp = format!("flux__optional_pattern_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}{} {temp} = {};\n",
+            c_type(&Type::Optional(Box::new(inner.clone())), signatures),
+            optional.code
+        ));
+        optional_binding = Some((binding.name.clone(), inner, temp.clone()));
+        format!("{temp}.has_value")
+    } else if let Some((name, inner, present_in_then, temp)) = &promotion {
         let optional_ty = Type::Optional(Box::new(inner.clone()));
         out.push_str(&format!(
             "{pad}{} {temp} = {};\n",
@@ -18506,7 +18550,16 @@ fn emit_async_branch_continuation_function(
     let mut then_mutable = outer_mutable.clone();
     let mut else_env = outer_env.clone();
     let mut else_mutable = outer_mutable.clone();
-    if let Some((name, inner, true, temp)) = &promotion {
+    if let Some((name, inner, temp)) = &optional_binding
+        && name != "_"
+    {
+        out.push_str(&format!(
+            "{pad}    {} {} = {temp}.value;\n",
+            c_type(inner, signatures),
+            local_c_name(name)
+        ));
+        then_env.insert(name.clone(), inner.clone());
+    } else if let Some((name, inner, true, temp)) = &promotion {
         out.push_str(&format!(
             "{pad}    {} {} = {temp}.value;\n",
             c_type(inner, signatures),
