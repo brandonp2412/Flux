@@ -5739,6 +5739,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_cancellation_is_cooperative_and_propagates_to_descendants() {
+    let source = r#"
+fn child(channelHandle: i64) -> void {
+    while !worker.cancelled():
+        time.sleepMillis(1)
+    let _sendError: error = channel.send(channelHandle, 99)
+}
+fn parent(channelHandle: i64) -> void {
+    let (childHandle, startError) = worker.startWith(child, channelHandle)
+    if startError != nil:
+        let _sendError: error = channel.send(channelHandle, -1)
+        return
+    let _sendError: error = channel.send(channelHandle, childHandle)
+    while !worker.cancelled():
+        time.sleepMillis(1)
+}
+fn main() -> i64 {
+    let (channelHandle, createError) = channel.create(2)
+    if createError != nil:
+        return 1
+    let (parentHandle, startError) = worker.startWith(parent, channelHandle)
+    if startError != nil:
+        return 2
+    let (childHandle, childError) = channel.receive(channelHandle)
+    if childError != nil || childHandle <= 0:
+        return 3
+    let cancelError: error = worker.cancel(parentHandle)
+    if cancelError != nil:
+        return 4
+    let parentJoinError: error = worker.join(parentHandle)
+    if parentJoinError != nil:
+        return 5
+    let (signal, signalError) = channel.receive(channelHandle)
+    if signalError != nil || signal != 99:
+        return 6
+    let childJoinError: error = worker.join(childHandle)
+    if childJoinError != nil:
+        return 7
+    let closeError: error = channel.close(channelHandle)
+    if closeError != nil:
+        return 8
+    if worker.cancelled():
+        return 9
+    return 0
+}
+"#;
+
+    check_source(source).expect("worker cancellation propagation should typecheck");
+    let generated = compile_to_c(source).expect("worker cancellation should lower natively");
+    assert!(generated.contains("static const char *flux__worker_cancel"));
+    assert!(generated.contains("static bool flux__worker_cancelled"));
+    assert!(generated.contains("flux__worker_descends_from_locked"));
+    assert!(generated.contains("_Thread_local int64_t flux__worker_current_id"));
+
+    let root = std::env::temp_dir().join(format!("flux-worker-cancel-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker cancellation source should be writable");
+    let binary = root.join("worker-cancel-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "worker cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker cancellation binary should run");
+    assert!(
+        run.status.success(),
+        "worker cancellation binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let invalid = r#"
+fn main() -> i64 {
+    print(worker.cancel(false))
+    print(worker.cancelled(1))
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid worker cancellation calls must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("worker.cancel handle: expected i64, got bool")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("worker.cancelled expects 0 arguments, got 1")
+    }));
+
+    let dead = r#"
+fn hidden() -> void {
+    print(worker.cancelled())
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead cancellation helper should tree-shake");
+    assert!(!dead_generated.contains("flux__worker_cancelled("));
+    assert!(!dead_generated.contains("#include <pthread.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn bounded_channels_pass_i64_values_between_workers_and_tree_shake() {
     let source = r#"
 fn produce(channelHandle: i64) -> void {
