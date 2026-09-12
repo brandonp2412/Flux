@@ -6500,6 +6500,81 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "sqlite" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("sqlite.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "open" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("sqlite.open expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let path = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &path, "sqlite.open path")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("sqlite.close expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let database = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &database, "sqlite.close database")?;
+                return Ok(vec![Type::Error]);
+            }
+            "execute" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("sqlite.execute expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let database = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &database,
+                    "sqlite.execute database",
+                )?;
+                let sql = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &sql, "sqlite.execute sql")?;
+                return Ok(vec![Type::Error]);
+            }
+            "query" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("sqlite.query expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let database = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &database, "sqlite.query database")?;
+                let sql = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &sql, "sqlite.query sql")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::I64, Type::Str, Type::Str, Type::Bool],
+                    returns: Vec::new(),
+                };
+                require_type(args[2].span, &expected, &callback, "sqlite.query callback")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("sqlite module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "net" {
         if !named_args.is_empty() {
             return Err(diag(

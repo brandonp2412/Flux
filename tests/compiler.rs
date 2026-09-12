@@ -5705,6 +5705,132 @@ fn main() -> i64 {
 }
 
 #[test]
+fn sqlite_interface_is_typed_borrowed_tree_shaken_and_runnable() {
+    let root = std::env::temp_dir().join(format!("flux-sqlite-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("SQLite API fixture should be writable");
+    let database = root.join("state.db");
+    let database_path = database
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn cell(row: i64, column: i64, name: str, value: str, isNull: bool) -> void {{
+    print(row)
+    print(column)
+    print(name)
+    print(value)
+    print(isNull)
+}}
+
+fn main() -> i64 {{
+    let (database, openError) = sqlite.open("{database_path}")
+    print(openError)
+    print(sqlite.execute(database, "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"))
+    print(sqlite.execute(database, "INSERT INTO items (name) VALUES ('Ada'), (NULL)"))
+    let (rows, queryError) = sqlite.query(database, "SELECT id, name FROM items ORDER BY id", cell)
+    print(rows)
+    print(queryError)
+    print(sqlite.close(database))
+    print(sqlite.close(database))
+    return 0
+}}
+"#
+    );
+
+    check_source(&source).expect("SQLite capabilities should typecheck");
+    let generated = compile_to_c(&source).expect("SQLite capabilities should lower natively");
+    assert!(generated.contains("#include <sqlite3.h>"));
+    assert!(generated.contains("flux__sqlite_open("));
+    assert!(generated.contains("flux__sqlite_execute("));
+    assert!(generated.contains("flux__sqlite_query("));
+    assert!(generated.contains("flux__sqlite_close("));
+    assert!(generated.contains("flux__sqlite_slot_for"));
+
+    let unused = r#"
+fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {
+}
+fn hidden() -> void {
+    let (database, _openError) = sqlite.open("hidden.db")
+    print(sqlite.execute(database, "SELECT 1"))
+    let (_rows, _queryError) = sqlite.query(database, "SELECT 1", cell)
+    print(sqlite.close(database))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("unreachable SQLite calls should compile");
+    assert!(!unused_generated.contains("#include <sqlite3.h>"));
+    assert!(!unused_generated.contains("flux__sqlite_open("));
+
+    let callback_error = check_source(
+        "fn cell(_value: str) -> void {\n}\nfn main() -> i64 {\n    let (database, _failure) = sqlite.open(\"state.db\")\n    let (_rows, queryFailure) = sqlite.query(database, \"SELECT 1\", cell)\n    print(queryFailure)\n    return 0\n}\n",
+    )
+    .expect_err("SQLite query callback shape should be checked");
+    assert!(callback_error.message.contains("sqlite.query callback"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("SQLite API source should be writable");
+    let binary = root.join("sqlite-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("SQLite API binary should build");
+    assert!(
+        built.status.success(),
+        "SQLite API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("SQLite API binary should run");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            "nil",
+            "nil",
+            "nil",
+            "0",
+            "0",
+            "id",
+            "1",
+            "false",
+            "0",
+            "1",
+            "name",
+            "Ada",
+            "false",
+            "1",
+            "0",
+            "id",
+            "2",
+            "false",
+            "1",
+            "1",
+            "name",
+            "",
+            "true",
+            "2",
+            "nil",
+            "nil",
+            "invalid or closed SQLite database handle"
+        ]
+    );
+    assert!(database.is_file());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_capabilities_are_typed_native_and_tree_shaken() {
     let root = std::env::temp_dir().join(format!("flux-fs-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

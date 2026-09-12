@@ -1340,6 +1340,9 @@ fn emit_runtime_prelude(
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
+    if runtime_usage.contains("flux__sqlite_") {
+        out.push_str("#include <sqlite3.h>\n");
+    }
     if runtime_usage.contains("struct flux__optional_i64") {
         out.push_str("struct flux__optional_i64 { bool has_value; int64_t value; };\n");
     }
@@ -3715,6 +3718,118 @@ fn emit_runtime_prelude(
         cursor = end < length ? end + 1 : length;
     }
     return NULL;
+}
+"#);
+    }
+
+    if runtime_usage.contains("flux__sqlite_") {
+        out.push_str(r#"struct flux__sqlite_i64_error { int64_t v0; const char *v1; };
+#define FLUX__SQLITE_MAX_DATABASES 256
+struct flux__sqlite_slot { sqlite3 *database; uint32_t generation; };
+static struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];
+static inline struct flux__sqlite_i64_error flux__sqlite_result(int64_t value, const char *error) { struct flux__sqlite_i64_error result = { .v0 = value, .v1 = error }; return result; }
+static inline struct flux__sqlite_slot *flux__sqlite_slot_for(int64_t handle) {
+    if (handle <= 0) return NULL;
+    uint64_t raw = (uint64_t)handle;
+    uint32_t slot_id = (uint32_t)(raw & UINT64_C(0xffffffff));
+    uint32_t generation = (uint32_t)(raw >> 32);
+    if (slot_id == 0 || slot_id > FLUX__SQLITE_MAX_DATABASES || generation == 0) return NULL;
+    struct flux__sqlite_slot *slot = &flux__sqlite_slots[slot_id - 1];
+    return slot->database != NULL && slot->generation == generation ? slot : NULL;
+}
+static inline struct flux__sqlite_i64_error flux__sqlite_register(sqlite3 *database) {
+    for (uint32_t index = 0; index < FLUX__SQLITE_MAX_DATABASES; index += 1) {
+        struct flux__sqlite_slot *slot = &flux__sqlite_slots[index];
+        if (slot->database != NULL) continue;
+        uint32_t generation = (slot->generation % UINT32_C(0x7ffffffe)) + UINT32_C(1);
+        slot->database = database;
+        slot->generation = generation;
+        uint64_t handle = ((uint64_t)generation << 32) | (uint64_t)(index + 1);
+        return flux__sqlite_result((int64_t)handle, NULL);
+    }
+    return flux__sqlite_result(-1, "too many open SQLite databases");
+}
+static inline struct flux__sqlite_i64_error flux__sqlite_open(const char *path) {
+    sqlite3 *database = NULL;
+    int result = sqlite3_open_v2(path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (result != SQLITE_OK) {
+        if (database != NULL) sqlite3_close_v2(database);
+        return flux__sqlite_result(-1, sqlite3_errstr(result));
+    }
+    struct flux__sqlite_i64_error registered = flux__sqlite_register(database);
+    if (registered.v1 != NULL) sqlite3_close_v2(database);
+    return registered;
+}
+static inline const char *flux__sqlite_close(int64_t handle) {
+    struct flux__sqlite_slot *slot = flux__sqlite_slot_for(handle);
+    if (slot == NULL) return "invalid or closed SQLite database handle";
+    int result = sqlite3_close_v2(slot->database);
+    if (result != SQLITE_OK) return sqlite3_errstr(result);
+    slot->database = NULL;
+    return NULL;
+}
+static inline const char *flux__sqlite_execute(int64_t handle, const char *sql) {
+    struct flux__sqlite_slot *slot = flux__sqlite_slot_for(handle);
+    if (slot == NULL) return "invalid or closed SQLite database handle";
+    char *message = NULL;
+    int result = sqlite3_exec(slot->database, sql, NULL, NULL, &message);
+    if (message != NULL) sqlite3_free(message);
+    return result == SQLITE_OK ? NULL : sqlite3_errstr(result);
+}
+static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, const char *sql, void (*callback)(int64_t, int64_t, const char *, const char *, bool)) {
+    struct flux__sqlite_slot *slot = flux__sqlite_slot_for(handle);
+    if (slot == NULL) return flux__sqlite_result(-1, "invalid or closed SQLite database handle");
+    sqlite3_stmt *statement = NULL;
+    const char *tail = NULL;
+    int result = sqlite3_prepare_v2(slot->database, sql, -1, &statement, &tail);
+    if (result != SQLITE_OK) return flux__sqlite_result(-1, sqlite3_errstr(result));
+    if (statement == NULL) return flux__sqlite_result(-1, "sqlite.query requires one SQL statement");
+    while (*tail == ' ' || *tail == '\t' || *tail == '\r' || *tail == '\n') tail += 1;
+    if (*tail != '\0') {
+        sqlite3_finalize(statement);
+        return flux__sqlite_result(-1, "sqlite.query accepts exactly one SQL statement");
+    }
+    int64_t row = 0;
+    for (;;) {
+        result = sqlite3_step(statement);
+        if (result == SQLITE_DONE) break;
+        if (result != SQLITE_ROW) {
+            const char *failure = sqlite3_errstr(result);
+            sqlite3_finalize(statement);
+            return flux__sqlite_result(row, failure);
+        }
+        int columns = sqlite3_column_count(statement);
+        for (int column = 0; column < columns; column += 1) {
+            const char *name = sqlite3_column_name(statement, column);
+            if (name == NULL) {
+                sqlite3_finalize(statement);
+                return flux__sqlite_result(row, sqlite3_errstr(SQLITE_NOMEM));
+            }
+            bool is_null = sqlite3_column_type(statement, column) == SQLITE_NULL;
+            if (is_null) {
+                callback(row, (int64_t)column, name, "", true);
+                continue;
+            }
+            const unsigned char *value = sqlite3_column_text(statement, column);
+            int bytes = sqlite3_column_bytes(statement, column);
+            if (value == NULL) {
+                sqlite3_finalize(statement);
+                return flux__sqlite_result(row, sqlite3_errstr(SQLITE_NOMEM));
+            }
+            if (bytes > 0 && memchr(value, '\0', (size_t)bytes) != NULL) {
+                sqlite3_finalize(statement);
+                return flux__sqlite_result(row, "SQLite query text contains NUL bytes");
+            }
+            callback(row, (int64_t)column, name, (const char *)value, false);
+        }
+        if (row == INT64_MAX) {
+            sqlite3_finalize(statement);
+            return flux__sqlite_result(row, "SQLite query row count exceeds i64 range");
+        }
+        row += 1;
+    }
+    result = sqlite3_finalize(statement);
+    return result == SQLITE_OK ? flux__sqlite_result(row, NULL) : flux__sqlite_result(row, sqlite3_errstr(result));
 }
 "#);
     }
@@ -20265,6 +20380,64 @@ fn emit_qualified_call(
             _ => {
                 return Err(diag(span, "unknown process call reached code generation"));
             }
+        }
+    }
+    if namespace == "sqlite" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid SQLite call reached code generation"));
+        }
+        match name {
+            "open" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid SQLite call reached code generation"));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__sqlite_open({})", path.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__sqlite_i64_error".to_string()),
+                ));
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid SQLite call reached code generation"));
+                }
+                let database = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__sqlite_close({})", database.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "execute" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid SQLite call reached code generation"));
+                }
+                let database = emit_expr(&args[0], env, signatures)?;
+                let sql = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__sqlite_execute({}, {})", database.code, sql.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "query" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid SQLite call reached code generation"));
+                }
+                let database = emit_expr(&args[0], env, signatures)?;
+                let sql = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__sqlite_query({}, {}, {})",
+                        database.code, sql.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__sqlite_i64_error".to_string()),
+                ));
+            }
+            _ => return Err(diag(span, "unknown SQLite call reached code generation")),
         }
     }
     if namespace == "net" {

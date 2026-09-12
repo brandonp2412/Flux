@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 513
-- Reported overall progress: **69%**
+- Completed baseline units: 514
+- Reported overall progress: **70%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -910,7 +910,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Files.
 - [ ] Preferences/settings.
 - [ ] Secure storage.
-- [ ] SQLite interface.
+- [x] SQLite interface.
 - [ ] Database driver/plugin model.
 - [ ] HTTP client.
   - [x] Bootstrap bounded borrowed HTTP/1.0/1.1 response-head parsing through compiler-owned `http.receiveResponseHeadWithHeaders(socket, maxBytes, responseCallback, headerCallback)`: the API requires a TCP socket, validates a `1..=65536` byte cap statically where possible and at runtime, reads exactly through `\r\n\r\n` without consuming response-body bytes, validates HTTP version/status/reason/header grammar, lends response/header strings only to exact callback scope, tree-shakes when unreachable, participates in LSP completion/signature help, and has native loopback coverage proving body bytes remain unread for subsequent I/O. This head-only helper intentionally leaves body framing/decoding to `http.receiveResponseWithTextBody`; redirects, TLS, and owned response values remain pending at the higher client layer.

@@ -6015,15 +6015,30 @@ fn build_native_configured(
     } else {
         Vec::new()
     };
-    let toolchain_identity = native_toolchain_cache_identity(gtk, native_target)?;
+    let sqlite = c_source.contains("#include <sqlite3.h>");
+    let sqlite_cflags = if sqlite {
+        pkg_config_flags("--cflags", "sqlite3")?
+    } else {
+        Vec::new()
+    };
+    let sqlite_libs = if sqlite {
+        pkg_config_flags("--libs", "sqlite3")?
+    } else {
+        Vec::new()
+    };
+    let mut native_cflags = gtk_cflags;
+    native_cflags.extend(sqlite_cflags);
+    let mut native_libs = gtk_libs;
+    native_libs.extend(sqlite_libs);
+    let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
     let cache = native_build_cache_path_configured(
         c_source,
         mode,
         instrumentation,
         native_target,
         &toolchain_identity,
-        &gtk_cflags,
-        &gtk_libs,
+        &native_cflags,
+        &native_libs,
         static_link,
     );
     if cache.is_file() && native_cache_entry_is_valid(&cache) {
@@ -6069,13 +6084,9 @@ fn build_native_configured(
             command.arg("-fsanitize=address");
         }
     }
-    if gtk {
-        command.args(&gtk_cflags);
-    }
+    command.args(&native_cflags);
     command.args(["-x", "c", "-"]);
-    if gtk {
-        command.args(&gtk_libs);
-    }
+    command.args(&native_libs);
     command.arg("-o").arg(output);
     let mut child = command
         .stdin(Stdio::piped())
@@ -6177,6 +6188,7 @@ fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
 
 fn native_toolchain_cache_identity(
     gtk: bool,
+    sqlite: bool,
     native_target: &NativeTargetOptions,
 ) -> Result<String, String> {
     let clang = command_first_line("clang", &["--version"])?;
@@ -6196,6 +6208,10 @@ fn native_toolchain_cache_identity(
     if gtk {
         let gtk_version = command_first_line("pkg-config", &["--modversion", "gtk4"])?;
         identity.push_str(&format!("\ngtk4={gtk_version}"));
+    }
+    if sqlite {
+        let sqlite_version = command_first_line("pkg-config", &["--modversion", "sqlite3"])?;
+        identity.push_str(&format!("\nsqlite3={sqlite_version}"));
     }
     Ok(identity)
 }

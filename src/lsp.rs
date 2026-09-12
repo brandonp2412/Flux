@@ -1179,6 +1179,23 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "sqlite" {
+        for (label, detail) in [
+            ("open", "fn sqlite.open(path: str) -> (i64, error)"),
+            ("close", "fn sqlite.close(database: i64) -> error"),
+            (
+                "execute",
+                "fn sqlite.execute(database: i64, sql: str) -> error",
+            ),
+            (
+                "query",
+                "fn sqlite.query(database: i64, sql: str, callback: fn(i64, i64, str, str, bool) -> void) -> (i64, error)",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "net" {
         for (label, detail) in [
             (
@@ -2800,6 +2817,47 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        if namespace == "sqlite" {
+            match member {
+                "open" => {
+                    return Some(signature_help_for_builtin(
+                        "sqlite.open",
+                        &["path: str"],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "close" => {
+                    return Some(signature_help_for_builtin(
+                        "sqlite.close",
+                        &["database: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "execute" => {
+                    return Some(signature_help_for_builtin(
+                        "sqlite.execute",
+                        &["database: i64", "sql: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "query" => {
+                    return Some(signature_help_for_builtin(
+                        "sqlite.query",
+                        &[
+                            "database: i64",
+                            "sql: str",
+                            "callback: fn(i64, i64, str, str, bool) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
         if namespace == "net" {
             match member {
                 "tcpConnect" => {
@@ -6782,7 +6840,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -6842,6 +6900,25 @@ mod tests {
         assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
+
+        let sqlite_line = source
+            .lines()
+            .position(|line| line.trim() == "sqlite.")
+            .expect("SQLite completion line should exist");
+        let sqlite_source = source.lines().nth(sqlite_line).unwrap();
+        let sqlite_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(sqlite_line),
+            Some(sqlite_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(sqlite_items.contains("fn sqlite.open(path: str) -> (i64, error)"));
+        assert!(sqlite_items.contains("fn sqlite.close(database: i64) -> error"));
+        assert!(sqlite_items.contains("fn sqlite.execute(database: i64, sql: str) -> error"));
+        assert!(sqlite_items.contains("fn sqlite.query(database: i64, sql: str, callback: fn(i64, i64, str, str, bool) -> void) -> (i64, error)"));
 
         let net_line = source
             .lines()
@@ -7802,6 +7879,43 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("process call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_sqlite_capabilities() {
+        let uri = "file:///tmp/sqlite-signatures.flux";
+        let source = "fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {\n}\nfn main() -> i64 {\n    let (database, _openError) = sqlite.open(\"state.db\")\n    print(sqlite.execute(database, \"CREATE TABLE state (value TEXT)\"))\n    let (_rows, _queryError) = sqlite.query(database, \"SELECT value FROM state\", cell)\n    print(sqlite.close(database))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("sqlite.open(", "fn sqlite.open(path: str) -> (i64, error)"),
+            (
+                "sqlite.execute(",
+                "fn sqlite.execute(database: i64, sql: str) -> error",
+            ),
+            (
+                "sqlite.query(",
+                "fn sqlite.query(database: i64, sql: str, callback: fn(i64, i64, str, str, bool) -> void) -> (i64, error)",
+            ),
+            ("sqlite.close(", "fn sqlite.close(database: i64) -> error"),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("SQLite call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("SQLite call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }
