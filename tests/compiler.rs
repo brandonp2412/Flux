@@ -23912,6 +23912,59 @@ app StaticPadding
 }
 
 #[test]
+fn android_per_edge_padding_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicEdgePadding {
+    state topSpacing: i64 = 8
+    state endSpacing: i64 = 10
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Button panel at 1,1
+        text: "Panel"
+        padding: 4
+        paddingTop: topSpacing
+        paddingEnd: endSpacing
+    Button growTop at 2,1
+        text: "Grow top"
+        onPress: topSpacing => topSpacing + 2
+    Button growEnd at 3,1
+        text: "Grow end"
+        onPress: endSpacing => endSpacing + 3
+}
+app DynamicEdgePadding
+"#;
+
+    check_source(source).expect("dynamic Android per-edge padding should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android per-edge padding should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android per-edge padding should lower");
+
+    assert!(android.contains("int64_t child_padding_top = flux__ui_state_topSpacing"));
+    assert!(android.contains("int64_t child_padding_end = flux__ui_state_endSpacing"));
+    assert!(android.contains("int64_t refresh_padding_top = flux__ui_state_topSpacing"));
+    assert!(android.contains("int64_t refresh_padding_end = flux__ui_state_endSpacing"));
+    assert!(
+        android.contains("padding_top must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(
+        android.contains("padding_end must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(android.contains("(jint)(child_padding_top * flux__ui_density)"));
+    assert!(android.contains("(jint)(child_padding_end * flux__ui_density)"));
+    assert!(android.contains("(jint)(refresh_padding_top * flux__ui_density)"));
+    assert!(android.contains("(jint)(refresh_padding_end * flux__ui_density)"));
+    assert!(android.contains("flux__ui_state_topSpacing = flux_add_i64"));
+    assert!(android.contains("flux__ui_state_endSpacing = flux_add_i64"));
+    assert!(!android.contains("int64_t child_padding ="));
+}
+
+#[test]
 fn android_margin_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicMargin {

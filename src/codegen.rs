@@ -5967,20 +5967,57 @@ fn emit_android_native_application(
         } else {
             (0, false)
         };
-        let padding_top_static = static_non_negative_style_i64(element, "padding_top", signatures)?;
-        let padding_bottom_static =
-            static_non_negative_style_i64(element, "padding_bottom", signatures)?;
-        let padding_start_static =
-            static_non_negative_style_i64(element, "padding_start", signatures)?;
-        let padding_end_static = static_non_negative_style_i64(element, "padding_end", signatures)?;
+        let padding_top_property = view_property(element, "padding_top");
+        let padding_bottom_property = view_property(element, "padding_bottom");
+        let padding_start_property = view_property(element, "padding_start");
+        let padding_end_property = view_property(element, "padding_end");
+        let padding_side = |property_name: &str| -> Result<(Option<i64>, bool), Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok((None, false));
+            };
+            let Some(value) = static_expr_i64(&property.value, signatures) else {
+                return Ok((None, true));
+            };
+            if value < 0 {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be non-negative"),
+                ));
+            }
+            if value > i64::from(i32::MAX) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must fit within a 32-bit signed integer"),
+                ));
+            }
+            Ok((Some(value), false))
+        };
+        let (padding_top_static, dynamic_padding_top_explicit) = padding_side("padding_top")?;
+        let (padding_bottom_static, dynamic_padding_bottom_explicit) =
+            padding_side("padding_bottom")?;
+        let (padding_start_static, dynamic_padding_start_explicit) = padding_side("padding_start")?;
+        let (padding_end_static, dynamic_padding_end_explicit) = padding_side("padding_end")?;
         let padding_top = padding_top_static.unwrap_or(padding);
         let padding_bottom = padding_bottom_static.unwrap_or(padding);
         let padding_start = padding_start_static.unwrap_or(padding);
         let padding_end = padding_end_static.unwrap_or(padding);
-        let dynamic_padding_top = dynamic_padding && padding_top_static.is_none();
-        let dynamic_padding_bottom = dynamic_padding && padding_bottom_static.is_none();
-        let dynamic_padding_start = dynamic_padding && padding_start_static.is_none();
-        let dynamic_padding_end = dynamic_padding && padding_end_static.is_none();
+        let dynamic_padding_top =
+            dynamic_padding_top_explicit || (padding_top_property.is_none() && dynamic_padding);
+        let dynamic_padding_bottom = dynamic_padding_bottom_explicit
+            || (padding_bottom_property.is_none() && dynamic_padding);
+        let dynamic_padding_start =
+            dynamic_padding_start_explicit || (padding_start_property.is_none() && dynamic_padding);
+        let dynamic_padding_end =
+            dynamic_padding_end_explicit || (padding_end_property.is_none() && dynamic_padding);
+        let uses_dynamic_padding_base = dynamic_padding
+            && [
+                padding_top_property,
+                padding_bottom_property,
+                padding_start_property,
+                padding_end_property,
+            ]
+            .iter()
+            .any(|property| property.is_none());
         if dynamic_padding_top
             || dynamic_padding_bottom
             || dynamic_padding_start
@@ -5990,7 +6027,7 @@ fn emit_android_native_application(
             || padding_start > 0
             || padding_end > 0
         {
-            if dynamic_padding {
+            if uses_dynamic_padding_base {
                 let value = ui_expr_c(
                     &padding_property
                         .expect("dynamic padding property exists")
@@ -6002,17 +6039,45 @@ fn emit_android_native_application(
                     "    int64_t child_padding = {value};\n    if (child_padding < 0 || child_padding > INT32_MAX) {{ fputs(\"Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
                 ));
             }
-            let padding_value = |dynamic: bool, value: i64| {
-                if dynamic {
-                    "child_padding".to_string()
+            let mut padding_value = |property_name: &str,
+                                     property: Option<&crate::ast::ViewProperty>,
+                                     static_value: Option<i64>|
+             -> Result<String, Diagnostic> {
+                if property.is_some() && static_value.is_none() {
+                    let value = ui_expr_c(
+                        &property
+                            .expect("dynamic padding side property exists")
+                            .value,
+                        view,
+                        signatures,
+                    )?;
+                    let variable = format!("child_{property_name}");
+                    out.push_str(&format!(
+                        "    int64_t {variable} = {value};\n    if ({variable} < 0 || {variable} > INT32_MAX) {{ fputs(\"Flux runtime error: {property_name} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                    ));
+                    Ok(variable)
+                } else if let Some(value) = static_value {
+                    Ok(format!("INT64_C({value})"))
+                } else if dynamic_padding {
+                    Ok("child_padding".to_string())
                 } else {
-                    format!("INT64_C({value})")
+                    Ok(format!("INT64_C({padding})"))
                 }
             };
-            let padding_top_value = padding_value(dynamic_padding_top, padding_top);
-            let padding_bottom_value = padding_value(dynamic_padding_bottom, padding_bottom);
-            let padding_start_value = padding_value(dynamic_padding_start, padding_start);
-            let padding_end_value = padding_value(dynamic_padding_end, padding_end);
+            let padding_top_value =
+                padding_value("padding_top", padding_top_property, padding_top_static)?;
+            let padding_bottom_value = padding_value(
+                "padding_bottom",
+                padding_bottom_property,
+                padding_bottom_static,
+            )?;
+            let padding_start_value = padding_value(
+                "padding_start",
+                padding_start_property,
+                padding_start_static,
+            )?;
+            let padding_end_value =
+                padding_value("padding_end", padding_end_property, padding_end_static)?;
             out.push_str("    jmethodID set_child_padding = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
             out.push_str("    if (set_child_padding == NULL) return;\n");
             out.push_str(&format!(
@@ -9804,6 +9869,10 @@ fn android_ui_element_needs_refresh(
         "shadow_offset_x",
         "shadow_offset_y",
         "padding",
+        "padding_top",
+        "padding_bottom",
+        "padding_start",
+        "padding_end",
         "margin",
         "tooltip",
         "accessibility_label",
@@ -10088,28 +10157,73 @@ fn emit_android_ui_refresh(
             out.push_str("                    (*env)->DeleteLocalRef(env, refresh_shadow);\n");
             out.push_str("                }\n");
         }
-        if android_ui_property_needs_refresh(element, "padding", &runtime_names)
-            && let Some(property) = view_property(element, "padding")
+        let dynamic_padding = android_ui_property_needs_refresh(element, "padding", &runtime_names);
+        let dynamic_padding_top =
+            android_ui_property_needs_refresh(element, "padding_top", &runtime_names);
+        let dynamic_padding_bottom =
+            android_ui_property_needs_refresh(element, "padding_bottom", &runtime_names);
+        let dynamic_padding_start =
+            android_ui_property_needs_refresh(element, "padding_start", &runtime_names);
+        let dynamic_padding_end =
+            android_ui_property_needs_refresh(element, "padding_end", &runtime_names);
+        if dynamic_padding
+            || dynamic_padding_top
+            || dynamic_padding_bottom
+            || dynamic_padding_start
+            || dynamic_padding_end
         {
-            let value = ui_expr_c(&property.value, view, signatures)?;
-            let padding_top = static_non_negative_style_i64(element, "padding_top", signatures)?;
-            let padding_bottom =
-                static_non_negative_style_i64(element, "padding_bottom", signatures)?;
-            let padding_start =
-                static_non_negative_style_i64(element, "padding_start", signatures)?;
-            let padding_end = static_non_negative_style_i64(element, "padding_end", signatures)?;
-            let padding_value = |value: Option<i64>| {
-                value
-                    .map(|value| format!("INT64_C({value})"))
-                    .unwrap_or_else(|| "refresh_padding".to_string())
+            let padding_property = view_property(element, "padding");
+            let use_dynamic_padding_base = dynamic_padding
+                && [
+                    "padding_top",
+                    "padding_bottom",
+                    "padding_start",
+                    "padding_end",
+                ]
+                .iter()
+                .any(|name| view_property(element, name).is_none());
+            if use_dynamic_padding_base {
+                let value = ui_expr_c(
+                    &padding_property
+                        .expect("dynamic padding property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "                int64_t refresh_padding = {value};\n                if (refresh_padding < 0 || refresh_padding > INT32_MAX) {{ fputs(\"Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let mut padding_value = |property_name: &str,
+                                     dynamic: bool|
+             -> Result<String, Diagnostic> {
+                if dynamic {
+                    let property = view_property(element, property_name)
+                        .expect("dynamic padding side property exists");
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let variable = format!("refresh_{property_name}");
+                    out.push_str(&format!(
+                        "                int64_t {variable} = {value};\n                if ({variable} < 0 || {variable} > INT32_MAX) {{ fputs(\"Flux runtime error: {property_name} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                    ));
+                    Ok(variable)
+                } else if let Some(value) =
+                    static_non_negative_style_i64(element, property_name, signatures)?
+                {
+                    Ok(format!("INT64_C({value})"))
+                } else if dynamic_padding {
+                    Ok("refresh_padding".to_string())
+                } else if let Some(property) = padding_property {
+                    let value = static_expr_i64(&property.value, signatures)
+                        .expect("non-dynamic padding is statically evaluable");
+                    Ok(format!("INT64_C({value})"))
+                } else {
+                    Ok("INT64_C(0)".to_string())
+                }
             };
-            let top = padding_value(padding_top);
-            let bottom = padding_value(padding_bottom);
-            let start = padding_value(padding_start);
-            let end = padding_value(padding_end);
-            out.push_str(&format!(
-                "                int64_t refresh_padding = {value};\n                if (refresh_padding < 0 || refresh_padding > INT32_MAX) {{ fputs(\"Flux runtime error: padding must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
-            ));
+            let top = padding_value("padding_top", dynamic_padding_top)?;
+            let bottom = padding_value("padding_bottom", dynamic_padding_bottom)?;
+            let start = padding_value("padding_start", dynamic_padding_start)?;
+            let end = padding_value("padding_end", dynamic_padding_end)?;
             out.push_str("                jmethodID refresh_padding_method = (*env)->GetMethodID(env, child_class, \"setPadding\", \"(IIII)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_padding_method != NULL) (*env)->CallVoidMethod(env, child, refresh_padding_method, (jint)({start} * flux__ui_density), (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density));\n"
