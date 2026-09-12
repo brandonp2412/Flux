@@ -1226,6 +1226,10 @@ fn add_qualified_namespace_completions(
                 "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error",
             ),
             (
+                "sendTextToParts",
+                "fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error",
+            ),
+            (
                 "receiveText",
                 "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
@@ -2862,10 +2866,23 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sendTextTo" => {
+                "sendTextTo" | "sendTextToParts" => {
                     return Some(signature_help_for_builtin(
-                        "net.sendTextTo",
-                        &["socket: i64", "host: str", "port: i64", "text: str"],
+                        if member == "sendTextToParts" {
+                            "net.sendTextToParts"
+                        } else {
+                            "net.sendTextTo"
+                        },
+                        &[
+                            "socket: i64",
+                            "host: str",
+                            "port: i64",
+                            if member == "sendTextToParts" {
+                                "parts: str[]"
+                            } else {
+                                "text: str"
+                            },
+                        ],
                         "error",
                         active_parameter,
                     ));
@@ -6811,6 +6828,9 @@ mod tests {
             )
         );
         assert!(net_items.contains(
+            "fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error"
+        ));
+        assert!(net_items.contains(
             "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains(
@@ -7797,6 +7817,34 @@ mod tests {
         assert!(
             help.contains("fn net.sendTextParts(socket: i64, parts: str[]) -&gt; error")
                 || help.contains("fn net.sendTextParts(socket: i64, parts: str[]) -> error")
+        );
+    }
+
+    #[test]
+    fn signature_help_supports_udp_scatter_gather_text_send() {
+        let uri = "file:///tmp/udp-scatter-gather-signature.flux";
+        let source = "fn main() -> i64 {\n    print(net.sendTextToParts(1, \"127.0.0.1\", 9999, [\"hello\", \"world\"]))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.sendTextToParts("))
+            .expect("UDP scatter/gather call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.sendTextToParts(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("UDP scatter/gather call should have signature help")
+        .to_json();
+        assert!(
+            help.contains("fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -&gt; error")
+                || help.contains("fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error")
         );
     }
 

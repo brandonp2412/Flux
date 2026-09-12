@@ -6770,30 +6770,44 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "sendTextTo" => {
+            "sendTextTo" | "sendTextToParts" => {
                 if args.len() != 4 {
                     return Err(diag(
                         span,
-                        &format!("net.sendTextTo expects 4 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 4 arguments, got {}", args.len()),
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.sendTextTo socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    &format!("net.{name} socket"),
+                )?;
                 let host = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &host, "net.sendTextTo host")?;
+                require_type(args[1].span, &Type::Str, &host, &format!("net.{name} host"))?;
                 let port = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::I64, &port, "net.sendTextTo port")?;
+                require_type(args[2].span, &Type::I64, &port, &format!("net.{name} port"))?;
                 if matches!(
                     constant_primitive_value(&args[2], signatures),
                     Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value)
                 ) {
                     return Err(diag(
                         args[2].span,
-                        "net.sendTextTo port must be between 1 and 65535",
+                        &format!("net.{name} port must be between 1 and 65535"),
                     ));
                 }
-                let text = type_of_expr(&args[3], env, signatures)?;
-                require_type(args[3].span, &Type::Str, &text, "net.sendTextTo text")?;
+                let payload = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                if name == "sendTextToParts" {
+                    require_type(
+                        args[3].span,
+                        &Type::List(Box::new(Type::Str)),
+                        &payload,
+                        "net.sendTextToParts parts",
+                    )?;
+                } else {
+                    require_type(args[3].span, &Type::Str, &payload, "net.sendTextTo text")?;
+                }
                 return Ok(vec![Type::Error]);
             }
             "receiveTextMany" => {

@@ -1277,7 +1277,9 @@ fn emit_runtime_prelude(
         out.push_str("#include <fcntl.h>\n");
         out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
-        if runtime_usage.contains("flux__net_send_text_parts(") {
+        if runtime_usage.contains("flux__net_send_text_parts(")
+            || runtime_usage.contains("flux__net_send_text_to_parts(")
+        {
             out.push_str("#include <sys/uio.h>\n");
         }
         out.push_str("#include <netdb.h>\n");
@@ -4656,6 +4658,58 @@ fn emit_runtime_prelude(
         }
     }
     return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_send_text_to_parts(") {
+        out.push_str(r#"static inline const char *flux__net_send_text_to_parts(int64_t socket_handle, const char *host, int64_t port, struct flux__list parts) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    if (port < 1 || port > 65535) return "sendTextToParts port must be between 1 and 65535";
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
+    if (socket_type != SOCK_DGRAM) return "sendTextToParts requires a UDP socket";
+    struct sockaddr_storage local;
+    socklen_t local_length = sizeof(local);
+    if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return "failed to read UDP socket address";
+    char service[6];
+    snprintf(service, sizeof(service), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = local.ss_family;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    struct addrinfo *addresses = NULL;
+    if (getaddrinfo(host, service, &hints, &addresses) != 0) return "failed to resolve UDP peer";
+    ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    struct iovec vectors[64];
+    size_t vector_count = 0;
+    size_t total_length = 0;
+    for (size_t index = 0; index < parts.len; ++index) {
+        const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
+        size_t length = strlen(text);
+        if (length == 0) continue;
+        if (vector_count == 64) { freeaddrinfo(addresses); return "sendTextToParts supports at most 64 non-empty parts"; }
+        if (length > (size_t)SSIZE_MAX - total_length) { freeaddrinfo(addresses); return "text parts are too large to send"; }
+        vectors[vector_count].iov_base = (void *)text;
+        vectors[vector_count].iov_len = length;
+        vector_count += 1;
+        total_length += length;
+    }
+    const char *failure = "failed to send UDP text parts";
+    for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
+        struct msghdr message;
+        memset(&message, 0, sizeof(message));
+        message.msg_name = address->ai_addr;
+        message.msg_namelen = address->ai_addrlen;
+        message.msg_iov = vectors;
+        message.msg_iovlen = vector_count;
+        ssize_t sent;
+        do { sent = sendmsg((int)socket_handle, &message, 0); } while (sent < 0 && errno == EINTR);
+        if (sent == (ssize_t)total_length) { failure = NULL; break; }
+    }
+    freeaddrinfo(addresses);
+    return failure;
 }
 "#);
     }
@@ -19579,18 +19633,23 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextTo" => {
+            "sendTextTo" | "sendTextToParts" => {
                 if args.len() != 4 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
                 let host = emit_expr(&args[1], env, signatures)?;
                 let port = emit_expr(&args[2], env, signatures)?;
-                let text = emit_expr(&args[3], env, signatures)?;
+                let payload = emit_expr(&args[3], env, signatures)?;
+                let helper = if name == "sendTextToParts" {
+                    "flux__net_send_text_to_parts"
+                } else {
+                    "flux__net_send_text_to"
+                };
                 return Ok((
                     format!(
-                        "flux__net_send_text_to({}, {}, {}, {})",
-                        socket_handle.code, host.code, port.code, text.code
+                        "{}({}, {}, {}, {})",
+                        helper, socket_handle.code, host.code, port.code, payload.code
                     ),
                     vec![Type::Error],
                     None,
