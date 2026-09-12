@@ -11090,6 +11090,7 @@ fn main() -> i64 {
     let header_path = root.join("package.h");
     let consumer_path = root.join("consumer.c");
     let consumer_object = root.join("consumer.o");
+    let cpp_consumer_path = root.join("consumer.cpp");
     fs::write(&header_path, &header).expect("package ABI header should be writable");
     fs::write(
         &consumer_path,
@@ -11109,6 +11110,23 @@ fn main() -> i64 {
         consumer_compile.status.success(),
         "package ABI header consumer should compile: {}",
         String::from_utf8_lossy(&consumer_compile.stderr)
+    );
+    fs::write(
+        &cpp_consumer_path,
+        format!(
+            "#include \"package.h\"\nint64_t probe_cpp(struct {point_type} point) {{ return {identity_symbol}(point).flux__field_value; }}\n"
+        ),
+    )
+    .expect("package ABI C++ consumer should be writable");
+    let cpp_consumer_compile = Command::new("clang++")
+        .args(["-std=c++17", "-fsyntax-only"])
+        .arg(&cpp_consumer_path)
+        .output()
+        .expect("clang++ should compile a consumer of the package ABI header");
+    assert!(
+        cpp_consumer_compile.status.success(),
+        "package ABI header should be C++17 compatible: {}",
+        String::from_utf8_lossy(&cpp_consumer_compile.stderr)
     );
 
     let c_path = root.join("package.c");

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 509
+- Completed baseline units: 510
 - Reported overall progress: **69%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -858,8 +858,8 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 19 — Platform interoperability and plugin ecosystem
 
 - [ ] Stable C FFI.
-- [ ] Generated C header/binding support.
-  - [x] Bootstrap generated C headers for the currently safe export ABI: `flux emit-c-header <file|package> [-o file.h]` exposes only `pub fn` declarations, supports `i64`/`bool`/borrowed `str`/`error`, scalar multi-return result structs, recursively `Copy` public structs, and recursively `Copy` public enums with explicit `int32_t` discriminants, deterministic zero-based variant tags, dependency-ordered payload layouts, public aliases, and module-qualified ABI-v2 type/tag names. It emits C++ `extern "C"` compatibility and still rejects lists/function values/interfaces until their cross-FFI ownership/layout contracts are explicit. The current ABI and borrowed-string caveats are documented in `docs/c-interop.md`; C imports, linker metadata, callbacks, ownership-sensitive values, and broader foreign ownership rules remain pending.
+- [x] Generated C header/binding support for the currently stable export ABI: headers expose ABI-v2 package/module-qualified public symbols and type identities, compile as both C11 and C++17, and cover the supported scalar/Copy aggregate/optional/callback surface without widening ownership-sensitive FFI contracts.
+  - [x] Bootstrap generated C headers for the currently safe export ABI: `flux emit-c-header <file|package> [-o file.h]` exposes only `pub fn` declarations, supports `i64`/`bool`/borrowed `str`/`error`, scalar multi-return result structs, recursively `Copy` public structs/enums and their `Copy` optionals, public aliases, ABI-safe plain function-pointer values, explicit `int32_t` enum discriminants, deterministic zero-based variant tags, dependency-ordered payload layouts, and module-qualified ABI-v2 type/tag names. It emits C++ `extern "C"` compatibility and still rejects lists/interfaces/nested callbacks and other ownership-sensitive shapes until their cross-FFI ownership/layout contracts are explicit. The current ABI and borrowed-string caveats are documented in `docs/c-interop.md`; C imports, linker metadata, owned foreign values, and broader foreign ownership rules remain pending under their separate Milestone 19 items.
   - [x] Generated scalar C bindings now preserve public transparent aliases as compiler-prefixed typedefs and expose public compile-time `i64`/`bool`/`str` constants as typed macros while keeping private constants absent. This adds source-level binding names without introducing runtime storage or widening the ownership-sensitive FFI type surface.
 - [ ] Android Kotlin/Java/NDK bindings, with compiler-generated glue sufficient for ordinary platform API use directly from Flux; manual FFI remains an advanced escape hatch for third-party/native libraries, not the default Android programming model.
 - [ ] Apple Swift/Objective-C bindings following the same no-user-written-bridge principle where platform ABI/runtime constraints allow it.
