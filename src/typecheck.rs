@@ -1371,6 +1371,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             }
             "min_width"
             | "min_height"
+            | "max_width"
+            | "max_height"
             | "focus_scope"
             | "accessibility_order"
             | "margin"
@@ -1535,7 +1537,7 @@ pub(crate) fn source_name_to_internal(name: &str) -> String {
     out
 }
 
-fn internal_name_to_source(name: &str) -> String {
+pub(crate) fn internal_name_to_source(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut uppercase_next = false;
     for ch in name.chars() {
@@ -1757,6 +1759,8 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "layout_transition_ms",
     "min_width",
     "min_height",
+    "max_width",
+    "max_height",
 ];
 
 pub fn view_property_names(kind: &str) -> Vec<String> {

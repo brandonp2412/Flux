@@ -5824,8 +5824,9 @@ fn emit_android_native_application(
             (matches!(
                 element.kind.as_str(),
                 "Button" | "TextInput" | "Toggle" | "Radio"
-            ) && !rows_are_explicitly_fixed)
-                .then(|| ("INT64_C(48)".to_string(), false))
+            ) && !rows_are_explicitly_fixed
+                && view_property(element, "max_height").is_none())
+            .then(|| ("INT64_C(48)".to_string(), false))
         };
         if let Some((min_height, dynamic)) = min_height {
             out.push_str("    jmethodID set_min_height = (*env)->GetMethodID(env, child_class, \"setMinimumHeight\", \"(I)V\");\n");
@@ -5839,6 +5840,67 @@ fn emit_android_native_application(
                     "    (*env)->CallVoidMethod(env, child, set_min_height, (jint)({min_height} * flux__ui_density));\n"
                 ));
             }
+        }
+        for (property_name, minimum_name, local_name, method_name, source_name) in [
+            (
+                "max_width",
+                "min_width",
+                "child_max_width",
+                "setMaxWidth",
+                "maxWidth",
+            ),
+            (
+                "max_height",
+                "min_height",
+                "child_max_height",
+                "setMaxHeight",
+                "maxHeight",
+            ),
+        ] {
+            let Some(property) = view_property(element, property_name) else {
+                continue;
+            };
+            let maximum = if let Some(value) = static_expr_i64(&property.value, signatures) {
+                if !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return Err(diag(
+                        property.value.span,
+                        &format!("{source_name} must be between 1 and {}", i32::MAX),
+                    ));
+                }
+                format!("INT64_C({value})")
+            } else {
+                ui_expr_c(&property.value, view, signatures)?
+            };
+            out.push_str(&format!(
+                "    int64_t {local_name} = {maximum};\n    if ({local_name} < 1 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+            ));
+            if let Some(minimum) = view_property(element, minimum_name) {
+                if let (Some(maximum), Some(minimum_value)) = (
+                    static_expr_i64(&property.value, signatures),
+                    static_expr_i64(&minimum.value, signatures),
+                ) && maximum < minimum_value
+                {
+                    return Err(diag(
+                        property.value.span,
+                        &format!(
+                            "{source_name} must be greater than or equal to {}",
+                            typecheck::internal_name_to_source(minimum_name)
+                        ),
+                    ));
+                }
+                let minimum = if let Some(value) = static_expr_i64(&minimum.value, signatures) {
+                    format!("INT64_C({value})")
+                } else {
+                    ui_expr_c(&minimum.value, view, signatures)?
+                };
+                out.push_str(&format!(
+                    "    if ({local_name} < ({minimum})) {{ fputs(\"Flux runtime error: {source_name} must be greater than or equal to {}\\n\", stderr); abort(); }}\n",
+                    typecheck::internal_name_to_source(minimum_name)
+                ));
+            }
+            out.push_str(&format!(
+                "    jmethodID set_maximum = (*env)->GetMethodID(env, child_class, \"{method_name}\", \"(I)V\");\n    if (set_maximum == NULL) return;\n    (*env)->CallVoidMethod(env, child, set_maximum, (jint)({local_name} * flux__ui_density));\n"
+            ));
         }
         let static_color = |property_name: &str| -> Result<Option<String>, Diagnostic> {
             let Some(property) = view_property(element, property_name) else {
@@ -8159,6 +8221,74 @@ fn emit_android_native_application(
     Ok(())
 }
 
+fn emit_linux_size_constraint_runtime(out: &mut String) {
+    out.push_str(
+        r#"typedef struct _FluxSizeConstraint FluxSizeConstraint;
+typedef struct _FluxSizeConstraintClass FluxSizeConstraintClass;
+struct _FluxSizeConstraint {
+    GtkWidget parent_instance;
+    GtkWidget *child;
+    int max_width;
+    int max_height;
+};
+struct _FluxSizeConstraintClass { GtkWidgetClass parent_class; };
+G_DEFINE_TYPE(FluxSizeConstraint, flux_size_constraint, GTK_TYPE_WIDGET)
+static void flux_size_constraint_measure(GtkWidget *widget, GtkOrientation orientation, int for_size, int *minimum, int *natural, int *minimum_baseline, int *natural_baseline) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)widget;
+    if (self->child == NULL || !gtk_widget_should_layout(self->child)) {
+        *minimum = 0; *natural = 0; *minimum_baseline = -1; *natural_baseline = -1; return;
+    }
+    int constrained_for_size = for_size;
+    if (orientation == GTK_ORIENTATION_HORIZONTAL && self->max_height > 0 && constrained_for_size > self->max_height) constrained_for_size = self->max_height;
+    if (orientation == GTK_ORIENTATION_VERTICAL && self->max_width > 0 && constrained_for_size > self->max_width) constrained_for_size = self->max_width;
+    int child_minimum = 0; int child_natural = 0; int child_minimum_baseline = -1; int child_natural_baseline = -1;
+    gtk_widget_measure(self->child, orientation, constrained_for_size, &child_minimum, &child_natural, &child_minimum_baseline, &child_natural_baseline);
+    int maximum = orientation == GTK_ORIENTATION_HORIZONTAL ? self->max_width : self->max_height;
+    if (maximum > 0) {
+        if (child_minimum > maximum) child_minimum = maximum;
+        if (child_natural > maximum) child_natural = maximum;
+        if (child_natural < child_minimum) child_natural = child_minimum;
+    }
+    *minimum = child_minimum; *natural = child_natural; *minimum_baseline = child_minimum_baseline; *natural_baseline = child_natural_baseline;
+}
+static void flux_size_constraint_size_allocate(GtkWidget *widget, int width, int height, int baseline) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)widget;
+    if (self->child == NULL || !gtk_widget_should_layout(self->child)) return;
+    int child_width = self->max_width > 0 && width > self->max_width ? self->max_width : width;
+    int child_height = self->max_height > 0 && height > self->max_height ? self->max_height : height;
+    int x = 0; int y = 0;
+    GtkAlign halign = gtk_widget_get_halign(self->child); GtkAlign valign = gtk_widget_get_valign(self->child);
+    if (halign == GTK_ALIGN_CENTER) x = (width - child_width) / 2; else if (halign == GTK_ALIGN_END) x = width - child_width;
+    if (valign == GTK_ALIGN_CENTER) y = (height - child_height) / 2; else if (valign == GTK_ALIGN_END) y = height - child_height;
+    GskTransform *transform = NULL;
+    if (x != 0 || y != 0) { graphene_point_t point = GRAPHENE_POINT_INIT((float)x, (float)y); transform = gsk_transform_translate(NULL, &point); }
+    gtk_widget_allocate(self->child, child_width, child_height, baseline >= 0 ? baseline - y : -1, transform);
+    if (transform != NULL) gsk_transform_unref(transform);
+}
+static void flux_size_constraint_dispose(GObject *object) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)object;
+    if (self->child != NULL) { gtk_widget_unparent(self->child); self->child = NULL; }
+    G_OBJECT_CLASS(flux_size_constraint_parent_class)->dispose(object);
+}
+static void flux_size_constraint_class_init(FluxSizeConstraintClass *klass) {
+    GObjectClass *object_class = G_OBJECT_CLASS(klass); object_class->dispose = flux_size_constraint_dispose;
+    GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass); widget_class->measure = flux_size_constraint_measure; widget_class->size_allocate = flux_size_constraint_size_allocate;
+}
+static void flux_size_constraint_init(FluxSizeConstraint *self) { self->child = NULL; self->max_width = -1; self->max_height = -1; gtk_widget_set_overflow(GTK_WIDGET(self), GTK_OVERFLOW_HIDDEN); }
+static GtkWidget *flux_size_constraint_new(GtkWidget *child, int max_width, int max_height) {
+    FluxSizeConstraint *self = g_object_new(flux_size_constraint_get_type(), NULL);
+    self->child = child; self->max_width = max_width; self->max_height = max_height; gtk_widget_set_parent(child, GTK_WIDGET(self));
+    return GTK_WIDGET(self);
+}
+static void flux_size_constraint_set_limits(GtkWidget *widget, int max_width, int max_height) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)widget;
+    if (self->max_width == max_width && self->max_height == max_height) return;
+    self->max_width = max_width; self->max_height = max_height; gtk_widget_queue_resize(widget);
+}
+"#,
+    );
+}
+
 fn emit_linux_gtk_application(
     out: &mut String,
     program: &Program,
@@ -8196,6 +8326,12 @@ fn emit_linux_gtk_application(
             )
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
+    if view.elements.iter().any(|element| {
+        view_property(element, "max_width").is_some()
+            || view_property(element, "max_height").is_some()
+    }) {
+        emit_linux_size_constraint_runtime(out);
+    }
 
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let initial_window_width = application_metadata_i64(application, "width", signatures)
@@ -8306,6 +8442,14 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static GtkWidget *{} = NULL;\n",
                 linux_ui_host_c_name(element)
+            ));
+        }
+        if view_property(element, "max_width").is_some()
+            || view_property(element, "max_height").is_some()
+        {
+            out.push_str(&format!(
+                "static GtkWidget *{} = NULL;\n",
+                linux_ui_constraint_c_name(element)
             ));
         }
         if view_property(element, "layout_transition_ms").is_some() {
@@ -9896,6 +10040,37 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
+        let constrained_variable = if view_property(element, "max_width").is_some()
+            || view_property(element, "max_height").is_some()
+        {
+            let constraint = linux_ui_constraint_c_name(element);
+            let max_width = linux_size_constraint_value(
+                out,
+                element,
+                "max_width",
+                "min_width",
+                "maxWidth",
+                view,
+                signatures,
+                "initial_max_width",
+            )?;
+            let max_height = linux_size_constraint_value(
+                out,
+                element,
+                "max_height",
+                "min_height",
+                "maxHeight",
+                view,
+                signatures,
+                "initial_max_height",
+            )?;
+            out.push_str(&format!(
+                "    {constraint} = flux_size_constraint_new({variable}, (int)({max_width}), (int)({max_height}));\n"
+            ));
+            constraint
+        } else {
+            variable
+        };
         let layout_variable = if let Some(duration) =
             static_non_negative_style_i64(element, "layout_transition_ms", signatures)?
         {
@@ -9905,11 +10080,11 @@ fn emit_linux_gtk_application(
                 .transpose()?
                 .unwrap_or_else(|| "true".to_string());
             out.push_str(&format!(
-                "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {variable});\n    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
+                "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {constrained_variable});\n    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
             ));
             layout
         } else {
-            variable
+            constrained_variable
         };
         emit_grid_sizing(out, view, element, &layout_variable, signatures)?;
         out.push_str(&format!(
@@ -10164,6 +10339,8 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "clip"
             | "min_width"
             | "min_height"
+            | "max_width"
+            | "max_height"
             | "background_color"
             | "border_color"
             | "border_width"
@@ -10308,6 +10485,8 @@ fn android_ui_element_needs_refresh(
         "focusable",
         "min_width",
         "min_height",
+        "max_width",
+        "max_height",
         "background_color",
         "border_color",
         "border_width",
@@ -10432,15 +10611,17 @@ fn emit_android_ui_refresh(
                 "                if (refresh_enabled != NULL) (*env)->CallVoidMethod(env, child, refresh_enabled, (jboolean)({value}));\n"
             ));
         }
-        for (property_name, local_name, method_name, source_name) in [
+        for (property_name, maximum_name, local_name, method_name, source_name) in [
             (
                 "min_width",
+                "max_width",
                 "refresh_min_width",
                 "setMinimumWidth",
                 "minWidth",
             ),
             (
                 "min_height",
+                "max_height",
                 "refresh_min_height",
                 "setMinimumHeight",
                 "minHeight",
@@ -10451,7 +10632,52 @@ fn emit_android_ui_refresh(
             {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str(&format!(
-                    "                int64_t {local_name} = {value};\n                if ({local_name} < 1 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n                jmethodID {local_name}_method = (*env)->GetMethodID(env, child_class, \"{method_name}\", \"(I)V\");\n                if ({local_name}_method != NULL) (*env)->CallVoidMethod(env, child, {local_name}_method, (jint)({local_name} * flux__ui_density));\n"
+                    "                int64_t {local_name} = {value};\n                if ({local_name} < 1 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                ));
+                if let Some(maximum) = view_property(element, maximum_name) {
+                    let maximum = ui_expr_c(&maximum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                if ({local_name} > ({maximum})) {{ fputs(\"Flux runtime error: {source_name} must be less than or equal to {}\\n\", stderr); abort(); }}\n",
+                        typecheck::internal_name_to_source(maximum_name)
+                    ));
+                }
+                out.push_str(&format!(
+                    "                jmethodID {local_name}_method = (*env)->GetMethodID(env, child_class, \"{method_name}\", \"(I)V\");\n                if ({local_name}_method != NULL) (*env)->CallVoidMethod(env, child, {local_name}_method, (jint)({local_name} * flux__ui_density));\n"
+                ));
+            }
+        }
+        for (property_name, minimum_name, local_name, method_name, source_name) in [
+            (
+                "max_width",
+                "min_width",
+                "refresh_max_width",
+                "setMaxWidth",
+                "maxWidth",
+            ),
+            (
+                "max_height",
+                "min_height",
+                "refresh_max_height",
+                "setMaxHeight",
+                "maxHeight",
+            ),
+        ] {
+            if android_ui_property_needs_refresh(element, property_name, &runtime_names)
+                && let Some(property) = view_property(element, property_name)
+            {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                int64_t {local_name} = {value};\n                if ({local_name} < 1 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                ));
+                if let Some(minimum) = view_property(element, minimum_name) {
+                    let minimum = ui_expr_c(&minimum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                if ({local_name} < ({minimum})) {{ fputs(\"Flux runtime error: {source_name} must be greater than or equal to {}\\n\", stderr); abort(); }}\n",
+                        typecheck::internal_name_to_source(minimum_name)
+                    ));
+                }
+                out.push_str(&format!(
+                    "                jmethodID {local_name}_method = (*env)->GetMethodID(env, child_class, \"{method_name}\", \"(I)V\");\n                if ({local_name}_method != NULL) (*env)->CallVoidMethod(env, child, {local_name}_method, (jint)({local_name} * flux__ui_density));\n"
                 ));
             }
         }
@@ -11298,9 +11524,17 @@ fn linux_ui_host_c_name(element: &crate::ast::ViewElement) -> String {
     }
 }
 
+fn linux_ui_constraint_c_name(element: &crate::ast::ViewElement) -> String {
+    format!("flux__ui_constraint_{}", element.name)
+}
+
 fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
     if view_property(element, "layout_transition_ms").is_some() {
         format!("flux__ui_layout_{}", element.name)
+    } else if view_property(element, "max_width").is_some()
+        || view_property(element, "max_height").is_some()
+    {
+        linux_ui_constraint_c_name(element)
     } else {
         linux_ui_host_c_name(element)
     }
@@ -11876,6 +12110,13 @@ fn emit_ui_refresh(
                     "    int64_t refresh_min_width_{} = {value};\n    if (refresh_min_width_{} < 1 || refresh_min_width_{} > INT32_MAX) {{ fputs(\"Flux runtime error: minWidth must be between 1 and 2147483647\\n\", stderr); abort(); }}\n",
                     element.name, element.name, element.name
                 ));
+                if let Some(maximum) = view_property(element, "max_width") {
+                    let maximum = ui_expr_c(&maximum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if (refresh_min_width_{} > ({maximum})) {{ fputs(\"Flux runtime error: minWidth must be less than or equal to maxWidth\\n\", stderr); abort(); }}\n",
+                        element.name
+                    ));
+                }
                 match fixed_width {
                     Some(fixed) => format!(
                         "(refresh_min_width_{} > INT64_C({fixed}) ? refresh_min_width_{} : INT64_C({fixed}))",
@@ -11895,6 +12136,13 @@ fn emit_ui_refresh(
                     "    int64_t refresh_min_height_{} = {value};\n    if (refresh_min_height_{} < 1 || refresh_min_height_{} > INT32_MAX) {{ fputs(\"Flux runtime error: minHeight must be between 1 and 2147483647\\n\", stderr); abort(); }}\n",
                     element.name, element.name, element.name
                 ));
+                if let Some(maximum) = view_property(element, "max_height") {
+                    let maximum = ui_expr_c(&maximum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if (refresh_min_height_{} > ({maximum})) {{ fputs(\"Flux runtime error: minHeight must be less than or equal to maxHeight\\n\", stderr); abort(); }}\n",
+                        element.name
+                    ));
+                }
                 match fixed_height {
                     Some(fixed) => format!(
                         "(refresh_min_height_{} > INT64_C({fixed}) ? refresh_min_height_{} : INT64_C({fixed}))",
@@ -11906,6 +12154,7 @@ fn emit_ui_refresh(
                 let minimum =
                     static_minimum_size(element, "min_height", signatures)?.or_else(|| {
                         (fixed_height.is_none()
+                            && view_property(element, "max_height").is_none()
                             && matches!(
                                 element.kind.as_str(),
                                 "Button" | "TextInput" | "Toggle" | "Radio"
@@ -11919,6 +12168,48 @@ fn emit_ui_refresh(
             };
             out.push_str(&format!(
                 "    if ({layout_widget} != NULL) gtk_widget_set_size_request({layout_widget}, {width}, {height});\n"
+            ));
+        }
+        let dynamic_max_width = view_property(element, "max_width")
+            .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+        let dynamic_max_height = view_property(element, "max_height")
+            .filter(|property| static_expr_i64(&property.value, signatures).is_none());
+        if dynamic_max_width.is_some() || dynamic_max_height.is_some() {
+            let constraint = linux_ui_constraint_c_name(element);
+            let max_width = if let Some(property) = view_property(element, "max_width") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let local = format!("refresh_max_width_{}", element.name);
+                out.push_str(&format!(
+                    "    int64_t {local} = {value};\n    if ({local} < 1 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: maxWidth must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                ));
+                if let Some(minimum) = view_property(element, "min_width") {
+                    let minimum = ui_expr_c(&minimum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({local} < ({minimum})) {{ fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); }}\n"
+                    ));
+                }
+                local
+            } else {
+                "-1".to_string()
+            };
+            let max_height = if let Some(property) = view_property(element, "max_height") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let local = format!("refresh_max_height_{}", element.name);
+                out.push_str(&format!(
+                    "    int64_t {local} = {value};\n    if ({local} < 1 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: maxHeight must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+                ));
+                if let Some(minimum) = view_property(element, "min_height") {
+                    let minimum = ui_expr_c(&minimum.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({local} < ({minimum})) {{ fputs(\"Flux runtime error: maxHeight must be greater than or equal to minHeight\\n\", stderr); abort(); }}\n"
+                    ));
+                }
+                local
+            } else {
+                "-1".to_string()
+            };
+            out.push_str(&format!(
+                "    if ({constraint} != NULL) flux_size_constraint_set_limits({constraint}, (int)({max_width}), (int)({max_height}));\n"
             ));
         }
         emit_dynamic_transform_refresh(out, element, view, signatures)?;
@@ -12772,6 +13063,61 @@ fn static_rich_text_markup(
         ));
     }
     Ok(Some(markup))
+}
+
+fn linux_size_constraint_value(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    minimum_name: &str,
+    source_name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+    local_prefix: &str,
+) -> Result<String, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok("-1".to_string());
+    };
+    let maximum = if let Some(value) = static_expr_i64(&property.value, signatures) {
+        if !(1..=i64::from(i32::MAX)).contains(&value) {
+            return Err(diag(
+                property.value.span,
+                &format!("{source_name} must be between 1 and {}", i32::MAX),
+            ));
+        }
+        format!("INT64_C({value})")
+    } else {
+        ui_expr_c(&property.value, view, signatures)?
+    };
+    let local = format!("flux__{local_prefix}_{}", element.name);
+    out.push_str(&format!(
+        "    int64_t {local} = {maximum};\n    if ({local} < 1 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be between 1 and 2147483647\\n\", stderr); abort(); }}\n"
+    ));
+    if let Some(minimum) = view_property(element, minimum_name) {
+        let minimum_value = if let Some(value) = static_expr_i64(&minimum.value, signatures) {
+            format!("INT64_C({value})")
+        } else {
+            ui_expr_c(&minimum.value, view, signatures)?
+        };
+        if let (Some(maximum), Some(minimum)) = (
+            static_expr_i64(&property.value, signatures),
+            static_expr_i64(&minimum.value, signatures),
+        ) && maximum < minimum
+        {
+            return Err(diag(
+                property.value.span,
+                &format!(
+                    "{source_name} must be greater than or equal to {}",
+                    typecheck::internal_name_to_source(minimum_name)
+                ),
+            ));
+        }
+        out.push_str(&format!(
+            "    if ({local} < ({minimum_value})) {{ fputs(\"Flux runtime error: {source_name} must be greater than or equal to {}\\n\", stderr); abort(); }}\n",
+            typecheck::internal_name_to_source(minimum_name)
+        ));
+    }
+    Ok(local)
 }
 
 fn static_minimum_size(

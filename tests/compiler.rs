@@ -20959,6 +20959,77 @@ app DynamicMinimumSize
 }
 
 #[test]
+fn native_min_max_constraints_lower_and_refresh_across_linux_and_android() {
+    let source = r#"
+view DynamicConstraints {
+    state minimum: i64 = 48
+    state maximum: i64 = 160
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Constrained"
+        minWidth: minimum
+        minHeight: minimum
+        maxWidth: maximum
+        maxHeight: maximum
+    Button grow at 2,1
+        text: "Grow"
+        onPress: maximum => maximum + 8
+}
+app DynamicConstraints
+"#;
+
+    check_source(source).expect("portable min/max size constraints should typecheck");
+    let linux = compile_to_c(source).expect("Linux min/max constraints should lower");
+    assert!(
+        linux.contains("G_DEFINE_TYPE(FluxSizeConstraint, flux_size_constraint, GTK_TYPE_WIDGET)")
+    );
+    assert!(linux.contains("flux__ui_constraint_panel = flux_size_constraint_new(flux__ui_panel"));
+    assert!(linux.contains("int64_t flux__initial_max_width_panel = flux__ui_state_maximum"));
+    assert!(linux.contains("int64_t refresh_max_width_panel = flux__ui_state_maximum"));
+    assert!(linux.contains("int64_t refresh_max_height_panel = flux__ui_state_maximum"));
+    assert!(linux.contains("flux_size_constraint_set_limits(flux__ui_constraint_panel"));
+    assert!(linux.contains("maxWidth must be greater than or equal to minWidth"));
+    assert!(linux.contains("maxHeight must be greater than or equal to minHeight"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable min/max constraints should analyze for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Android min/max constraints should lower");
+    assert!(android.contains("setMaxWidth"));
+    assert!(android.contains("setMaxHeight"));
+    assert!(android.contains("int64_t child_max_width = flux__ui_state_maximum"));
+    assert!(android.contains("int64_t refresh_max_width = flux__ui_state_maximum"));
+    assert!(android.contains("int64_t refresh_max_height = flux__ui_state_maximum"));
+    assert!(android.contains("maxWidth must be greater than or equal to minWidth"));
+    assert!(android.contains("maxHeight must be greater than or equal to minHeight"));
+
+    let invalid = r#"
+view InvalidConstraints {
+    grid columns: auto
+    grid rows: auto
+    Button action at 1,1
+        text: "Invalid"
+        minWidth: 120
+        maxWidth: 80
+}
+app InvalidConstraints
+"#;
+    check_source(invalid).expect("constraint relationship is validated during native lowering");
+    let error = compile_to_c(invalid).expect_err("maxWidth below minWidth must be rejected");
+    assert!(
+        error
+            .message
+            .contains("maxWidth must be greater than or equal to minWidth")
+    );
+}
+
+#[test]
 fn flow_layout_auto_places_flat_siblings_on_linux_and_android() {
     let source = r#"
 view Actions {
