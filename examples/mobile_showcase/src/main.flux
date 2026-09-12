@@ -3,8 +3,8 @@ view HorseTinder {
     state passed: bool = false
     grid columns: 1fr 104 36 104 1fr
     grid rows: auto auto auto auto auto auto auto
-    grid gap: 12
-    grid padding: 24
+    grid gap: 10
+    grid padding: 22
     grid scroll: true
     grid overlay: true
 
@@ -28,39 +28,39 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 420
+        minHeight: 345
         backgroundColor: "#13151B"
-        borderColor: "#292E38"
+        borderColor: "#303642"
         borderWidth: 1
-        radius: 30
-        shadowColor: "#00000070"
-        shadowBlur: 14
-        shadowOffsetY: 5
+        radius: 28
+        shadowColor: "#00000066"
+        shadowBlur: 10
+        shadowOffsetY: 4
 
     Text profileName at 3,1 span columns 3
         text: "Buttercup, 7"
         color: "text"
-        size: 32
+        size: 31
         bold: true
 
     Text matchBadge at 3,4 span columns 2
         text: "98% MATCH"
         color: "#FF93A0"
-        size: 12
+        size: 11
         bold: true
         letterSpacing: 1
         textAlign: "center"
         alignY: "center"
-        padding: 9
-        backgroundColor: "#2A151B"
+        padding: 8
+        backgroundColor: "#30151D"
         borderColor: "#61303B"
         borderWidth: 1
         radius: 999
 
     Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
-        color: "#B5BAC4"
-        size: 15
+        color: "#B8BDC7"
+        size: 14
 
     Text weekend at 5,1 span columns 2
         text: "BEACH GALLOPS"
@@ -69,9 +69,9 @@ view HorseTinder {
         bold: true
         letterSpacing: 1
         textAlign: "center"
-        padding: 14
-        backgroundColor: "#181C24"
-        borderColor: "#2A303B"
+        padding: 12
+        backgroundColor: "#191D25"
+        borderColor: "#303643"
         borderWidth: 1
         radius: 999
 
@@ -82,24 +82,24 @@ view HorseTinder {
         bold: true
         letterSpacing: 1
         textAlign: "center"
-        padding: 14
-        backgroundColor: "#14231B"
-        borderColor: "#294332"
+        padding: 12
+        backgroundColor: "#14251C"
+        borderColor: "#31513B"
         borderWidth: 1
         radius: 999
 
     Text bio at 6,1 span columns 5
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
-        color: "#E8EAF0"
-        size: 17
+        color: "#ECEEF3"
+        size: 16
         wrap: true
         maxLines: 3
-        lineHeightPercent: 145
-        padding: 18
-        backgroundColor: "#11141A"
-        borderColor: "#272D38"
+        lineHeightPercent: 142
+        padding: 16
+        backgroundColor: "#11151B"
+        borderColor: "#2B313D"
         borderWidth: 1
-        radius: 20
+        radius: 18
 
     Button pass at 7,2
         text: "✕"
