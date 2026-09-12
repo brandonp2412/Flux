@@ -13010,6 +13010,77 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_multiply_after_matching_constant_division() {
+    let source = r#"
+const FACTOR: i64 = 7
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn divideThenMultiply(value: i64) -> i64 {
+    return (value / FACTOR) * FACTOR
+}
+
+fn multiplyLeftAfterDivide(value: i64) -> i64 {
+    return FACTOR * (value / FACTOR)
+}
+
+fn divideThenMultiplyEffect(value: i64) -> i64 {
+    return (observe(value) / FACTOR) * FACTOR
+}
+
+fn main() -> i64 {
+    print(divideThenMultiply(10))
+    print(multiplyLeftAfterDivide(11))
+    return divideThenMultiplyEffect(12)
+}
+"#;
+
+    check_source(source).expect("matching division/multiplication should typecheck");
+    let generated = compile_to_c(source)
+        .expect("matching division/multiplication should remove the outer overflow guard");
+    assert!(!generated.contains("flux_mul_i64("));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful dividends must still evaluate exactly once",
+    );
+
+    let unmatched = r#"
+fn keepGuard(value: i64) -> i64 {
+    return (value / 7) * 3
+}
+
+fn main() -> i64 {
+    return keepGuard(9)
+}
+"#;
+    let unmatched_generated =
+        compile_to_c(unmatched).expect("unmatched multiplication should still lower");
+    assert!(unmatched_generated.contains("flux_mul_i64("));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 14
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count / 7) * 7
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI matching division/multiplication should share lowering");
+    assert!(!ui_generated.contains("flux_mul_i64("));
+    assert!(ui_generated.contains("((flux__ui_state_count) / INT64_C(7))"));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";

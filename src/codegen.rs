@@ -14875,6 +14875,34 @@ fn checked_i64_inverse_c(
             }
             None
         }
+        BinOp::Mul => {
+            if let Some(outer) = constant_i64(right) {
+                if let ExprKind::Binary {
+                    op: BinOp::Div,
+                    right: inner_right,
+                    ..
+                } = &left.kind
+                {
+                    if constant_i64(inner_right) == Some(outer) {
+                        return Some(format!("(({left_code}) * ({right_code}))"));
+                    }
+                }
+            }
+
+            if let Some(outer) = constant_i64(left) {
+                if let ExprKind::Binary {
+                    op: BinOp::Div,
+                    right: inner_right,
+                    ..
+                } = &right.kind
+                {
+                    if constant_i64(inner_right) == Some(outer) {
+                        return Some(format!("(({left_code}) * ({right_code}))"));
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
