@@ -456,7 +456,7 @@ fn ffi_header_type_supported_inner(
 }
 
 fn ffi_header_callback_value_supported(ty: &Type, signatures: &Signatures) -> bool {
-    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new(), false)
+    ffi_header_type_supported_inner(ty, signatures, &mut HashSet::new(), true)
 }
 
 fn c_header_optional_types(
@@ -597,9 +597,12 @@ fn emit_c_header_function_type_typedefs(
         visiting: &mut HashSet<String>,
     ) {
         match signatures.canonical_type(ty) {
-            Type::Function { .. } => {
+            Type::Function { params, returns } => {
                 if ffi_header_type_supported(ty, signatures) {
-                    types.insert(signatures.canonical_type(ty));
+                    for nested in params.iter().chain(&returns) {
+                        collect_nested_function_types(nested, signatures, types, visiting);
+                    }
+                    types.insert(Type::Function { params, returns });
                 }
             }
             Type::Named(name) => {
@@ -681,7 +684,11 @@ fn emit_c_header_function_type_typedefs(
         }
     }
     let mut types = types.into_iter().collect::<Vec<_>>();
-    types.sort_by_key(|ty| ty.name());
+    types.sort_by(|left, right| {
+        function_type_depth(left)
+            .cmp(&function_type_depth(right))
+            .then_with(|| left.name().cmp(&right.name()))
+    });
     let emitted_any = !types.is_empty();
     for ty in types {
         let Type::Function { params, returns } = ty else {

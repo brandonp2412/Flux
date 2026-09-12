@@ -11200,9 +11200,15 @@ fn native_c_can_invoke_flux_with_copy_callback() {
     fs::write(
         root.join("main.flux"),
         r#"pub type Mapper = fn(i64) -> i64
+pub type MapperFactory = fn(Mapper) -> Mapper
 
 pub fn invoke(callback: Mapper, value: i64) -> i64 {
     return callback(value)
+}
+
+pub fn invokeFactory(factory: MapperFactory, callback: Mapper, value: i64) -> i64 {
+    let mapped: Mapper = factory(callback)
+    return mapped(value)
 }
 
 fn main() -> i64 {
@@ -11222,8 +11228,12 @@ fn main() -> i64 {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let invoke_symbol = format!("flux__abi_{module_component}__fn_invoke");
+    let invoke_factory_symbol = format!("flux__abi_{module_component}__fn_invokeFactory");
     assert!(header.contains(&format!(
         "int64_t {invoke_symbol}(flux__alias_Mapper flux__local_callback, int64_t flux__local_value);"
+    )));
+    assert!(header.contains(&format!(
+        "int64_t {invoke_factory_symbol}(flux__alias_MapperFactory flux__local_factory, flux__alias_Mapper flux__local_callback, int64_t flux__local_value);"
     )));
 
     let header_path = root.join("package.h");
@@ -11236,7 +11246,7 @@ fn main() -> i64 {
     fs::write(
         &consumer_path,
         format!(
-            "#include \"package.h\"\nstatic int64_t plus_one(int64_t value) {{ return value + 1; }}\nint main(void) {{ return {invoke_symbol}(plus_one, 41) == 42 ? 0 : 1; }}\n"
+            "#include \"package.h\"\nstatic int64_t plus_one(int64_t value) {{ return value + 1; }}\nstatic flux__alias_Mapper identity_mapper(flux__alias_Mapper callback) {{ return callback; }}\nint main(void) {{ return {invoke_symbol}(plus_one, 41) == 42 && {invoke_factory_symbol}(identity_mapper, plus_one, 41) == 42 ? 0 : 1; }}\n"
         ),
     )
     .expect("callback runtime C consumer should be writable");
@@ -11273,7 +11283,7 @@ fn main() -> i64 {
         .expect("native callback consumer should run");
     assert!(
         run.status.success(),
-        "C -> Flux -> C callback invocation should return the expected value"
+        "C -> Flux -> nested C callback invocation should return the expected value"
     );
 
     let _ = fs::remove_dir_all(&root);
@@ -11398,6 +11408,81 @@ fn main() -> i64 {
     assert!(
         output.status.success(),
         "generated callback ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn emits_c_header_for_nested_copy_callback_abi() {
+    let source = r#"
+pub type Mapper = fn(i64) -> i64
+pub type MapperFactory = fn(Mapper) -> Mapper
+
+pub struct FactoryBox {
+    callback: MapperFactory
+}
+
+pub fn choose(value: MapperFactory) -> MapperFactory {
+    return value
+}
+
+pub fn chooseBox(value: FactoryBox) -> FactoryBox {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("nested Copy callbacks should remain plain ABI-safe C function pointers");
+    let inner = "typedef int64_t (*flux__fn_i64__to__i64)(int64_t);";
+    let outer = "typedef flux__fn_i64__to__i64 (*flux__fn_i64__to__i64__to__i64__to__i64)(flux__fn_i64__to__i64);";
+    let inner_offset = header
+        .find(inner)
+        .expect("inner callback typedef should be emitted");
+    let outer_offset = header
+        .find(outer)
+        .expect("outer callback typedef should be emitted");
+    assert!(
+        inner_offset < outer_offset,
+        "nested callback dependencies must be emitted first"
+    );
+    assert!(
+        header
+            .contains("typedef flux__fn_i64__to__i64__to__i64__to__i64 flux__alias_MapperFactory;")
+    );
+    assert!(header.contains("flux__alias_MapperFactory flux__field_callback;"));
+    assert!(header.contains(
+        "flux__alias_MapperFactory flux__fn_choose(flux__alias_MapperFactory flux__local_value);"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-c-nested-callback-header-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary nested callback header directory should be writable");
+    let header_path = root.join("flux_nested_callback_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header)
+        .expect("generated nested callback C header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_nested_callback_api.h\"\nstatic flux__alias_Mapper identity_mapper(flux__alias_Mapper callback) { return callback; }\nflux__alias_MapperFactory probe(void) { return flux__fn_choose(identity_mapper); }\n",
+    )
+    .expect("nested callback ABI C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the nested callback ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated nested callback ABI should compile: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = fs::remove_dir_all(&root);
