@@ -796,11 +796,10 @@ pub fn emit_c_for_target_with_source_metadata(
     }
     let reachable_enum_variants =
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
-    let anonymous_functions =
-        collect_anonymous_functions(program, &reachable_functions, &function_ir);
+    let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
     let mut generated_body = String::new();
-    for function in &anonymous_functions {
-        emit_anonymous_function(&mut generated_body, function, signatures, source_paths)?;
+    for helper in &function_helpers {
+        emit_function_helper(&mut generated_body, helper, signatures, source_paths)?;
         generated_body.push('\n');
     }
     let mut temp_counter = 0usize;
@@ -1027,8 +1026,8 @@ pub fn emit_c_for_target_with_source_metadata(
             out.push_str(";\n");
         }
     }
-    for function in &anonymous_functions {
-        out.push_str(&anonymous_function_prototype(function, signatures)?);
+    for helper in &function_helpers {
+        out.push_str(&function_helper_prototype(helper, signatures)?);
         out.push_str(";\n");
     }
     out.push('\n');
@@ -11705,6 +11704,73 @@ fn anonymous_function_c_name(span: SourceSpan) -> String {
     )
 }
 
+fn partial_application_c_name(span: SourceSpan) -> String {
+    format!(
+        "flux__bind_{}_{}_{}",
+        span.source_id.value(),
+        span.line,
+        span.column
+    )
+}
+
+fn partial_application_prototype(
+    expr: &Expr,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &expr.kind
+    else {
+        return Err(diag(
+            expr.span,
+            "expected bind expression during code generation",
+        ));
+    };
+    if name != "bind" || !named_args.is_empty() || args.len() < 2 {
+        return Err(diag(
+            expr.span,
+            "invalid bind expression reached code generation",
+        ));
+    }
+    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
+    let Type::Function { params, returns } = ty else {
+        return Err(diag(expr.span, "bind did not produce a function type"));
+    };
+    let ret = returns
+        .first()
+        .map(|ty| c_type(ty, signatures))
+        .unwrap_or_else(|| "void".to_string());
+    let params_text = if params.is_empty() {
+        "void".to_string()
+    } else {
+        params
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| format!("{} flux__bound_arg_{index}", c_type(ty, signatures)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Ok(format!(
+        "static {ret} {}({params_text})",
+        partial_application_c_name(expr.span)
+    ))
+}
+
+fn function_helper_prototype(expr: &Expr, signatures: &Signatures) -> Result<String, Diagnostic> {
+    match &expr.kind {
+        ExprKind::AnonymousFunction { .. } => anonymous_function_prototype(expr, signatures),
+        ExprKind::Call { name, .. } if name == "bind" => {
+            partial_application_prototype(expr, signatures)
+        }
+        _ => Err(diag(
+            expr.span,
+            "expected function helper during code generation",
+        )),
+    }
+}
+
 fn anonymous_function_prototype(
     expr: &Expr,
     signatures: &Signatures,
@@ -11750,6 +11816,85 @@ fn anonymous_function_prototype(
         "static {ret} {}({params_text})",
         anonymous_function_c_name(expr.span)
     ))
+}
+
+fn emit_partial_application(
+    out: &mut String,
+    expr: &Expr,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+) -> Result<(), Diagnostic> {
+    let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &expr.kind
+    else {
+        return Err(diag(
+            expr.span,
+            "expected bind expression during code generation",
+        ));
+    };
+    if name != "bind" || !named_args.is_empty() || args.len() < 2 {
+        return Err(diag(
+            expr.span,
+            "invalid bind expression reached code generation",
+        ));
+    }
+    let ExprKind::Var(target_name) = &args[0].kind else {
+        return Err(diag(expr.span, "bind target must be a named function"));
+    };
+    let signature = signatures.get(target_name).ok_or_else(|| {
+        diag(
+            expr.span,
+            "bind target function disappeared during code generation",
+        )
+    })?;
+    let bound_count = args.len() - 1;
+    let mut call_args = Vec::with_capacity(signature.params.len());
+    for arg in &args[1..] {
+        let Some(value) = fold_primitive_expr(arg, &HashMap::new(), signatures)? else {
+            return Err(diag(
+                arg.span,
+                "non-constant bind argument reached code generation",
+            ));
+        };
+        call_args.push(constant_c_value(&value));
+    }
+    for index in 0..signature.params.len().saturating_sub(bound_count) {
+        call_args.push(format!("flux__bound_arg_{index}"));
+    }
+    emit_source_line(out, expr.span, source_paths);
+    out.push_str(&partial_application_prototype(expr, signatures)?);
+    out.push_str(" {\n");
+    let call = format!("{}({})", function_c_name(target_name), call_args.join(", "));
+    if signature.returns.is_empty() {
+        out.push_str(&format!("    {call};\n"));
+    } else {
+        out.push_str(&format!("    return {call};\n"));
+    }
+    out.push_str("}\n");
+    Ok(())
+}
+
+fn emit_function_helper(
+    out: &mut String,
+    expr: &Expr,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+) -> Result<(), Diagnostic> {
+    match &expr.kind {
+        ExprKind::AnonymousFunction { .. } => {
+            emit_anonymous_function(out, expr, signatures, source_paths)
+        }
+        ExprKind::Call { name, .. } if name == "bind" => {
+            emit_partial_application(out, expr, signatures, source_paths)
+        }
+        _ => Err(diag(
+            expr.span,
+            "expected function helper during code generation",
+        )),
+    }
 }
 
 fn emit_anonymous_function(
@@ -13910,7 +14055,7 @@ fn collect_named_function_refs_from_expr(
     }
 }
 
-fn collect_anonymous_functions<'a>(
+fn collect_function_helpers<'a>(
     program: &'a Program,
     reachable_functions: &HashSet<String>,
     function_ir: &FunctionIrCache,
@@ -13921,7 +14066,7 @@ fn collect_anonymous_functions<'a>(
             continue;
         }
         let mut candidates = Vec::new();
-        collect_anonymous_functions_from_block(&function.body, &mut candidates);
+        collect_function_helpers_from_block(&function.body, &mut candidates);
         let Some(cfg) = function_ir.get(&function.name) else {
             functions.extend(candidates);
             continue;
@@ -13932,8 +14077,11 @@ fn collect_anonymous_functions<'a>(
             .filter(|value| cfg.is_value_reachable(value.id))
             .filter(|value| {
                 matches!(
-                    value.kind,
+                    &value.kind,
                     crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
+                ) || matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "bind"
                 )
             })
             .map(|value| source_span_key(value.span))
@@ -13947,7 +14095,7 @@ fn collect_anonymous_functions<'a>(
     functions
 }
 
-fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut Vec<&'a Expr>) {
+fn collect_function_helpers_from_block<'a>(body: &'a [Stmt], functions: &mut Vec<&'a Expr>) {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let { expr, .. }
@@ -13960,16 +14108,16 @@ fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut 
             | StmtKind::LetMultiDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. }
-            | StmtKind::Expr(expr) => collect_anonymous_functions_from_expr(expr, functions),
+            | StmtKind::Expr(expr) => collect_function_helpers_from_expr(expr, functions),
             StmtKind::Return(values) => {
                 for value in values {
-                    collect_anonymous_functions_from_expr(value, functions);
+                    collect_function_helpers_from_expr(value, functions);
                 }
             }
             StmtKind::Shell { expr, redirect, .. } => {
-                collect_anonymous_functions_from_expr(expr, functions);
+                collect_function_helpers_from_expr(expr, functions);
                 if let Some(redirect) = redirect {
-                    collect_anonymous_functions_from_expr(&redirect.path, functions);
+                    collect_function_helpers_from_expr(&redirect.path, functions);
                 }
             }
             StmtKind::If {
@@ -13978,41 +14126,41 @@ fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut 
                 else_body,
                 ..
             } => {
-                collect_anonymous_functions_from_expr(cond, functions);
-                collect_anonymous_functions_from_block(body, functions);
-                collect_anonymous_functions_from_block(else_body, functions);
+                collect_function_helpers_from_expr(cond, functions);
+                collect_function_helpers_from_block(body, functions);
+                collect_function_helpers_from_block(else_body, functions);
             }
             StmtKind::ForRange {
                 start, end, body, ..
             } => {
-                collect_anonymous_functions_from_expr(start, functions);
-                collect_anonymous_functions_from_expr(end, functions);
-                collect_anonymous_functions_from_block(body, functions);
+                collect_function_helpers_from_expr(start, functions);
+                collect_function_helpers_from_expr(end, functions);
+                collect_function_helpers_from_block(body, functions);
             }
             StmtKind::ForEach { iterable, body, .. } => {
-                collect_anonymous_functions_from_expr(iterable, functions);
-                collect_anonymous_functions_from_block(body, functions);
+                collect_function_helpers_from_expr(iterable, functions);
+                collect_function_helpers_from_block(body, functions);
             }
             StmtKind::While { cond, body } => {
-                collect_anonymous_functions_from_expr(cond, functions);
-                collect_anonymous_functions_from_block(body, functions);
+                collect_function_helpers_from_expr(cond, functions);
+                collect_function_helpers_from_block(body, functions);
             }
             StmtKind::Match { value, arms } => {
-                collect_anonymous_functions_from_expr(value, functions);
+                collect_function_helpers_from_expr(value, functions);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_anonymous_functions_from_expr(guard, functions);
+                        collect_function_helpers_from_expr(guard, functions);
                     }
-                    collect_anonymous_functions_from_block(&arm.body, functions);
+                    collect_function_helpers_from_block(&arm.body, functions);
                 }
             }
             StmtKind::ListMatch { value, arms } => {
-                collect_anonymous_functions_from_expr(value, functions);
+                collect_function_helpers_from_expr(value, functions);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_anonymous_functions_from_expr(guard, functions);
+                        collect_function_helpers_from_expr(guard, functions);
                     }
-                    collect_anonymous_functions_from_block(&arm.body, functions);
+                    collect_function_helpers_from_block(&arm.body, functions);
                 }
             }
             StmtKind::Break | StmtKind::Continue => {}
@@ -14020,17 +14168,20 @@ fn collect_anonymous_functions_from_block<'a>(body: &'a [Stmt], functions: &mut 
     }
 }
 
-fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'a Expr>) {
+fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'a Expr>) {
     match &expr.kind {
         ExprKind::AnonymousFunction { body, .. } => {
             functions.push(expr);
-            collect_anonymous_functions_from_expr(body, functions);
+            collect_function_helpers_from_expr(body, functions);
         }
         ExprKind::Call {
             name,
             args,
             named_args,
         } => {
+            if name == "bind" {
+                functions.push(expr);
+            }
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback = named_args.is_empty()
                     && match name.as_str() {
@@ -14042,35 +14193,35 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
                     && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
                 if inline_sequence_callback {
                     if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
-                        collect_anonymous_functions_from_expr(body, functions);
+                        collect_function_helpers_from_expr(body, functions);
                     }
                 } else {
-                    collect_anonymous_functions_from_expr(arg, functions);
+                    collect_function_helpers_from_expr(arg, functions);
                 }
             }
             for arg in named_args {
-                collect_anonymous_functions_from_expr(&arg.value, functions);
+                collect_function_helpers_from_expr(&arg.value, functions);
             }
         }
         ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
             for arg in args {
-                collect_anonymous_functions_from_expr(arg, functions);
+                collect_function_helpers_from_expr(arg, functions);
             }
             for arg in named_args {
-                collect_anonymous_functions_from_expr(&arg.value, functions);
+                collect_function_helpers_from_expr(&arg.value, functions);
             }
         }
         ExprKind::ShellCall { args, .. } => {
             for arg in args {
-                collect_anonymous_functions_from_expr(arg, functions);
+                collect_function_helpers_from_expr(arg, functions);
             }
         }
         ExprKind::Pipe {
             input, name, args, ..
         } => {
-            collect_anonymous_functions_from_expr(input, functions);
+            collect_function_helpers_from_expr(input, functions);
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback =
                     match name.as_str() {
@@ -14081,20 +14232,20 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
                     } && matches!(arg.kind, ExprKind::AnonymousFunction { .. });
                 if inline_sequence_callback {
                     if let ExprKind::AnonymousFunction { body, .. } = &arg.kind {
-                        collect_anonymous_functions_from_expr(body, functions);
+                        collect_function_helpers_from_expr(body, functions);
                     }
                 } else {
-                    collect_anonymous_functions_from_expr(arg, functions);
+                    collect_function_helpers_from_expr(arg, functions);
                 }
             }
         }
         ExprKind::List(items) => {
             for item in items {
-                collect_anonymous_functions_from_expr(item, functions);
+                collect_function_helpers_from_expr(item, functions);
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
-            collect_anonymous_functions_from_expr(value, functions)
+            collect_function_helpers_from_expr(value, functions)
         }
         ExprKind::ListIf {
             condition,
@@ -14102,15 +14253,15 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
             else_value,
             ..
         } => {
-            collect_anonymous_functions_from_expr(condition, functions);
-            collect_anonymous_functions_from_expr(value, functions);
+            collect_function_helpers_from_expr(condition, functions);
+            collect_function_helpers_from_expr(value, functions);
             if let Some(else_value) = else_value {
-                collect_anonymous_functions_from_expr(else_value, functions);
+                collect_function_helpers_from_expr(else_value, functions);
             }
         }
         ExprKind::Index { base, index } => {
-            collect_anonymous_functions_from_expr(base, functions);
-            collect_anonymous_functions_from_expr(index, functions);
+            collect_function_helpers_from_expr(base, functions);
+            collect_function_helpers_from_expr(index, functions);
         }
         ExprKind::Slice {
             base,
@@ -14118,9 +14269,9 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
             end,
             step,
         } => {
-            collect_anonymous_functions_from_expr(base, functions);
+            collect_function_helpers_from_expr(base, functions);
             for part in [start, end, step].into_iter().flatten() {
-                collect_anonymous_functions_from_expr(part, functions);
+                collect_function_helpers_from_expr(part, functions);
             }
         }
         ExprKind::ListComprehension {
@@ -14129,39 +14280,39 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
             condition,
             ..
         } => {
-            collect_anonymous_functions_from_expr(value, functions);
-            collect_anonymous_functions_from_expr(iterable, functions);
+            collect_function_helpers_from_expr(value, functions);
+            collect_function_helpers_from_expr(iterable, functions);
             if let Some(condition) = condition {
-                collect_anonymous_functions_from_expr(condition, functions);
+                collect_function_helpers_from_expr(condition, functions);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
             if let Some(base) = base {
-                collect_anonymous_functions_from_expr(base, functions);
+                collect_function_helpers_from_expr(base, functions);
             }
             for field in fields {
-                collect_anonymous_functions_from_expr(&field.value, functions);
+                collect_function_helpers_from_expr(&field.value, functions);
             }
         }
         ExprKind::Field { base, .. } | ExprKind::Unary { expr: base, .. } => {
-            collect_anonymous_functions_from_expr(base, functions)
+            collect_function_helpers_from_expr(base, functions)
         }
         ExprKind::Match { value, arms } => {
-            collect_anonymous_functions_from_expr(value, functions);
+            collect_function_helpers_from_expr(value, functions);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_anonymous_functions_from_expr(guard, functions);
+                    collect_function_helpers_from_expr(guard, functions);
                 }
-                collect_anonymous_functions_from_expr(&arm.value, functions);
+                collect_function_helpers_from_expr(&arm.value, functions);
             }
         }
         ExprKind::ListMatch { value, arms } => {
-            collect_anonymous_functions_from_expr(value, functions);
+            collect_function_helpers_from_expr(value, functions);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_anonymous_functions_from_expr(guard, functions);
+                    collect_function_helpers_from_expr(guard, functions);
                 }
-                collect_anonymous_functions_from_expr(&arm.value, functions);
+                collect_function_helpers_from_expr(&arm.value, functions);
             }
         }
         ExprKind::Conditional {
@@ -14169,13 +14320,13 @@ fn collect_anonymous_functions_from_expr<'a>(expr: &'a Expr, functions: &mut Vec
             cond,
             else_expr,
         } => {
-            collect_anonymous_functions_from_expr(then_expr, functions);
-            collect_anonymous_functions_from_expr(cond, functions);
-            collect_anonymous_functions_from_expr(else_expr, functions);
+            collect_function_helpers_from_expr(then_expr, functions);
+            collect_function_helpers_from_expr(cond, functions);
+            collect_function_helpers_from_expr(else_expr, functions);
         }
         ExprKind::Binary { left, right, .. } => {
-            collect_anonymous_functions_from_expr(left, functions);
-            collect_anonymous_functions_from_expr(right, functions);
+            collect_function_helpers_from_expr(left, functions);
+            collect_function_helpers_from_expr(right, functions);
         }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
@@ -18035,6 +18186,10 @@ fn emit_expr(
         }
         ExprKind::AnonymousFunction { .. } => EmittedExpr {
             code: anonymous_function_c_name(expr.span),
+            ty: type_of_expr(expr, env, signatures)?,
+        },
+        ExprKind::Call { name, .. } if name == "bind" => EmittedExpr {
+            code: partial_application_c_name(expr.span),
             ty: type_of_expr(expr, env, signatures)?,
         },
         ExprKind::ShellCall { name, args, .. } => {

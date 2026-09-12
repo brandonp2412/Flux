@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 503
+- Completed baseline units: 504
 - Reported overall progress: **68%**
 - Current net scope growth after the baseline: 115 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -181,7 +181,7 @@ The interface/capability foundation is complete for the bootstrap compiler: decl
 - [x] Optional positional/named parameters with explicit compile-time primitive defaults, including top-level constant references and call-site default expansion.
 - [x] Required named parameters: named-only parameters without defaults must be supplied explicitly.
 - [x] Function type aliases through concrete `type Mapper = fn(...) -> ...` aliases; first-class function values currently support zero or one return value.
-- [ ] Partial application / ergonomic function binding if it remains predictable and allocation-free where possible.
+- [x] Allocation-free partial application / ergonomic function binding through `bind(function, compileTimePrefix...)`: top-level named functions with positional parameters and zero/one return may bind one or more compile-time primitive prefix arguments into an ordinary typed function value; lowering emits a static native helper/function pointer with no closure environment or heap allocation, full binding to a zero-argument thunk is supported, and runtime/local captures remain rejected until closure ownership/lifetime semantics exist.
 - [x] Typed value pipeline/composition syntax with `|`, passing the previous result as the next call's first argument; compiler-known list transforms additionally fuse where profitable without changing source semantics.
 
 ## Modules/packages

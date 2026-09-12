@@ -4930,6 +4930,98 @@ fn type_of_sequence_callback(
     }
 }
 
+fn type_of_partial_application(
+    expr: &Expr,
+    args: &[Expr],
+    named_args: &[NamedArg],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if !named_args.is_empty() {
+        return Err(diag(expr.span, "bind does not accept named arguments"));
+    }
+    if args.len() < 2 {
+        return Err(diag(
+            expr.span,
+            "bind expects a named function followed by at least one bound argument",
+        ));
+    }
+    let ExprKind::Var(target_name) = &args[0].kind else {
+        return Err(diag(
+            args[0].span,
+            "bind requires a named function as its first argument",
+        ));
+    };
+    if env.contains_key(target_name) {
+        return Err(diag(
+            args[0].span,
+            "bind currently requires a top-level named function, not a local function value",
+        ));
+    }
+    let Some(signature) = signatures.get(target_name) else {
+        return Err(diag(
+            args[0].span,
+            &format!("unknown function '{target_name}' in bind"),
+        ));
+    };
+    require_visible_declaration(
+        args[0].span,
+        signature.span,
+        signature.public,
+        "function",
+        target_name,
+        signatures,
+    )?;
+    if signature.returns.len() > 1 {
+        return Err(diag(
+            args[0].span,
+            "bind supports functions with zero or one return value",
+        ));
+    }
+    if signature.param_details.iter().any(|param| param.named_only) {
+        return Err(diag(
+            args[0].span,
+            "bind currently supports positional parameters only",
+        ));
+    }
+    let bound = &args[1..];
+    if bound.len() > signature.params.len() {
+        return Err(diag(
+            expr.span,
+            &format!(
+                "bind for '{target_name}' can bind at most {} arguments, got {}",
+                signature.params.len(),
+                bound.len()
+            ),
+        ));
+    }
+    for (index, (arg, expected)) in bound.iter().zip(&signature.params).enumerate() {
+        let actual = type_of_expr(arg, env, signatures)?;
+        require_type(
+            arg.span,
+            expected,
+            &actual,
+            &format!("bound argument {} to '{target_name}'", index + 1),
+        )?;
+        if evaluate_default_expr(arg, signatures).is_err() {
+            return Err(diag(
+                arg.span,
+                &format!(
+                    "bound argument {} to '{target_name}' must be a compile-time primitive constant",
+                    index + 1
+                ),
+            )
+            .with_note(
+                "compile-time binding stays allocation-free; runtime captures require closure ownership/lifetime semantics",
+            ));
+        }
+    }
+    Ok(Type::Function {
+        params: signature.params[bound.len()..].to_vec(),
+        returns: signature.returns.clone(),
+    })
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -5233,6 +5325,11 @@ pub fn type_of_expr(
             }
             Ok(Type::List(Box::new(value_ty)))
         }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "bind" => type_of_partial_application(expr, args, named_args, env, signatures),
         ExprKind::Call {
             name,
             args,
@@ -6181,7 +6278,8 @@ pub(crate) fn value_types_of_expr(
             if signatures.interface(name).is_some()
                 || matches!(
                     name.as_str(),
-                    "take"
+                    "bind"
+                        | "take"
                         | "skip"
                         | "any"
                         | "every"

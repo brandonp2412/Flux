@@ -8389,6 +8389,95 @@ fn main() -> i64 {
 }
 
 #[test]
+fn supports_allocation_free_compile_time_partial_application() {
+    let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn main() -> i64 {
+    let plusTwo: fn(i64) -> i64 = bind(add, 2)
+    let answer: fn() -> i64 = bind(add, 40, 2)
+    print(plusTwo(40))
+    print(answer())
+    return 0
+}
+"#;
+
+    check_source(source).expect("compile-time partial application should typecheck");
+    let generated = compile_to_c(source).expect("partial application should lower natively");
+    assert!(generated.contains("static int64_t flux__bind_0_"));
+    assert!(generated.contains("return flux__fn_add(INT64_C(2), flux__bound_arg_0);"));
+    assert!(generated.contains("return flux__fn_add(INT64_C(40), INT64_C(2));"));
+    assert!(!generated.contains("malloc("));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-partial-application-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("partial-application temp directory should be writable");
+    let c_path = root.join("partial.c");
+    let exe_path = root.join("partial");
+    fs::write(&c_path, generated).expect("generated partial-application C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile partial-application C");
+    assert!(
+        compile.status.success(),
+        "partial-application C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("partial-application program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n42\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let dynamic_capture = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+fn main() -> i64 {
+    let offset: i64 = 2
+    let mapper: fn(i64) -> i64 = bind(add, offset)
+    return mapper(40)
+}
+"#;
+    let error = check_source(dynamic_capture)
+        .expect_err("runtime partial captures must wait for closure ownership semantics");
+    assert!(
+        error
+            .message
+            .contains("must be a compile-time primitive constant")
+    );
+
+    let local_function_value = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+fn main() -> i64 {
+    let target: fn(i64, i64) -> i64 = add
+    let mapper: fn(i64) -> i64 = bind(target, 2)
+    return mapper(40)
+}
+"#;
+    let error = check_source(local_function_value)
+        .expect_err("binding a runtime function value would require an environment");
+    assert!(
+        error
+            .message
+            .contains("requires a top-level named function")
+    );
+}
+
+#[test]
 fn accepts_capture_free_anonymous_functions_and_inline_higher_order_calls() {
     let source = r#"
 type Mapper = fn(i64) -> i64

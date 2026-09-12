@@ -31,6 +31,18 @@ fn positive(value: i64) -> bool { value > 0 }
 
 Concise bodies require a non-`void` return type. Multi-value forwarding remains supported when the single expression is a call with the exact declared return shape.
 
+Named functions are first-class typed values. For predictable allocation-free partial application, `bind(function, prefix...)` binds one or more leading positional arguments when those bound values are compile-time primitive constants:
+
+```flux
+fn add(left: i64, right: i64) -> i64 { left + right }
+fn main() -> i64 {
+    let plusTwo: fn(i64) -> i64 = bind(add, 2)
+    return plusTwo(40)
+}
+```
+
+The bootstrap lowers this form to an ordinary static native helper/function pointer with no closure environment or heap allocation. Binding every positional parameter produces a zero-argument function value. Runtime captures, local function-value targets, named-only target parameters, and multi-value target returns remain rejected until general closure ownership/lifetime semantics can represent them safely.
+
 Control flow uses indentation:
 
 ```flux
