@@ -10607,13 +10607,30 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_c_header_optional_aggregates_until_named_optional_abi_is_defined() {
+fn emits_c_header_for_public_copy_aggregate_optional_abi() {
     let source = r#"
 pub struct Point {
     x: i64
 }
 
-pub fn pass(value: Point?) -> Point? {
+pub enum Choice {
+    Empty
+    PointValue(Point)
+}
+
+pub struct Wrapper {
+    point: Point?
+    choice: Choice?
+}
+
+pub type MaybePoint = Point?
+pub type OptionalMapper = fn(Point?) -> Choice?
+
+pub fn pass(value: MaybePoint) -> Point? {
+    return value
+}
+
+pub fn choose(value: OptionalMapper) -> OptionalMapper {
     return value
 }
 
@@ -10622,10 +10639,67 @@ fn main() -> i64 {
 }
 "#;
 
-    let error = compile_to_c_header(source)
-        .expect_err("optional named aggregates need a collision-safe public ABI type name first");
-    assert_eq!(error.stage, DiagnosticStage::Codegen);
-    assert!(error.message.contains("unsupported FFI type 'Point?'"));
+    let header = compile_to_c_header(source)
+        .expect("Copy aggregate optionals should cross the C ABI by value");
+    let point = header
+        .find("struct flux__type_Point {")
+        .expect("Point ABI layout should be emitted");
+    let maybe_point = header
+        .find(
+            "struct flux__optional_named_Point { bool has_value; struct flux__type_Point value; };",
+        )
+        .expect("Point optional ABI wrapper should be emitted");
+    let choice = header
+        .find("struct flux__type_Choice {")
+        .expect("Choice ABI layout should be emitted");
+    let maybe_choice = header
+        .find("struct flux__optional_named_Choice { bool has_value; struct flux__type_Choice value; };")
+        .expect("Choice optional ABI wrapper should be emitted");
+    let wrapper = header
+        .find("struct flux__type_Wrapper {")
+        .expect("Wrapper ABI layout should be emitted");
+    assert!(point < maybe_point && maybe_point < choice);
+    assert!(choice < maybe_choice && maybe_choice < wrapper);
+    assert!(header.contains("struct flux__optional_named_Point flux__field_point;"));
+    assert!(header.contains("struct flux__optional_named_Choice flux__field_choice;"));
+    assert!(header.contains("typedef struct flux__optional_named_Point flux__alias_MaybePoint;"));
+    assert!(header.contains(
+        "typedef struct flux__optional_named_Choice (*flux__fn_optional_named_Point__to__optional_named_Choice)(struct flux__optional_named_Point);"
+    ));
+    assert!(header.contains(
+        "typedef flux__fn_optional_named_Point__to__optional_named_Choice flux__alias_OptionalMapper;"
+    ));
+    assert!(header.contains(
+        "struct flux__optional_named_Point flux__fn_pass(flux__alias_MaybePoint flux__local_value);"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-c-aggregate-optional-header-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary aggregate optional ABI directory should be writable");
+    let header_path = root.join("flux_optional_aggregate_api.h");
+    let consumer_path = root.join("consumer.c");
+    fs::write(&header_path, &header)
+        .expect("generated aggregate optional C header should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_optional_aggregate_api.h\"\nstatic struct flux__optional_named_Choice map_point(struct flux__optional_named_Point value) { (void)value; return (struct flux__optional_named_Choice){ .has_value = false }; }\nflux__alias_OptionalMapper probe(void) { struct flux__optional_named_Point value = { .has_value = true, .value = { .flux__field_x = 7 } }; return flux__fn_choose(map_point) != 0 && flux__fn_pass(value).value.flux__field_x == 7 ? map_point : 0; }\n",
+    )
+    .expect("aggregate optional ABI C consumer should be writable");
+    let output = Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(&consumer_path)
+        .output()
+        .expect("clang should validate the aggregate optional ABI consumer");
+    assert!(
+        output.status.success(),
+        "generated aggregate optional ABI should compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -10713,6 +10787,12 @@ pub enum Choice {
 
 pub type Mapper = fn(i64) -> i64
 pub type PointMapper = fn(Point) -> Point
+pub type MaybePoint = Point?
+pub type OptionalPointMapper = fn(Point?) -> Point?
+
+pub struct Holder {
+    point: Point?
+}
 
 pub fn scale(value: i64) -> i64 {
     return value * 2
@@ -10731,6 +10811,14 @@ pub fn passThrough(mapper: Mapper) -> Mapper {
 }
 
 pub fn passPoint(mapper: PointMapper) -> PointMapper {
+    return mapper
+}
+
+pub fn maybeIdentity(point: MaybePoint) -> Point? {
+    return point
+}
+
+pub fn passOptionalPoint(mapper: OptionalPointMapper) -> OptionalPointMapper {
     return mapper
 }
 
@@ -10755,12 +10843,21 @@ fn main() -> i64 {
     let roundtrip_symbol = format!("flux__abi_{module_component}__fn_roundtrip");
     let callback_symbol = format!("flux__abi_{module_component}__fn_passThrough");
     let point_callback_symbol = format!("flux__abi_{module_component}__fn_passPoint");
+    let optional_identity_symbol = format!("flux__abi_{module_component}__fn_maybeIdentity");
+    let optional_callback_symbol = format!("flux__abi_{module_component}__fn_passOptionalPoint");
     let point_type = format!("flux__abi_{module_component}__type_Point");
+    let optional_point_type = format!("{point_type}__optional");
+    let holder_type = format!("flux__abi_{module_component}__type_Holder");
     let choice_type = format!("flux__abi_{module_component}__type_Choice");
     let choice_tag = format!("flux__abi_{module_component}__tag_Choice");
 
     assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
     assert!(header.contains(&format!("struct {point_type} {{")));
+    assert!(header.contains(&format!(
+        "struct {optional_point_type} {{ bool has_value; struct {point_type} value; }};"
+    )));
+    assert!(header.contains(&format!("struct {optional_point_type} flux__field_point;")));
+    assert!(header.contains(&format!("struct {holder_type} {{")));
     assert!(header.contains(&format!("typedef int32_t {choice_tag};")));
     assert!(header.contains(&format!(
         "#define {choice_tag}_Off (({choice_tag})INT32_C(0))"
@@ -10782,16 +10879,33 @@ fn main() -> i64 {
         header.contains("typedef flux__fn_named_Point__to__named_Point flux__alias_PointMapper;")
     );
     assert!(header.contains(&format!(
+        "typedef struct {optional_point_type} flux__alias_MaybePoint;"
+    )));
+    assert!(header.contains(&format!(
+        "typedef struct {optional_point_type} (*flux__fn_optional_named_Point__to__optional_named_Point)(struct {optional_point_type});"
+    )));
+    assert!(header.contains(
+        "typedef flux__fn_optional_named_Point__to__optional_named_Point flux__alias_OptionalPointMapper;"
+    ));
+    assert!(header.contains(&format!(
         "flux__alias_Mapper {callback_symbol}(flux__alias_Mapper flux__local_mapper);"
     )));
     assert!(header.contains(&format!(
         "flux__alias_PointMapper {point_callback_symbol}(flux__alias_PointMapper flux__local_mapper);"
+    )));
+    assert!(header.contains(&format!(
+        "struct {optional_point_type} {optional_identity_symbol}(flux__alias_MaybePoint flux__local_point);"
+    )));
+    assert!(header.contains(&format!(
+        "flux__alias_OptionalPointMapper {optional_callback_symbol}(flux__alias_OptionalPointMapper flux__local_mapper);"
     )));
     assert!(generated.contains(&format!("__asm__(\"{symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{identity_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{roundtrip_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{callback_symbol}\")")));
     assert!(generated.contains(&format!("__asm__(\"{point_callback_symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{optional_identity_symbol}\")")));
+    assert!(generated.contains(&format!("__asm__(\"{optional_callback_symbol}\")")));
 
     let header_path = root.join("package.h");
     let consumer_path = root.join("consumer.c");
@@ -10800,7 +10914,7 @@ fn main() -> i64 {
     fs::write(
         &consumer_path,
         format!(
-            "#include \"package.h\"\nint64_t probe(void) {{ struct {point_type} point = {{ .flux__field_value = 7 }}; return {identity_symbol}(point).flux__field_value; }}\n"
+            "#include \"package.h\"\nint64_t probe(void) {{ struct {point_type} point = {{ .flux__field_value = 7 }}; struct {optional_point_type} maybe = {{ .has_value = true, .value = point }}; return {identity_symbol}(point).flux__field_value + {optional_identity_symbol}(maybe).value.flux__field_value; }}\n"
         ),
     )
     .expect("package ABI C consumer should be writable");
@@ -10858,6 +10972,14 @@ fn main() -> i64 {
     assert!(
         symbols.contains(&point_callback_symbol),
         "qualified aggregate callback ABI symbol should be exported"
+    );
+    assert!(
+        symbols.contains(&optional_identity_symbol),
+        "qualified aggregate optional ABI symbol should be exported"
+    );
+    assert!(
+        symbols.contains(&optional_callback_symbol),
+        "qualified aggregate optional callback ABI symbol should be exported"
     );
     assert!(
         !symbols.contains("flux__fn_scale"),

@@ -73,6 +73,15 @@ pub fn emit_c_header_with_module_names(
         &public_ffi_aliases,
         signatures,
     );
+    let public_optional_names = public_optional_types
+        .iter()
+        .map(|optional| {
+            (
+                optional.clone(),
+                c_header_optional_type_name(optional, &public_value_names, signatures),
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     for function in &public_functions {
         for param in &function.params {
@@ -121,7 +130,7 @@ pub fn emit_c_header_with_module_names(
         "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
     );
     out.push_str(
-        "/* Primitive Copy optionals cross by value as { bool has_value; T value; }. */\n",
+        "/* Copy optionals cross by value as { bool has_value; T value; }; aggregate wrappers use stable public ABI identities. */\n",
     );
     out.push_str("/* Copy callback values use plain C function pointers with ABI-safe Copy parameters/results. */\n");
     out.push_str("/* Public str constants below expand to ordinary C string literals with static storage duration. */\n\n");
@@ -138,23 +147,26 @@ pub fn emit_c_header_with_module_names(
         out.push('\n');
     }
 
+    let mut emitted_optional_types = HashSet::new();
     for optional in &public_optional_types {
-        let Type::Optional(inner) = optional else {
+        let Type::Optional(inner) = signatures.canonical_type(optional) else {
             unreachable!("collected C header optional type must be optional");
         };
-        emit_c_header_optional_definition(&mut out, inner, signatures);
+        if !matches!(signatures.canonical_type(&inner), Type::Named(_)) {
+            emit_c_header_optional_definition(
+                &mut out,
+                optional,
+                &public_ffi_aliases,
+                &public_value_names,
+                &public_optional_names,
+                signatures,
+            );
+            emitted_optional_types.insert(optional.clone());
+        }
     }
-    if !public_optional_types.is_empty() {
+    if !emitted_optional_types.is_empty() {
         out.push('\n');
     }
-
-    emit_c_header_function_type_typedefs(
-        &mut out,
-        program,
-        &public_ffi_aliases,
-        &public_value_names,
-        signatures,
-    )?;
 
     for definition in &public_value_defs {
         match definition {
@@ -163,6 +175,7 @@ pub fn emit_c_header_with_module_names(
                 definition,
                 &public_ffi_aliases,
                 &public_value_names,
+                &public_optional_names,
                 signatures,
             ),
             ValueDef::Enum(definition) => emit_c_header_enum_definition(
@@ -170,12 +183,52 @@ pub fn emit_c_header_with_module_names(
                 definition,
                 &public_ffi_aliases,
                 &public_value_names,
+                &public_optional_names,
                 source_modules,
                 signatures,
             ),
         }
         out.push('\n');
+
+        for optional in &public_optional_types {
+            if emitted_optional_types.contains(optional) {
+                continue;
+            }
+            let Type::Optional(inner) = signatures.canonical_type(optional) else {
+                continue;
+            };
+            let Type::Named(inner_name) = signatures.canonical_type(&inner) else {
+                continue;
+            };
+            if inner_name == definition.name() {
+                emit_c_header_optional_definition(
+                    &mut out,
+                    optional,
+                    &public_ffi_aliases,
+                    &public_value_names,
+                    &public_optional_names,
+                    signatures,
+                );
+                emitted_optional_types.insert(optional.clone());
+                out.push('\n');
+            }
+        }
     }
+
+    debug_assert_eq!(
+        emitted_optional_types.len(),
+        public_optional_types.len(),
+        "every supported public C-header optional must have an emitted wrapper"
+    );
+
+    emit_c_header_function_type_typedefs(
+        &mut out,
+        program,
+        &public_ffi_aliases,
+        &public_value_names,
+        &public_optional_names,
+        signatures,
+    )?;
 
     for alias in ordered_public_scalar_aliases(program, &public_ffi_aliases) {
         out.push_str(&format!(
@@ -184,6 +237,7 @@ pub fn emit_c_header_with_module_names(
                 &alias.target,
                 &public_ffi_aliases,
                 &public_value_names,
+                &public_optional_names,
                 signatures,
             ),
             alias.name
@@ -204,6 +258,7 @@ pub fn emit_c_header_with_module_names(
                 &constant.ty,
                 &public_ffi_aliases,
                 &public_value_names,
+                &public_optional_names,
                 signatures,
             ),
             constant_c_value(&signature.value)
@@ -222,7 +277,13 @@ pub fn emit_c_header_with_module_names(
             for (index, ty) in function.returns.iter().enumerate() {
                 out.push_str(&format!(
                     "    {} v{index};\n",
-                    c_header_type(ty, &public_ffi_aliases, &public_value_names, signatures,)
+                    c_header_type(
+                        ty,
+                        &public_ffi_aliases,
+                        &public_value_names,
+                        &public_optional_names,
+                        signatures,
+                    )
                 ));
             }
             out.push_str("};\n\n");
@@ -234,6 +295,7 @@ pub fn emit_c_header_with_module_names(
             function,
             &public_ffi_aliases,
             &public_value_names,
+            &public_optional_names,
             signatures,
             source_modules,
         ));
@@ -326,10 +388,11 @@ fn ffi_header_type_supported_inner(
                     .chain(&returns)
                     .all(|ty| ffi_header_callback_value_supported(ty, signatures))
         }
-        Type::Optional(inner) => matches!(
-            signatures.canonical_type(&inner),
-            Type::I64 | Type::Bool | Type::Str | Type::Error
-        ),
+        Type::Optional(inner) => match signatures.canonical_type(&inner) {
+            Type::I64 | Type::Bool | Type::Str | Type::Error => true,
+            Type::Named(_) => ffi_header_type_supported_inner(&inner, signatures, visiting, false),
+            Type::Void | Type::List(_) | Type::Optional(_) | Type::Function { .. } => false,
+        },
         Type::Void | Type::List(_) | Type::Function { .. } => false,
     }
 }
@@ -408,14 +471,55 @@ fn c_header_optional_types(
     optionals
 }
 
-fn emit_c_header_optional_definition(out: &mut String, inner: &Type, signatures: &Signatures) {
-    let mangle = type_mangle(inner, signatures);
-    let guard = format!("FLUX__OPTIONAL_{}_DEFINED", mangle.to_ascii_uppercase());
-    let optional = Type::Optional(Box::new(inner.clone()));
+fn c_header_optional_type_name(
+    optional: &Type,
+    public_value_names: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> String {
+    let Type::Optional(inner) = signatures.canonical_type(optional) else {
+        unreachable!("C header optional name requested for non-optional type");
+    };
+    match signatures.canonical_type(&inner) {
+        Type::Named(name) => public_value_names
+            .get(&name)
+            .map(|public_name| {
+                let internal_name = struct_c_name(&name);
+                if public_name == &internal_name {
+                    format!("flux__optional_{}", type_mangle(&inner, signatures))
+                } else {
+                    format!("{public_name}__optional")
+                }
+            })
+            .unwrap_or_else(|| format!("flux__optional_{}", type_mangle(&inner, signatures))),
+        _ => format!("flux__optional_{}", type_mangle(&inner, signatures)),
+    }
+}
+
+fn emit_c_header_optional_definition(
+    out: &mut String,
+    optional: &Type,
+    public_ffi_aliases: &HashSet<String>,
+    public_value_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
+    signatures: &Signatures,
+) {
+    let canonical = signatures.canonical_type(optional);
+    let Type::Optional(inner) = &canonical else {
+        unreachable!("C header optional definition requested for non-optional type");
+    };
+    let name = public_optional_names
+        .get(&canonical)
+        .expect("supported public C-header optional has a stable wrapper name");
+    let guard = format!("{}_DEFINED", name.to_ascii_uppercase());
     out.push_str(&format!(
-        "#ifndef {guard}\n#define {guard}\n{} {{ bool has_value; {} value; }};\n#endif\n",
-        c_type(&optional, signatures),
-        c_type(inner, signatures)
+        "#ifndef {guard}\n#define {guard}\nstruct {name} {{ bool has_value; {} value; }};\n#endif\n",
+        c_header_type(
+            inner,
+            public_ffi_aliases,
+            public_value_names,
+            public_optional_names,
+            signatures,
+        )
     ));
 }
 
@@ -424,6 +528,7 @@ fn emit_c_header_function_type_typedefs(
     program: &Program,
     public_ffi_aliases: &HashSet<String>,
     public_value_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let mut types = HashSet::new();
@@ -463,14 +568,30 @@ fn emit_c_header_function_type_typedefs(
         };
         let return_type = returns
             .first()
-            .map(|ty| c_header_type(ty, public_ffi_aliases, public_value_names, signatures))
+            .map(|ty| {
+                c_header_type(
+                    ty,
+                    public_ffi_aliases,
+                    public_value_names,
+                    public_optional_names,
+                    signatures,
+                )
+            })
             .unwrap_or_else(|| "void".to_string());
         let params_text = if params.is_empty() {
             "void".to_string()
         } else {
             params
                 .iter()
-                .map(|ty| c_header_type(ty, public_ffi_aliases, public_value_names, signatures))
+                .map(|ty| {
+                    c_header_type(
+                        ty,
+                        public_ffi_aliases,
+                        public_value_names,
+                        public_optional_names,
+                        signatures,
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -537,6 +658,7 @@ fn emit_c_header_struct_definition(
     definition: &StructDef,
     public_ffi_aliases: &HashSet<String>,
     public_struct_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
     signatures: &Signatures,
 ) {
     let name = public_struct_names
@@ -550,6 +672,7 @@ fn emit_c_header_struct_definition(
                 &field.ty,
                 public_ffi_aliases,
                 public_struct_names,
+                public_optional_names,
                 signatures,
             ),
             field_c_name(&field.name)
@@ -563,6 +686,7 @@ fn emit_c_header_enum_definition(
     definition: &EnumDef,
     public_ffi_aliases: &HashSet<String>,
     public_value_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
     source_modules: &HashMap<SourceId, String>,
     signatures: &Signatures,
 ) {
@@ -597,6 +721,7 @@ fn emit_c_header_enum_definition(
                         &payload.ty,
                         public_ffi_aliases,
                         public_value_names,
+                        public_optional_names,
                         signatures,
                     )
                 ));
@@ -615,6 +740,7 @@ fn c_header_type(
     ty: &Type,
     public_ffi_aliases: &HashSet<String>,
     public_struct_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
     signatures: &Signatures,
 ) -> String {
     if let Type::Named(name) = ty {
@@ -625,6 +751,12 @@ fn c_header_type(
             return format!("struct {struct_name}");
         }
     }
+    let canonical = signatures.canonical_type(ty);
+    if let Type::Optional(_) = &canonical
+        && let Some(name) = public_optional_names.get(&canonical)
+    {
+        return format!("struct {name}");
+    }
     c_type(ty, signatures)
 }
 
@@ -632,12 +764,19 @@ fn c_header_function_prototype(
     function: &Function,
     public_ffi_aliases: &HashSet<String>,
     public_struct_names: &HashMap<String, String>,
+    public_optional_names: &HashMap<Type, String>,
     signatures: &Signatures,
     source_modules: &HashMap<SourceId, String>,
 ) -> String {
     let ret = match function.returns.as_slice() {
         [] => "void".to_string(),
-        [ty] => c_header_type(ty, public_ffi_aliases, public_struct_names, signatures),
+        [ty] => c_header_type(
+            ty,
+            public_ffi_aliases,
+            public_struct_names,
+            public_optional_names,
+            signatures,
+        ),
         _ => format!(
             "struct {}",
             c_header_multi_return_struct_name(function, source_modules)
@@ -656,6 +795,7 @@ fn c_header_function_prototype(
                         &param.ty,
                         public_ffi_aliases,
                         public_struct_names,
+                        public_optional_names,
                         signatures,
                     ),
                     local_c_name(&param.name)
