@@ -1,9 +1,9 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 104 56 104 1fr
+    grid columns: 1fr 96 60 96 1fr
     grid rows: auto 368 auto auto auto auto auto
-    grid gap: 9
+    grid gap: 11
     grid padding: 20
     grid scroll: true
     grid overlay: true
@@ -11,23 +11,23 @@ view HorseTinder {
     Text brand at 1,1 span columns 5
         text: "♥︎  HORSE TINDER"
         color: "#FF6077"
-        size: 24
+        size: 23
         bold: true
         wrap: false
         letterSpacing: 1
 
     Text nearby at 1,1 span columns 5
         text: "4 KM  ·  ONLINE"
-        color: "#C8CDD5"
-        size: 11
+        color: "#D5D9E0"
+        size: 10
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
-        padding: 8
-        backgroundColor: "#151A21"
-        borderColor: "#303844"
+        padding: 9
+        backgroundColor: "#141922"
+        borderColor: "#323B48"
         borderWidth: 1
         radius: 18
 
@@ -36,56 +36,56 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 280
-        maxHeight: 292
-        backgroundColor: "#12151B"
-        borderColor: "#29313C"
+        minHeight: 286
+        maxHeight: 300
+        backgroundColor: "#11151B"
+        borderColor: "#303844"
         borderWidth: 1
-        radius: 32
-        shadowColor: "#00000066"
-        shadowBlur: 6
+        radius: 30
+        shadowColor: "#00000070"
+        shadowBlur: 5
         shadowOffsetY: 3
 
     Text profileName at 3,1 span columns 5
         text: "Buttercup, 7"
         color: "text"
-        size: 37
+        size: 35
         bold: true
         wrap: false
 
     Text matchBadge at 3,1 span columns 5
         text: "98% MATCH"
-        color: "#FFA2AF"
-        size: 12
+        color: "#FFB2BD"
+        size: 11
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        padding: 9
-        backgroundColor: "#461923"
-        borderColor: "#984052"
+        padding: 8
+        backgroundColor: "#431822"
+        borderColor: "#914052"
         borderWidth: 1
         radius: 999
 
     Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
-        color: "#BFC5CF"
-        size: 14
+        color: "#C5CAD3"
+        size: 13
         wrap: false
 
     Text weekend at 5,1 span columns 5
         text: "BEACH GALLOPS"
         color: "#D2D6DF"
-        size: 13
+        size: 12
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "start"
-        padding: 12
-        backgroundColor: "#171C24"
+        padding: 10
+        backgroundColor: "#171D26"
         borderColor: "#343D49"
         borderWidth: 1
         radius: 999
@@ -93,14 +93,14 @@ view HorseTinder {
     Text greenFlag at 5,1 span columns 5
         text: "SHARES HAY"
         color: "#C9F0DA"
-        size: 13
+        size: 12
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
-        padding: 12
-        backgroundColor: "#13251B"
+        padding: 10
+        backgroundColor: "#13271C"
         borderColor: "#31583E"
         borderWidth: 1
         radius: 999
@@ -108,61 +108,63 @@ view HorseTinder {
     Text bio at 6,1 span columns 5
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
         color: "#F0F1F5"
-        size: 16
+        size: 15
         wrap: true
         maxLines: 3
-        lineHeightPercent: 140
-        padding: 14
-        backgroundColor: "#10141A"
-        borderColor: "#29323D"
+        lineHeightPercent: 138
+        padding: 16
+        backgroundColor: "#11161D"
+        borderColor: "#2D3743"
         borderWidth: 1
-        radius: 24
-        shadowColor: "#00000040"
-        shadowBlur: 3
-        shadowOffsetY: 2
+        radius: 22
+        shadowColor: "#00000038"
+        shadowBlur: 2
+        shadowOffsetY: 1
 
     Button pass at 7,1 span columns 5
         text: "✕"
-        size: 68
+        size: 58
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 106
-        maxWidth: 106
-        minHeight: 106
+        minWidth: 96
+        maxWidth: 96
+        minHeight: 96
         alignX: "center"
-        translateX: -86
-        translateY: -8
+        translateX: -80
+        translateY: -4
         focusable: true
         padding: 0
-        radius: 53
-        backgroundColor: "#151A22"
-        borderColor: "#394452"
+        radius: 48
+        backgroundColor: "#151B23"
+        borderColor: "#3A4655"
         borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
+        transitionMs: motionFast
         onPress: passed => !passed
 
     Button like at 7,1 span columns 5
         text: "♥︎"
-        size: 76
+        size: 62
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
-        minWidth: 106
-        maxWidth: 106
-        minHeight: 106
+        minWidth: 96
+        maxWidth: 96
+        minHeight: 96
         alignX: "center"
-        translateX: 86
-        translateY: -8
+        translateX: 80
+        translateY: -4
         focusable: true
         padding: 0
-        radius: 53
+        radius: 48
         backgroundColor: "#FF4D67"
         borderColor: "#FF91A0"
         borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
+        transitionMs: motionFast
         onPress: liked => !liked
 
     Text result at 2,1 span columns 5
@@ -205,4 +207,4 @@ view HorseTinder {
         layoutTransitionMs: motionNormal
 }
 
-app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#07080B", surfaceRaisedColor: "#11151C", textColor: "#F7F8FA", textMutedColor: "#9298A4", accentColor: "#FF4962", onAccentColor: "#FFFFFF", outlineColor: "#2B323D", shadowColor: "#00000080")
+app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#080A0E", surfaceRaisedColor: "#11161D", textColor: "#F7F8FA", textMutedColor: "#9AA1AD", accentColor: "#FF4D67", onAccentColor: "#FFFFFF", outlineColor: "#303945", shadowColor: "#00000080")
