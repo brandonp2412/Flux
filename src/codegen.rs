@@ -11498,6 +11498,10 @@ fn ui_expr_c(
                     let inner = ui_expr_c(double_negated, view, signatures)?;
                     return Ok(format!("(-flux_neg_i64({inner}))"));
                 }
+                if i64_expr_result_excludes_min(inner, signatures) {
+                    let inner = ui_expr_c(inner, view, signatures)?;
+                    return Ok(format!("(-({inner}))"));
+                }
             }
             let inner = ui_expr_c(inner, view, signatures)?;
             Ok(match op {
@@ -15579,6 +15583,52 @@ fn boolean_identity_c(
     }
 }
 
+fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
+    let constant_i64 = |expr: &Expr| match typecheck::constant_primitive_value(expr, signatures) {
+        Some(ConstantValue::I64(value)) => Some(value),
+        _ => None,
+    };
+    if let Some(value) = constant_i64(expr) {
+        return value != i64::MIN;
+    }
+
+    match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::Neg, ..
+        } => true,
+        ExprKind::Binary {
+            left,
+            op: BinOp::Sub,
+            right,
+        } => {
+            constant_i64(left) == Some(0)
+                || matches!(
+                    (&left.kind, &right.kind),
+                    (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+                )
+        }
+        ExprKind::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } => {
+            matches!(constant_i64(left), Some(0 | -1))
+                || matches!(constant_i64(right), Some(0 | -1))
+        }
+        ExprKind::Binary {
+            left,
+            op: BinOp::Div,
+            right,
+        } => {
+            matches!(
+                (&left.kind, &right.kind),
+                (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+            ) || constant_i64(right).is_some_and(|divisor| divisor != 0 && divisor != 1)
+        }
+        _ => false,
+    }
+}
+
 fn checked_i64_identity_c(
     op: BinOp,
     left: &Expr,
@@ -15597,6 +15647,12 @@ fn checked_i64_identity_c(
         CheckedI64Reduction::Zero => Some("INT64_C(0)".to_string()),
         CheckedI64Reduction::ZeroAfterLeft => Some(format!("((void)({left_code}), INT64_C(0))")),
         CheckedI64Reduction::ZeroAfterRight => Some(format!("((void)({right_code}), INT64_C(0))")),
+        CheckedI64Reduction::NegateLeft if i64_expr_result_excludes_min(left, signatures) => {
+            Some(format!("(-({left_code}))"))
+        }
+        CheckedI64Reduction::NegateRight if i64_expr_result_excludes_min(right, signatures) => {
+            Some(format!("(-({right_code}))"))
+        }
         CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
         CheckedI64Reduction::NegateRight => Some(format!("flux_neg_i64({right_code})")),
         CheckedI64Reduction::SelfDivide => Some(format!("flux_div_self_i64({left_code})")),
@@ -19724,6 +19780,13 @@ fn emit_expr(
                     let inner = emit_expr(double_negated, env, signatures)?;
                     return Ok(EmittedExpr {
                         code: format!("(-flux_neg_i64({}))", inner.code),
+                        ty: Type::I64,
+                    });
+                }
+                if i64_expr_result_excludes_min(inner, signatures) {
+                    let inner = emit_expr(inner, env, signatures)?;
+                    return Ok(EmittedExpr {
+                        code: format!("(-({}))", inner.code),
                         ty: Type::I64,
                     });
                 }

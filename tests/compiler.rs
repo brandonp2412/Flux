@@ -13849,6 +13849,169 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
+    let source = r#"
+const NEG_ONE: i64 = -1
+
+fn unaryAfterMultiply(value: i64) -> i64 {
+    return -(value * NEG_ONE)
+}
+
+fn multiplyAfterUnary(value: i64) -> i64 {
+    return NEG_ONE * -value
+}
+
+fn divideAfterSubtract(value: i64) -> i64 {
+    return (0 - value) / NEG_ONE
+}
+
+fn subtractAfterDivide(value: i64) -> i64 {
+    return 0 - (value / NEG_ONE)
+}
+
+fn retainPotentialTrap(value: i64) -> i64 {
+    let _unused: i64 = -(value * NEG_ONE)
+    return 0
+}
+
+fn main() -> i64 {
+    print(unaryAfterMultiply(3))
+    print(multiplyAfterUnary(4))
+    print(divideAfterSubtract(5))
+    print(subtractAfterDivide(6))
+    print(retainPotentialTrap(7))
+    return 0
+}
+"#;
+
+    check_source(source).expect("mixed checked negation forms should typecheck");
+    let generated = compile_to_c(source)
+        .expect("mixed checked negation forms should lower with one guard per value");
+    assert!(!generated.contains("flux_neg_i64(flux_neg_i64("));
+    assert_eq!(
+        generated.matches("flux_neg_i64(").count(),
+        6,
+        "five reachable mixed-negation functions should share one helper definition and retain exactly one checked guard each, including a dead result whose first negation may still trap",
+    );
+
+    let trap_source = r#"
+fn mixed(value: i64) -> i64 {
+    return 0 - (value * -1)
+}
+
+fn main() -> i64 {
+    let minimum: i64 = -9223372036854775807 - 1
+    return mixed(minimum)
+}
+"#;
+    let trap_generated =
+        compile_to_c(trap_source).expect("mixed negation overflow case should lower natively");
+    let root = std::env::temp_dir().join(format!(
+        "flux-mixed-negation-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary mixed-negation directory should be writable");
+    let c_path = root.join("mixed-negation.c");
+    let exe_path = root.join("mixed-negation");
+    fs::write(&c_path, &trap_generated).expect("generated mixed-negation C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile mixed-negation C");
+    assert!(
+        compile.status.success(),
+        "mixed-negation C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("mixed-negation overflow program should run");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("integer negation overflow"));
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => 0 - (count * -1)
+}
+app Counter
+"#;
+    let ui_generated = compile_to_c(ui).expect("UI mixed checked negation should share lowering");
+    assert!(!ui_generated.contains("flux_neg_i64(flux_neg_i64("));
+    assert_eq!(ui_generated.matches("flux_neg_i64(").count(), 2);
+}
+
+#[test]
+fn eliminates_negation_guard_when_inner_result_excludes_i64_min() {
+    let source = r#"
+fn negateHalved(value: i64) -> i64 {
+    return -(value / 2)
+}
+
+fn negateSelfDivision(value: i64) -> i64 {
+    return -(value / value)
+}
+
+fn negateSelfSubtraction(value: i64) -> i64 {
+    return -(value - value)
+}
+
+fn negateZeroMultiply(value: i64) -> i64 {
+    return -(value * 0)
+}
+
+fn retainPotentialMin(value: i64) -> i64 {
+    return -(value / 1)
+}
+
+fn main() -> i64 {
+    print(negateHalved(8))
+    print(negateSelfDivision(2))
+    print(negateSelfSubtraction(3))
+    print(negateZeroMultiply(4))
+    print(retainPotentialMin(5))
+    return 0
+}
+"#;
+
+    check_source(source).expect("bounded-result negation proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("bounded-result negation proofs should remove only redundant guards");
+    assert_eq!(
+        generated.matches("flux_neg_i64(").count(),
+        2,
+        "only the helper definition and value / 1 case may retain a checked negation",
+    );
+    assert!(generated.contains("flux_div_self_i64(flux__local_value)"));
+    assert!(generated.contains("(flux__local_value) / INT64_C(2)"));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 4
+    Button action at 1,1
+        text: "Half"
+        onPress: count => -(count / 2)
+}
+app Counter
+"#;
+    let ui_generated = compile_to_c(ui).expect("UI bounded-result negation should share lowering");
+    assert!(!ui_generated.contains("flux_neg_i64("));
+    assert!(ui_generated.contains("(flux__ui_state_count) / INT64_C(2)"));
+}
+
+#[test]
 fn eliminates_redundant_checked_inverse_add_sub_guards() {
     let source = r#"
 const OFFSET: i64 = 7
