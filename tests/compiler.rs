@@ -4707,7 +4707,7 @@ fn main() -> i64 {{
     let generated = compile_to_c(&source).expect("multi-socket readiness should lower on Linux");
     assert!(generated.contains("flux__net_wait_readable_many("));
     assert!(generated.contains("flux__net_wait_writable_many("));
-    assert!(generated.contains("poll(descriptors, (nfds_t)sockets.len"));
+    assert!(generated.contains("flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len"));
     assert!(generated.contains("void (*callback)(int64_t)"));
 
     let root = std::env::temp_dir().join(format!("flux-net-many-{}", std::process::id()));
@@ -4825,6 +4825,7 @@ fn main() -> i64 {{
     let generated = compile_to_c(&source).expect("combined readiness should lower on Linux");
     assert!(generated.contains("flux__net_wait_ready_many("));
     assert!(generated.contains("POLLIN | POLLOUT"));
+    assert!(generated.contains("flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len"));
     assert!(generated.contains("void (*callback)(int64_t, bool, bool)"));
 
     let root = std::env::temp_dir().join(format!("flux-net-ready-many-{}", std::process::id()));
@@ -6324,6 +6325,114 @@ fn main() -> i64 {
         .map(|line| {
             line.parse::<i64>()
                 .expect("timer cancellation marker should be i64")
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    assert_eq!(values, vec![1, 2]);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn structured_worker_cancellation_interrupts_socket_readiness_waits() {
+    let source = r#"
+fn ready(_socket: i64) -> void {
+}
+fn singleWaiter() -> void {
+    let (socket, openError) = net.udpBind("127.0.0.1", 0)
+    if openError != nil:
+        return
+    let (_ready, waitError) = net.waitReadable(socket, -1)
+    if waitError != nil && worker.cancelled():
+        print(1)
+}
+fn manyWaiter() -> void {
+    let (socket, openError) = net.udpBind("127.0.0.1", 0)
+    if openError != nil:
+        return
+    let (_count, waitError) = net.waitReadableMany([socket], -1, ready)
+    if waitError != nil && worker.cancelled():
+        print(2)
+}
+fn main() -> i64 {
+    let (_singleHandle, singleError) = worker.start(singleWaiter)
+    if singleError != nil:
+        return 11
+    let (_manyHandle, manyError) = worker.start(manyWaiter)
+    if manyError != nil:
+        return 12
+    time.sleepMillis(100)
+    return 0
+}
+"#;
+
+    check_source(source).expect("cancellation-aware readiness waits should typecheck");
+    let generated = compile_to_c(source).expect("cancellation-aware readiness waits should lower");
+    assert!(generated.contains("static bool flux__worker_cancelled(void);"));
+    assert!(generated.contains("static inline int flux__net_poll_cancellable"));
+    assert!(generated.contains("if (flux__worker_cancelled()) return -2;"));
+    assert!(generated.contains("socket readiness wait cancelled by worker scope"));
+
+    let combined = r#"
+fn state(_socket: i64, _readable: bool, _writable: bool) -> void {
+}
+fn main() -> i64 {
+    let (socket, openError) = net.udpBind("127.0.0.1", 0)
+    if openError != nil:
+        return 1
+    let (_count, waitError) = net.waitReadyMany([socket], 0, state)
+    if waitError != nil:
+        return 2
+    return 0
+}
+"#;
+    let combined_generated = compile_to_c(combined).expect("combined readiness should lower");
+    assert!(combined_generated.contains("flux__net_poll_cancellable(descriptors"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-structured-readiness-cancel-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("structured readiness cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source)
+        .expect("structured readiness cancellation source should be writable");
+    let binary = root.join("structured-readiness-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("structured readiness cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "structured readiness cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let started = Instant::now();
+    let run = Command::new(&binary)
+        .output()
+        .expect("structured readiness cancellation binary should run");
+    let elapsed = started.elapsed();
+    assert!(
+        run.status.success(),
+        "structured readiness cancellation binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "structured cancellation should interrupt infinite readiness waits, took {elapsed:?}"
+    );
+    let mut values = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(|line| {
+            line.parse::<i64>()
+                .expect("readiness cancellation marker should be i64")
         })
         .collect::<Vec<_>>();
     values.sort_unstable();
