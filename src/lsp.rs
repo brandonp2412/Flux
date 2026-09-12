@@ -1222,6 +1222,10 @@ fn add_qualified_namespace_completions(
                 "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
             ),
             (
+                "sendTextProgress",
+                "fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)",
+            ),
+            (
                 "sendTextParts",
                 "fn net.sendTextParts(socket: i64, parts: str[]) -> error",
             ),
@@ -2874,6 +2878,14 @@ fn signature_help_for_document_cached(
                         "net.sendTextWithTimeout",
                         &["socket: i64", "text: str", "timeoutMillis: i64"],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendTextProgress" => {
+                    return Some(signature_help_for_builtin(
+                        "net.sendTextProgress",
+                        &["socket: i64", "text: str", "offset: i64"],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -6856,6 +6868,9 @@ mod tests {
         assert!(net_items.contains(
             "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
         ));
+        assert!(net_items.contains(
+            "fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
+        ));
         assert!(net_items.contains("fn net.sendTextParts(socket: i64, parts: str[]) -> error"));
         assert!(
             net_items.contains(
@@ -7854,6 +7869,34 @@ mod tests {
         assert!(
             help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)")
                 || help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)")
+        );
+    }
+
+    #[test]
+    fn signature_help_supports_progressive_text_send() {
+        let uri = "file:///tmp/progressive-send-signature.flux";
+        let source = "fn main() -> i64 {\n    let (offset, complete, failure) = net.sendTextProgress(1, \"hello\", 0)\n    print(offset)\n    print(complete)\n    print(failure)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.sendTextProgress("))
+            .expect("progressive-send call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.sendTextProgress(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("progressive-send call should have signature help")
+        .to_json();
+        assert!(
+            help.contains("fn net.sendTextProgress(socket: i64, text: str, offset: i64) -&gt; (i64, bool, error)")
+                || help.contains("fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)")
         );
     }
 

@@ -4053,6 +4053,113 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_progressive_text_send_is_resumable_nonblocking_and_tree_shaken() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("progressive-send listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    let (blockedOffset, blockedComplete, blockedError) = net.sendTextProgress(socket, "hello", 0)
+    print(blockedOffset)
+    print(blockedComplete)
+    print(blockedError)
+    print(net.setNonblocking(socket, true))
+    let (nextOffset, complete, sendError) = net.sendTextProgress(socket, "hello", 0)
+    print(nextOffset)
+    print(complete)
+    print(sendError)
+    let (sameOffset, alreadyComplete, repeatError) = net.sendTextProgress(socket, "hello", nextOffset)
+    print(sameOffset)
+    print(alreadyComplete)
+    print(repeatError)
+    let (badOffset, badComplete, badError) = net.sendTextProgress(socket, "hello", 99)
+    print(badOffset)
+    print(badComplete)
+    print(badError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("progressive text send should typecheck");
+    let generated = compile_to_c(&source).expect("progressive text send should lower");
+    assert!(generated.contains("struct flux__net_i64_bool_error"));
+    assert!(generated.contains("flux__net_send_text_progress("));
+    assert!(generated.contains("MSG_NOSIGNAL"));
+    assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
+    assert!(generated.contains("sendTextProgress requires a nonblocking TCP socket"));
+
+    let root =
+        std::env::temp_dir().join(format!("flux-net-progressive-send-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("progressive-send fixture should be writable");
+    let source_path = root.join("progressive-send.flux");
+    fs::write(&source_path, &source).expect("progressive-send source should be writable");
+    let binary = root.join("progressive-send");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("progressive-send binary should build");
+    assert!(
+        built.status.success(),
+        "progressive-send build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux progressive-send client should connect");
+        let mut request = [0u8; 5];
+        stream
+            .read_exact(&mut request)
+            .expect("progressive send should deliver the payload");
+        assert_eq!(&request, b"hello");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("progressive-send binary should run");
+    server
+        .join()
+        .expect("progressive-send server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n0\nfalse\nsendTextProgress requires a nonblocking TCP socket\nnil\n5\ntrue\nnil\n5\ntrue\nnil\n99\nfalse\nsendTextProgress offset exceeds text length\nnil\n"
+    );
+
+    let negative_offset = check_source(
+        "fn main() -> i64 {\n    let (offset, complete, failure) = net.sendTextProgress(1, \"hello\", -1)\n    print(offset)\n    print(complete)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("progressive send should reject a negative constant offset");
+    assert!(
+        negative_offset
+            .message
+            .contains("net.sendTextProgress offset must be non-negative")
+    );
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    let (offset, complete, failure) = net.sendTextProgress(socket, "hidden", 0)
+    print(offset)
+    print(complete)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead progressive send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_progress("));
+    assert!(!unused_generated.contains("struct flux__net_i64_bool_error"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("scatter/gather listener should bind");
     let port = listener.local_addr().unwrap().port();

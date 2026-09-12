@@ -6778,6 +6778,43 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "sendTextProgress" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "net.sendTextProgress expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.sendTextProgress socket",
+                )?;
+                let text = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &text, "net.sendTextProgress text")?;
+                let offset = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &offset,
+                    "net.sendTextProgress offset",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if value < 0
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.sendTextProgress offset must be non-negative",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
             "sendText" => {
                 if args.len() != 2 {
                     return Err(diag(

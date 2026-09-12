@@ -3723,6 +3723,10 @@ fn emit_runtime_prelude(
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
+    if runtime_usage.contains("flux__net_send_text_progress(") {
+        out.push_str("struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n");
+        out.push_str("static inline struct flux__net_i64_bool_error flux__net_progress_result(int64_t offset, bool complete, const char *error) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = complete, .v2 = error }; return result; }\n");
+    }
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
     {
@@ -3826,6 +3830,39 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result((int64_t)offset, "socket closed while waiting to send");
     }
     return flux__net_result((int64_t)offset, NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_send_text_progress(") {
+        out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_text_progress(int64_t socket_handle, const char *text, int64_t offset) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(offset, false, "invalid socket handle");
+    if (offset < 0) return flux__net_progress_result(offset, false, "sendTextProgress offset must be non-negative");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_progress_result(offset, false, "sendTextProgress requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_progress_result(offset, false, "sendTextProgress requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextProgress requires a nonblocking TCP socket");
+    size_t length = strlen(text);
+    if (length > (size_t)INT64_MAX) return flux__net_progress_result(offset, false, "text is too large to send");
+    if ((uint64_t)offset > (uint64_t)length) return flux__net_progress_result(offset, false, "sendTextProgress offset exceeds text length");
+    if ((size_t)offset == length) return flux__net_progress_result(offset, true, NULL);
+    size_t remaining = length - (size_t)offset;
+    size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining;
+    ssize_t sent;
+    do { sent = send((int)socket_handle, text + (size_t)offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR);
+    if (sent > 0) {
+        int64_t next_offset = offset + (int64_t)sent;
+        return flux__net_progress_result(next_offset, (size_t)next_offset == length, NULL);
+    }
+    if (sent == 0) return flux__net_progress_result(offset, false, "socket made no send progress");
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_progress_result(offset, false, NULL);
+    return flux__net_progress_result(offset, false, "failed to send text");
 }
 "#);
     }
@@ -20032,6 +20069,22 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "sendTextProgress" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let text = emit_expr(&args[1], env, signatures)?;
+                let offset = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_progress({}, {}, {})",
+                        socket_handle.code, text.code, offset.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "sendText" => {
