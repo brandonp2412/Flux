@@ -1234,6 +1234,10 @@ fn add_qualified_namespace_completions(
                 "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
+                "receiveTextFromMany",
+                "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+            ),
+            (
                 "receiveTextFrom",
                 "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
@@ -2886,6 +2890,19 @@ fn signature_help_for_document_cached(
                             "maxBytes: i64",
                             "maxCount: i64",
                             "callback: fn(i64, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveTextFromMany" => {
+                    return Some(signature_help_for_builtin(
+                        "net.receiveTextFromMany",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "callback: fn(i64, str, str, i64) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
@@ -6800,6 +6817,9 @@ mod tests {
             "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains(
+            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
             "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains("fn net.setNonblocking(socket: i64, enabled: bool) -> error"));
@@ -7906,6 +7926,35 @@ mod tests {
             "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
             "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+    }
+
+    #[test]
+    fn signature_help_supports_receive_text_from_many() {
+        let uri = "file:///tmp/network-receive-from-many.flux";
+        let source = "fn consume(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (bytes, failure) = net.receiveTextFromMany(1, 4096, 8, consume)\n    print(bytes)\n    print(failure)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.receiveTextFromMany("))
+            .expect("receiveTextFromMany call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.receiveTextFromMany(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("receiveTextFromMany call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -&gt; void) -&gt; (i64, error)"
+        ) || help.contains(
+            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
     }
 

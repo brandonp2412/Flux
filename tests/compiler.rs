@@ -4145,6 +4145,130 @@ fn main() -> i64 {
 }
 
 #[test]
+fn udp_receive_text_from_many_drains_nonblocking_datagrams_and_tree_shakes() {
+    let peer = UdpSocket::bind("127.0.0.1:0").expect("batched UDP peer should bind");
+    let peer_port = peer.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn consume(_socket: i64, text: str, host: str, port: i64) -> void {{
+    print(text)
+    print(host)
+    print(port)
+}}
+fn main() -> i64 {{
+    let (socket, bindError) = net.udpBind("127.0.0.1", 0)
+    print(bindError)
+    print(net.sendTextTo(socket, "127.0.0.1", {peer_port}, "ready"))
+    print(net.setNonblocking(socket, true))
+    let (ready, readyError) = net.waitReadable(socket, 1000)
+    print(ready)
+    print(readyError)
+    time.sleepMillis(20)
+    let (received, receiveError) = net.receiveTextFromMany(socket, 64, 8, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("batched nonblocking UDP receive should typecheck");
+    let generated = compile_to_c(&source).expect("batched nonblocking UDP receive should lower");
+    assert!(generated.contains("flux__net_receive_text_from_many("));
+    assert!(generated.contains("receiveTextFromMany requires a nonblocking UDP socket"));
+    assert!(generated.contains("recvfrom("));
+    assert!(generated.contains("EAGAIN"));
+
+    let root = std::env::temp_dir().join(format!("flux-udp-receive-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("batched UDP fixture should be writable");
+    let source_path = root.join("receive_many.flux");
+    fs::write(&source_path, &source).expect("batched UDP source should be writable");
+    let binary = root.join("receive_many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("batched UDP binary should build");
+    assert!(
+        built.status.success(),
+        "batched UDP build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let mut ready = [0u8; 5];
+        let (length, sender) = peer
+            .recv_from(&mut ready)
+            .expect("Flux UDP readiness probe should arrive");
+        assert_eq!(length, 5);
+        assert_eq!(&ready, b"ready");
+        peer.send_to(b"one", sender)
+            .expect("first UDP datagram should send");
+        peer.send_to(b"two", sender)
+            .expect("second UDP datagram should send");
+        peer.send_to(b"three", sender)
+            .expect("third UDP datagram should send");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("batched UDP binary should run");
+    server.join().expect("batched UDP server should finish");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(&lines[..5], ["nil", "nil", "nil", "true", "nil"]);
+    assert_eq!(lines[5], "one");
+    assert_eq!(lines[8], "two");
+    assert_eq!(lines[11], "three");
+    assert_eq!(lines[6], "127.0.0.1");
+    assert_eq!(lines[9], "127.0.0.1");
+    assert_eq!(lines[12], "127.0.0.1");
+    assert_eq!(lines[lines.len() - 3], "11");
+    assert_eq!(lines[lines.len() - 2], "nil");
+    assert_eq!(lines[lines.len() - 1], "nil");
+
+    let max_bytes_error = check_source(
+        "fn consume(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextFromMany(1, 0, 2, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched UDP maxBytes must be statically bounded");
+    assert!(
+        max_bytes_error
+            .message
+            .contains("net.receiveTextFromMany maxBytes must be between 1 and 65536")
+    );
+    let max_count_error = check_source(
+        "fn consume(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextFromMany(1, 64, 0, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched UDP maxCount must be statically bounded");
+    assert!(
+        max_count_error
+            .message
+            .contains("net.receiveTextFromMany maxCount must be between 1 and 2147483647")
+    );
+
+    let unused = r#"
+fn consume(_socket: i64, _text: str, _host: str, _port: i64) -> void {
+}
+fn hidden(socket: i64) -> void {
+    let (received, failure) = net.receiveTextFromMany(socket, 64, 8, consume)
+    print(received)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead batched UDP receive should tree-shake");
+    assert!(!unused_generated.contains("flux__net_receive_text_from_many("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_multi_readiness_is_typed_native_tree_shaken_and_runnable() {
     let first_listener =
         TcpListener::bind("127.0.0.1:0").expect("first loopback readiness listener should bind");
