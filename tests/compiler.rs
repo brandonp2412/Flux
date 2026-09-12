@@ -21948,6 +21948,46 @@ app ButtonIcons
 }
 
 #[test]
+fn button_text_size_refreshes_from_state_on_native_backends() {
+    let source = r#"
+view DynamicButtonSize {
+    state size: i64 = 18
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Grow"
+        size: size
+        onPress: size => size + 2
+}
+app DynamicButtonSize
+"#;
+    check_source(source).expect("Button.size should accept state-driven i64 values");
+
+    let linux = compile_to_c(source).expect("dynamic Button.size should lower on Linux");
+    assert!(linux.contains("int64_t flux__ui_button_size_action = flux__ui_state_size;"));
+    assert!(linux.contains("refresh_button_size_action"));
+    assert!(linux.contains("gtk_button_get_child(GTK_BUTTON(flux__ui_action))"));
+    assert!(linux.contains(
+        "Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer"
+    ));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic button-size fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Button.size should lower on Android");
+    assert!(android.contains("int64_t child_button_size_action = flux__ui_state_size;"));
+    assert!(android.contains("refresh_button_size = flux__ui_state_size;"));
+    assert!(android.contains("refresh_button_text_size"));
+    assert!(android.contains("\"setTextSize\", \"(F)V\""));
+    assert!(android.contains("changed_state == -1 || changed_state == 0"));
+}
+
+#[test]
 fn semantic_ui_colors_lower_through_native_theme_tokens() {
     let source = r#"
 view Palette {

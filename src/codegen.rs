@@ -6027,22 +6027,26 @@ fn emit_android_native_application(
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
             if let Some(property) = view_property(element, "size") {
-                let Some(value) = static_expr_i64(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android Button.size must be a compile-time i64 value",
+                let size_value = if let Some(value) = static_expr_i64(&property.value, signatures) {
+                    if value <= 0 || value > i64::from(i32::MAX) {
+                        return Err(diag(
+                            property.value.span,
+                            "Button.size must be greater than zero and fit within a 32-bit signed integer",
+                        ));
+                    }
+                    value.to_string()
+                } else {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let local = format!("child_button_size_{}", element.name);
+                    out.push_str(&format!(
+                        "    int64_t {local} = {value};\n    if ({local} <= 0 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
                     ));
+                    local
                 };
-                if value <= 0 || value > i64::from(i32::MAX) {
-                    return Err(diag(
-                        property.value.span,
-                        "Button.size must be greater than zero and fit within a 32-bit signed integer",
-                    ));
-                }
                 out.push_str("    jmethodID button_set_text_size = (*env)->GetMethodID(env, child_class, \"setTextSize\", \"(F)V\");\n");
                 out.push_str("    if (button_set_text_size == NULL) return;\n");
                 out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, child, button_set_text_size, (jfloat){value});\n"
+                    "    (*env)->CallVoidMethod(env, child, button_set_text_size, (jfloat){size_value});\n"
                 ));
             }
         }
@@ -10321,23 +10325,25 @@ fn emit_linux_gtk_application(
                     "    gtk_widget_add_css_class({variable}, \"flux-button\");\n"
                 ));
                 if let Some(property) = view_property(element, "size") {
-                    let Some(value) = static_expr_i64(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Linux Button.size must be a compile-time i64 value",
-                        ));
-                    };
-                    if value <= 0 || value > i64::from(i32::MAX) {
-                        return Err(diag(
-                            property.value.span,
-                            "Button.size must be greater than zero and fit within a 32-bit signed integer",
-                        ));
-                    }
                     let label = format!("flux__ui_button_label_{}", element.name);
                     let attrs = format!("flux__ui_button_attrs_{}", element.name);
-                    out.push_str(&format!(
-                        "    GtkWidget *{label} = gtk_button_get_child(GTK_BUTTON({variable}));\n    if (GTK_IS_LABEL({label})) {{ PangoAttrList *{attrs} = pango_attr_list_new(); pango_attr_list_insert({attrs}, pango_attr_size_new({value} * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({label}), {attrs}); pango_attr_list_unref({attrs}); }}\n"
-                    ));
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        if value <= 0 || value > i64::from(i32::MAX) {
+                            return Err(diag(
+                                property.value.span,
+                                "Button.size must be greater than zero and fit within a 32-bit signed integer",
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "    GtkWidget *{label} = gtk_button_get_child(GTK_BUTTON({variable}));\n    if (GTK_IS_LABEL({label})) {{ PangoAttrList *{attrs} = pango_attr_list_new(); pango_attr_list_insert({attrs}, pango_attr_size_new({value} * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({label}), {attrs}); pango_attr_list_unref({attrs}); }}\n"
+                        ));
+                    } else {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        let local = format!("flux__ui_button_size_{}", element.name);
+                        out.push_str(&format!(
+                            "    int64_t {local} = {value};\n    if ({local} <= 0 || {local} > INT32_MAX) {{ fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n    GtkWidget *{label} = gtk_button_get_child(GTK_BUTTON({variable}));\n    if (GTK_IS_LABEL({label})) {{ PangoAttrList *{attrs} = pango_attr_list_new(); pango_attr_list_insert({attrs}, pango_attr_size_new((int){local} * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({label}), {attrs}); pango_attr_list_unref({attrs}); }}\n"
+                        ));
+                    }
                 }
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;
@@ -11110,6 +11116,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Text", "max_lines")
             | ("Text", "max_width_chars")
             | ("Button", "text")
+            | ("Button", "size")
             | ("TextInput", "placeholder")
             | ("TextInput", "validation_state")
             | ("Image", "source")
@@ -11279,7 +11286,7 @@ fn android_ui_element_needs_refresh(
             "max_lines",
             "max_width_chars",
         ],
-        "Button" => &["text"],
+        "Button" => &["text", "size"],
         "TextInput" => &["placeholder", "validation_state"],
         "Image" => &["source", "alt", "can_shrink"],
         "Toggle" => &["label", "checked"],
@@ -11926,6 +11933,17 @@ fn emit_android_ui_refresh(
                         "                    (*env)->DeleteLocalRef(env, refresh_text_value);\n",
                     );
                     out.push_str("                }\n");
+                }
+                if element.kind == "Button"
+                    && android_ui_property_needs_refresh(element, "size", &runtime_names)
+                    && let Some(property) = view_property(element, "size")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                int64_t refresh_button_size = {value};\n                if (refresh_button_size <= 0 || refresh_button_size > INT32_MAX) {{ fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                    ));
+                    out.push_str("                jmethodID refresh_button_text_size = (*env)->GetMethodID(env, child_class, \"setTextSize\", \"(F)V\");\n");
+                    out.push_str("                if (refresh_button_text_size != NULL) (*env)->CallVoidMethod(env, child, refresh_button_text_size, (jfloat)refresh_button_size);\n");
                 }
                 if element.kind == "Text" {
                     if android_ui_property_needs_refresh(element, "selectable", &runtime_names)
@@ -13275,6 +13293,17 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
+                    ));
+                }
+                if let Some(property) = view_property(element, "size")
+                    && static_expr_i64(&property.value, signatures).is_none()
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let label = format!("refresh_button_label_{}", element.name);
+                    let attrs = format!("refresh_button_attrs_{}", element.name);
+                    let size = format!("refresh_button_size_{}", element.name);
+                    out.push_str(&format!(
+                        "    int64_t {size} = {value};\n    if ({size} <= 0 || {size} > INT32_MAX) {{ fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n    if ({widget} != NULL) {{ GtkWidget *{label} = gtk_button_get_child(GTK_BUTTON({widget})); if (GTK_IS_LABEL({label})) {{ PangoAttrList *{attrs} = pango_attr_list_new(); pango_attr_list_insert({attrs}, pango_attr_size_new((int){size} * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({label}), {attrs}); pango_attr_list_unref({attrs}); }} }}\n"
                     ));
                 }
             }
