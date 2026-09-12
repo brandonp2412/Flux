@@ -1244,6 +1244,10 @@ fn build_package_directory(
             "failed to copy package manifest: {error}"
         )));
     }
+    if let Err(error) = stage_package_assets(manifest, output) {
+        let _ = fs::remove_dir_all(output);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -2737,7 +2741,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
 
         stop_child(&mut child);
         let previous_binary = std::mem::replace(&mut binary, next_binary);
-        child = Some(spawn_development_binary(&binary)?);
+        child = Some(spawn_development_binary(&binary, target)?);
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
@@ -2835,13 +2839,27 @@ fn start_development_build(
     let binary = development_binary_path(generation);
     let native_package = native_package_config_for_target(target)?;
     build_native(&generated, &binary, mode, native_package.as_ref())?;
-    let child = spawn_development_binary(&binary)?;
+    let child = spawn_development_binary(&binary, target)?;
     let watch_paths = project_watch_paths(target, &sources);
     Ok((Some(child), binary, watch_paths))
 }
 
-fn spawn_development_binary(path: &Path) -> Result<Child, CliError> {
-    Command::new(path)
+fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliError> {
+    let manifest_path = if target.is_dir() {
+        Some(target.join("flux.toml"))
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        Some(target.to_path_buf())
+    } else {
+        None
+    };
+    let mut command = Command::new(path);
+    if let Some(manifest_path) = manifest_path
+        && let Ok(manifest) = fluxc::project::read_manifest(&manifest_path)
+        && let Some(asset_root) = manifest.assets
+    {
+        command.env("FLUX_ASSET_ROOT", asset_root);
+    }
+    command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -5072,6 +5090,19 @@ __FLUX_PICKER_METHODS__
             view.setImageDrawable(null);
             return;
         }
+        if (source.startsWith("asset://")) {
+            String assetName = source.substring("asset://".length());
+            if (assetName.isEmpty() || assetName.startsWith("/") || assetName.equals("..") || assetName.contains("../") || assetName.endsWith("/..")) {
+                view.setImageDrawable(null);
+                return;
+            }
+            try (java.io.InputStream stream = getAssets().open(assetName)) {
+                view.setImageBitmap(android.graphics.BitmapFactory.decodeStream(stream));
+            } catch (java.io.IOException error) {
+                view.setImageDrawable(null);
+            }
+            return;
+        }
         if (!source.contains("://")) {
             String assetSource = source.startsWith("assets/") ? source.substring(7) : source;
             try (java.io.InputStream input = getAssets().open(assetSource)) {
@@ -5456,7 +5487,10 @@ fn stage_android_package_assets(
         .path
         .parent()
         .ok_or_else(|| "Android package manifest has no parent directory".to_string())?;
-    let source_root = package_root.join("assets");
+    let source_root = manifest
+        .assets
+        .clone()
+        .unwrap_or_else(|| package_root.join("assets"));
     if !source_root.is_dir() {
         return Ok(false);
     }
@@ -5477,14 +5511,88 @@ fn copy_android_asset_directory(source: &Path, destination: &Path) -> Result<(),
             .file_type()
             .map_err(|error| format!("failed to inspect Android asset entry: {error}"))?;
         let destination_path = destination.join(entry.file_name());
+        if file_type.is_symlink() {
+            return Err(CliError::Message(format!(
+                "package assets may not contain symbolic links: '{}'",
+                entry.path().display()
+            )));
+        }
         if file_type.is_dir() {
             copy_android_asset_directory(&entry.path(), &destination_path)?;
         } else if file_type.is_file() {
             fs::copy(entry.path(), &destination_path)
                 .map_err(|error| format!("failed to stage Android asset: {error}"))?;
+        } else {
+            return Err(CliError::Message(format!(
+                "package assets must be regular files or directories: '{}'",
+                entry.path().display()
+            )));
         }
     }
     Ok(())
+}
+
+fn copy_asset_directory(source: &Path, destination: &Path) -> Result<(), CliError> {
+    fs::create_dir_all(destination).map_err(|error| {
+        format!(
+            "failed to create asset directory '{}': {error}",
+            destination.display()
+        )
+    })?;
+    let entries = fs::read_dir(source).map_err(|error| {
+        format!(
+            "failed to read asset directory '{}': {error}",
+            source.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to enumerate asset directory '{}': {error}",
+                source.display()
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "failed to inspect package asset '{}': {error}",
+                entry.path().display()
+            )
+        })?;
+        if file_type.is_symlink() {
+            return Err(CliError::Message(format!(
+                "package assets may not contain symbolic links: '{}'",
+                entry.path().display()
+            )));
+        }
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_asset_directory(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target).map_err(|error| {
+                format!(
+                    "failed to copy package asset '{}': {error}",
+                    entry.path().display()
+                )
+            })?;
+        } else {
+            return Err(CliError::Message(format!(
+                "package assets must be regular files or directories: '{}'",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn stage_package_assets(
+    manifest: &fluxc::project::PackageManifest,
+    payload_root: &Path,
+) -> Result<bool, CliError> {
+    let Some(source) = manifest.assets.as_deref() else {
+        return Ok(false);
+    };
+    copy_asset_directory(source, &payload_root.join("assets"))?;
+    Ok(true)
 }
 
 fn build_android_aab(
@@ -6477,8 +6585,9 @@ mod tests {
         native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
-        select_android_run_target, split_symbols_options, symbolize_options, test_options,
-        validate_android_publish_manifest, waydroid_status_is_running, write_native_cache_metadata,
+        select_android_run_target, split_symbols_options, stage_android_package_assets,
+        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
+        waydroid_status_is_running, write_native_cache_metadata,
     };
 
     #[test]
@@ -7037,6 +7146,7 @@ mod tests {
             version: None,
             entry: std::path::PathBuf::from("src/main.flux"),
             path: std::path::PathBuf::from("flux.toml"),
+            assets: None,
             dependencies: std::collections::BTreeMap::new(),
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
@@ -7076,6 +7186,71 @@ mod tests {
             .expect("complete publishing metadata should pass static policy checks");
 
         assert_eq!(json_string("a\\b\"c\n"), "\"a\\\\b\\\"c\\n\"");
+    }
+
+    #[test]
+    fn android_activity_loads_portable_asset_images() {
+        let activity = android_activity_java_source("");
+        assert!(activity.contains("source.startsWith(\"asset://\")"));
+        assert!(activity.contains("getAssets().open(assetName)"));
+        assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(stream)"));
+    }
+
+    #[test]
+    fn package_assets_stage_recursively_under_portable_asset_root() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-package-assets-stage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let output = root.join("output");
+        std::fs::create_dir_all(source.join("horses")).expect("asset source should be writable");
+        std::fs::write(source.join("horses/profile.txt"), "neigh\n")
+            .expect("asset should be writable");
+        let manifest = crate::project::PackageManifest {
+            format_version: crate::project::PACKAGE_FORMAT_VERSION,
+            name: "example".to_string(),
+            version: None,
+            entry: root.join("src/main.flux"),
+            path: root.join("flux.toml"),
+            assets: Some(source),
+            dependencies: std::collections::BTreeMap::new(),
+            constants: std::collections::BTreeMap::new(),
+            translations: std::collections::BTreeMap::new(),
+            native: crate::project::NativePackageConfig::default(),
+            android: crate::project::AndroidPackageConfig {
+                application_id: "app.flux.example".to_string(),
+                version_code: 1,
+                min_sdk: 23,
+                target_sdk: 36,
+                permissions: vec![],
+                deep_links: vec![],
+                keystore: None,
+                key_alias: None,
+            },
+        };
+
+        assert!(matches!(stage_package_assets(&manifest, &output), Ok(true)));
+        assert_eq!(
+            std::fs::read_to_string(output.join("assets/horses/profile.txt"))
+                .expect("staged asset should exist"),
+            "neigh\n"
+        );
+        let android_output = root.join("android-output");
+        assert!(matches!(
+            stage_android_package_assets(&manifest, &android_output),
+            Ok(true)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(android_output.join("assets/horses/profile.txt"))
+                .expect("Android-staged asset should exist"),
+            "neigh\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -7120,6 +7295,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
             entry: std::path::PathBuf::from("src/main.flux"),
             path: std::path::PathBuf::from("flux.toml"),
+            assets: None,
             dependencies: std::collections::BTreeMap::new(),
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),

@@ -12,6 +12,7 @@ format_version = 1
 name = "example"
 version = "1.0.0"
 entry = "src/main.flux"
+assets = "assets"
 ```
 
 The compiler rejects an explicitly declared package-format version it does not support before building the package. It does not silently downgrade, upgrade, or reinterpret an unknown version.
@@ -20,7 +21,7 @@ The package-format version covers the schema and semantics of `flux.toml`; it is
 
 ## Compatibility policy
 
-Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]`, `[constants]`, `[translations]`, and `[native]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
+Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, `entry`, and optional `assets`), the optional `[dependencies]`, `[constants]`, `[translations]`, and `[native]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules. When present, `assets` names a relative directory inside the package root; package commands preserve its contents under the portable runtime resource root `assets/`.
 
 `[dependencies]` is an additive version-1 extension. Registry entries use quoted exact/caret/tilde SemVer requirements or `"*"`; local development entries use `{ path = "relative/path" }` and may add `version = "^1.2.3"` (or another supported SemVer requirement) when they must satisfy the same version contract as a registry package; Git development entries use `{ git = "repository-url", rev = "immutable-revision" }`. The manifest parser validates names, source shape, required fields, duplicates, relative local paths, and dependency requirement syntax.
 
@@ -65,6 +66,8 @@ Lockfile format version 1 is generated deterministically. Entries are ordered by
 Backward-compatible additions, such as a new optional field with a well-defined default, may remain in package format version 1. A change that removes or renames a supported field, changes an existing field's meaning incompatibly, makes previously optional metadata mandatory without a compatible default, or otherwise requires existing valid manifests to be rewritten must use a new package-format version.
 
 Unknown fields continue to fail explicitly rather than being ignored, which prevents misspellings or newer manifest features from degrading silently on an older compiler.
+
+Application UI can address a declared resource as `asset://relative/path`. Linux development runs bind that URI to the declared source directory, directory/tar packages place the same tree beside the executable under `assets/`, and Android APK/AAB builds embed it in the platform asset store. Resource paths stay relative to the declared root; packaging rejects symbolic links so a package cannot accidentally capture files outside its resource tree.
 
 ## Tooling
 

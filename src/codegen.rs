@@ -8356,6 +8356,9 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
     ));
+    out.push_str(
+        "static gchar *flux__ui_image_source_path(const char *source) {\n    if (source == NULL) return g_strdup(\"\");\n    if (!g_str_has_prefix(source, \"asset://\")) return g_strdup(source);\n    const char *relative = source + 8;\n    if (*relative == '\\0' || *relative == '/' || strstr(relative, \"../\") != NULL || g_str_has_suffix(relative, \"/..\")) return g_strdup(\"\");\n    const char *override_root = getenv(\"FLUX_ASSET_ROOT\");\n    if (override_root != NULL && *override_root != '\\0') return g_build_filename(override_root, relative, NULL);\n    GError *error = NULL;\n    gchar *executable = g_file_read_link(\"/proc/self/exe\", &error);\n    if (executable == NULL) {\n        if (error != NULL) g_error_free(error);\n        return g_build_filename(\"assets\", relative, NULL);\n    }\n    gchar *directory = g_path_get_dirname(executable);\n    gchar *resolved = g_build_filename(directory, \"assets\", relative, NULL);\n    g_free(directory);\n    g_free(executable);\n    return resolved;\n}\n"
+    );
     for element in &view.elements {
         if view_property(element, "drag_translate").is_some() {
             out.push_str(&format!(
@@ -9525,7 +9528,8 @@ fn emit_linux_gtk_application(
                     None => c_string(""),
                 };
                 out.push_str(&format!(
-                    "    {variable} = gtk_picture_new_for_filename({source});\n"
+                    "    gchar *flux__image_source_{} = flux__ui_image_source_path({source});\n    {variable} = gtk_picture_new_for_filename(flux__image_source_{});\n    g_free(flux__image_source_{});\n",
+                    element.name, element.name, element.name
                 ));
                 if let Some(property) = view_property(element, "alt") {
                     let alt = ui_expr_c(&property.value, view, signatures)?;
@@ -12255,7 +12259,7 @@ fn emit_ui_refresh(
                 if let Some(property) = view_property(element, "source") {
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
-                        "    if ({widget} != NULL) gtk_picture_set_filename(GTK_PICTURE({widget}), {value});\n"
+                        "    if ({widget} != NULL) {{ gchar *flux__image_source = flux__ui_image_source_path({value}); gtk_picture_set_filename(GTK_PICTURE({widget}), flux__image_source); g_free(flux__image_source); }}\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "alt") {

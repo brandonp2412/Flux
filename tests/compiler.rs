@@ -18648,6 +18648,44 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
 }
 
 #[test]
+fn package_manifest_resolves_portable_asset_directory() {
+    let root = std::env::temp_dir().join(format!("flux-package-assets-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary package source should be writable");
+    fs::create_dir_all(root.join("media/horses"))
+        .expect("temporary asset directory should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    fs::write(root.join("media/horses/profile.txt"), "neigh\n").expect("asset should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"asset-app\"\nentry = \"src/main.flux\"\nassets = \"media\"\n",
+    )
+    .expect("asset manifest should be writable");
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("asset directory should parse");
+    assert_eq!(
+        parsed.assets.as_deref(),
+        Some(fs::canonicalize(root.join("media")).unwrap().as_path())
+    );
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"asset-app\"\nentry = \"src/main.flux\"\nassets = \"../outside\"\n",
+    )
+    .expect("escaping asset manifest should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("asset directory must remain inside package root");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("package assets")
+            || error.message.contains("assets must remain inside")
+    }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_manifest_parses_strict_dependency_sources() {
     let root =
         std::env::temp_dir().join(format!("flux-package-dependencies-{}", std::process::id()));
@@ -21605,13 +21643,15 @@ app Gallery
 "#;
     check_source(source).expect("Image properties and state-derived source should typecheck");
     let generated = compile_to_c(source).expect("Image should lower to native GtkPicture");
+    assert!(generated.contains("flux__ui_image_source_path"));
     assert!(generated.contains("gtk_picture_new_for_filename"));
     assert!(generated.contains("gtk_picture_set_alternative_text"));
     assert!(generated.contains("GTK_CONTENT_FIT_COVER"));
     assert!(generated.contains("gtk_picture_set_can_shrink"));
     assert!(
-        generated
-            .contains("gtk_picture_set_filename(GTK_PICTURE(flux__ui_artwork), \"default.png\")")
+        generated.contains(
+            "gtk_picture_set_filename(GTK_PICTURE(flux__ui_artwork), flux__image_source)"
+        )
     );
     assert!(generated.contains(
         "gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_artwork), flux__ui_state_alternate)"

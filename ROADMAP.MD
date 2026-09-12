@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 520
-- Reported overall progress: **70%**
+- Completed baseline units: 521
+- Reported overall progress: **71%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -495,7 +495,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [x] `app` declaration / application entry model.
   - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers through the current native Linux/Android application backends. Rich process arguments and multiple-window entry remain pending in their dedicated follow-up tracks rather than blocking the core application entry model.
 - [x] Bootstrap application metadata: `app ViewName(id: ..., title: ..., width: ..., height: ..., resizable: ...)` accepts compile-time typed values/constants, validates positive dimensions and GLib-compatible reverse-DNS-style application IDs, formats canonically, and lowers identity/title/default size/resizability into the native Linux window. Icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
-- [ ] Assets/resources.
+- [x] Assets/resources: manifest-backed packages may declare a relative `[package].assets` directory, and portable `asset://path` image sources resolve from that package resource root. Linux development runs receive the source asset root directly while packaged Linux layouts copy assets beside the executable; Android APK/AAB builds embed the same tree as native package assets and load it through `AssetManager`. Asset directories are constrained to the package root and symlink traversal is rejected during packaging, without exposing resource-manager objects to Flux source.
 - [x] Environment/configuration: portable application build-time configuration uses package-scoped primitive `[constants]` from `flux.toml` through explicit `package.name` references that fold away before native lowering and may feed application metadata/view properties; desktop/server runtime deployment configuration uses typed `process.hasEnv` / `process.env` host-environment access, while Android intentionally keeps configuration in package/application metadata and typed platform capabilities rather than inventing Unix-style environment semantics.
 - [x] Platform permissions for the current native application targets: Android packages accept validated declarative `[android].permissions`, generate deterministic manifest entries, expose typed `android.permissionGranted` / `android.requestPermission` runtime capabilities, and infer compiler-owned vibration/notification permissions only when reachable code needs them; Linux has no equivalent application-manifest permission surface to configure. Permission JNI/runtime support tree-shakes when unused and remains hidden behind Flux APIs rather than application bridge code.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
@@ -536,7 +536,7 @@ The UI model must avoid Flutter-style deeply nested widget construction and obje
   - [x] Bootstrap Linux GTK4 `Text` lowering for literal/constant/state-derived `text: str`, `selectable: bool`, compile-time positive `size: i64`, `bold: bool`, font family/slant/decoration, letter spacing, line height, and hexadecimal foreground color, including grid placement and Pango-backed typography without exposing GTK/Pango objects to Flux source.
 - [x] Rich text: `Text.richText: str` is a compiler-validated compile-time portable inline-markup surface supporting nested balanced `<b>`, `<i>`, and `<u>` spans plus escaped `<`, `>`, and `&` entities. Linux lowers directly to Pango-backed `GtkLabel` markup and Android lowers through platform `Html.fromHtml` into the existing native `TextView`; plain `text` and `richText` are mutually exclusive, unsupported tags/attributes fail compilation, and no rich-text widget tree/runtime is introduced.
 - [ ] Images/vector images.
-  - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `canShrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scaleDown`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. The current source is a runtime file path; package asset embedding/resource identity and vector-specific behavior remain pending rather than being hidden behind cwd assumptions.
+  - [x] Bootstrap native `Image` control uses a typed compile-time/state-derived `source: str`, `alt: str`, `canShrink: bool`, and compile-time `fit: str` (`fill`/`contain`/`cover`/`scaleDown`); Linux lowers to `GtkPicture`, refreshes state-derived source/alt values, and reuses common visibility/accessibility/layout/event properties. Sources may remain ordinary runtime file paths or use portable `asset://path` package resource identity; vector-specific behavior remains pending.
 - [x] Buttons.
   - [x] Bootstrap Linux GTK4 `Button` lowering for compile-time `text: str` / `enabled: bool` plus typed named `fn() -> void` `onPress` dispatch.
 - [ ] Text inputs.

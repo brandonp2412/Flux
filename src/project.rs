@@ -233,6 +233,7 @@ pub struct PackageManifest {
     pub version: Option<String>,
     pub entry: PathBuf,
     pub path: PathBuf,
+    pub assets: Option<PathBuf>,
     pub dependencies: BTreeMap<String, PackageDependency>,
     pub constants: BTreeMap<String, typecheck::ConstantValue>,
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
@@ -539,6 +540,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut name = None::<String>;
     let mut version = None::<String>;
     let mut entry = None::<String>;
+    let mut assets = None::<String>;
     let mut android_application_id = None::<String>;
     let mut android_version_code = None::<u32>;
     let mut android_min_sdk = None::<u32>;
@@ -624,6 +626,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                     "name" => &mut name,
                     "version" => &mut version,
                     "entry" => &mut entry,
+                    "assets" => &mut assets,
                     _ => {
                         diagnostics.push(manifest_diagnostic(
                             source_id,
@@ -1031,6 +1034,21 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[package].entry must end in '.flux'",
         ));
     }
+    if assets.as_deref().is_some_and(str::is_empty) {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[package].assets cannot be empty",
+        ));
+    }
+    if assets
+        .as_deref()
+        .is_some_and(|value| Path::new(value).is_absolute())
+    {
+        diagnostics.push(Diagnostic::global(
+            DiagnosticStage::Parse,
+            "[package].assets must be a relative directory path",
+        ));
+    }
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -1046,6 +1064,24 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[package].entry must remain inside the package root",
         )]);
     }
+    let assets = if let Some(asset_path) = assets {
+        let canonical_assets = canonical_source(&package_root.join(asset_path), "package assets")?;
+        if !canonical_assets.starts_with(&package_root) {
+            return Err(vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                "[package].assets must remain inside the package root",
+            )]);
+        }
+        if !canonical_assets.is_dir() {
+            return Err(vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                "[package].assets must reference a directory",
+            )]);
+        }
+        Some(canonical_assets)
+    } else {
+        None
+    };
 
     let name = name.expect("validated package name");
     let version_code = android_version_code.unwrap_or(1);
@@ -1086,6 +1122,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         version,
         entry: canonical_entry,
         path: canonical_manifest,
+        assets,
         dependencies,
         constants,
         translations,
