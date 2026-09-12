@@ -166,10 +166,18 @@ impl SemanticDatabase {
             }
         }
         for route in &program.routes {
+            let ty = program
+                .views
+                .iter()
+                .find(|view| view.name == route.view_name)
+                .map(|view| Type::Function {
+                    params: view.params.iter().map(|param| param.ty.clone()).collect(),
+                    returns: Vec::new(),
+                });
             symbols.push(SemanticSymbol {
                 name: route.name.clone(),
                 kind: SymbolKind::Route,
-                ty: None,
+                ty,
                 span: route.name_span,
             });
         }

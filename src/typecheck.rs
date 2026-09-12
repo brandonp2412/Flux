@@ -1800,15 +1800,6 @@ fn validate_routes(program: &Program, signatures: &Signatures, diagnostics: &mut
         ) {
             diagnostics.push(diagnostic);
         }
-        if !view.params.is_empty() {
-            diagnostics.push(diag(
-                route.view_span,
-                &format!(
-                    "route '{}' target view '{}' must not declare parameters until route parameters are implemented",
-                    route.name, route.view_name
-                ),
-            ));
-        }
     }
 }
 

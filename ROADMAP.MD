@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 512
+- Completed baseline units: 513
 - Reported overall progress: **69%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -640,8 +640,8 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 
 # Milestone 13 — Navigation
 
-- [x] Typed routes: `route name = ViewName` declares a compiler-owned route identity that resolves across the loaded project graph to one visible zero-parameter Flux view, rejects duplicate/unknown/parameterized targets statically, participates in formatter/semantic/LSP keyword tooling, and lowers to no runtime route/controller object until navigation operations consume it.
-- [ ] Route parameters.
+- [x] Typed routes: `route name = ViewName` declares a compiler-owned route identity that resolves across the loaded project graph to one visible Flux view, rejects duplicate/unknown targets statically, participates in formatter/semantic/LSP keyword tooling, and lowers to no runtime route/controller object until navigation operations consume it.
+- [x] Route parameters are inferred directly from the target view's typed parameter contract rather than duplicated in route syntax: parameterized views may be route targets, semantic route symbols carry the target parameter types, ordinary positional/named/default rules remain owned by the view declaration, and route metadata still emits no runtime object until navigation operations consume it.
 - [ ] Back stack.
 - [ ] Tabs.
 - [ ] Nested navigation where genuinely needed.

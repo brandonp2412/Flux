@@ -5737,7 +5737,7 @@ fn hover_description(
         SymbolKind::Enum => format!("enum {}", symbol.name),
         SymbolKind::EnumVariant => typed_symbol("variant", symbol),
         SymbolKind::Struct => format!("struct {}", symbol.name),
-        SymbolKind::Route => format!("route {}", symbol.name),
+        SymbolKind::Route => typed_symbol("route", symbol),
         SymbolKind::View => format!("view {}", symbol.name),
         SymbolKind::ViewElement => format!("element {}", symbol.name),
     }
@@ -6749,6 +6749,17 @@ mod tests {
             .expect("custom view property should hover")
             .to_json();
         assert!(property.contains("property Badge.label: str"));
+    }
+
+    #[test]
+    fn hover_reports_parameterized_route_contracts() {
+        let source = "view Detail(id: i64, *, tab: str = \"overview\") {\n    grid columns: 1fr\n    grid rows: auto\n}\nroute detail = Detail\nfn main() -> i64 { 0 }\n";
+        let uri = "file:///tmp/route-hover.flux";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let hover = hover_for_document(uri, source, &documents, 4, 8, PositionEncoding::Utf8)
+            .expect("route declaration should hover")
+            .to_json();
+        assert!(hover.contains("route detail: fn(i64, str) -> void"));
     }
 
     #[test]

@@ -25595,7 +25595,7 @@ fn main() -> i64 { 0 }
 }
 
 #[test]
-fn typed_routes_bind_zero_parameter_views_without_runtime_route_objects() {
+fn typed_routes_bind_view_parameter_contracts_without_runtime_route_objects() {
     let source = r#"
 view Home {
     grid columns: 1fr
@@ -25649,20 +25649,32 @@ app Home
     }));
 
     let parameterized = r#"
-view Detail(id: i64) {
+view Detail(id: i64, *, tab: str = "overview") {
     grid columns: 1fr
     grid rows: auto
 }
 route detail = Detail
 fn main() -> i64 { 0 }
 "#;
-    let errors = check_source_all(parameterized)
-        .expect_err("route parameters remain a separate navigation milestone");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("target view 'Detail' must not declare parameters until route parameters are implemented")
-    }));
+    check_source(parameterized)
+        .expect("route parameter contracts should be inferred from the target view");
+    let parameterized_database =
+        fluxc::semantic::SemanticDatabase::analyze(parameterized, SourceId::UNKNOWN)
+            .expect("parameterized routes should participate in semantic analysis");
+    let detail_route = parameterized_database
+        .symbols_named("detail")
+        .find(|symbol| symbol.kind == fluxc::semantic::SymbolKind::Route)
+        .expect("parameterized route symbol should exist");
+    assert_eq!(
+        detail_route.ty,
+        Some(fluxc::ast::Type::Function {
+            params: vec![fluxc::ast::Type::I64, fluxc::ast::Type::Str],
+            returns: Vec::new(),
+        })
+    );
+    let generated = compile_to_c(parameterized)
+        .expect("parameterized route metadata should not add a runtime route object");
+    assert!(!generated.contains("route detail"));
 
     let duplicate = r#"
 view Home {
