@@ -21274,6 +21274,48 @@ app Screen(accentColor: 7)
 }
 
 #[test]
+fn application_environment_configuration_combines_manifest_constants_and_host_environment() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-application-configuration-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("application package should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"configured-app\"\nentry = \"src/main.flux\"\n\n[constants]\nappTitle = \"Configured Flux\"\napiBase = \"https://example.test/v1\"\n",
+    )
+    .expect("application manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        r#"fn started() -> void {
+    print(process.env("FLUX_APP_ENV", "development"))
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text endpoint at 1,1
+        text: package.apiBase
+}
+app Screen(title: package.appTitle, onStart: started)
+"#,
+    )
+    .expect("application source should be writable");
+
+    let generated = fluxc::project::compile_to_c(&root)
+        .expect("manifest configuration and host environment should compile for an application");
+    assert!(generated.contains("Configured Flux"));
+    assert!(generated.contains("https://example.test/v1"));
+    assert!(generated.contains("getenv("));
+    assert!(
+        !generated.contains("package."),
+        "package configuration must fold away before native lowering"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn application_lifecycle_metadata_uses_typed_free_function_callbacks() {
     let source = r#"
 fn started() -> void {

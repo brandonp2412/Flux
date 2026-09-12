@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 506
-- Reported overall progress: **68%**
+- Completed baseline units: 507
+- Reported overall progress: **69%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -488,7 +488,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
   - [x] Bootstrap `app ViewName` process entry selects one visible zero-parameter root view, is formatter/LSP-keyword aware, rejects competing `fn main`, and lowers through the current native Linux/Android application backends. Rich process arguments and multiple-window entry remain pending in their dedicated follow-up tracks rather than blocking the core application entry model.
 - [x] Bootstrap application metadata: `app ViewName(id: ..., title: ..., width: ..., height: ..., resizable: ...)` accepts compile-time typed values/constants, validates positive dimensions and GLib-compatible reverse-DNS-style application IDs, formats canonically, and lowers identity/title/default size/resizability into the native Linux window. Icons/permissions remain in their dedicated later tracks rather than being hidden in this bootstrap surface.
 - [ ] Assets/resources.
-- [ ] Environment/configuration.
+- [x] Environment/configuration: portable application build-time configuration uses package-scoped primitive `[constants]` from `flux.toml` through explicit `package.name` references that fold away before native lowering and may feed application metadata/view properties; desktop/server runtime deployment configuration uses typed `process.hasEnv` / `process.env` host-environment access, while Android intentionally keeps configuration in package/application metadata and typed platform capabilities rather than inventing Unix-style environment semantics.
 - [x] Platform permissions for the current native application targets: Android packages accept validated declarative `[android].permissions`, generate deterministic manifest entries, expose typed `android.permissionGranted` / `android.requestPermission` runtime capabilities, and infer compiler-owned vibration/notification permissions only when reachable code needs them; Linux has no equivalent application-manifest permission surface to configure. Permission JNI/runtime support tree-shakes when unused and remains hidden behind Flux APIs rather than application bridge code.
 - [ ] Lifecycle events as functions/capabilities, not class callbacks.
   - [x] Bootstrap `app` metadata accepts named typed `onStart`, `onResume`, `onPause`, `onStop`, and `onExit` `fn() -> void` callbacks. Linux maps start/stop/exit to native application activation/shutdown and resume/pause to native window active-state changes; Android maps the same callbacks directly onto `ANativeActivityCallbacks`, with no application/controller object exposed to Flux source.

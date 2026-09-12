@@ -9286,18 +9286,7 @@ fn application_metadata_string(
         .metadata
         .iter()
         .find(|field| field.name == source_name || field.name == name)?;
-    match &field.value.kind {
-        ExprKind::Str(value) => Some(value.clone()),
-        ExprKind::Var(name) => {
-            signatures
-                .constant(name)
-                .and_then(|constant| match &constant.value {
-                    ConstantValue::Str(value) => Some(value.clone()),
-                    _ => None,
-                })
-        }
-        _ => None,
-    }
+    static_expr_str(&field.value, signatures)
 }
 
 const APPLICATION_THEME_COLOR_FIELDS: &[(&str, &str)] = &[
