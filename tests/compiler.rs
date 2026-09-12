@@ -33377,8 +33377,10 @@ async fn addOne(value: i64) -> i64 {
 
 async fn choose(choice: Choice) -> i64 {
     match choice:
-        Choice.Value(value) if value > 0:
+        Choice.Value(value) if value > 10:
             return await addOne(value)
+        Choice.Value(< 0 && > -99):
+            return await addOne(10)
         Choice.Value(value):
             return value
         Choice.Empty():
@@ -33386,12 +33388,25 @@ async fn choose(choice: Choice) -> i64 {
 }
 
 async fn main() -> i64 {
-    return await choose(Choice.Value(40))
+    let positive: i64 = await choose(Choice.Value(40))
+    let negative: i64 = await choose(Choice.Value(-1))
+    let zero: i64 = await choose(Choice.Value(0))
+    let empty: i64 = await choose(Choice.Empty())
+    return positive + negative + zero + empty
 }
 "#;
     let guarded_generated = compile_to_c(guarded_source)
-        .expect("guarded match awaits should retain the safe blocking fallback");
-    assert!(guarded_generated.contains("flux__async_body_choose("));
+        .expect("guarded match awaits should lower to continuation states");
+    assert!(guarded_generated.contains("flux__async_resume_choose"));
+    assert!(!guarded_generated.contains("flux__async_body_choose("));
+    assert!(guarded_generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(guarded_generated.contains("< INT64_C(0)"));
+    assert!(guarded_generated.contains("&&"));
+    assert!(guarded_generated.contains(
+        "flux__async_start_cont_addOne(INT64_C(10), flux__async_resume_choose, flux__task)"
+    ));
 
     let root = std::env::temp_dir().join(format!("flux-async-match-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -33416,6 +33431,32 @@ async fn main() -> i64 {
         .expect("async match fixture should run");
     assert_eq!(status.code(), Some(46));
     let _ = fs::remove_dir_all(&root);
+
+    let guarded_root =
+        std::env::temp_dir().join(format!("flux-async-guarded-match-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&guarded_root);
+    fs::create_dir_all(&guarded_root).expect("guarded async match directory should be writable");
+    let guarded_path = guarded_root.join("main.flux");
+    let guarded_binary = guarded_root.join("async-guarded-match");
+    fs::write(&guarded_path, guarded_source)
+        .expect("guarded async match source should be writable");
+    let guarded_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&guarded_path)
+        .arg("-o")
+        .arg(&guarded_binary)
+        .output()
+        .expect("guarded async match fixture should build");
+    assert!(
+        guarded_built.status.success(),
+        "guarded async match build failed: {}",
+        String::from_utf8_lossy(&guarded_built.stderr)
+    );
+    let guarded_status = Command::new(&guarded_binary)
+        .status()
+        .expect("guarded async match fixture should run");
+    assert_eq!(guarded_status.code(), Some(52));
+    let _ = fs::remove_dir_all(&guarded_root);
 }
 
 #[test]

@@ -14897,16 +14897,10 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     if expr_contains_await(value) || arms.is_empty() {
         return None;
     }
-    let mut seen_variants = HashSet::new();
     let mut arm_await_indices = Vec::with_capacity(arms.len());
     let mut any_await = false;
     for arm in arms {
-        if arm.guard.is_some()
-            || !seen_variants.insert(arm.variant.as_str())
-            || arm.patterns.iter().any(|pattern| {
-                !matches!(pattern, MatchPattern::Binding(_) | MatchPattern::Struct(_))
-            })
-        {
+        if arm.guard.as_ref().is_some_and(expr_contains_await) {
             return None;
         }
         let await_indices = block_direct_await_indices(&arm.body)?;
@@ -15080,7 +15074,7 @@ fn collect_async_match_arm_bindings(
             MatchPattern::Struct(pattern) => {
                 collect_async_struct_pattern_bindings(pattern, signatures, env, locals)?;
             }
-            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => return None,
+            MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {}
         }
     }
     Some(())
@@ -19592,7 +19586,7 @@ fn emit_async_match_arm_bindings(
     arm: &crate::ast::MatchArm,
     signatures: &Signatures,
     env: &mut HashMap<String, Type>,
-) -> Result<(), Diagnostic> {
+) -> Result<Vec<String>, Diagnostic> {
     let definition = signatures.enum_type(&arm.enum_name).ok_or_else(|| {
         diag(
             arm.enum_span,
@@ -19605,6 +19599,7 @@ fn emit_async_match_arm_bindings(
             "async match continuation variant disappeared after type checking",
         )
     })?;
+    let mut conditions = Vec::new();
     for (index, (pattern, payload_ty)) in arm.patterns.iter().zip(&variant.payloads).enumerate() {
         let payload_access = format!(
             "{temp}.payload.{}.v{index}",
@@ -19643,14 +19638,23 @@ fn emit_async_match_arm_bindings(
                 )?;
             }
             MatchPattern::Relational(_) | MatchPattern::Logical { .. } => {
-                return Err(diag(
-                    arm.span,
-                    "refutable pattern reached async match continuation lowering",
-                ));
+                if let Some(condition) = emit_match_pattern_condition(
+                    pattern,
+                    &payload_access,
+                    payload_ty,
+                    env,
+                    signatures,
+                )? {
+                    conditions.push(condition);
+                }
             }
         }
     }
-    Ok(())
+    if let Some(guard) = &arm.guard {
+        let guard = emit_expr(guard, env, signatures)?;
+        conditions.push(c_condition(&guard.code));
+    }
+    Ok(conditions)
 }
 
 fn emit_async_match_continuation_function(
@@ -19712,6 +19716,12 @@ fn emit_async_match_continuation_function(
             "async match continuation requires an enum value",
         ));
     };
+    let definition = signatures.enum_type(enum_name).ok_or_else(|| {
+        diag(
+            value.span,
+            "async match continuation enum disappeared after type checking",
+        )
+    })?;
     let temp = format!("flux__async_match_{}", *temp_counter);
     *temp_counter += 1;
     out.push_str(&format!(
@@ -19723,71 +19733,96 @@ fn emit_async_match_continuation_function(
 
     let mut next_state = 1usize;
     let mut resume_envs = Vec::with_capacity(arms.len());
-    for (arm_index, (arm, await_indices)) in
-        arms.iter().zip(&match_plan.arm_await_indices).enumerate()
-    {
+    for variant in &definition.variants {
+        let variant_arms = arms
+            .iter()
+            .enumerate()
+            .filter(|(_, arm)| arm.variant == variant.name)
+            .collect::<Vec<_>>();
+        if variant_arms.is_empty() {
+            continue;
+        }
         out.push_str(&format!(
             "{pad}    case {}: {{\n",
-            enum_tag_value_name(enum_name, &arm.variant)
+            enum_tag_value_name(enum_name, &variant.name)
         ));
-        let mut arm_env = outer_env.clone();
-        let mut arm_mutable = outer_mutable.clone();
-        emit_async_match_arm_bindings(
-            out,
-            &format!("{pad}        "),
-            &temp,
-            arm,
-            signatures,
-            &mut arm_env,
-        )?;
-        if let Some(first_await) = await_indices.first().copied() {
-            emit_block(
+        for (arm_index, arm) in variant_arms {
+            let await_indices = &match_plan.arm_await_indices[arm_index];
+            out.push_str(&format!("{pad}        {{\n"));
+            let mut arm_env = outer_env.clone();
+            let mut arm_mutable = outer_mutable.clone();
+            let conditions = emit_async_match_arm_bindings(
                 out,
-                &arm.body[..first_await],
-                5,
+                &format!("{pad}            "),
+                &temp,
+                arm,
+                signatures,
                 &mut arm_env,
-                &mut arm_mutable,
-                signatures,
-                temp_counter,
-                state_context,
             )?;
-            let awaited_stmt = &arm.body[first_await];
-            emit_source_line(out, awaited_stmt.span, context.source_paths);
-            emit_async_suspend(
-                out,
-                "                    ",
-                awaited_stmt,
-                next_state,
-                function,
-                plan,
-                &arm_env,
-                signatures,
-            )?;
-            resume_envs.push(Some((arm_index, next_state, arm_env, arm_mutable)));
-            next_state += await_indices.len();
-        } else {
-            emit_block(
-                out,
-                &arm.body,
-                5,
-                &mut arm_env,
-                &mut arm_mutable,
-                signatures,
-                temp_counter,
-                state_context,
-            )?;
-            emit_async_match_tail(
-                out,
-                function,
-                signatures,
-                match_plan,
-                &outer_env,
-                &outer_mutable,
-                temp_counter,
-                state_context,
-            )?;
-            resume_envs.push(None);
+            let guarded = !conditions.is_empty();
+            if guarded {
+                out.push_str(&format!(
+                    "{pad}            if ({}) {{\n",
+                    conditions.join(" && ")
+                ));
+            }
+            let body_depth = if guarded { 6 } else { 5 };
+            if let Some(first_await) = await_indices.first().copied() {
+                emit_block(
+                    out,
+                    &arm.body[..first_await],
+                    body_depth,
+                    &mut arm_env,
+                    &mut arm_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                let awaited_stmt = &arm.body[first_await];
+                emit_source_line(out, awaited_stmt.span, context.source_paths);
+                let suspend_pad = "    ".repeat(body_depth);
+                emit_async_suspend(
+                    out,
+                    &suspend_pad,
+                    awaited_stmt,
+                    next_state,
+                    function,
+                    plan,
+                    &arm_env,
+                    signatures,
+                )?;
+                resume_envs.push((arm_index, next_state, arm_env, arm_mutable));
+                next_state += await_indices.len();
+            } else {
+                emit_block(
+                    out,
+                    &arm.body,
+                    body_depth,
+                    &mut arm_env,
+                    &mut arm_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                emit_async_match_tail(
+                    out,
+                    function,
+                    signatures,
+                    match_plan,
+                    &outer_env,
+                    &outer_mutable,
+                    temp_counter,
+                    state_context,
+                )?;
+            }
+            if guarded {
+                out.push_str(&format!("{pad}            }}\n"));
+            }
+            out.push_str(&format!("{pad}        }}\n"));
         }
+        out.push_str(&format!(
+            "{pad}        fputs(\"Flux runtime error: async match arm dispatch failed\\n\", stderr); abort();\n"
+        ));
         out.push_str(&format!("{pad}    }}\n"));
     }
     out.push_str(&format!(
@@ -19796,8 +19831,7 @@ fn emit_async_match_continuation_function(
     out.push_str(&format!("{pad}}}\n"));
     out.push_str("        }\n");
 
-    for resume in resume_envs.into_iter().flatten() {
-        let (arm_index, first_state, mut arm_env, mut arm_mutable) = resume;
+    for (arm_index, first_state, mut arm_env, mut arm_mutable) in resume_envs {
         let arm = &arms[arm_index];
         let await_indices = &match_plan.arm_await_indices[arm_index];
         let mut previous_await = await_indices[0];
