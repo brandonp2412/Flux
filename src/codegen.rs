@@ -6201,6 +6201,25 @@ fn emit_android_native_application(
                 "    (*env)->CallVoidMethod(env, child, set_enabled, (jboolean)({value}));\n"
             ));
         }
+        if let Some(property) = view_property(element, "clip") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("    jclass outline_provider_class = (*env)->FindClass(env, \"android/view/ViewOutlineProvider\");\n");
+            out.push_str("    if (outline_provider_class == NULL) return;\n");
+            out.push_str("    jfieldID outline_bounds_field = (*env)->GetStaticFieldID(env, outline_provider_class, \"BOUNDS\", \"Landroid/view/ViewOutlineProvider;\");\n");
+            out.push_str("    if (outline_bounds_field == NULL) return;\n");
+            out.push_str("    jobject outline_bounds = (*env)->GetStaticObjectField(env, outline_provider_class, outline_bounds_field);\n");
+            out.push_str("    jmethodID set_outline_provider = (*env)->GetMethodID(env, child_class, \"setOutlineProvider\", \"(Landroid/view/ViewOutlineProvider;)V\");\n");
+            out.push_str("    jmethodID set_clip_to_outline = (*env)->GetMethodID(env, child_class, \"setClipToOutline\", \"(Z)V\");\n");
+            out.push_str("    if (outline_bounds == NULL || set_outline_provider == NULL || set_clip_to_outline == NULL) return;\n");
+            out.push_str(
+                "    (*env)->CallVoidMethod(env, child, set_outline_provider, outline_bounds);\n",
+            );
+            out.push_str(&format!(
+                "    (*env)->CallVoidMethod(env, child, set_clip_to_outline, (jboolean)({value}));\n"
+            ));
+            out.push_str("    (*env)->DeleteLocalRef(env, outline_bounds);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, outline_provider_class);\n");
+        }
         if let Some(property) = view_property(element, "min_width") {
             out.push_str("    jmethodID set_min_width = (*env)->GetMethodID(env, child_class, \"setMinimumWidth\", \"(I)V\");\n");
             out.push_str("    if (set_min_width == NULL) return;\n");
@@ -11335,6 +11354,7 @@ fn android_ui_element_needs_refresh(
         "visible",
         "enabled",
         "focusable",
+        "clip",
         "align_x",
         "align_y",
         "min_width",
@@ -11481,6 +11501,15 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_enabled = (*env)->GetMethodID(env, child_class, \"setEnabled\", \"(Z)V\");\n");
             out.push_str(&format!(
                 "                if (refresh_enabled != NULL) (*env)->CallVoidMethod(env, child, refresh_enabled, (jboolean)({value}));\n"
+            ));
+        }
+        if android_ui_property_needs_refresh(element, "clip", &runtime_names)
+            && let Some(property) = view_property(element, "clip")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str("                jmethodID refresh_clip = (*env)->GetMethodID(env, child_class, \"setClipToOutline\", \"(Z)V\");\n");
+            out.push_str(&format!(
+                "                if (refresh_clip != NULL) (*env)->CallVoidMethod(env, child, refresh_clip, (jboolean)({value}));\n"
             ));
         }
         for (property_name, maximum_name, local_name, method_name, source_name) in [

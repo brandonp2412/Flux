@@ -28406,6 +28406,7 @@ view Screen {
     Text title at 1,1
         text: "Hello Android"
         visible: expanded
+        clip: expanded
     Button toggle at 2,1
         text: label
         onPress: expanded => !expanded
@@ -28434,6 +28435,10 @@ app Screen
     assert!(!generated.contains(&format!("find_view, (jint){toggle_id}")));
     assert!(generated.contains(&format!("find_view, (jint){action_id}")));
     assert!(generated.contains("set_stable_id"));
+    assert!(generated.contains("android/view/ViewOutlineProvider"));
+    assert!(generated.contains("setOutlineProvider"));
+    assert!(generated.matches("setClipToOutline").count() >= 2);
+    assert!(generated.contains("refresh_clip"));
     assert!(generated.contains("android/widget/GridLayout"));
     assert!(generated.contains("android/widget/TextView"));
     assert!(generated.contains("android/widget/Button"));
