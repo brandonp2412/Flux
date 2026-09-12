@@ -5776,7 +5776,7 @@ fn main() -> i64 {
     if signalError != nil || signal != 99:
         return 6
     let childJoinError: error = worker.join(childHandle)
-    if childJoinError != nil:
+    if childJoinError == nil:
         return 7
     let closeError: error = channel.close(channelHandle)
     if closeError != nil:
@@ -5793,6 +5793,7 @@ fn main() -> i64 {
     assert!(generated.contains("static bool flux__worker_cancelled"));
     assert!(generated.contains("flux__worker_descends_from_locked"));
     assert!(generated.contains("_Thread_local int64_t flux__worker_current_id"));
+    assert!(generated.contains("state->scope_error = flux__worker_join_children()"));
 
     let root = std::env::temp_dir().join(format!("flux-worker-cancel-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
