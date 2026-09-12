@@ -1,17 +1,17 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 100 32 100 1fr
+    grid columns: 1fr 104 36 104 1fr
     grid rows: auto auto auto auto auto auto auto
-    grid gap: 10
-    grid padding: 22
+    grid gap: 12
+    grid padding: 24
     grid scroll: true
     grid overlay: true
 
     Text brand at 1,1 span columns 3
         text: "♥︎  HORSE TINDER"
         color: "#FF5268"
-        size: 20
+        size: 21
         bold: true
         letterSpacing: 1
 
@@ -28,19 +28,19 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 390
+        minHeight: 420
         backgroundColor: "#13151B"
-        borderColor: "#242832"
+        borderColor: "#292E38"
         borderWidth: 1
-        radius: 26
-        shadowColor: "#00000085"
-        shadowBlur: 16
-        shadowOffsetY: 6
+        radius: 30
+        shadowColor: "#00000070"
+        shadowBlur: 14
+        shadowOffsetY: 5
 
     Text profileName at 3,1 span columns 3
         text: "Buttercup, 7"
         color: "text"
-        size: 31
+        size: 32
         bold: true
 
     Text matchBadge at 3,4 span columns 2
@@ -51,9 +51,9 @@ view HorseTinder {
         letterSpacing: 1
         textAlign: "center"
         alignY: "center"
-        padding: 8
-        backgroundColor: "#241419"
-        borderColor: "#4C252D"
+        padding: 9
+        backgroundColor: "#2A151B"
+        borderColor: "#61303B"
         borderWidth: 1
         radius: 999
 
@@ -69,9 +69,9 @@ view HorseTinder {
         bold: true
         letterSpacing: 1
         textAlign: "center"
-        padding: 13
-        backgroundColor: "#171A21"
-        borderColor: "#242832"
+        padding: 14
+        backgroundColor: "#181C24"
+        borderColor: "#2A303B"
         borderWidth: 1
         radius: 999
 
@@ -82,61 +82,59 @@ view HorseTinder {
         bold: true
         letterSpacing: 1
         textAlign: "center"
-        padding: 13
-        backgroundColor: "#142019"
-        borderColor: "#23362A"
+        padding: 14
+        backgroundColor: "#14231B"
+        borderColor: "#294332"
         borderWidth: 1
         radius: 999
 
     Text bio at 6,1 span columns 5
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
-        color: "#E1E4EA"
-        size: 16
+        color: "#E8EAF0"
+        size: 17
         wrap: true
         maxLines: 3
-        lineHeightPercent: 142
-        padding: 17
-        backgroundColor: "#0F1218"
-        borderColor: "#222731"
+        lineHeightPercent: 145
+        padding: 18
+        backgroundColor: "#11141A"
+        borderColor: "#272D38"
         borderWidth: 1
-        radius: 18
+        radius: 20
 
-    Button pass at 7,1 span columns 5
+    Button pass at 7,2
         text: "✕"
-        size: 46
+        size: 50
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 96
-        maxWidth: 96
-        minHeight: 96
+        minWidth: 100
+        maxWidth: 100
+        minHeight: 100
         alignX: "center"
-        marginEnd: 128
         focusable: true
         padding: 0
-        radius: 48
-        backgroundColor: "#171A21"
-        borderColor: "#3B414C"
-        borderWidth: 1
+        radius: 50
+        backgroundColor: "#171B23"
+        borderColor: "#3F4653"
+        borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
         onPress: passed => !passed
 
-    Button like at 7,1 span columns 5
+    Button like at 7,4
         text: "♥︎"
-        size: 50
+        size: 54
         accessibilityLabel: "Like Buttercup"
-        minWidth: 96
-        maxWidth: 96
-        minHeight: 96
+        minWidth: 100
+        maxWidth: 100
+        minHeight: 100
         alignX: "center"
-        marginStart: 128
         focusable: true
         primary: true
         padding: 0
-        radius: 48
+        radius: 50
         backgroundColor: "#FF4458"
-        borderColor: "#FF6678"
-        borderWidth: 1
+        borderColor: "#FF7181"
+        borderWidth: 2
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
