@@ -1489,12 +1489,26 @@ pub fn emit_c_for_target_with_source_metadata(
             "struct {} {{\n",
             async_task_c_name(&function.name)
         ));
-        out.push_str("    pthread_t thread;\n");
+        out.push_str("    pthread_mutex_t mutex;\n");
+        out.push_str("    pthread_cond_t completed;\n");
+        out.push_str("    bool done;\n");
+        out.push_str("    int state;\n");
+        out.push_str("    void (*continuation)(void *, void *);\n");
+        out.push_str("    void *continuation_context;\n");
         for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
                 "    {} arg_{index};\n",
                 c_type(&param.ty, signatures)
             ));
+        }
+        if let Some(plan) = async_continuation_plan(function, signatures) {
+            for (name, ty) in &plan.locals {
+                out.push_str(&format!(
+                    "    {} {};\n",
+                    c_type(ty, signatures),
+                    async_saved_local_field_name(name)
+                ));
+            }
         }
         match function.returns.as_slice() {
             [] => {}
@@ -1526,11 +1540,22 @@ pub fn emit_c_for_target_with_source_metadata(
             continue;
         }
         if function.asynchronous {
-            out.push_str(&async_body_prototype(function, signatures));
-            out.push_str(";\n");
+            if async_continuation_plan(function, signatures).is_some() {
+                out.push_str(&async_resume_prototype(function));
+                out.push_str(";\n");
+            } else {
+                out.push_str(&async_body_prototype(function, signatures));
+                out.push_str(";\n");
+            }
             out.push_str(&async_start_prototype(function, signatures));
             out.push_str(";\n");
+            out.push_str(&async_start_cont_prototype(function, signatures));
+            out.push_str(";\n");
             out.push_str(&async_await_prototype(function, signatures));
+            out.push_str(";\n");
+            out.push_str(&async_finish_prototype(function));
+            out.push_str(";\n");
+            out.push_str(&async_release_prototype(function));
             out.push_str(";\n");
             if function.name == "main" {
                 out.push_str("int main(void);\n");
@@ -13793,6 +13818,26 @@ fn async_await_c_name(name: &str) -> String {
     format!("flux__async_await_{name}")
 }
 
+fn async_start_cont_c_name(name: &str) -> String {
+    format!("flux__async_start_cont_{name}")
+}
+
+fn async_resume_c_name(name: &str) -> String {
+    format!("flux__async_resume_{name}")
+}
+
+fn async_finish_c_name(name: &str) -> String {
+    format!("flux__async_finish_{name}")
+}
+
+fn async_release_c_name(name: &str) -> String {
+    format!("flux__async_release_{name}")
+}
+
+fn async_saved_local_field_name(name: &str) -> String {
+    format!("saved_{}", local_c_name(name))
+}
+
 fn function_params_c(function: &Function, signatures: &Signatures) -> String {
     if function.params.is_empty() {
         "void".to_string()
@@ -13837,6 +13882,354 @@ fn async_await_prototype(function: &Function, signatures: &Signatures) -> String
         async_await_c_name(&function.name),
         async_task_c_name(&function.name)
     )
+}
+
+fn async_start_cont_prototype(function: &Function, signatures: &Signatures) -> String {
+    let visible = if function.params.is_empty() {
+        String::new()
+    } else {
+        format!("{}, ", function_params_c(function, signatures))
+    };
+    format!(
+        "static struct {} *{}({visible}void (*flux__continuation)(void *, void *), void *flux__context)",
+        async_task_c_name(&function.name),
+        async_start_cont_c_name(&function.name)
+    )
+}
+
+fn async_resume_prototype(function: &Function) -> String {
+    format!(
+        "static void {}(void *flux__context, void *flux__completed_child)",
+        async_resume_c_name(&function.name)
+    )
+}
+
+fn async_finish_prototype(function: &Function) -> String {
+    format!(
+        "static void {}(struct {} *flux__task)",
+        async_finish_c_name(&function.name),
+        async_task_c_name(&function.name)
+    )
+}
+
+fn async_release_prototype(function: &Function) -> String {
+    format!(
+        "static void {}(struct {} *flux__task)",
+        async_release_c_name(&function.name),
+        async_task_c_name(&function.name)
+    )
+}
+
+#[derive(Clone)]
+struct AsyncContinuationPlan {
+    locals: Vec<(String, Type)>,
+    mutable: HashSet<String>,
+}
+
+fn expr_contains_await(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Await(_) => true,
+        ExprKind::AnonymousFunction { body, .. }
+        | ExprKind::ListSpread { value: body, .. }
+        | ExprKind::ListOptional { value: body, .. }
+        | ExprKind::Field { base: body, .. }
+        | ExprKind::Unary { expr: body, .. } => expr_contains_await(body),
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            args.iter().any(expr_contains_await)
+                || named_args
+                    .iter()
+                    .any(|argument| expr_contains_await(&argument.value))
+        }
+        ExprKind::ShellCall { args, .. } => args.iter().any(expr_contains_await),
+        ExprKind::Pipe { input, args, .. } => {
+            expr_contains_await(input) || args.iter().any(expr_contains_await)
+        }
+        ExprKind::List(items) => items.iter().any(expr_contains_await),
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            expr_contains_await(condition)
+                || expr_contains_await(value)
+                || else_value.as_deref().is_some_and(expr_contains_await)
+        }
+        ExprKind::Index { base, index } => expr_contains_await(base) || expr_contains_await(index),
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            expr_contains_await(base)
+                || start.as_deref().is_some_and(expr_contains_await)
+                || end.as_deref().is_some_and(expr_contains_await)
+                || step.as_deref().is_some_and(expr_contains_await)
+        }
+        ExprKind::ListComprehension {
+            value,
+            iterable,
+            condition,
+            ..
+        } => {
+            expr_contains_await(value)
+                || expr_contains_await(iterable)
+                || condition.as_deref().is_some_and(expr_contains_await)
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            base.as_deref().is_some_and(expr_contains_await)
+                || fields.iter().any(|field| expr_contains_await(&field.value))
+        }
+        ExprKind::Match { value, arms } => {
+            expr_contains_await(value)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_await)
+                        || expr_contains_await(&arm.value)
+                })
+        }
+        ExprKind::ListMatch { value, arms } => {
+            expr_contains_await(value)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_await)
+                        || expr_contains_await(&arm.value)
+                })
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            expr_contains_await(then_expr)
+                || expr_contains_await(cond)
+                || expr_contains_await(else_expr)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            expr_contains_await(left) || expr_contains_await(right)
+        }
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Nil
+        | ExprKind::None
+        | ExprKind::Var(_) => false,
+    }
+}
+
+fn stmt_contains_await(stmt: &Stmt) -> bool {
+    match &stmt.kind {
+        StmtKind::Let { expr, .. }
+        | StmtKind::Var { expr, .. }
+        | StmtKind::Assign { expr, .. }
+        | StmtKind::AssignMultiDestructure { expr, .. }
+        | StmtKind::AssignListDestructure { expr, .. }
+        | StmtKind::AssignStructDestructure { expr, .. }
+        | StmtKind::LetDestructure { expr, .. }
+        | StmtKind::LetMultiDestructure { expr, .. }
+        | StmtKind::LetListDestructure { expr, .. }
+        | StmtKind::LetStructDestructure { expr, .. }
+        | StmtKind::Expr(expr) => expr_contains_await(expr),
+        StmtKind::Return(values) => values.iter().any(expr_contains_await),
+        StmtKind::Shell { expr, redirect, .. } => {
+            expr_contains_await(expr)
+                || redirect
+                    .as_ref()
+                    .is_some_and(|redirect| expr_contains_await(&redirect.path))
+        }
+        StmtKind::If {
+            cond,
+            body,
+            else_body,
+            ..
+        } => {
+            expr_contains_await(cond)
+                || body.iter().any(stmt_contains_await)
+                || else_body.iter().any(stmt_contains_await)
+        }
+        StmtKind::ForRange {
+            start, end, body, ..
+        } => {
+            expr_contains_await(start)
+                || expr_contains_await(end)
+                || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::ForEach { iterable, body, .. } => {
+            expr_contains_await(iterable) || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::While { cond, body } => {
+            expr_contains_await(cond) || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::Match { value, arms } => {
+            expr_contains_await(value)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_await)
+                        || arm.body.iter().any(stmt_contains_await)
+                })
+        }
+        StmtKind::ListMatch { value, arms } => {
+            expr_contains_await(value)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_await)
+                        || arm.body.iter().any(stmt_contains_await)
+                })
+        }
+        StmtKind::Break | StmtKind::Continue => false,
+    }
+}
+
+fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
+    match &stmt.kind {
+        StmtKind::Let { expr, .. }
+        | StmtKind::Var { expr, .. }
+        | StmtKind::LetMultiDestructure {
+            expr,
+            else_return: false,
+            ..
+        }
+        | StmtKind::Expr(expr) => matches!(&expr.kind, ExprKind::Await(_)).then_some(expr),
+        _ => None,
+    }
+}
+
+fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
+    let ExprKind::Await(awaited) = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Call {
+        name,
+        args,
+        named_args,
+    } = &awaited.kind
+    else {
+        return None;
+    };
+    if args.iter().any(expr_contains_await)
+        || named_args
+            .iter()
+            .any(|argument| expr_contains_await(&argument.value))
+    {
+        return None;
+    }
+    Some((name, args, named_args))
+}
+
+fn async_continuation_plan(
+    function: &Function,
+    signatures: &Signatures,
+) -> Option<AsyncContinuationPlan> {
+    if !function.asynchronous || !function.body.iter().any(stmt_contains_await) {
+        return None;
+    }
+    if function
+        .params
+        .iter()
+        .any(|param| !signatures.is_copy_type(&param.ty))
+    {
+        return None;
+    }
+
+    let mut env = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+        .collect::<HashMap<_, _>>();
+    env.insert("flux__async_context".to_string(), Type::Bool);
+    let mut locals = BTreeMap::<String, Type>::new();
+    let mut mutable = HashSet::new();
+
+    for stmt in &function.body {
+        if stmt_contains_await(stmt) {
+            let await_expr = direct_await_expr(stmt)?;
+            let (callee, _, _) = direct_await_call(await_expr)?;
+            let signature = signatures.get(callee)?;
+            if !signature.asynchronous {
+                return None;
+            }
+        }
+
+        match &stmt.kind {
+            StmtKind::Let { name, ty, .. } => {
+                let ty = signatures.canonical_type(ty);
+                if !signatures.is_copy_type(&ty) {
+                    return None;
+                }
+                env.insert(name.clone(), ty.clone());
+                locals.insert(name.clone(), ty);
+            }
+            StmtKind::Var { name, ty, .. } => {
+                let ty = signatures.canonical_type(ty);
+                if !signatures.is_copy_type(&ty) {
+                    return None;
+                }
+                env.insert(name.clone(), ty.clone());
+                locals.insert(name.clone(), ty);
+                mutable.insert(name.clone());
+            }
+            StmtKind::LetDestructure {
+                bindings,
+                mutable: is_mutable,
+                ..
+            } => {
+                for binding in bindings {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(&binding.ty);
+                    if !signatures.is_copy_type(&ty) {
+                        return None;
+                    }
+                    env.insert(binding.name.clone(), ty.clone());
+                    locals.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                mutable: is_mutable,
+                ..
+            } => {
+                let actuals = if let Some((callee, _, _)) = direct_await_call(expr) {
+                    signatures.get(callee)?.returns.clone()
+                } else {
+                    typecheck::value_types_of_expr(expr, &env, signatures).ok()?
+                };
+                if actuals.len() != bindings.len() {
+                    return None;
+                }
+                for (binding, ty) in bindings.iter().zip(actuals) {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(&ty);
+                    if !signatures.is_copy_type(&ty) {
+                        return None;
+                    }
+                    env.insert(binding.name.clone(), ty.clone());
+                    locals.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            }
+            StmtKind::LetListDestructure { .. } | StmtKind::LetStructDestructure { .. } => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+
+    Some(AsyncContinuationPlan {
+        locals: locals.into_iter().collect(),
+        mutable,
+    })
 }
 
 fn function_prototype(function: &Function, signatures: &Signatures) -> String {
@@ -16615,33 +17008,70 @@ fn emit_source_line(out: &mut String, span: SourceSpan, source_paths: &HashMap<S
     out.push_str(&format!("#line {} \"{}\"\n", span.line.max(1), escaped));
 }
 
-fn emit_async_task_runtime(out: &mut String, function: &Function, signatures: &Signatures) {
+fn emit_async_task_runtime(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    continuation_lowered: bool,
+) {
     let task_name = async_task_c_name(&function.name);
     let runner_name = format!("flux__async_run_{}", function.name);
     let start_name = async_start_c_name(&function.name);
+    let start_cont_name = async_start_cont_c_name(&function.name);
     let await_name = async_await_c_name(&function.name);
     let body_name = async_body_c_name(&function.name);
+    let resume_name = async_resume_c_name(&function.name);
+    let finish_name = async_finish_c_name(&function.name);
+    let release_name = async_release_c_name(&function.name);
     let args = (0..function.params.len())
         .map(|index| format!("flux__task->arg_{index}"))
         .collect::<Vec<_>>()
         .join(", ");
 
+    out.push_str(&format!("{} {{\n", async_release_prototype(function)));
+    out.push_str("    if (flux__task == NULL) return;\n");
+    out.push_str("    pthread_cond_destroy(&flux__task->completed);\n");
+    out.push_str("    pthread_mutex_destroy(&flux__task->mutex);\n");
+    out.push_str("    free(flux__task);\n}\n");
+
+    out.push_str(&format!("{} {{\n", async_finish_prototype(function)));
+    out.push_str("    if (flux__task->continuation != NULL) {\n");
+    out.push_str(
+        "        void (*flux__continuation)(void *, void *) = flux__task->continuation;\n",
+    );
+    out.push_str("        void *flux__context = flux__task->continuation_context;\n");
+    out.push_str("        flux__continuation(flux__context, flux__task);\n");
+    out.push_str("        return;\n    }\n");
+    out.push_str("    pthread_mutex_lock(&flux__task->mutex);\n");
+    out.push_str("    flux__task->done = true;\n");
+    out.push_str("    pthread_cond_signal(&flux__task->completed);\n");
+    out.push_str("    pthread_mutex_unlock(&flux__task->mutex);\n}\n");
+
     out.push_str(&format!(
         "static void *{runner_name}(void *flux__opaque) {{\n    struct {task_name} *flux__task = (struct {task_name} *)flux__opaque;\n"
     ));
-    match function.returns.as_slice() {
-        [] => out.push_str(&format!("    {body_name}({args});\n")),
-        _ => out.push_str(&format!("    flux__task->result = {body_name}({args});\n")),
+    if continuation_lowered {
+        out.push_str(&format!("    {resume_name}(flux__task, NULL);\n"));
+    } else {
+        match function.returns.as_slice() {
+            [] => out.push_str(&format!("    {body_name}({args});\n")),
+            _ => out.push_str(&format!("    flux__task->result = {body_name}({args});\n")),
+        }
+        out.push_str(&format!("    {finish_name}(flux__task);\n"));
     }
     out.push_str("    return NULL;\n}\n");
 
     out.push_str(&format!(
         "{} {{\n",
-        async_start_prototype(function, signatures)
+        async_start_cont_prototype(function, signatures)
     ));
     out.push_str(&format!(
         "    struct {task_name} *flux__task = malloc(sizeof(*flux__task));\n    if (flux__task == NULL) {{ fputs(\"Flux runtime error: unable to allocate async task state\\n\", stderr); abort(); }}\n"
     ));
+    out.push_str("    if (pthread_mutex_init(&flux__task->mutex, NULL) != 0) { free(flux__task); fputs(\"Flux runtime error: unable to initialize async task mutex\\n\", stderr); abort(); }\n");
+    out.push_str("    if (pthread_cond_init(&flux__task->completed, NULL) != 0) { pthread_mutex_destroy(&flux__task->mutex); free(flux__task); fputs(\"Flux runtime error: unable to initialize async task condition\\n\", stderr); abort(); }\n");
+    out.push_str("    flux__task->done = false;\n    flux__task->state = 0;\n");
+    out.push_str("    flux__task->continuation = flux__continuation;\n    flux__task->continuation_context = flux__context;\n");
     for (index, param) in function.params.iter().enumerate() {
         out.push_str(&format!(
             "    flux__task->arg_{index} = {};\n",
@@ -16649,27 +17079,45 @@ fn emit_async_task_runtime(out: &mut String, function: &Function, signatures: &S
         ));
     }
     out.push_str(&format!(
-        "    if (pthread_create(&flux__task->thread, NULL, {runner_name}, flux__task) != 0) {{ free(flux__task); fputs(\"Flux runtime error: unable to start async task\\n\", stderr); abort(); }}\n    return flux__task;\n}}\n"
+        "    pthread_t flux__thread;\n    if (pthread_create(&flux__thread, NULL, {runner_name}, flux__task) != 0) {{ {release_name}(flux__task); fputs(\"Flux runtime error: unable to start async task\\n\", stderr); abort(); }}\n    if (pthread_detach(flux__thread) != 0) {{ fputs(\"Flux runtime error: unable to detach async task\\n\", stderr); abort(); }}\n    return flux__task;\n}}\n"
+    ));
+
+    out.push_str(&format!(
+        "{} {{\n",
+        async_start_prototype(function, signatures)
+    ));
+    let forwarded = function
+        .params
+        .iter()
+        .map(|param| local_c_name(&param.name))
+        .collect::<Vec<_>>();
+    let mut start_args = forwarded;
+    start_args.push("NULL".to_string());
+    start_args.push("NULL".to_string());
+    out.push_str(&format!(
+        "    return {start_cont_name}({});\n}}\n",
+        start_args.join(", ")
     ));
 
     out.push_str(&format!(
         "{} {{\n",
         async_await_prototype(function, signatures)
     ));
-    out.push_str(
-        "    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async task\\n\", stderr); abort(); }\n    if (pthread_join(flux__task->thread, NULL) != 0) { free(flux__task); fputs(\"Flux runtime error: unable to await async task\\n\", stderr); abort(); }\n",
-    );
+    out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async task\\n\", stderr); abort(); }\n");
+    out.push_str("    pthread_mutex_lock(&flux__task->mutex);\n");
+    out.push_str("    while (!flux__task->done) pthread_cond_wait(&flux__task->completed, &flux__task->mutex);\n");
+    out.push_str("    pthread_mutex_unlock(&flux__task->mutex);\n");
     match function.returns.as_slice() {
-        [] => out.push_str("    free(flux__task);\n}\n"),
+        [] => out.push_str(&format!("    {release_name}(flux__task);\n}}\n")),
         [ty] => {
             out.push_str(&format!(
-                "    {} flux__result = flux__task->result;\n    free(flux__task);\n    return flux__result;\n}}\n",
+                "    {} flux__result = flux__task->result;\n    {release_name}(flux__task);\n    return flux__result;\n}}\n",
                 c_type(ty, signatures)
             ));
         }
         _ => {
             out.push_str(&format!(
-                "    struct {} flux__result = flux__task->result;\n    free(flux__task);\n    return flux__result;\n}}\n",
+                "    struct {} flux__result = flux__task->result;\n    {release_name}(flux__task);\n    return flux__result;\n}}\n",
                 multi_return_struct_name(&function.name)
             ));
         }
@@ -16680,6 +17128,280 @@ fn emit_async_task_runtime(out: &mut String, function: &Function, signatures: &S
             "int main(void) {{\n    return (int){await_name}({start_name}());\n}}\n"
         ));
     }
+}
+
+fn emit_async_completed_await(
+    out: &mut String,
+    pad: &str,
+    stmt: &Stmt,
+    env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let await_expr = direct_await_expr(stmt).ok_or_else(|| {
+        diag(
+            stmt.span,
+            "async continuation lowering requires a direct await statement",
+        )
+    })?;
+    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation lowering requires a direct async function call",
+        )
+    })?;
+    let signature = signatures.get(callee).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            &format!("unknown async function '{callee}' during continuation lowering"),
+        )
+    })?;
+    let child = format!("flux__completed_task_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct {} *{child} = (struct {} *)flux__completed_child;\n",
+        async_task_c_name(callee),
+        async_task_c_name(callee)
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child} == NULL) {{ fputs(\"Flux runtime error: missing completed async child\\n\", stderr); abort(); }}\n"
+    ));
+
+    match &stmt.kind {
+        StmtKind::Let { name, ty, .. } | StmtKind::Var { name, ty, .. } => {
+            let [actual] = signature.returns.as_slice() else {
+                return Err(diag(
+                    await_expr.span,
+                    "single-value await changed return arity after type checking",
+                ));
+            };
+            let declared = signatures.canonical_type(ty);
+            let actual = signatures.canonical_type(actual);
+            if declared != actual {
+                return Err(diag(
+                    stmt.span,
+                    "await binding type changed after type checking",
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}{} {} = {child}->result;\n",
+                c_type(&declared, signatures),
+                local_c_name(name)
+            ));
+            env.insert(name.clone(), declared);
+            if matches!(stmt.kind, StmtKind::Var { .. }) {
+                mutable.insert(name.clone());
+            }
+        }
+        StmtKind::LetMultiDestructure { bindings, .. } => {
+            if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
+                return Err(diag(
+                    stmt.span,
+                    "multi-value await changed return arity after type checking",
+                ));
+            }
+            let value = format!("flux__completed_result_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!(
+                "{pad}struct {} {value} = {child}->result;\n",
+                multi_return_struct_name(callee)
+            ));
+            for (index, (binding, ty)) in bindings.iter().zip(&signature.returns).enumerate() {
+                if binding.name == "_" {
+                    continue;
+                }
+                let ty = signatures.canonical_type(ty);
+                out.push_str(&format!(
+                    "{pad}{} {} = {value}.v{index};\n",
+                    c_type(&ty, signatures),
+                    local_c_name(&binding.name)
+                ));
+                env.insert(binding.name.clone(), ty);
+            }
+        }
+        StmtKind::Expr(_) => {
+            if !signature.returns.is_empty() {
+                return Err(diag(
+                    stmt.span,
+                    "discarded await changed return arity after type checking",
+                ));
+            }
+        }
+        _ => {
+            return Err(diag(
+                stmt.span,
+                "unsupported statement reached async continuation completion lowering",
+            ));
+        }
+    }
+    out.push_str(&format!(
+        "{pad}{}({child});\n",
+        async_release_c_name(callee)
+    ));
+    Ok(())
+}
+
+fn emit_async_suspend(
+    out: &mut String,
+    pad: &str,
+    stmt: &Stmt,
+    next_state: usize,
+    function: &Function,
+    plan: &AsyncContinuationPlan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let await_expr = direct_await_expr(stmt).ok_or_else(|| {
+        diag(
+            stmt.span,
+            "async continuation lowering requires a direct await statement",
+        )
+    })?;
+    let (callee, args, named_args) = direct_await_call(await_expr).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation lowering requires a direct async function call",
+        )
+    })?;
+    let signature = signatures.get(callee).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            &format!("unknown async function '{callee}' during continuation lowering"),
+        )
+    })?;
+    for (name, _) in &plan.locals {
+        if env.contains_key(name) {
+            out.push_str(&format!(
+                "{pad}flux__task->{} = {};\n",
+                async_saved_local_field_name(name),
+                local_c_name(name)
+            ));
+        }
+    }
+    out.push_str(&format!("{pad}flux__task->state = {next_state};\n"));
+    let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
+    let mut start_args = rendered;
+    start_args.push(async_resume_c_name(&function.name));
+    start_args.push("flux__task".to_string());
+    out.push_str(&format!(
+        "{pad}(void){}({});\n",
+        async_start_cont_c_name(callee),
+        start_args.join(", ")
+    ));
+    out.push_str(&format!("{pad}return;\n"));
+    Ok(())
+}
+
+fn emit_async_continuation_function(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let await_indices = function
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .collect::<Vec<_>>();
+    let task_name = async_task_c_name(&function.name);
+    out.push_str(&async_resume_prototype(function));
+    out.push_str(" {\n");
+    out.push_str(&format!(
+        "    struct {task_name} *flux__task = (struct {task_name} *)flux__context;\n"
+    ));
+    out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
+    out.push_str("    switch (flux__task->state) {\n");
+
+    let mut env = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+        .collect::<HashMap<_, _>>();
+    let mut mutable = plan.mutable.clone();
+    let mut segment_start = 0usize;
+    let mut previous_await: Option<&Stmt> = None;
+    let mut state_context = context;
+    state_context.async_state_machine = true;
+
+    for state in 0..=await_indices.len() {
+        out.push_str(&format!("        case {state}: {{\n"));
+        let pad = "            ";
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        for (name, ty) in &plan.locals {
+            if env.contains_key(name) {
+                out.push_str(&format!(
+                    "{pad}{} {} = flux__task->{};\n",
+                    c_type(ty, signatures),
+                    local_c_name(name),
+                    async_saved_local_field_name(name)
+                ));
+            }
+        }
+        if let Some(awaited_stmt) = previous_await {
+            emit_async_completed_await(
+                out,
+                pad,
+                awaited_stmt,
+                &mut env,
+                &mut mutable,
+                signatures,
+                temp_counter,
+            )?;
+        }
+
+        let next_await = await_indices.get(state).copied();
+        let segment_end = next_await.unwrap_or(function.body.len());
+        emit_block(
+            out,
+            &function.body[segment_start..segment_end],
+            3,
+            &mut env,
+            &mut mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+
+        if let Some(await_index) = next_await {
+            let awaited_stmt = &function.body[await_index];
+            emit_source_line(out, awaited_stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                pad,
+                awaited_stmt,
+                state + 1,
+                function,
+                plan,
+                &env,
+                signatures,
+            )?;
+            previous_await = Some(awaited_stmt);
+            segment_start = await_index + 1;
+        } else if function.returns.is_empty() {
+            out.push_str(&format!(
+                "{pad}{}(flux__task);\n{pad}return;\n",
+                async_finish_c_name(&function.name)
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+            ));
+        }
+        out.push_str("        }\n");
+    }
+    out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
+    out.push_str("    }\n}\n");
+    Ok(())
 }
 
 fn emit_function(
@@ -16763,6 +17485,31 @@ fn emit_function(
             (!dead.is_empty()).then_some((source_span_key(node.span), dead))
         })
         .collect::<HashMap<_, _>>();
+    let block_context = BlockEmitContext {
+        current_function: function,
+        source_paths,
+        reachable_spans: &reachable_spans,
+        dead_assignment_spans: &dead_assignment_spans,
+        dead_var_initializer_spans: &dead_var_initializer_spans,
+        dead_let_binding_spans: &dead_let_binding_spans,
+        dead_definition_names: &dead_definition_names,
+        async_state_machine: false,
+    };
+    if function.asynchronous
+        && let Some(plan) = async_continuation_plan(function, signatures)
+    {
+        emit_source_line(out, function.span, source_paths);
+        emit_async_continuation_function(
+            out,
+            function,
+            signatures,
+            &plan,
+            temp_counter,
+            block_context,
+        )?;
+        emit_async_task_runtime(out, function, signatures, true);
+        return Ok(());
+    }
     emit_source_line(out, function.span, source_paths);
     if function.asynchronous {
         out.push_str(&async_body_prototype(function, signatures));
@@ -16783,19 +17530,11 @@ fn emit_function(
         &mut mutable,
         signatures,
         temp_counter,
-        BlockEmitContext {
-            current_function: function,
-            source_paths,
-            reachable_spans: &reachable_spans,
-            dead_assignment_spans: &dead_assignment_spans,
-            dead_var_initializer_spans: &dead_var_initializer_spans,
-            dead_let_binding_spans: &dead_let_binding_spans,
-            dead_definition_names: &dead_definition_names,
-        },
+        block_context,
     )?;
     out.push_str("}\n");
     if function.asynchronous {
-        emit_async_task_runtime(out, function, signatures);
+        emit_async_task_runtime(out, function, signatures, false);
     }
     Ok(())
 }
@@ -16809,6 +17548,7 @@ struct BlockEmitContext<'a> {
     dead_var_initializer_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
+    async_state_machine: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -17816,9 +18556,10 @@ fn emit_block(
             .get(&source_span_key(stmt.span));
         match &stmt.kind {
             StmtKind::Var { name, ty, expr, .. }
-                if context
-                    .dead_var_initializer_spans
-                    .contains(&source_span_key(stmt.span))
+                if !context.async_state_machine
+                    && context
+                        .dead_var_initializer_spans
+                        .contains(&source_span_key(stmt.span))
                     && dead_store_rhs_is_discardable(expr, env, signatures) =>
             {
                 out.push_str(&format!(
@@ -18104,7 +18845,14 @@ fn emit_block(
                             "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    if context.async_state_machine {
+                        out.push_str(&format!(
+                            "{pad}    flux__task->result = {return_temp};\n{pad}    {}(flux__task);\n{pad}    return;\n",
+                            async_finish_c_name(&context.current_function.name)
+                        ));
+                    } else {
+                        out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    }
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 for (index, binding) in bindings.iter().enumerate() {
@@ -18141,7 +18889,14 @@ fn emit_block(
                             "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    if context.async_state_machine {
+                        out.push_str(&format!(
+                            "{pad}    flux__task->result = {return_temp};\n{pad}    {}(flux__task);\n{pad}    return;\n",
+                            async_finish_c_name(&context.current_function.name)
+                        ));
+                    } else {
+                        out.push_str(&format!("{pad}    return {return_temp};\n"));
+                    }
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 for (index, binding) in bindings.iter().enumerate() {
@@ -18272,7 +19027,14 @@ fn emit_block(
                 )?;
             }
             StmtKind::Return(values) if values.is_empty() => {
-                out.push_str(&format!("{pad}return;\n"));
+                if context.async_state_machine {
+                    out.push_str(&format!(
+                        "{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&context.current_function.name)
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}return;\n"));
+                }
             }
             StmtKind::Return(values)
                 if values.len() == 1 && context.current_function.returns.len() > 1 =>
@@ -18292,7 +19054,14 @@ fn emit_block(
                         "{pad}{return_temp}.v{index} = {source_temp}.v{index};\n"
                     ));
                 }
-                out.push_str(&format!("{pad}return {return_temp};\n"));
+                if context.async_state_machine {
+                    out.push_str(&format!(
+                        "{pad}flux__task->result = {return_temp};\n{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&context.current_function.name)
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}return {return_temp};\n"));
+                }
             }
             StmtKind::Return(values)
                 if values.len() == 1
@@ -18317,12 +19086,26 @@ fn emit_block(
                     signatures,
                     temp_counter,
                 )?;
-                out.push_str(&format!("{pad}return {target};\n"));
+                if context.async_state_machine {
+                    out.push_str(&format!(
+                        "{pad}flux__task->result = {target};\n{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&context.current_function.name)
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}return {target};\n"));
+                }
             }
             StmtKind::Return(values) if values.len() == 1 => {
                 let expected = &context.current_function.returns[0];
                 let value = emit_expr_for_expected(&values[0], expected, env, signatures)?;
-                out.push_str(&format!("{pad}return {value};\n"));
+                if context.async_state_machine {
+                    out.push_str(&format!(
+                        "{pad}flux__task->result = {value};\n{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&context.current_function.name)
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}return {value};\n"));
+                }
             }
             StmtKind::Return(values) => {
                 let tag = multi_return_struct_name(&context.current_function.name);
@@ -18334,7 +19117,14 @@ fn emit_block(
                     let value = emit_expr_for_expected(expr, expected, env, signatures)?;
                     out.push_str(&format!("{pad}{temp}.v{index} = {value};\n"));
                 }
-                out.push_str(&format!("{pad}return {temp};\n"));
+                if context.async_state_machine {
+                    out.push_str(&format!(
+                        "{pad}flux__task->result = {temp};\n{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&context.current_function.name)
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}return {temp};\n"));
+                }
             }
             StmtKind::Break => out.push_str(&format!("{pad}break;\n")),
             StmtKind::Continue => out.push_str(&format!("{pad}continue;\n")),

@@ -30999,10 +30999,14 @@ async fn main() -> i64 {
 
     let generated = compile_to_c(source).expect("reachable await should lower to native tasks");
     assert!(generated.contains("struct flux__async_task_loadCode"));
-    assert!(generated.contains("flux__async_start_loadCode(INT64_C(21))"));
+    assert!(generated.contains(
+        "flux__async_start_cont_loadCode(INT64_C(21), flux__async_resume_main, flux__task)"
+    ));
     assert!(generated.contains("flux__async_await_loadCode"));
-    assert!(generated.contains("pthread_create(&flux__task->thread"));
-    assert!(generated.contains("pthread_join(flux__task->thread"));
+    assert!(generated.contains("pthread_create(&flux__thread"));
+    assert!(generated.contains("pthread_detach(flux__thread)"));
+    assert!(generated.contains("pthread_cond_wait"));
+    assert!(!generated.contains("pthread_join("));
     assert!(generated.contains("free(flux__task)"));
 
     let root = std::env::temp_dir().join(format!("flux-async-api-{}", std::process::id()));
@@ -31171,6 +31175,10 @@ async fn main() -> i64 {
     assert!(generated.contains("struct flux__async_task_loadCode"));
     assert!(generated.contains("flux__async_await_addOne"));
     assert!(generated.contains("flux__async_await_mark"));
+    assert!(generated.contains("flux__async_resume_loadCode"));
+    assert!(generated.contains("flux__async_start_cont_addOne"));
+    assert!(generated.contains("flux__async_start_cont_mark"));
+    assert!(!generated.contains("pthread_join("));
 
     let root = std::env::temp_dir().join(format!("flux-async-nested-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -31195,6 +31203,33 @@ async fn main() -> i64 {
         .expect("nested async fixture should run");
     assert_eq!(status.code(), Some(42));
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn async_await_inside_control_flow_keeps_safe_blocking_fallback() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(flag: bool) -> i64 {
+    if flag:
+        let value: i64 = await addOne(40)
+        return value + 1
+    return 0
+}
+
+async fn main() -> i64 {
+    return await choose(true)
+}
+"#;
+
+    check_source(source).expect("await inside control flow should remain supported");
+    let generated = compile_to_c(source).expect("fallback await lowering should remain native");
+    assert!(generated.contains("flux__async_body_choose"));
+    assert!(generated.contains("flux__async_await_addOne(flux__async_start_addOne(INT64_C(40)))"));
+    assert!(generated.contains("pthread_cond_wait"));
+    assert!(!generated.contains("pthread_join("));
 }
 
 #[test]
