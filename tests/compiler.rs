@@ -15538,6 +15538,10 @@ fn negateZeroMultiply(value: i64) -> i64 {
     return -(value * 0)
 }
 
+fn negateSquare(value: i64) -> i64 {
+    return -(value * value)
+}
+
 fn negateNonPowerOfTwoMultiply(value: i64) -> i64 {
     return -(value * 3)
 }
@@ -15591,6 +15595,7 @@ fn main() -> i64 {
     print(negateSelfDivision(2))
     print(negateSelfSubtraction(3))
     print(negateZeroMultiply(4))
+    print(negateSquare(5))
     print(negateNonPowerOfTwoMultiply(5))
     print(negateNonPowerOfTwoMultiplyLeft(6))
     print(retainPowerOfTwoMultiply(7))
@@ -15617,6 +15622,7 @@ fn main() -> i64 {
     );
     assert!(generated.contains("flux_div_self_i64(flux__local_value)"));
     assert!(generated.contains("(flux__local_value) / INT64_C(2)"));
+    assert!(generated.contains("-(flux_mul_i64(flux__local_value, flux__local_value))"));
     assert!(generated.contains("-(flux_mul_i64(flux__local_value, INT64_C(3)))"));
     assert!(generated.contains("-(flux_mul_i64(INT64_C(6), flux__local_value))"));
     assert!(generated.contains("flux_neg_i64(flux_mul_i64(flux__local_value, INT64_C(2)))"));
@@ -15635,14 +15641,14 @@ view Counter {
     grid rows: auto
     state count: i64 = 4
     Button action at 1,1
-        text: "Scale"
-        onPress: count => -(count * 3)
+        text: "Square"
+        onPress: count => -(count * count)
 }
 app Counter
 "#;
     let ui_generated = compile_to_c(ui).expect("UI bounded-result negation should share lowering");
     assert!(!ui_generated.contains("flux_neg_i64("));
-    assert!(ui_generated.contains("-(flux_mul_i64(flux__ui_state_count, INT64_C(3)))"));
+    assert!(ui_generated.contains("-(flux_mul_i64(flux__ui_state_count, flux__ui_state_count))"));
 }
 
 #[test]

@@ -18556,7 +18556,12 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
             let constant_factor_excludes_min = |factor: i64| {
                 factor == 0 || factor == -1 || !factor.unsigned_abs().is_power_of_two()
             };
-            constant_i64(left).is_some_and(constant_factor_excludes_min)
+            let same_binding_square = matches!(
+                (&left.kind, &right.kind),
+                (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+            );
+            same_binding_square
+                || constant_i64(left).is_some_and(constant_factor_excludes_min)
                 || constant_i64(right).is_some_and(constant_factor_excludes_min)
         }
         ExprKind::Binary {
