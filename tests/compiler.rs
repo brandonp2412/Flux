@@ -21223,6 +21223,124 @@ fn main() -> i64 {
 }
 
 #[test]
+fn portable_choice_dialogs_dispatch_indexed_callbacks_on_native_backends() {
+    let source = r#"
+fn chosen(index: i64) -> void {
+    print(index)
+}
+fn started() -> void {
+    dialog.choose("Flux", "Pick one", ["Alpha", "Beta", "Gamma"], chosen)
+    dialog.choose("Delete", "Choose action", ["Archive", "Delete"], chosen, cancelLabel: "Later")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("portable choice dialog should typecheck");
+    let linux = compile_to_c(source).expect("portable choice dialog should lower on Linux");
+    assert!(linux.contains("static void flux__dialog_choose("));
+    assert!(linux.contains("context->callback((int64_t)response - INT64_C(1))"));
+    assert!(linux.contains("gtk_dialog_add_button"));
+    assert!(
+        linux.contains("(const char *[]){\"Alpha\", \"Beta\", \"Gamma\"}, INT64_C(3), \"Cancel\"")
+    );
+    assert!(linux.contains("(const char *[]){\"Archive\", \"Delete\"}, INT64_C(2), \"Later\""));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("portable choice app should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable choice dialog should lower on Android");
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnDialogChoose"));
+    assert!(android.contains("fluxShowChooseDialog"));
+    assert!(android.contains("[Ljava/lang/String;Ljava/lang/String;J)V"));
+    assert!(
+        android
+            .contains("(const char *[]){\"Alpha\", \"Beta\", \"Gamma\"}, INT64_C(3), \"Cancel\"")
+    );
+    assert!(!android.contains("gtk_message_dialog_new"));
+
+    let unused = r#"
+fn chosen(index: i64) -> void {
+    print(index)
+}
+fn unused() -> void {
+    dialog.choose("Unused", "Hidden", ["One"], chosen)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable choice code should tree-shake");
+    assert!(!tree_shaken.contains("flux__dialog_choose"));
+
+    let invalid = r#"
+fn wrong() -> void {
+    print("wrong")
+}
+fn chosen(index: i64) -> void {
+    print(index)
+}
+fn main() -> i64 {
+    dialog.choose(42, "message", ["One"], chosen)
+    dialog.choose("Title", false, ["One"], chosen)
+    dialog.choose("Title", "message", [], chosen)
+    dialog.choose("Title", "message", [""], chosen)
+    dialog.choose("Title", "message", ["One"], wrong)
+    dialog.choose("Title", "message", ["One"], chosen, cancelLabel: 42)
+    dialog.choose("Title", "message", ["One"], chosen, nope: "No")
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid)
+        .expect_err("dialog choose arguments must be statically typed and compile-time safe");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("dialog.choose title"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("dialog.choose message"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("at least one label"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("labels must not be empty"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("dialog.choose callback"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("dialog.choose cancelLabel"))
+    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dialog.choose has no named argument 'nope'")
+    }));
+}
+
+#[test]
 fn linux_file_dialogs_are_typed_native_tree_shaken_and_target_checked() {
     let source = r#"
 fn selected(path: str) -> void {

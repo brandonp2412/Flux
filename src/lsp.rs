@@ -1574,6 +1574,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn dialog.confirm(title: str, message: str, onConfirm: fn() -> void, *, cancelLabel: str = \"Cancel\", confirmLabel: str = \"OK\") -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "choose",
+            3,
+            "fn dialog.choose(title: str, message: str, options: str[], onChoose: fn(i64) -> void, *, cancelLabel: str = \"Cancel\") -> void",
+        );
         return true;
     }
     if namespace == "fileDialog" {
@@ -3352,6 +3359,20 @@ fn signature_help_for_document_cached(
                             "onConfirm: fn() -> void",
                             "cancelLabel: str = \"Cancel\"",
                             "confirmLabel: str = \"OK\"",
+                        ],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "choose" => {
+                    return Some(signature_help_for_builtin(
+                        "dialog.choose",
+                        &[
+                            "title: str",
+                            "message: str",
+                            "options: str[]",
+                            "onChoose: fn(i64) -> void",
+                            "cancelLabel: str = \"Cancel\"",
                         ],
                         "void",
                         active_parameter,
@@ -8439,6 +8460,8 @@ mod tests {
         .to_json();
         assert!(items.contains("fn dialog.alert(title: str, message: str) -> void"));
         assert!(items.contains("dialog.confirm"));
+        assert!(items.contains("dialog.choose"));
+        assert!(items.contains("onChoose: fn(i64) -> void"));
         assert!(items.contains("cancelLabel"));
         assert!(items.contains("confirmLabel"));
 
@@ -8486,6 +8509,29 @@ mod tests {
         assert!(help.contains("dialog.confirm"));
         assert!(help.contains("cancelLabel"));
         assert!(help.contains("confirmLabel"));
+
+        let choose_source = "fn chosen(index: i64) -> void {\n    print(index)\n}\nfn main() -> i64 {\n    dialog.choose(\"Flux\", \"Pick one\", [\"One\", \"Two\"], chosen)\n    return 0\n}\n";
+        let choose_documents = HashMap::from([(uri.to_string(), choose_source.to_string())]);
+        let needle = "dialog.choose(";
+        let line_index = choose_source
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("dialog choose line should exist");
+        let line = choose_source.lines().nth(line_index).unwrap();
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            choose_source,
+            &choose_documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("dialog choose should have signature help")
+        .to_json();
+        assert!(help.contains("dialog.choose"));
+        assert!(help.contains("options: str[]"));
+        assert!(help.contains("onChoose: fn(i64) -> void"));
     }
 
     #[test]

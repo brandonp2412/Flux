@@ -1189,6 +1189,7 @@ fn emit_runtime_prelude(
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
     let uses_dialog_confirm = runtime_usage.contains("flux__dialog_confirm(");
+    let uses_dialog_choose = runtime_usage.contains("flux__dialog_choose(");
     let uses_file_dialog_open_file = runtime_usage.contains("flux__file_dialog_open_file(");
     let uses_file_dialog_save_file = runtime_usage.contains("flux__file_dialog_save_file(");
     let uses_file_dialog_select_directory =
@@ -1342,7 +1343,7 @@ fn emit_runtime_prelude(
         || uses_android_share
         || uses_android_set_clipboard_text
         || uses_android_read_clipboard_text
-        || (uses_android && (uses_dialog_alert || uses_dialog_confirm))
+        || (uses_android && (uses_dialog_alert || uses_dialog_confirm || uses_dialog_choose))
         || uses_android_show_keyboard
         || uses_android_hide_keyboard
         || uses_android_focus_navigation
@@ -1429,7 +1430,7 @@ fn emit_runtime_prelude(
     if uses_android_open_url
         || uses_android_share
         || uses_android_set_clipboard_text
-        || (uses_android && (uses_dialog_alert || uses_dialog_confirm))
+        || (uses_android && (uses_dialog_alert || uses_dialog_confirm || uses_dialog_choose))
         || uses_android_notifications
         || uses_android_has_system_feature
         || uses_android_permission_granted
@@ -2189,6 +2190,13 @@ fn emit_runtime_prelude(
         out.push_str("static void flux__dialog_confirm_response(GtkDialog *dialog, gint response, gpointer data) { flux__dialog_confirm_context *context = (flux__dialog_confirm_context *)data; if (response == GTK_RESPONSE_ACCEPT && context != NULL && context->callback != NULL) context->callback(); g_free(context); gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
         out.push_str("static void flux__dialog_confirm(const char *title, const char *message, const char *cancel_label, const char *confirm_label, void (*callback)(void)) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); gtk_dialog_add_button(GTK_DIALOG(dialog), cancel_label == NULL ? \"Cancel\" : cancel_label, GTK_RESPONSE_CANCEL); gtk_dialog_add_button(GTK_DIALOG(dialog), confirm_label == NULL ? \"OK\" : confirm_label, GTK_RESPONSE_ACCEPT); flux__dialog_confirm_context *context = g_new0(flux__dialog_confirm_context, 1); if (context == NULL) { gtk_window_destroy(GTK_WINDOW(dialog)); return; } context->callback = callback; g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_confirm_response), context); gtk_window_present(GTK_WINDOW(dialog)); }\n");
     }
+    if uses_dialog_choose && uses_gtk {
+        out.push_str(
+            "typedef struct { void (*callback)(int64_t); } flux__dialog_choose_context;\n",
+        );
+        out.push_str("static void flux__dialog_choose_response(GtkDialog *dialog, gint response, gpointer data) { flux__dialog_choose_context *context = (flux__dialog_choose_context *)data; if (response > 0 && context != NULL && context->callback != NULL) context->callback((int64_t)response - INT64_C(1)); g_free(context); gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
+        out.push_str("static void flux__dialog_choose(const char *title, const char *message, const char **options, int64_t option_count, const char *cancel_label, void (*callback)(int64_t)) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application) || options == NULL || option_count <= 0 || option_count > INT32_MAX) return; GtkWindow *parent = gtk_application_get_active_window(GTK_APPLICATION(application)); GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, \"%s\", message == NULL ? \"\" : message); if (dialog == NULL) return; if (title != NULL) gtk_window_set_title(GTK_WINDOW(dialog), title); for (int64_t index = 0; index < option_count; ++index) gtk_dialog_add_button(GTK_DIALOG(dialog), options[index] == NULL ? \"\" : options[index], (gint)(index + INT64_C(1))); gtk_dialog_add_button(GTK_DIALOG(dialog), cancel_label == NULL ? \"Cancel\" : cancel_label, GTK_RESPONSE_CANCEL); flux__dialog_choose_context *context = g_new0(flux__dialog_choose_context, 1); if (context == NULL) { gtk_window_destroy(GTK_WINDOW(dialog)); return; } context->callback = callback; g_signal_connect(dialog, \"response\", G_CALLBACK(flux__dialog_choose_response), context); gtk_window_present(GTK_WINDOW(dialog)); }\n");
+    }
     if uses_clipboard_read_text && uses_gtk {
         out.push_str(
             "typedef struct { void (*callback)(const char *); } flux__clipboard_read_context;\n",
@@ -2423,6 +2431,21 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, show_confirm, title_string, message_string, cancel_label_string, confirm_label_string, (jlong)(intptr_t)callback);\n");
         out.push_str("done:\n");
         out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (confirm_label_string != NULL) (*env)->DeleteLocalRef(env, confirm_label_string); if (cancel_label_string != NULL) (*env)->DeleteLocalRef(env, cancel_label_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach);\n");
+        out.push_str("}\n");
+    }
+    if uses_dialog_choose && uses_android {
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnDialogChoose(JNIEnv *env, jclass activity_class, jlong callback_pointer, jlong index) { (void)env; (void)activity_class; void (*callback)(int64_t) = (void (*)(int64_t))(intptr_t)callback_pointer; if (callback != NULL) callback((int64_t)index); }\n");
+        out.push_str("static void flux__dialog_choose(const char *title, const char *message, const char **options, int64_t option_count, const char *cancel_label, void (*callback)(int64_t)) {\n");
+        out.push_str("    if (flux__android_activity == NULL || options == NULL || option_count <= 0 || option_count > INT32_MAX) return;\n");
+        out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+        out.push_str("    jclass activity_class = NULL; jclass string_class = NULL; jobjectArray option_array = NULL; jstring title_string = NULL; jstring message_string = NULL; jstring cancel_label_string = NULL;\n");
+        out.push_str("    activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz); string_class = (*env)->FindClass(env, \"java/lang/String\"); if (activity_class == NULL || string_class == NULL) goto done;\n");
+        out.push_str("    option_array = (*env)->NewObjectArray(env, (jsize)option_count, string_class, NULL); if (option_array == NULL) goto done; for (int64_t index = 0; index < option_count; ++index) { jstring option = flux__android_utf8_string(env, options[index] == NULL ? \"\" : options[index]); if (option == NULL) goto done; (*env)->SetObjectArrayElement(env, option_array, (jsize)index, option); (*env)->DeleteLocalRef(env, option); if ((*env)->ExceptionCheck(env)) goto done; }\n");
+        out.push_str("    jmethodID show_choose = (*env)->GetMethodID(env, activity_class, \"fluxShowChooseDialog\", \"(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;J)V\"); if (show_choose == NULL) goto done;\n");
+        out.push_str("    title_string = flux__android_utf8_string(env, title == NULL ? \"\" : title); message_string = flux__android_utf8_string(env, message == NULL ? \"\" : message); cancel_label_string = flux__android_utf8_string(env, cancel_label == NULL ? \"Cancel\" : cancel_label); if (title_string == NULL || message_string == NULL || cancel_label_string == NULL) goto done;\n");
+        out.push_str("    (*env)->CallVoidMethod(env, flux__android_activity->clazz, show_choose, title_string, message_string, option_array, cancel_label_string, (jlong)(intptr_t)callback);\n");
+        out.push_str("done:\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (cancel_label_string != NULL) (*env)->DeleteLocalRef(env, cancel_label_string); if (message_string != NULL) (*env)->DeleteLocalRef(env, message_string); if (title_string != NULL) (*env)->DeleteLocalRef(env, title_string); if (option_array != NULL) (*env)->DeleteLocalRef(env, option_array); if (string_class != NULL) (*env)->DeleteLocalRef(env, string_class); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach);\n");
         out.push_str("}\n");
     }
     if uses_android_open_url {
@@ -10519,6 +10542,42 @@ fn static_expr_str(expr: &Expr, signatures: &Signatures) -> Option<String> {
         ConstantValue::Str(value) => Some(value),
         _ => None,
     }
+}
+
+fn static_string_list(
+    expr: &Expr,
+    signatures: &Signatures,
+    subject: &str,
+) -> Result<Vec<String>, Diagnostic> {
+    let ExprKind::List(values) = &expr.kind else {
+        return Err(diag(
+            expr.span,
+            &format!("{subject} must be a compile-time list literal of string values"),
+        ));
+    };
+    if values.is_empty() {
+        return Err(diag(
+            expr.span,
+            &format!("{subject} must contain at least one label"),
+        ));
+    }
+    let mut labels = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(label) = static_expr_str(value, signatures) else {
+            return Err(diag(
+                value.span,
+                &format!("{subject} must be a compile-time list of string values"),
+            ));
+        };
+        if label.is_empty() {
+            return Err(diag(
+                value.span,
+                &format!("{subject} labels must not be empty"),
+            ));
+        }
+        labels.push(label);
+    }
+    Ok(labels)
 }
 
 fn static_context_menu_items(
@@ -19952,7 +20011,7 @@ fn emit_qualified_call(
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
     }
     if namespace == "dialog" {
-        if name != "confirm" && !named_args.is_empty() {
+        if !matches!(name, "confirm" | "choose") && !named_args.is_empty() {
             return Err(diag(span, "invalid dialog call reached code generation"));
         }
         match name {
@@ -19985,6 +20044,36 @@ fn emit_qualified_call(
                     format!(
                         "flux__dialog_confirm({}, {}, {}, {}, {})",
                         title.code, message.code, cancel_label, confirm_label, callback.code
+                    ),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "choose" if args.len() == 4 => {
+                let title = emit_expr(&args[0], env, signatures)?;
+                let message = emit_expr(&args[1], env, signatures)?;
+                let options = static_string_list(&args[2], signatures, "dialog.choose options")?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                let cancel_label =
+                    if let Some(arg) = named_args.iter().find(|arg| arg.name == "cancelLabel") {
+                        emit_expr(&arg.value, env, signatures)?.code
+                    } else {
+                        c_string("Cancel")
+                    };
+                let option_values = options
+                    .iter()
+                    .map(|value| c_string(value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Ok((
+                    format!(
+                        "flux__dialog_choose({}, {}, (const char *[]){{{}}}, INT64_C({}), {}, {})",
+                        title.code,
+                        message.code,
+                        option_values,
+                        options.len(),
+                        cancel_label,
+                        callback.code
                     ),
                     Vec::new(),
                     None,

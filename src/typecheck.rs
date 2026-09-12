@@ -8054,6 +8054,94 @@ fn check_qualified_call(
                 }
                 return Ok(Vec::new());
             }
+            "choose" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "dialog.choose expects 4 positional arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let title = type_of_expr(&args[0], env, signatures)?;
+                let message = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &title, "dialog.choose title")?;
+                require_type(args[1].span, &Type::Str, &message, "dialog.choose message")?;
+                match &args[2].kind {
+                    ExprKind::List(values) if values.is_empty() => {
+                        return Err(diag(
+                            args[2].span,
+                            "dialog.choose options must contain at least one label",
+                        ));
+                    }
+                    ExprKind::List(values) => {
+                        for value in values {
+                            match evaluate_default_expr(value, signatures) {
+                                Ok(ConstantValue::Str(label)) if !label.is_empty() => {}
+                                Ok(ConstantValue::Str(_)) => {
+                                    return Err(diag(
+                                        value.span,
+                                        "dialog.choose option labels must not be empty",
+                                    ));
+                                }
+                                Ok(_) | Err(_) => {
+                                    return Err(diag(
+                                        value.span,
+                                        "dialog.choose options must be a compile-time list of string values",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(diag(
+                            args[2].span,
+                            "dialog.choose options must be a compile-time list literal of string values",
+                        ));
+                    }
+                }
+                let options = type_of_expr(&args[2], env, signatures)?;
+                let callback = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::List(Box::new(Type::Str)),
+                    &options,
+                    "dialog.choose options",
+                )?;
+                require_type(
+                    args[3].span,
+                    &Type::Function {
+                        params: vec![Type::I64],
+                        returns: Vec::new(),
+                    },
+                    &callback,
+                    "dialog.choose callback",
+                )?;
+                let mut supplied_labels = HashSet::new();
+                for arg in named_args {
+                    if arg.name != "cancelLabel" {
+                        return Err(diag(
+                            arg.name_span,
+                            &format!("dialog.choose has no named argument '{}'", arg.name),
+                        ));
+                    }
+                    if !supplied_labels.insert(arg.name.as_str()) {
+                        return Err(diag(
+                            arg.name_span,
+                            "dialog.choose named argument 'cancelLabel' is supplied more than once",
+                        ));
+                    }
+                    let label = type_of_expr(&arg.value, env, signatures)?;
+                    require_type(
+                        arg.value.span,
+                        &Type::Str,
+                        &label,
+                        "dialog.choose cancelLabel",
+                    )?;
+                }
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,
