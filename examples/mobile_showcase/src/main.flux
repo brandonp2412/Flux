@@ -10,8 +10,8 @@ view HorseTinder {
 
     Text brand at 1,1 span columns 3
         text: "♥︎  HORSE TINDER"
-        color: "#FF4B61"
-        size: 19
+        color: "#FF5268"
+        size: 20
         bold: true
         letterSpacing: 1
 
@@ -28,19 +28,19 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 405
+        minHeight: 390
         backgroundColor: "#13151B"
-        borderColor: "#303540"
+        borderColor: "#242832"
         borderWidth: 1
-        radius: 30
-        shadowColor: "#00000070"
-        shadowBlur: 10
-        shadowOffsetY: 4
+        radius: 26
+        shadowColor: "#00000085"
+        shadowBlur: 16
+        shadowOffsetY: 6
 
     Text profileName at 3,1 span columns 3
         text: "Buttercup, 7"
         color: "text"
-        size: 30
+        size: 31
         bold: true
 
     Text matchBadge at 3,4 span columns 2
@@ -60,7 +60,7 @@ view HorseTinder {
     Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
         color: "#B5BAC4"
-        size: 14
+        size: 15
 
     Text weekend at 5,1 span columns 2
         text: "BEACH GALLOPS"
@@ -95,27 +95,27 @@ view HorseTinder {
         wrap: true
         maxLines: 3
         lineHeightPercent: 142
-        padding: 16
-        backgroundColor: "#101319"
-        borderColor: "#252A34"
+        padding: 17
+        backgroundColor: "#0F1218"
+        borderColor: "#222731"
         borderWidth: 1
-        radius: 20
+        radius: 18
 
     Button pass at 7,1 span columns 5
         text: "✕"
-        size: 48
+        size: 46
         accessibilityLabel: "Pass on Buttercup"
         minWidth: 96
         maxWidth: 96
         minHeight: 96
         alignX: "center"
+        marginEnd: 128
         focusable: true
         padding: 0
         radius: 48
-        translateX: -64
         backgroundColor: "#171A21"
-        borderColor: "#454B57"
-        borderWidth: 2
+        borderColor: "#3B414C"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
@@ -129,14 +129,14 @@ view HorseTinder {
         maxWidth: 96
         minHeight: 96
         alignX: "center"
+        marginStart: 128
         focusable: true
         primary: true
         padding: 0
         radius: 48
-        translateX: 64
         backgroundColor: "#FF4458"
-        borderColor: "#FF7080"
-        borderWidth: 2
+        borderColor: "#FF6678"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
