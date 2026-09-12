@@ -15502,8 +15502,16 @@ app Counter
 #[test]
 fn reuses_checked_negation_for_same_negated_binding_arithmetic() {
     let source = r#"
+fn add(value: i64) -> i64 {
+    return (-value) + (-value)
+}
+
 fn subtract(value: i64) -> i64 {
     return (-value) - (-value)
+}
+
+fn multiply(value: i64) -> i64 {
+    return (-value) * (-value)
 }
 
 fn divide(value: i64) -> i64 {
@@ -15511,25 +15519,65 @@ fn divide(value: i64) -> i64 {
 }
 
 fn main() -> i64 {
+    print(add(7))
     print(subtract(7))
-    return divide(2)
+    print(multiply(3))
+    print(divide(2))
+    return 0
 }
 "#;
 
     check_source(source).expect("same negated binding arithmetic should typecheck");
     let generated = compile_to_c(source)
         .expect("same negated binding arithmetic should reuse one checked negation");
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux_neg_i64(flux__local_value); flux_add_i64(flux__checked_reuse, flux__checked_reuse); });"));
     assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), INT64_C(0));"));
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux_neg_i64(flux__local_value); flux_mul_i64(flux__checked_reuse, flux__checked_reuse); });"));
     assert!(generated.contains("return flux_div_self_i64(flux_neg_i64(flux__local_value));"));
+    assert!(!generated.contains(
+        "flux_add_i64(flux_neg_i64(flux__local_value), flux_neg_i64(flux__local_value))"
+    ));
     assert!(!generated.contains("flux_sub_i64(flux_neg_i64"));
+    assert!(!generated.contains(
+        "flux_mul_i64(flux_neg_i64(flux__local_value), flux_neg_i64(flux__local_value))"
+    ));
     assert!(!generated.contains("flux_div_i64(flux_neg_i64"));
     assert_eq!(
         generated.matches("flux_neg_i64(flux__local_value)").count(),
-        2,
-        "subtraction and division should each evaluate the checked negation once",
+        4,
+        "each same-negated arithmetic form should evaluate the checked negation once",
     );
     assert!(generated.contains("if (value == INT64_MIN)"));
     assert!(generated.contains("flux_div_self_i64(int64_t value) { if (value == 0)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-same-negated-arithmetic-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary same-negated arithmetic directory should exist");
+    let c_path = root.join("same-negated-arithmetic.c");
+    let exe_path = root.join("same-negated-arithmetic");
+    fs::write(&c_path, &generated).expect("generated same-negated arithmetic C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile same-negated arithmetic C");
+    assert!(
+        compile.status.success(),
+        "same-negated arithmetic C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("same-negated arithmetic program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "-14\n0\n9\n1\n");
+    let _ = fs::remove_dir_all(&root);
 
     let ui = r#"
 view Counter {
@@ -15538,13 +15586,13 @@ view Counter {
     state count: i64 = 1
     Button action at 1,1
         text: "Reset"
-        onPress: count => (-count) - (-count)
+        onPress: count => (-count) * (-count)
 }
 app Counter
 "#;
     let ui_generated =
         compile_to_c(ui).expect("UI same negated binding arithmetic should share checked lowering");
-    assert!(ui_generated.contains("((void)(flux_neg_i64(flux__ui_state_count)), INT64_C(0))"));
+    assert!(ui_generated.contains("__extension__ ({ int64_t flux__checked_reuse = flux_neg_i64(flux__ui_state_count); flux_mul_i64(flux__checked_reuse, flux__checked_reuse); })"));
     assert_eq!(
         ui_generated
             .matches("flux_neg_i64(flux__ui_state_count)")

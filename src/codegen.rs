@@ -18520,6 +18520,8 @@ enum CheckedI64Reduction {
     ZeroAfterRight,
     NegateLeft,
     NegateRight,
+    DoubleAfterLeft,
+    SquareAfterLeft,
     SelfDivide,
     DivideByConstant(i64),
 }
@@ -18559,11 +18561,12 @@ fn checked_i64_reduction(
         )
     );
     if same_checked_negated_binding {
-        if matches!(op, BinOp::Sub) {
-            return Some(CheckedI64Reduction::ZeroAfterLeft);
-        }
-        if matches!(op, BinOp::Div) {
-            return Some(CheckedI64Reduction::SelfDivide);
+        match op {
+            BinOp::Add => return Some(CheckedI64Reduction::DoubleAfterLeft),
+            BinOp::Sub => return Some(CheckedI64Reduction::ZeroAfterLeft),
+            BinOp::Mul => return Some(CheckedI64Reduction::SquareAfterLeft),
+            BinOp::Div => return Some(CheckedI64Reduction::SelfDivide),
+            _ => {}
         }
     }
 
@@ -19030,6 +19033,12 @@ fn checked_i64_identity_c(
         }
         CheckedI64Reduction::NegateLeft => Some(format!("flux_neg_i64({left_code})")),
         CheckedI64Reduction::NegateRight => Some(format!("flux_neg_i64({right_code})")),
+        CheckedI64Reduction::DoubleAfterLeft => Some(format!(
+            "__extension__ ({{ int64_t flux__checked_reuse = {left_code}; flux_add_i64(flux__checked_reuse, flux__checked_reuse); }})"
+        )),
+        CheckedI64Reduction::SquareAfterLeft => Some(format!(
+            "__extension__ ({{ int64_t flux__checked_reuse = {left_code}; flux_mul_i64(flux__checked_reuse, flux__checked_reuse); }})"
+        )),
         CheckedI64Reduction::SelfDivide => Some(format!("flux_div_self_i64({left_code})")),
         CheckedI64Reduction::DivideByConstant(divisor) => {
             Some(format!("(({left_code}) / INT64_C({divisor}))"))
@@ -19424,6 +19433,8 @@ fn dead_store_rhs_is_discardable(
                 Some(
                     CheckedI64Reduction::NegateLeft
                     | CheckedI64Reduction::NegateRight
+                    | CheckedI64Reduction::DoubleAfterLeft
+                    | CheckedI64Reduction::SquareAfterLeft
                     | CheckedI64Reduction::SelfDivide,
                 )
                 | None => false,
