@@ -5187,6 +5187,21 @@ fn emit_android_native_application(
     out.push_str("    if (grid_ctor == NULL || set_columns == NULL || set_rows == NULL || set_padding == NULL || set_clip_children == NULL || set_clip_to_padding == NULL || add_view == NULL || grid_spec == NULL || grid_spec_weight == NULL) return;\n");
     out.push_str("    jobject grid = (*env)->NewObject(env, grid_class, grid_ctor, activity);\n");
     out.push_str("    if (grid == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+    if let Some(duration) = view_layout_transition_duration(view, signatures)? {
+        out.push_str("    jclass layout_transition_class = (*env)->FindClass(env, \"android/animation/LayoutTransition\");\n");
+        out.push_str("    if (layout_transition_class == NULL) return;\n");
+        out.push_str("    jmethodID layout_transition_ctor = (*env)->GetMethodID(env, layout_transition_class, \"<init>\", \"()V\");\n");
+        out.push_str("    jmethodID layout_transition_set_duration = (*env)->GetMethodID(env, layout_transition_class, \"setDuration\", \"(J)V\");\n");
+        out.push_str("    jmethodID grid_set_layout_transition = (*env)->GetMethodID(env, grid_class, \"setLayoutTransition\", \"(Landroid/animation/LayoutTransition;)V\");\n");
+        out.push_str("    if (layout_transition_ctor == NULL || layout_transition_set_duration == NULL || grid_set_layout_transition == NULL) return;\n");
+        out.push_str("    jobject layout_transition = (*env)->NewObject(env, layout_transition_class, layout_transition_ctor);\n");
+        out.push_str("    if (layout_transition == NULL || (*env)->ExceptionCheck(env)) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return; }\n");
+        out.push_str(&format!(
+            "    (*env)->CallVoidMethod(env, layout_transition, layout_transition_set_duration, (jlong)INT64_C({duration}));\n"
+        ));
+        out.push_str("    (*env)->CallVoidMethod(env, grid, grid_set_layout_transition, layout_transition);\n");
+        out.push_str("    (*env)->DeleteLocalRef(env, layout_transition);\n    (*env)->DeleteLocalRef(env, layout_transition_class);\n");
+    }
     if let Some(direction) =
         application_metadata_string(application, "layout_direction", signatures)
     {
@@ -7954,6 +7969,7 @@ fn emit_linux_gtk_application(
                 "app root view was not found during codegen",
             )
         })?;
+    let _ = view_layout_transition_duration(view, signatures)?;
 
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let initial_window_width = application_metadata_i64(application, "width", signatures)
@@ -8064,6 +8080,12 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "static GtkWidget *{} = NULL;\n",
                 linux_ui_host_c_name(element)
+            ));
+        }
+        if view_property(element, "layout_transition_ms").is_some() {
+            out.push_str(&format!(
+                "static GtkWidget *{} = NULL;\n",
+                linux_ui_layout_c_name(element)
             ));
         }
         if element_has_dynamic_transform(element, signatures) {
@@ -9648,9 +9670,24 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
-        emit_grid_sizing(out, view, element, &variable, signatures)?;
+        let layout_variable = if let Some(duration) =
+            static_non_negative_style_i64(element, "layout_transition_ms", signatures)?
+        {
+            let layout = linux_ui_layout_c_name(element);
+            let visible = view_property(element, "visible")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "true".to_string());
+            out.push_str(&format!(
+                "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {variable});\n    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
+            ));
+            layout
+        } else {
+            variable
+        };
+        emit_grid_sizing(out, view, element, &layout_variable, signatures)?;
         out.push_str(&format!(
-            "    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n",
+            "    gtk_grid_attach(GTK_GRID(grid), {layout_variable}, {}, {}, {}, {});\n",
             element.column - 1,
             element.row - 1,
             element.column_span,
@@ -11008,6 +11045,62 @@ fn linux_ui_host_c_name(element: &crate::ast::ViewElement) -> String {
     }
 }
 
+fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
+    if view_property(element, "layout_transition_ms").is_some() {
+        format!("flux__ui_layout_{}", element.name)
+    } else {
+        linux_ui_host_c_name(element)
+    }
+}
+
+fn view_layout_transition_duration(
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Option<i64>, Diagnostic> {
+    let mut duration = None;
+    for element in &view.elements {
+        let Some(value) =
+            static_non_negative_style_i64(element, "layout_transition_ms", signatures)?
+        else {
+            continue;
+        };
+        if let Some(existing) = duration
+            && existing != value
+        {
+            let span = view_property(element, "layout_transition_ms")
+                .expect("layout transition value exists")
+                .value
+                .span;
+            return Err(diag(
+                span,
+                "layoutTransitionMs must use one duration per view so native layout reflow stays deterministic across platforms",
+            ));
+        }
+        duration = Some(value);
+    }
+    if duration.is_some() {
+        for element in &view.elements {
+            let Some(visible) = view_property(element, "visible") else {
+                continue;
+            };
+            if static_expr_bool(&visible.value, signatures).is_none()
+                && view_property(element, "layout_transition_ms").is_none()
+            {
+                return Err(
+                    diag(
+                        visible.name_span,
+                        "state-driven visible elements must declare layoutTransitionMs when their view enables layout transitions",
+                    )
+                    .with_note(
+                        "Android applies native layout reflow animation at the flat root grid; requiring every dynamic visibility participant to opt in prevents unrelated elements from being animated implicitly",
+                    ),
+                );
+            }
+        }
+    }
+    Ok(duration)
+}
+
 fn fold_ui_primitive_expr(
     expr: &Expr,
     signatures: &Signatures,
@@ -11441,9 +11534,16 @@ fn emit_ui_refresh(
         let widget = linux_ui_host_c_name(element);
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
-            out.push_str(&format!(
-                "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
-            ));
+            if view_property(element, "layout_transition_ms").is_some() {
+                let layout = linux_ui_layout_c_name(element);
+                out.push_str(&format!(
+                    "    if ({layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {value});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
+                ));
+            }
         }
         if let Some(property) = view_property(element, "clip") {
             let value = ui_expr_c(&property.value, view, signatures)?;

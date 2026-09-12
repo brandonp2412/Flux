@@ -19339,6 +19339,129 @@ app Transformed
 }
 
 #[test]
+fn native_layout_transitions_animate_visibility_reflow_without_controller_objects() {
+    let source = r#"
+view AnimatedLayout {
+    state shown: bool = true
+    grid columns: 1fr
+    grid rows: auto auto
+    Text detail at 1,1
+        text: "Now you see me"
+        visible: shown
+        layoutTransitionMs: motionNormal
+    Button toggle at 2,1
+        text: "Toggle"
+        onPress: shown => !shown
+}
+app AnimatedLayout
+"#;
+    check_source(source).expect("layout transitions should typecheck on built-in elements");
+
+    let linux = compile_to_c(source).expect("layout transitions should lower on Linux");
+    assert!(linux.contains("static GtkWidget *flux__ui_layout_detail = NULL;"));
+    assert!(linux.contains("flux__ui_layout_detail = gtk_revealer_new()"));
+    assert!(linux.contains("GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN"));
+    assert!(linux.contains(
+        "gtk_revealer_set_transition_duration(GTK_REVEALER(flux__ui_layout_detail), (guint)200)"
+    ));
+    assert!(
+        linux.contains(
+            "gtk_revealer_set_child(GTK_REVEALER(flux__ui_layout_detail), flux__ui_detail)"
+        )
+    );
+    assert!(linux.contains(
+        "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_detail), flux__ui_state_shown)"
+    ));
+    assert!(linux.contains("gtk_grid_attach(GTK_GRID(grid), flux__ui_layout_detail"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("layout transition fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("layout transitions should lower on Android");
+    assert!(android.contains("android/animation/LayoutTransition"));
+    assert!(android.contains("\"setDuration\", \"(J)V\""));
+    assert!(
+        android.contains("\"setLayoutTransition\", \"(Landroid/animation/LayoutTransition;)V\"")
+    );
+    assert!(android.contains("(jlong)INT64_C(200)"));
+    assert!(android.contains("setVisibility"));
+
+    let ordinary = r#"
+view StaticLayout {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Static"
+}
+app StaticLayout
+"#;
+    let linux = compile_to_c(ordinary).expect("ordinary UI should still compile");
+    assert!(!linux.contains("gtk_revealer_new"));
+    let database = fluxc::semantic::SemanticDatabase::analyze(ordinary, SourceId::UNKNOWN)
+        .expect("ordinary UI fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("ordinary UI should still lower on Android");
+    assert!(!android.contains("android/animation/LayoutTransition"));
+
+    let conflicting = r#"
+view ConflictingLayout {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text first at 1,1
+        text: "First"
+        layoutTransitionMs: 120
+    Text second at 2,1
+        text: "Second"
+        layoutTransitionMs: 200
+}
+app ConflictingLayout
+"#;
+    check_source(conflicting)
+        .expect("layout transition duration is an ordinary typed i64 property");
+    let database = fluxc::semantic::SemanticDatabase::analyze(conflicting, SourceId::UNKNOWN)
+        .expect("conflicting layout transition fixture should analyze before native validation");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("one view must use one deterministic layout transition duration");
+    assert!(error.message.contains("one duration per view"));
+
+    let partial_opt_in = r#"
+view PartialLayout {
+    state firstShown: bool = true
+    state secondShown: bool = true
+    grid columns: 1fr
+    grid rows: auto auto
+    Text first at 1,1
+        text: "First"
+        visible: firstShown
+        layoutTransitionMs: 200
+    Text second at 2,1
+        text: "Second"
+        visible: secondShown
+}
+app PartialLayout
+"#;
+    check_source(partial_opt_in).expect("layout-transition participation is validated at lowering");
+    let error = compile_to_c(partial_opt_in)
+        .expect_err("dynamic visibility must not be animated implicitly by another element");
+    assert!(error.message.contains("must declare layoutTransitionMs"));
+}
+
+#[test]
 fn gesture_driven_transforms_bind_native_drag_and_pinch_directly() {
     let source = r#"
 view DirectManipulation {

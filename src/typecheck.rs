@@ -1348,7 +1348,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "transform_origin_x_percent"
             | "transform_origin_y_percent"
             | "transition_ms"
-            | "transition_delay_ms" => {
+            | "transition_delay_ms"
+            | "layout_transition_ms" => {
                 return Some(Type::I64);
             }
             "align_x"
@@ -1694,6 +1695,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "transition_ms",
     "transition_delay_ms",
     "transition_easing",
+    "layout_transition_ms",
     "min_width",
     "min_height",
 ];

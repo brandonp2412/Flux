@@ -7491,6 +7491,8 @@ mod tests {
         assert!(text_properties.contains("Text.borderStyle: str"));
         assert!(text_properties.contains("\"label\":\"transitionEasing\""));
         assert!(text_properties.contains("Text.transitionEasing: str"));
+        assert!(text_properties.contains("\"label\":\"layoutTransitionMs\""));
+        assert!(text_properties.contains("Text.layoutTransitionMs: i64"));
         assert!(text_properties.contains("\"label\":\"shortcutScope\""));
         assert!(text_properties.contains("Text.shortcutScope: str"));
         assert!(text_properties.contains("\"label\":\"windowWidth\""));
