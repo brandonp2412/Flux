@@ -28,7 +28,7 @@ flux run my-flux-app
 
 <img src="assets/readme/flux-mobile-showcase.png" alt="Horse Tinder dating app for horses compiled with Flux and running on Waydroid" width="360">
 
-<sub>Real Android screenshot of the checked-in Horse Tinder <code>examples/mobile_showcase</code> app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>.</sub>
+<sub>Real Android screenshot of the checked-in Horse Tinder <code>examples/mobile_showcase</code> app, compiled by Flux and captured from Waydroid. Reproduce it with <code>./tools/capture-readme-showcase</code>. Horse photo: <a href="https://commons.wikimedia.org/wiki/File:Funny_Horse_Faces.jpg">Funny Horse Faces</a> by Jussi You-S-See, <a href="https://creativecommons.org/licenses/by-sa/2.0/">CC BY-SA 2.0</a>.</sub>
 
 </div>
 
