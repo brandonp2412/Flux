@@ -9125,7 +9125,7 @@ fn main() -> i64 {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "6\n12\n");
     let _ = fs::remove_dir_all(&root);
 
-    let non_copy_capture = r#"
+    let borrowed_list_capture = r#"
 fn main() -> i64 {
     let offsets: i64[] = [10]
     let values: i64[] = [1, 2]
@@ -9133,9 +9133,12 @@ fn main() -> i64 {
     return mapped.first
 }
 "#;
-    let error = check_source(non_copy_capture)
-        .expect_err("non-copy inline captures must wait for borrow/lifetime semantics");
-    assert!(error.message.contains("capture 'offsets' must be Copy"));
+    check_source(borrowed_list_capture)
+        .expect("inlined sequence callbacks may immutably borrow list captures");
+    let generated = compile_to_c(borrowed_list_capture)
+        .expect("borrowed inline sequence callbacks should lower natively");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_offsets"));
 }
 
 #[test]
@@ -9189,7 +9192,7 @@ fn main() -> i64 {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "50\n22\n");
     let _ = fs::remove_dir_all(&root);
 
-    let non_copy_capture = r#"
+    let borrowed_list_capture = r#"
 fn main() -> i64 {
     let offsets: i64[] = [10]
     let values: i64[] = [1, 2]
@@ -9197,9 +9200,46 @@ fn main() -> i64 {
     return total
 }
 "#;
-    let error = check_source(non_copy_capture)
-        .expect_err("non-copy reduction captures must wait for borrow/lifetime semantics");
-    assert!(error.message.contains("capture 'offsets' must be Copy"));
+    check_source(borrowed_list_capture)
+        .expect("inlined reductions may immutably borrow list captures");
+    let generated = compile_to_c(borrowed_list_capture)
+        .expect("borrowed inline reductions should lower natively");
+    assert!(!generated.contains("flux__lambda_"));
+    assert!(generated.contains("flux__local_offsets"));
+}
+
+#[test]
+fn inline_sequence_list_captures_follow_move_state() {
+    let moved_before_capture = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10]
+    let moved: i64[] = offsets
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { value + offsets.first })
+    print(moved.first)
+    return mapped.first
+}
+"#;
+    let error = check_source(moved_before_capture)
+        .expect_err("an inlined borrowed capture must not read a moved owner");
+    assert!(
+        error
+            .message
+            .contains("use of moved non-copy binding 'offsets'")
+    );
+
+    let move_after_capture = r#"
+fn main() -> i64 {
+    let offsets: i64[] = [10]
+    let values: i64[] = [1, 2]
+    let mapped: i64[] = map(values, fn(value: i64) { value + offsets.first })
+    let moved: i64[] = offsets
+    print(mapped.first)
+    return moved.first
+}
+"#;
+    check_source(move_after_capture)
+        .expect("the inline borrow ends with the callback evaluation, so a later move is valid");
 }
 
 #[test]

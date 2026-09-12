@@ -4923,8 +4923,10 @@ fn type_of_anonymous_function(
     }
     if allow_copy_captures {
         if let Some(captured) = captures.iter().find(|name| {
-            env.get(**name)
-                .is_some_and(|ty| !signatures.is_copy_type(ty))
+            env.get(**name).is_some_and(|ty| {
+                let ty = signatures.canonical_type(ty);
+                !signatures.is_copy_type(&ty) && !matches!(ty, Type::List(_))
+            })
         }) {
             let ty = env
                 .get(*captured)
@@ -4932,11 +4934,11 @@ fn type_of_anonymous_function(
             return Err(diag(
                 body.span,
                 &format!(
-                    "inline anonymous callback capture '{captured}' must be Copy, got {}",
+                    "inline anonymous callback capture '{captured}' must be Copy or an immutable list/view borrow, got {}",
                     signatures.canonical_type(ty).name()
                 ),
             )
-            .with_note("non-copy captures require first-class borrow/lifetime semantics before they can be safe"));
+            .with_note("other non-copy captures require first-class borrow/lifetime semantics before they can be safe"));
         }
     }
 
@@ -5000,7 +5002,7 @@ fn type_of_anonymous_function(
     })
 }
 
-fn type_of_sequence_callback(
+pub(crate) fn type_of_sequence_callback(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,

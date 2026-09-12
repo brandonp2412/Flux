@@ -2485,6 +2485,26 @@ fn record_evaluation_type(
     record_expr_types(expr, env, signatures, evaluations);
 }
 
+fn record_inline_sequence_callback_types(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    let ExprKind::AnonymousFunction { params, body, .. } = &expr.kind else {
+        record_expr_types(expr, env, signatures, evaluations);
+        return;
+    };
+    let mut nested = env.clone();
+    for param in params {
+        nested.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+    }
+    record_expr_types(body, &nested, signatures, evaluations);
+    if let Ok(ty) = typecheck::type_of_sequence_callback(expr, env, signatures) {
+        evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
+    }
+}
+
 fn record_expr_types(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -2506,9 +2526,30 @@ fn record_expr_types(
             record_expr_types(body, &nested, signatures, evaluations);
         }
         ExprKind::Call {
-            args, named_args, ..
+            name,
+            args,
+            named_args,
+        } => {
+            for (index, arg) in args.iter().enumerate() {
+                let inline_sequence_callback = named_args.is_empty()
+                    && matches!(arg.kind, ExprKind::AnonymousFunction { .. })
+                    && match name.as_str() {
+                        "map" | "filter" | "where" => args.len() == 2 && index == 1,
+                        "fold" => args.len() == 3 && index == 2,
+                        "reduce" => args.len() == 2 && index == 1,
+                        _ => false,
+                    };
+                if inline_sequence_callback {
+                    record_inline_sequence_callback_types(arg, env, signatures, evaluations);
+                } else {
+                    record_expr_types(arg, env, signatures, evaluations);
+                }
+            }
+            for arg in named_args {
+                record_expr_types(&arg.value, env, signatures, evaluations);
+            }
         }
-        | ExprKind::QualifiedCall {
+        ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
             for arg in args {
@@ -2523,10 +2564,24 @@ fn record_expr_types(
                 record_expr_types(arg, env, signatures, evaluations);
             }
         }
-        ExprKind::Pipe { input, args, .. } => {
+        ExprKind::Pipe {
+            input, name, args, ..
+        } => {
             record_expr_types(input, env, signatures, evaluations);
-            for arg in args {
-                record_expr_types(arg, env, signatures, evaluations);
+            for (index, arg) in args.iter().enumerate() {
+                let inline_sequence_callback =
+                    matches!(arg.kind, ExprKind::AnonymousFunction { .. })
+                        && match name.as_str() {
+                            "map" | "filter" | "where" => args.len() == 1 && index == 0,
+                            "fold" => args.len() == 2 && index == 1,
+                            "reduce" => args.len() == 1 && index == 0,
+                            _ => false,
+                        };
+                if inline_sequence_callback {
+                    record_inline_sequence_callback_types(arg, env, signatures, evaluations);
+                } else {
+                    record_expr_types(arg, env, signatures, evaluations);
+                }
             }
         }
         ExprKind::List(items) => {
