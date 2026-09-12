@@ -21352,22 +21352,54 @@ fn emit_block(
         {
             continue;
         }
-        if let StmtKind::Assign { expr, .. } = &stmt.kind
+        if let StmtKind::Assign { name, expr, .. } = &stmt.kind
             && context
                 .dead_assignment_spans
                 .contains(&source_span_key(stmt.span))
-            && dead_store_rhs_is_discardable(expr, env, signatures)
         {
-            continue;
+            if dead_store_rhs_is_discardable(expr, env, signatures) {
+                continue;
+            }
+            if !expr_contains_await(expr)
+                && !matches!(
+                    expr.kind,
+                    ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                )
+            {
+                emit_source_line(out, stmt.span, context.source_paths);
+                let pad = "    ".repeat(depth);
+                let expected = env.get(name).ok_or_else(|| {
+                    diag(
+                        expr.span,
+                        "assignment target missing from code generation environment",
+                    )
+                })?;
+                let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                out.push_str(&format!("{pad}(void)({value});\n"));
+                continue;
+            }
         }
         if let StmtKind::Let { ty, expr, .. } = &stmt.kind
             && context
                 .dead_let_binding_spans
                 .contains(&source_span_key(stmt.span))
             && signatures.is_copy_type(ty)
-            && dead_store_rhs_is_discardable(expr, env, signatures)
         {
-            continue;
+            if dead_store_rhs_is_discardable(expr, env, signatures) {
+                continue;
+            }
+            if !expr_contains_await(expr)
+                && !matches!(
+                    expr.kind,
+                    ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                )
+            {
+                emit_source_line(out, stmt.span, context.source_paths);
+                let pad = "    ".repeat(depth);
+                let value = emit_expr_for_expected(expr, ty, env, signatures)?;
+                out.push_str(&format!("{pad}(void)({value});\n"));
+                continue;
+            }
         }
         emit_source_line(out, stmt.span, context.source_paths);
         let pad = "    ".repeat(depth);
