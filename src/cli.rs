@@ -3847,21 +3847,41 @@ fn android_toolchain(
     let sdk = find_android_sdk()?;
     let ndk = find_android_ndk(&sdk)?;
     let build_tools = find_android_build_tools(&sdk)?;
-    let android_jar = sdk
-        .join("platforms")
-        .join(format!("android-{}", manifest.android.target_sdk))
-        .join("android.jar");
-    if !android_jar.is_file() {
-        return Err(CliError::Message(format!(
-            "Android platform {} is not installed under '{}'",
-            manifest.android.target_sdk,
-            sdk.display()
-        )));
-    }
+    let android_jar = find_android_compile_jar(&sdk, manifest.android.target_sdk)?;
     Ok(AndroidToolchain {
         ndk,
         build_tools,
         android_jar,
+    })
+}
+
+fn find_android_compile_jar(sdk: &Path, target_sdk: u32) -> Result<PathBuf, CliError> {
+    let platforms = sdk.join("platforms");
+    let entries = fs::read_dir(&platforms).map_err(|error| {
+        format!(
+            "failed to inspect Android SDK platforms directory '{}': {error}",
+            platforms.display()
+        )
+    })?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let api = name
+                .to_str()?
+                .strip_prefix("android-")?
+                .parse::<u32>()
+                .ok()?;
+            let jar = entry.path().join("android.jar");
+            (api >= target_sdk && jar.is_file()).then_some((api, jar))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(api, _)| *api);
+    candidates.pop().map(|(_, jar)| jar).ok_or_else(|| {
+        CliError::Message(format!(
+            "Android compile platform API {target_sdk} or newer is not installed under '{}'; install an SDK platform at least as new as [android].target_sdk",
+            platforms.display()
+        ))
     })
 }
 
@@ -6396,12 +6416,12 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
+        AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode, CliError,
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_publish_options,
         build_native_configured, build_native_instrumented, build_options, debug_options,
-        demangle_profile_symbols, display_flux_symbol, json_string,
+        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar, json_string,
         native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
@@ -7004,6 +7024,40 @@ mod tests {
             .expect("complete publishing metadata should pass static policy checks");
 
         assert_eq!(json_string("a\\b\"c\n"), "\"a\\\\b\\\"c\\n\"");
+    }
+
+    #[test]
+    fn android_compile_platform_uses_newest_installed_api_without_changing_target_sdk() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-android-platform-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        for api in [21_u32, 34, 36] {
+            let platform = root.join("platforms").join(format!("android-{api}"));
+            std::fs::create_dir_all(&platform).expect("test platform directory should exist");
+            std::fs::write(platform.join("android.jar"), [])
+                .expect("test android.jar should exist");
+        }
+
+        let jar = find_android_compile_jar(&root, 23)
+            .ok()
+            .expect("newest installed platform should compile a lower target SDK");
+        assert!(jar.ends_with("platforms/android-36/android.jar"));
+        let exact = find_android_compile_jar(&root, 36)
+            .ok()
+            .expect("matching installed platform should compile the target SDK");
+        assert!(exact.ends_with("platforms/android-36/android.jar"));
+        let error = match find_android_compile_jar(&root, 37) {
+            Err(CliError::Message(message)) => message,
+            Err(CliError::Reported) => panic!("compile-platform lookup should report a message"),
+            Ok(_) => panic!("compile platform must not be older than target SDK"),
+        };
+        assert!(error.contains("API 37 or newer"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
