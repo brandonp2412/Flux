@@ -31496,6 +31496,69 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn multiple_async_awaits_inside_one_if_branch_suspend_without_blocking_worker() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn twice(flag: bool) -> i64 {
+    var total: i64 = 1
+    if flag:
+        let seed: i64 = total
+        let first: i64 = await addOne(seed)
+        let offset: i64 = first + 39
+        let second: i64 = await addOne(offset)
+        total = second
+    else:
+        total = 5
+    return total + 1
+}
+
+async fn main() -> i64 {
+    let taken: i64 = await twice(true)
+    let skipped: i64 = await twice(false)
+    return taken + skipped
+}
+"#;
+
+    check_source(source).expect("multiple awaits in one branch should typecheck");
+    let generated =
+        compile_to_c(source).expect("multiple branch awaits should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_twice"));
+    assert!(!generated.contains("flux__async_body_twice("));
+    assert!(generated.contains("flux__task->state = 2;"));
+    assert!(generated.contains("saved_flux__local_seed"));
+    assert!(generated.contains("saved_flux__local_first"));
+    assert!(generated.contains("saved_flux__local_offset"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-multi-branch-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("multiple branch await fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("multiple branch await source should be writable");
+    let binary = root.join("async-multi-branch");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("multiple branch await binary should build");
+    assert!(
+        built.status.success(),
+        "multiple branch await build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("multiple branch await binary should run");
+    assert_eq!(status.code(), Some(49));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn supports_explicit_mutable_bindings_and_while_loops() {
     let source = r#"
 fn main() -> i64 {

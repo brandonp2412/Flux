@@ -13987,11 +13987,11 @@ struct AsyncContinuationPlan {
     branch_await: Option<AsyncBranchAwaitPlan>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct AsyncBranchAwaitPlan {
     statement_index: usize,
     await_in_then: bool,
-    await_index: usize,
+    await_indices: Vec<usize>,
 }
 
 fn expr_contains_await(expr: &Expr) -> bool {
@@ -14189,33 +14189,17 @@ fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
     Some((name, args, named_args))
 }
 
-fn block_direct_await_index(block: &[Stmt]) -> Option<usize> {
-    let await_indices = block
-        .iter()
-        .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
-        .collect::<Vec<_>>();
-    let [await_index] = await_indices.as_slice() else {
-        return None;
-    };
-    let await_index = *await_index;
-    direct_await_expr(&block[await_index])?;
-    direct_await_call(direct_await_expr(&block[await_index])?)?;
-    let introduces_resume_local = |stmt: &Stmt| {
-        matches!(
-            stmt.kind,
-            StmtKind::Let { .. }
-                | StmtKind::Var { .. }
-                | StmtKind::LetDestructure { .. }
-                | StmtKind::LetMultiDestructure { .. }
-                | StmtKind::LetListDestructure { .. }
-                | StmtKind::LetStructDestructure { .. }
-        )
-    };
-    if block[..await_index].iter().any(introduces_resume_local) {
-        return None;
+fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
+    let mut await_indices = Vec::new();
+    for (index, stmt) in block.iter().enumerate() {
+        if !stmt_contains_await(stmt) {
+            continue;
+        }
+        let await_expr = direct_await_expr(stmt)?;
+        direct_await_call(await_expr)?;
+        await_indices.push(index);
     }
-    Some(await_index)
+    Some(await_indices)
 }
 
 fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
@@ -14245,26 +14229,121 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     {
         return None;
     }
-    match (
-        block_direct_await_index(body),
-        block_direct_await_index(else_body),
-    ) {
-        (Some(await_index), None) if !else_body.iter().any(stmt_contains_await) => {
-            Some(AsyncBranchAwaitPlan {
-                statement_index,
-                await_in_then: true,
-                await_index,
-            })
-        }
-        (None, Some(await_index)) if !body.iter().any(stmt_contains_await) => {
-            Some(AsyncBranchAwaitPlan {
-                statement_index,
-                await_in_then: false,
-                await_index,
-            })
-        }
+    let then_awaits = block_direct_await_indices(body)?;
+    let else_awaits = block_direct_await_indices(else_body)?;
+    match (then_awaits.is_empty(), else_awaits.is_empty()) {
+        (false, true) => Some(AsyncBranchAwaitPlan {
+            statement_index,
+            await_in_then: true,
+            await_indices: then_awaits,
+        }),
+        (true, false) => Some(AsyncBranchAwaitPlan {
+            statement_index,
+            await_in_then: false,
+            await_indices: else_awaits,
+        }),
         _ => None,
     }
+}
+
+fn collect_async_saved_locals(
+    block: &[Stmt],
+    through_index: usize,
+    outer_env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    locals: &mut BTreeMap<String, Type>,
+    mutable: &mut HashSet<String>,
+) -> Option<()> {
+    let mut env = outer_env.clone();
+    for stmt in block.iter().take(through_index + 1) {
+        match &stmt.kind {
+            StmtKind::Let { name, ty, .. } => {
+                let ty = signatures.canonical_type(ty);
+                if !signatures.is_copy_type(&ty) {
+                    return None;
+                }
+                if locals.get(name).is_some_and(|existing| existing != &ty) {
+                    return None;
+                }
+                env.insert(name.clone(), ty.clone());
+                locals.insert(name.clone(), ty);
+            }
+            StmtKind::Var { name, ty, .. } => {
+                let ty = signatures.canonical_type(ty);
+                if !signatures.is_copy_type(&ty) {
+                    return None;
+                }
+                if locals.get(name).is_some_and(|existing| existing != &ty) {
+                    return None;
+                }
+                env.insert(name.clone(), ty.clone());
+                locals.insert(name.clone(), ty);
+                mutable.insert(name.clone());
+            }
+            StmtKind::LetDestructure {
+                bindings,
+                mutable: is_mutable,
+                ..
+            } => {
+                for binding in bindings {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(&binding.ty);
+                    if !signatures.is_copy_type(&ty)
+                        || locals
+                            .get(&binding.name)
+                            .is_some_and(|existing| existing != &ty)
+                    {
+                        return None;
+                    }
+                    env.insert(binding.name.clone(), ty.clone());
+                    locals.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            }
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                mutable: is_mutable,
+                ..
+            } => {
+                let actuals = if let Some((callee, _, _)) = direct_await_call(expr) {
+                    signatures.get(callee)?.returns.clone()
+                } else {
+                    typecheck::value_types_of_expr(expr, &env, signatures).ok()?
+                };
+                if actuals.len() != bindings.len() {
+                    return None;
+                }
+                for (binding, ty) in bindings.iter().zip(actuals) {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(&ty);
+                    if !signatures.is_copy_type(&ty)
+                        || locals
+                            .get(&binding.name)
+                            .is_some_and(|existing| existing != &ty)
+                    {
+                        return None;
+                    }
+                    env.insert(binding.name.clone(), ty.clone());
+                    locals.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            }
+            StmtKind::LetListDestructure { .. } | StmtKind::LetStructDestructure { .. } => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    Some(())
 }
 
 fn async_continuation_plan(
@@ -14302,7 +14381,9 @@ fn async_continuation_plan(
 
     for (stmt_index, stmt) in function.body.iter().enumerate() {
         if stmt_contains_await(stmt)
-            && branch_await.is_none_or(|branch| branch.statement_index != stmt_index)
+            && branch_await
+                .as_ref()
+                .is_none_or(|branch| branch.statement_index != stmt_index)
         {
             let await_expr = direct_await_expr(stmt)?;
             let (callee, _, _) = direct_await_call(await_expr)?;
@@ -14310,6 +14391,32 @@ fn async_continuation_plan(
             if !signature.asynchronous {
                 return None;
             }
+        }
+
+        if let Some(branch) = branch_await
+            .as_ref()
+            .filter(|branch| branch.statement_index == stmt_index)
+        {
+            let StmtKind::If {
+                body, else_body, ..
+            } = &stmt.kind
+            else {
+                return None;
+            };
+            let await_block = if branch.await_in_then {
+                body
+            } else {
+                else_body
+            };
+            let last_await = *branch.await_indices.last()?;
+            collect_async_saved_locals(
+                await_block,
+                last_await,
+                &env,
+                signatures,
+                &mut locals,
+                &mut mutable,
+            )?;
         }
 
         match &stmt.kind {
@@ -17497,7 +17604,7 @@ fn emit_async_branch_continuation_function(
     function: &Function,
     signatures: &Signatures,
     plan: &AsyncContinuationPlan,
-    branch: AsyncBranchAwaitPlan,
+    branch: &AsyncBranchAwaitPlan,
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
@@ -17518,7 +17625,12 @@ fn emit_async_branch_continuation_function(
     } else {
         (else_body.as_slice(), body.as_slice())
     };
-    let awaited_stmt = &await_block[branch.await_index];
+    let first_await = *branch.await_indices.first().ok_or_else(|| {
+        diag(
+            function.body[branch.statement_index].span,
+            "async branch continuation plan has no await state",
+        )
+    })?;
     let task_name = async_task_c_name(&function.name);
     let mut state_context = context;
     state_context.async_state_machine = true;
@@ -17561,19 +17673,20 @@ fn emit_async_branch_continuation_function(
     let condition = emit_expr(cond, &env, signatures)?;
     out.push_str(&format!("{pad}if {} {{\n", c_condition(&condition.code)));
 
-    let mut resume_env = outer_env.clone();
-    let mut resume_mutable = outer_mutable.clone();
+    let mut branch_env = outer_env.clone();
+    let mut branch_mutable = outer_mutable.clone();
     if branch.await_in_then {
         emit_block(
             out,
-            &await_block[..branch.await_index],
+            &await_block[..first_await],
             4,
-            &mut resume_env,
-            &mut resume_mutable,
+            &mut branch_env,
+            &mut branch_mutable,
             signatures,
             temp_counter,
             state_context,
         )?;
+        let awaited_stmt = &await_block[first_await];
         emit_source_line(out, awaited_stmt.span, context.source_paths);
         emit_async_suspend(
             out,
@@ -17582,7 +17695,7 @@ fn emit_async_branch_continuation_function(
             1,
             function,
             plan,
-            &resume_env,
+            &branch_env,
             signatures,
         )?;
         if else_body.is_empty() {
@@ -17619,14 +17732,15 @@ fn emit_async_branch_continuation_function(
         out.push_str(&format!("{pad}}} else {{\n"));
         emit_block(
             out,
-            &await_block[..branch.await_index],
+            &await_block[..first_await],
             4,
-            &mut resume_env,
-            &mut resume_mutable,
+            &mut branch_env,
+            &mut branch_mutable,
             signatures,
             temp_counter,
             state_context,
         )?;
+        let awaited_stmt = &await_block[first_await];
         emit_source_line(out, awaited_stmt.span, context.source_paths);
         emit_async_suspend(
             out,
@@ -17635,7 +17749,7 @@ fn emit_async_branch_continuation_function(
             1,
             function,
             plan,
-            &resume_env,
+            &branch_env,
             signatures,
         )?;
         out.push_str(&format!("{pad}}}\n"));
@@ -17665,71 +17779,95 @@ fn emit_async_branch_continuation_function(
     }
     out.push_str("        }\n");
 
-    out.push_str("        case 1: {\n");
-    for (index, param) in function.params.iter().enumerate() {
-        out.push_str(&format!(
-            "{pad}{} {} = flux__task->arg_{index};\n",
-            c_type(&param.ty, signatures),
-            local_c_name(&param.name)
-        ));
-    }
-    for (name, ty) in &plan.locals {
-        if resume_env.contains_key(name) {
+    let mut previous_await = first_await;
+    let mut segment_start = first_await + 1;
+    for state in 1..=branch.await_indices.len() {
+        out.push_str(&format!("        case {state}: {{\n"));
+        for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
-                "{pad}{} {} = flux__task->{};\n",
-                c_type(ty, signatures),
-                local_c_name(name),
-                async_saved_local_field_name(name)
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
             ));
         }
+        for (name, ty) in &plan.locals {
+            if branch_env.contains_key(name) {
+                out.push_str(&format!(
+                    "{pad}{} {} = flux__task->{};\n",
+                    c_type(ty, signatures),
+                    local_c_name(name),
+                    async_saved_local_field_name(name)
+                ));
+            }
+        }
+        out.push_str(&format!("{pad}{{\n"));
+        let awaited_stmt = &await_block[previous_await];
+        emit_async_completed_await(
+            out,
+            "                ",
+            awaited_stmt,
+            function,
+            &mut branch_env,
+            &mut branch_mutable,
+            signatures,
+            temp_counter,
+        )?;
+        let next_await = branch.await_indices.get(state).copied();
+        let segment_end = next_await.unwrap_or(await_block.len());
+        emit_block(
+            out,
+            &await_block[segment_start..segment_end],
+            4,
+            &mut branch_env,
+            &mut branch_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+        if let Some(await_index) = next_await {
+            let next_stmt = &await_block[await_index];
+            emit_source_line(out, next_stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                "                ",
+                next_stmt,
+                state + 1,
+                function,
+                plan,
+                &branch_env,
+                signatures,
+            )?;
+            previous_await = await_index;
+            segment_start = await_index + 1;
+        }
+        out.push_str(&format!("{pad}}}\n"));
+
+        if next_await.is_none() {
+            let mut resumed_fallthrough_env = outer_env.clone();
+            let mut resumed_fallthrough_mutable = outer_mutable.clone();
+            emit_block(
+                out,
+                &function.body[branch.statement_index + 1..],
+                3,
+                &mut resumed_fallthrough_env,
+                &mut resumed_fallthrough_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            if function.returns.is_empty() {
+                out.push_str(&format!(
+                    "{pad}{}(flux__task);\n{pad}return;\n",
+                    async_finish_c_name(&function.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+                ));
+            }
+        }
+        out.push_str("        }\n");
     }
-    out.push_str(&format!("{pad}{{\n"));
-    let mut resumed_branch_env = resume_env;
-    let mut resumed_branch_mutable = resume_mutable;
-    emit_async_completed_await(
-        out,
-        "                ",
-        awaited_stmt,
-        function,
-        &mut resumed_branch_env,
-        &mut resumed_branch_mutable,
-        signatures,
-        temp_counter,
-    )?;
-    emit_block(
-        out,
-        &await_block[branch.await_index + 1..],
-        4,
-        &mut resumed_branch_env,
-        &mut resumed_branch_mutable,
-        signatures,
-        temp_counter,
-        state_context,
-    )?;
-    out.push_str(&format!("{pad}}}\n"));
-    let mut resumed_fallthrough_env = outer_env;
-    let mut resumed_fallthrough_mutable = outer_mutable;
-    emit_block(
-        out,
-        &function.body[branch.statement_index + 1..],
-        3,
-        &mut resumed_fallthrough_env,
-        &mut resumed_fallthrough_mutable,
-        signatures,
-        temp_counter,
-        state_context,
-    )?;
-    if function.returns.is_empty() {
-        out.push_str(&format!(
-            "{pad}{}(flux__task);\n{pad}return;\n",
-            async_finish_c_name(&function.name)
-        ));
-    } else {
-        out.push_str(&format!(
-            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-        ));
-    }
-    out.push_str("        }\n");
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
     out.push_str("    }\n}\n");
     Ok(())
@@ -17743,7 +17881,7 @@ fn emit_async_continuation_function(
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
-    if let Some(branch) = plan.branch_await {
+    if let Some(branch) = &plan.branch_await {
         return emit_async_branch_continuation_function(
             out,
             function,
