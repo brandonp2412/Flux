@@ -3924,6 +3924,22 @@ fn android_staging_dir() -> PathBuf {
     env::temp_dir().join(format!("flux-android-{}-{nonce}", std::process::id()))
 }
 
+fn android_native_link_args(manifest: &fluxc::project::PackageManifest) -> Vec<String> {
+    manifest
+        .native
+        .search_paths
+        .iter()
+        .map(|path| format!("-L{}", path.display()))
+        .chain(
+            manifest
+                .native
+                .libraries
+                .iter()
+                .map(|library| format!("-l{library}")),
+        )
+        .collect()
+}
+
 fn compile_android_native_library(
     c_source: &str,
     manifest: &fluxc::project::PackageManifest,
@@ -3953,6 +3969,7 @@ fn compile_android_native_library(
         .args(["-std=c17", "-fwrapv", "-shared", "-fPIC"])
         .args(mode.clang_args())
         .arg(&source)
+        .args(android_native_link_args(manifest))
         .args(["-landroid", "-llog", "-Wl,-soname,libflux.so", "-o"])
         .arg(&native_library);
     let native = clang_command
@@ -6638,10 +6655,10 @@ mod tests {
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode, CliError,
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
-        android_job_service_java_source, android_manifest_xml, android_publish_options,
-        build_native_configured, build_native_instrumented, build_options, debug_options,
-        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar, json_string,
-        native_build_cache_path_configured, native_cache_entry_is_valid,
+        android_job_service_java_source, android_manifest_xml, android_native_link_args,
+        android_publish_options, build_native_configured, build_native_instrumented, build_options,
+        debug_options, demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
+        json_string, native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
@@ -6959,6 +6976,49 @@ mod tests {
             .expect("linked native test executable should run");
         assert_eq!(status.code(), Some(42));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn android_native_link_args_include_manifest_native_package() {
+        let manifest = crate::project::PackageManifest {
+            format_version: crate::project::PACKAGE_FORMAT_VERSION,
+            name: "android-native-link".to_string(),
+            version: Some("1.0.0".to_string()),
+            entry: std::path::PathBuf::from("src/main.flux"),
+            path: std::path::PathBuf::from("/tmp/android-native-link/flux.toml"),
+            assets: None,
+            dependencies: std::collections::BTreeMap::new(),
+            constants: std::collections::BTreeMap::new(),
+            translations: std::collections::BTreeMap::new(),
+            native: crate::project::NativePackageConfig {
+                plugin: true,
+                libraries: vec!["camera2ndk".to_string(), "mediandk".to_string()],
+                search_paths: vec![
+                    std::path::PathBuf::from("/tmp/android-native-link/native/arm64-v8a"),
+                    std::path::PathBuf::from("/tmp/android-native-link/vendor"),
+                ],
+            },
+            android: crate::project::AndroidPackageConfig {
+                application_id: "app.flux.androidnativelink".to_string(),
+                version_code: 1,
+                min_sdk: 23,
+                target_sdk: 36,
+                permissions: vec![],
+                deep_links: vec![],
+                keystore: None,
+                key_alias: None,
+            },
+        };
+
+        assert_eq!(
+            android_native_link_args(&manifest),
+            vec![
+                "-L/tmp/android-native-link/native/arm64-v8a".to_string(),
+                "-L/tmp/android-native-link/vendor".to_string(),
+                "-lcamera2ndk".to_string(),
+                "-lmediandk".to_string(),
+            ]
+        );
     }
 
     #[test]

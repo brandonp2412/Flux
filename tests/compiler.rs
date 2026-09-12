@@ -55,8 +55,9 @@ fn main() -> i64 {
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Android,
     )
-    .expect_err("the Linux native-library import path must not leak onto Android");
-    assert!(android.message.contains("require the Linux target"));
+    .expect("safe extern C imports should also lower for Android NDK linking");
+    assert!(android.contains("extern int64_t flux_test_double("));
+    assert!(android.contains("flux_test_double(INT64_C(21))"));
 }
 
 #[test]

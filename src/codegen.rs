@@ -1250,16 +1250,6 @@ pub fn emit_c_for_target_with_source_metadata(
         reachable_value_types = next_value_types;
         interface_pack_facts = next_pack_facts;
     }
-    if target != NativeTarget::Linux
-        && program.functions.iter().any(|function| {
-            function.foreign_symbol.is_some() && reachable_functions.contains(&function.name)
-        })
-    {
-        return Err(Diagnostic::global(
-            DiagnosticStage::Codegen,
-            "extern C native-library imports currently require the Linux target; Android platform access must use compiler-owned Android bindings",
-        ));
-    }
     let reachable_enum_variants =
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
     let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
