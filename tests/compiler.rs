@@ -3801,6 +3801,165 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_receive_text_many_drains_nonblocking_tcp_and_tree_shakes() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("batched receive listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn consume(_socket: i64, text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.setNonblocking(socket, true))
+    let (ready, readyError) = net.waitReadable(socket, 1000)
+    print(ready)
+    print(readyError)
+    let (received, receiveError) = net.receiveTextMany(socket, 3, 8, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("batched nonblocking receive should typecheck");
+    let generated = compile_to_c(&source).expect("batched nonblocking receive should lower");
+    assert!(generated.contains("flux__net_receive_text_many("));
+    assert!(generated.contains("receiveTextMany requires a nonblocking TCP socket"));
+    assert!(generated.contains("EAGAIN"));
+    assert!(generated.contains("SO_ACCEPTCONN"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-receive-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("batched receive fixture should be writable");
+    let source_path = root.join("receive_many.flux");
+    fs::write(&source_path, &source).expect("batched receive source should be writable");
+    let binary = root.join("receive_many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("batched receive binary should build");
+    assert!(
+        built.status.success(),
+        "batched receive build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux receive client should connect");
+        stream
+            .write_all(b"abcdef")
+            .expect("batched receive peer should send text");
+        let mut tail = Vec::new();
+        stream
+            .read_to_end(&mut tail)
+            .expect("batched receive peer should wait for client close");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("batched receive binary should run");
+    server.join().expect("batched receive server should finish");
+    assert!(run.status.success());
+    let lines = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        lines.len() >= 9,
+        "unexpected batched receive output: {lines:?}"
+    );
+    assert_eq!(&lines[..4], ["nil", "nil", "true", "nil"]);
+    assert_eq!(lines[lines.len() - 3], "6");
+    assert_eq!(lines[lines.len() - 2], "nil");
+    assert_eq!(lines[lines.len() - 1], "nil");
+    assert_eq!(lines[4..lines.len() - 3].concat(), "abcdef");
+
+    let blocking_listener =
+        TcpListener::bind("127.0.0.1:0").expect("blocking receive listener should bind");
+    let blocking_port = blocking_listener.local_addr().unwrap().port();
+    let blocking = format!(
+        "fn consume(_socket: i64, _text: str) -> void {{\n}}\nfn main() -> i64 {{\n    let (socket, connectError) = net.tcpConnect(\"127.0.0.1\", {blocking_port})\n    print(connectError)\n    let (received, failure) = net.receiveTextMany(socket, 64, 2, consume)\n    print(received)\n    print(failure)\n    print(net.close(socket))\n    return 0\n}}\n"
+    );
+    let blocking_path = root.join("receive_many_blocking.flux");
+    fs::write(&blocking_path, blocking).expect("blocking receive source should be writable");
+    let blocking_binary = root.join("receive_many_blocking");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&blocking_path)
+        .arg("-o")
+        .arg(&blocking_binary)
+        .output()
+        .expect("blocking receive binary should build");
+    assert!(built.status.success());
+    let blocking_server = thread::spawn(move || {
+        let (_stream, _) = blocking_listener
+            .accept()
+            .expect("blocking receive client should connect");
+    });
+    let run = Command::new(&blocking_binary)
+        .output()
+        .expect("blocking receive binary should run");
+    blocking_server
+        .join()
+        .expect("blocking receive server should finish");
+    assert!(run.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.stdout)
+            .contains("receiveTextMany requires a nonblocking TCP socket")
+    );
+
+    let max_bytes_error = check_source(
+        "fn consume(_socket: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextMany(1, 0, 2, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched receive maxBytes must be statically bounded");
+    assert!(
+        max_bytes_error
+            .message
+            .contains("net.receiveTextMany maxBytes must be between 1 and 65536")
+    );
+    let max_count_error = check_source(
+        "fn consume(_socket: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextMany(1, 64, 0, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched receive maxCount must be statically bounded");
+    assert!(
+        max_count_error
+            .message
+            .contains("net.receiveTextMany maxCount must be between 1 and 2147483647")
+    );
+    let callback_error = check_source(
+        "fn consume(_text: str) -> void {\n}\nfn main() -> i64 {\n    let (received, failure) = net.receiveTextMany(1, 64, 2, consume)\n    print(received)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("batched receive callback shape must be exact");
+    assert!(
+        callback_error
+            .message
+            .contains("net.receiveTextMany callback")
+    );
+
+    let unused = r#"
+fn consume(_socket: i64, _text: str) -> void {
+}
+fn hidden(socket: i64) -> void {
+    let (received, failure) = net.receiveTextMany(socket, 64, 8, consume)
+    print(received)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead batched receive should tree-shake");
+    assert!(!unused_generated.contains("flux__net_receive_text_many("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("scatter/gather listener should bind");
     let port = listener.local_addr().unwrap().port();
