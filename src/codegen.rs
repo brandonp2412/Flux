@@ -19135,8 +19135,12 @@ fn same_pure_i64_expression(left: &Expr, right: &Expr) -> bool {
         ) if left_op == right_op
             && matches!(left_op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
-            same_pure_i64_expression(left_left, right_left)
-                && same_pure_i64_expression(left_right, right_right)
+            let same_order = same_pure_i64_expression(left_left, right_left)
+                && same_pure_i64_expression(left_right, right_right);
+            same_order
+                || (matches!(left_op, BinOp::Add | BinOp::Mul)
+                    && same_pure_i64_expression(left_left, right_right)
+                    && same_pure_i64_expression(left_right, right_left))
         }
         _ => false,
     }

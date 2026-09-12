@@ -15992,6 +15992,121 @@ app Status
 }
 
 #[test]
+fn folds_commutatively_equivalent_pure_checked_i64_comparisons_after_one_evaluation() {
+    let source = r#"
+fn addEqual(value: i64, offset: i64) -> bool {
+    return (value + offset) == (offset + value)
+}
+
+fn mulLessEqual(value: i64, factor: i64) -> bool {
+    return (value * factor) <= (factor * value)
+}
+
+fn nestedEqual(value: i64, offset: i64, factor: i64) -> bool {
+    return ((value + offset) * factor) == (factor * (offset + value))
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectfulEqual(value: i64, offset: i64) -> bool {
+    return (observe(value) + offset) == (offset + observe(value))
+}
+
+fn main() -> i64 {
+    print(addEqual(1, 2))
+    print(mulLessEqual(3, 4))
+    print(nestedEqual(5, 6, 7))
+    print(effectfulEqual(8, 9))
+    return 0
+}
+"#;
+
+    check_source(source).expect("commutatively equivalent checked arithmetic should typecheck");
+    let generated = compile_to_c(source)
+        .expect("commutatively equivalent pure checked arithmetic should evaluate once");
+    assert!(
+        generated.contains(
+            "return ((void)(flux_add_i64(flux__local_value, flux__local_offset)), true);"
+        )
+    );
+    assert!(
+        generated.contains(
+            "return ((void)(flux_mul_i64(flux__local_value, flux__local_factor)), true);"
+        )
+    );
+    assert!(generated.contains(
+        "return ((void)(flux_mul_i64(flux_add_i64(flux__local_value, flux__local_offset), flux__local_factor)), true);"
+    ));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful commuted expressions must retain both source evaluations",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-commutative-checked-comparison-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary commutative comparison directory should be writable");
+    let c_path = root.join("comparison.c");
+    let exe_path = root.join("comparison");
+    fs::write(&c_path, &generated).expect("generated comparison C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile commutative checked comparisons");
+    assert!(
+        compile.status.success(),
+        "commutative comparison C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("commutative comparison program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\ntrue\n8\n8\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "Ready"
+        visible: (count + 1) == (1 + count)
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui)
+        .expect("UI commutative checked arithmetic should share optimized lowering");
+    assert!(
+        ui_generated.contains("((void)(flux_add_i64(flux__ui_state_count, INT64_C(1))), true)")
+    );
+    assert_eq!(
+        ui_generated
+            .matches("flux_add_i64(flux__ui_state_count, INT64_C(1))")
+            .count(),
+        1,
+        "UI lowering should evaluate the checked commutative expression once",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1
