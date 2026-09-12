@@ -1,10 +1,10 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 86 28 86 1fr
-    grid rows: auto auto auto auto auto auto auto auto
+    grid columns: 1fr 90 28 90 1fr
+    grid rows: auto auto auto auto auto auto auto
     grid gap: 10
-    grid padding: 18
+    grid padding: 20
     grid scroll: true
     grid overlay: true
 
@@ -17,8 +17,8 @@ view HorseTinder {
 
     Text nearby at 1,5
         text: "4 KM  ·  ONLINE"
-        color: "textMuted"
-        size: 11
+        color: "#9CA1AC"
+        size: 12
         bold: true
         letterSpacing: 1
         textAlign: "right"
@@ -28,19 +28,19 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 420
+        minHeight: 425
         backgroundColor: "#13151B"
-        borderColor: "#262A34"
+        borderColor: "#2A2E38"
         borderWidth: 1
-        radius: 30
-        shadowColor: "#00000066"
-        shadowBlur: 14
-        shadowOffsetY: 5
+        radius: 28
+        shadowColor: "#00000080"
+        shadowBlur: 18
+        shadowOffsetY: 6
 
     Text profileName at 3,1 span columns 4
         text: "BUTTERCUP, 7"
         color: "text"
-        size: 29
+        size: 31
         bold: true
 
     Text matchBadge at 3,5
@@ -54,8 +54,8 @@ view HorseTinder {
 
     Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
-        color: "textMuted"
-        size: 14
+        color: "#A0A5B0"
+        size: 15
 
     Text weekend at 5,1 span columns 2
         text: "BEACH GALLOPS"
@@ -85,73 +85,93 @@ view HorseTinder {
 
     Text bio at 6,1 span columns 5
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
-        color: "#D9DCE3"
-        size: 15
+        color: "#E1E4EA"
+        size: 16
         wrap: true
         maxLines: 3
-        padding: 16
+        lineHeightPercent: 142
+        padding: 18
         backgroundColor: "#101218"
-        borderColor: "#20232C"
+        borderColor: "#232731"
         borderWidth: 1
-        radius: 20
+        radius: 22
 
     Button pass at 7,1 span columns 5
         text: "✕"
-        size: 30
+        size: 38
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 86
-        maxWidth: 86
-        minHeight: 86
+        minWidth: 90
+        maxWidth: 90
+        minHeight: 90
         alignX: "center"
         padding: 0
-        radius: 999
-        translateX: -57
-        backgroundColor: "#15181F"
-        borderColor: "#3A404C"
-        borderWidth: 2
+        radius: 45
+        translateX: -59
+        backgroundColor: "#171A21"
+        borderColor: "#343945"
+        borderWidth: 1
+        shadowColor: "#00000080"
+        shadowBlur: 10
+        shadowOffsetY: 4
         onPress: passed => !passed
 
     Button like at 7,1 span columns 5
         text: "♥︎"
-        size: 32
+        size: 42
         accessibilityLabel: "Like Buttercup"
-        minWidth: 86
-        maxWidth: 86
-        minHeight: 86
+        minWidth: 90
+        maxWidth: 90
+        minHeight: 90
         alignX: "center"
         primary: true
         padding: 0
-        radius: 999
-        translateX: 57
-        borderColor: "#FF7182"
-        borderWidth: 2
+        radius: 45
+        translateX: 59
+        backgroundColor: "#FF4458"
+        borderColor: "#FF4458"
+        borderWidth: 0
+        shadowColor: "#00000099"
+        shadowBlur: 12
+        shadowOffsetY: 5
         onPress: liked => !liked
 
-    Text result at 8,1 span columns 5
+    Text result at 2,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
         color: "#FFD9DE"
         size: 14
         bold: true
         textAlign: "center"
+        alignX: "center"
+        alignY: "end"
+        margin: 18
         padding: 14
-        backgroundColor: "#35141A"
-        borderColor: "#66212C"
+        backgroundColor: "#35141AEF"
+        borderColor: "#7D2A38"
         borderWidth: 1
         radius: 18
+        shadowColor: "#00000099"
+        shadowBlur: 10
+        shadowOffsetY: 4
         layoutTransitionMs: motionNormal
 
-    Text passedNote at 8,1 span columns 5
+    Text passedNote at 2,1 span columns 5
         text: "Passed. The photobomber is taking it personally."
         visible: passed
-        color: "textMuted"
+        color: "#D9DCE3"
         size: 13
         textAlign: "center"
+        alignX: "center"
+        alignY: "end"
+        margin: 18
         padding: 14
-        backgroundColor: "#101218"
-        borderColor: "#20232C"
+        backgroundColor: "#101218E8"
+        borderColor: "#2A2E38"
         borderWidth: 1
         radius: 18
+        shadowColor: "#00000099"
+        shadowBlur: 10
+        shadowOffsetY: 4
         layoutTransitionMs: motionNormal
 }
 
