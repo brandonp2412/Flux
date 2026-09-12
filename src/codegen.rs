@@ -6360,24 +6360,47 @@ fn emit_android_native_application(
         } else {
             (0, false)
         };
-        let border_top_width_static =
-            static_non_negative_style_i64(element, "border_top_width", signatures)?;
-        let border_bottom_width_static =
-            static_non_negative_style_i64(element, "border_bottom_width", signatures)?;
-        let border_start_width_static =
-            static_non_negative_style_i64(element, "border_start_width", signatures)?;
-        let border_end_width_static =
-            static_non_negative_style_i64(element, "border_end_width", signatures)?;
+        let border_side_width = |property_name: &str| -> Result<(Option<i64>, bool), Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok((None, false));
+            };
+            let Some(value) = static_expr_i64(&property.value, signatures) else {
+                return Ok((None, true));
+            };
+            if value < 0 {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be non-negative"),
+                ));
+            }
+            if value > i64::from(i32::MAX) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must fit within a 32-bit signed integer"),
+                ));
+            }
+            Ok((Some(value), false))
+        };
+        let (border_top_width_static, border_top_width_dynamic) =
+            border_side_width("border_top_width")?;
+        let (border_bottom_width_static, border_bottom_width_dynamic) =
+            border_side_width("border_bottom_width")?;
+        let (border_start_width_static, border_start_width_dynamic) =
+            border_side_width("border_start_width")?;
+        let (border_end_width_static, border_end_width_dynamic) =
+            border_side_width("border_end_width")?;
         let border_top_width = border_top_width_static.unwrap_or(border_width);
         let border_bottom_width = border_bottom_width_static.unwrap_or(border_width);
         let border_start_width = border_start_width_static.unwrap_or(border_width);
         let border_end_width = border_end_width_static.unwrap_or(border_width);
-        let dynamic_border_top_width = dynamic_border_width && border_top_width_static.is_none();
-        let dynamic_border_bottom_width =
-            dynamic_border_width && border_bottom_width_static.is_none();
-        let dynamic_border_start_width =
-            dynamic_border_width && border_start_width_static.is_none();
-        let dynamic_border_end_width = dynamic_border_width && border_end_width_static.is_none();
+        let dynamic_border_top_width = border_top_width_dynamic
+            || (view_property(element, "border_top_width").is_none() && dynamic_border_width);
+        let dynamic_border_bottom_width = border_bottom_width_dynamic
+            || (view_property(element, "border_bottom_width").is_none() && dynamic_border_width);
+        let dynamic_border_start_width = border_start_width_dynamic
+            || (view_property(element, "border_start_width").is_none() && dynamic_border_width);
+        let dynamic_border_end_width = border_end_width_dynamic
+            || (view_property(element, "border_end_width").is_none() && dynamic_border_width);
         let radius_property = view_property(element, "radius");
         let (radius, dynamic_radius) = if let Some(property) = radius_property {
             if let Some(value) = static_expr_i64(&property.value, signatures) {
@@ -6725,26 +6748,55 @@ fn emit_android_native_application(
                     "    int64_t child_border_width = {value};\n    if (child_border_width < 0 || child_border_width > INT32_MAX) {{ fputs(\"Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
                 ));
             }
-            let border_top_width_value = if dynamic_border_top_width {
-                "child_border_width".to_string()
-            } else {
-                format!("INT64_C({border_top_width})")
+            let mut border_side_width_value = |property_name: &str,
+                                               local_name: &str,
+                                               static_value: i64,
+                                               side_dynamic: bool,
+                                               effective_dynamic: bool|
+             -> Result<String, Diagnostic> {
+                if side_dynamic {
+                    let property = view_property(element, property_name)
+                        .expect("dynamic side border width property exists");
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    int64_t {local_name} = {value};\n    if ({local_name} < 0 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n",
+                        typecheck::internal_name_to_source(property_name)
+                    ));
+                    Ok(local_name.to_string())
+                } else if effective_dynamic {
+                    Ok("child_border_width".to_string())
+                } else {
+                    Ok(format!("INT64_C({static_value})"))
+                }
             };
-            let border_end_width_value = if dynamic_border_end_width {
-                "child_border_width".to_string()
-            } else {
-                format!("INT64_C({border_end_width})")
-            };
-            let border_bottom_width_value = if dynamic_border_bottom_width {
-                "child_border_width".to_string()
-            } else {
-                format!("INT64_C({border_bottom_width})")
-            };
-            let border_start_width_value = if dynamic_border_start_width {
-                "child_border_width".to_string()
-            } else {
-                format!("INT64_C({border_start_width})")
-            };
+            let border_top_width_value = border_side_width_value(
+                "border_top_width",
+                "child_border_top_width",
+                border_top_width,
+                border_top_width_dynamic,
+                dynamic_border_top_width,
+            )?;
+            let border_end_width_value = border_side_width_value(
+                "border_end_width",
+                "child_border_end_width",
+                border_end_width,
+                border_end_width_dynamic,
+                dynamic_border_end_width,
+            )?;
+            let border_bottom_width_value = border_side_width_value(
+                "border_bottom_width",
+                "child_border_bottom_width",
+                border_bottom_width,
+                border_bottom_width_dynamic,
+                dynamic_border_bottom_width,
+            )?;
+            let border_start_width_value = border_side_width_value(
+                "border_start_width",
+                "child_border_start_width",
+                border_start_width,
+                border_start_width_dynamic,
+                dynamic_border_start_width,
+            )?;
             if dynamic_radius {
                 let value = ui_expr_c(
                     &radius_property
@@ -10870,6 +10922,10 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "background_color"
             | "border_color"
             | "border_width"
+            | "border_top_width"
+            | "border_bottom_width"
+            | "border_start_width"
+            | "border_end_width"
             | "border_style"
             | "radius"
             | "padding"
@@ -11018,6 +11074,10 @@ fn android_ui_element_needs_refresh(
         "background_color",
         "border_color",
         "border_width",
+        "border_top_width",
+        "border_bottom_width",
+        "border_start_width",
+        "border_end_width",
         "border_style",
         "radius",
         "shadow_color",
@@ -11269,34 +11329,42 @@ fn emit_android_ui_refresh(
                 ));
             }
         }
-        if android_ui_property_needs_refresh(element, "border_width", &runtime_names)
-            && let Some(property) = view_property(element, "border_width")
-        {
-            let value = ui_expr_c(&property.value, view, signatures)?;
-            let border_top_width =
-                static_non_negative_style_i64(element, "border_top_width", signatures)?;
-            let border_end_width =
-                static_non_negative_style_i64(element, "border_end_width", signatures)?;
-            let border_bottom_width =
-                static_non_negative_style_i64(element, "border_bottom_width", signatures)?;
-            let border_start_width =
-                static_non_negative_style_i64(element, "border_start_width", signatures)?;
-            let width_value = |value: Option<i64>| {
-                value
-                    .map(|value| format!("INT64_C({value})"))
-                    .unwrap_or_else(|| "refresh_border_width".to_string())
+        let border_width_needs_refresh = [
+            "border_width",
+            "border_top_width",
+            "border_end_width",
+            "border_bottom_width",
+            "border_start_width",
+        ]
+        .iter()
+        .any(|property_name| {
+            android_ui_property_needs_refresh(element, property_name, &runtime_names)
+        });
+        if border_width_needs_refresh {
+            let common_width = view_property(element, "border_width");
+            let effective_width = |side_name: &str| -> Result<String, Diagnostic> {
+                if let Some(property) = view_property(element, side_name).or(common_width) {
+                    ui_expr_c(&property.value, view, signatures)
+                } else {
+                    Ok("INT64_C(0)".to_string())
+                }
             };
-            let top = width_value(border_top_width);
-            let end = width_value(border_end_width);
-            let bottom = width_value(border_bottom_width);
-            let start = width_value(border_start_width);
-            out.push_str(&format!(
-                "                int64_t refresh_border_width = {value};\n                if (refresh_border_width < 0 || refresh_border_width > INT32_MAX) {{ fputs(\"Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
-            ));
+            let top = effective_width("border_top_width")?;
+            let end = effective_width("border_end_width")?;
+            let bottom = effective_width("border_bottom_width")?;
+            let start = effective_width("border_start_width")?;
+            for (local_name, source_name, value) in [
+                ("refresh_border_top_width", "borderTopWidth", top),
+                ("refresh_border_end_width", "borderEndWidth", end),
+                ("refresh_border_bottom_width", "borderBottomWidth", bottom),
+                ("refresh_border_start_width", "borderStartWidth", start),
+            ] {
+                out.push_str(&format!(
+                    "                int64_t {local_name} = {value};\n                if ({local_name} < 0 || {local_name} > INT32_MAX) {{ fputs(\"Flux runtime error: {source_name} must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }}\n"
+                ));
+            }
             out.push_str("                jmethodID refresh_border_widths = (*env)->GetMethodID(env, activity_class, \"styleViewBorderWidths\", \"(Landroid/view/View;IIII)V\");\n");
-            out.push_str(&format!(
-                "                if (refresh_border_widths != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_widths, child, (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density), (jint)({start} * flux__ui_density));\n"
-            ));
+            out.push_str("                if (refresh_border_widths != NULL) (*env)->CallVoidMethod(env, activity, refresh_border_widths, child, (jint)(refresh_border_top_width * flux__ui_density), (jint)(refresh_border_end_width * flux__ui_density), (jint)(refresh_border_bottom_width * flux__ui_density), (jint)(refresh_border_start_width * flux__ui_density));\n");
         }
         if android_ui_property_needs_refresh(element, "border_style", &runtime_names)
             && let Some(property) = view_property(element, "border_style")

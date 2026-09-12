@@ -27891,17 +27891,71 @@ app DynamicBorderWidth
     .expect("dynamic Android borderWidth should lower");
 
     assert!(android.contains("int64_t child_border_width = flux__ui_state_strokeWidth"));
-    assert!(android.contains("int64_t refresh_border_width = flux__ui_state_strokeWidth"));
+    assert!(android.contains("int64_t refresh_border_top_width = INT64_C(5)"));
+    assert!(android.contains("int64_t refresh_border_end_width = flux__ui_state_strokeWidth"));
     assert!(android.contains("styleViewBorderWidths"));
     assert!(android.contains("(Landroid/view/View;IIII)V"));
     assert!(
         android.contains("borderWidth must be non-negative and fit within a 32-bit signed integer")
     );
     assert!(android.contains("(jint)(INT64_C(5) * flux__ui_density)"));
-    assert!(android.contains("(jint)(refresh_border_width * flux__ui_density)"));
+    assert!(android.contains("(jint)(refresh_border_end_width * flux__ui_density)"));
     assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
     assert!(android.contains("flux__ui_state_strokeWidth = flux_add_i64"));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+}
+
+#[test]
+fn android_side_border_widths_refresh_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicSideBorderWidths {
+    state topWidth: i64 = 2
+    state endWidth: i64 = 3
+    grid columns: 1fr
+    grid rows: auto auto
+    Button panel at 1,1
+        text: "Panel"
+        borderColor: "outline"
+        borderWidth: 1
+        borderTopWidth: topWidth
+        borderEndWidth: endWidth
+        borderBottomWidth: 4
+    Button grow at 2,1
+        text: "Grow"
+        onPress: topWidth => topWidth + 1
+}
+app DynamicSideBorderWidths
+"#;
+
+    check_source(source).expect("dynamic Android side border widths should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android side border widths should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android side border widths should lower");
+
+    assert!(android.contains("int64_t child_border_top_width = flux__ui_state_topWidth"));
+    assert!(android.contains("int64_t child_border_end_width = flux__ui_state_endWidth"));
+    assert!(android.contains("int64_t refresh_border_top_width = flux__ui_state_topWidth"));
+    assert!(android.contains("int64_t refresh_border_end_width = flux__ui_state_endWidth"));
+    assert!(android.contains("int64_t refresh_border_bottom_width = INT64_C(4)"));
+    assert!(android.contains("int64_t refresh_border_start_width = INT64_C(1)"));
+    assert!(
+        android
+            .contains("borderTopWidth must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(
+        android
+            .contains("borderEndWidth must be non-negative and fit within a 32-bit signed integer")
+    );
+    assert!(android.contains("styleViewBorderWidths"));
+    assert!(
+        android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1) {")
+    );
 }
 
 #[test]
