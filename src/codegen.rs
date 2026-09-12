@@ -5383,6 +5383,9 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     if runtime_usage.contains("flux_div_self_i64(") {
         out.push_str("static inline int64_t flux_div_self_i64(int64_t value) { if (value == 0) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); } return INT64_C(1); }\n");
     }
+    if runtime_usage.contains("flux_div_nonzero_i64(") {
+        out.push_str("static inline int64_t flux_div_nonzero_i64(int64_t value, int64_t divisor) { if (divisor == 0) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); } return value / divisor; }\n");
+    }
     if runtime_usage.contains("flux_div_i64(") {
         out.push_str("static inline int64_t flux_div_i64(int64_t a, int64_t b) {\n");
         out.push_str("    if (b == 0 || (a == INT64_MIN && b == -1)) { fputs(\"Flux runtime error: invalid integer division\\n\", stderr); abort(); }\n");
@@ -16974,7 +16977,6 @@ fn checked_i64_inverse_c(
             None
         }
         BinOp::Div => {
-            let outer = constant_i64(right)?;
             let ExprKind::Binary {
                 left: inner_left,
                 op: BinOp::Mul,
@@ -16983,6 +16985,12 @@ fn checked_i64_inverse_c(
             else {
                 return None;
             };
+
+            if same_binding(inner_left, right) || same_binding(inner_right, right) {
+                return Some(format!("flux_div_nonzero_i64({left_code}, {right_code})"));
+            }
+
+            let outer = constant_i64(right)?;
             if constant_i64(inner_left) == Some(outer) || constant_i64(inner_right) == Some(outer) {
                 Some(format!("(({left_code}) / ({right_code}))"))
             } else {

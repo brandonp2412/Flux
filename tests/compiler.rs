@@ -15670,6 +15670,160 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_overflow_check_after_matching_dynamic_multiplication() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn multiplyThenDivide(value: i64, divisor: i64) -> i64 {
+    return (value * divisor) / divisor
+}
+
+fn multiplyLeftThenDivide(value: i64, divisor: i64) -> i64 {
+    return (divisor * value) / divisor
+}
+
+fn multiplyThenDivideEffect(value: i64, divisor: i64) -> i64 {
+    return (observe(value) * divisor) / divisor
+}
+
+fn main() -> i64 {
+    print(multiplyThenDivide(10, 3))
+    print(multiplyLeftThenDivide(11, 4))
+    print(multiplyThenDivideEffect(12, 5))
+    return 0
+}
+"#;
+
+    check_source(source).expect("matching dynamic multiplication/division should typecheck");
+    let generated = compile_to_c(source)
+        .expect("matching dynamic multiplication/division should remove only the overflow guard");
+    assert!(generated.contains("flux_mul_i64("));
+    assert!(generated.contains("flux_div_nonzero_i64("));
+    assert!(!generated.contains("flux_div_i64("));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful multiplicands must still evaluate exactly once",
+    );
+    assert!(generated.contains(
+        "return flux_div_nonzero_i64(flux_mul_i64(flux__local_value, flux__local_divisor), flux__local_divisor);"
+    ));
+    assert!(generated.contains(
+        "return flux_div_nonzero_i64(flux_mul_i64(flux__local_divisor, flux__local_value), flux__local_divisor);"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-dynamic-multiply-divide-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary dynamic multiply/divide directory should be writable");
+    let c_path = root.join("dynamic-multiply-divide.c");
+    let exe_path = root.join("dynamic-multiply-divide");
+    fs::write(&c_path, &generated).expect("generated dynamic multiply/divide C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile dynamic multiply/divide C");
+    assert!(
+        compile.status.success(),
+        "dynamic multiply/divide C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("dynamic multiply/divide program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "10\n11\n12\n12\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let zero_divisor = r#"
+fn divide(value: i64, divisor: i64) -> i64 {
+    return (value * divisor) / divisor
+}
+
+fn main() -> i64 {
+    return divide(7, 0)
+}
+"#;
+    let zero_generated = compile_to_c(zero_divisor)
+        .expect("matching dynamic multiplication must retain the zero-divisor guard");
+    let zero_root = std::env::temp_dir().join(format!(
+        "flux-dynamic-multiply-divide-zero-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&zero_root);
+    fs::create_dir_all(&zero_root).expect("temporary zero-divisor directory should be writable");
+    let zero_c_path = zero_root.join("dynamic-multiply-divide-zero.c");
+    let zero_exe_path = zero_root.join("dynamic-multiply-divide-zero");
+    fs::write(&zero_c_path, &zero_generated).expect("generated zero-divisor C should be writable");
+    let zero_compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&zero_c_path)
+        .arg("-o")
+        .arg(&zero_exe_path)
+        .output()
+        .expect("clang should compile zero-divisor C");
+    assert!(
+        zero_compile.status.success(),
+        "zero-divisor C should compile: {}",
+        String::from_utf8_lossy(&zero_compile.stderr)
+    );
+    let zero_output = Command::new(&zero_exe_path)
+        .output()
+        .expect("zero-divisor program should run");
+    assert!(!zero_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&zero_output.stderr)
+            .contains("Flux runtime error: invalid integer division")
+    );
+    let _ = fs::remove_dir_all(&zero_root);
+
+    let unmatched = r#"
+fn keepGuard(value: i64, factor: i64, divisor: i64) -> i64 {
+    return (value * factor) / divisor
+}
+
+fn main() -> i64 {
+    return keepGuard(9, 2, 3)
+}
+"#;
+    let unmatched_generated =
+        compile_to_c(unmatched).expect("unmatched dynamic division should still lower");
+    assert!(unmatched_generated.contains("flux_mul_i64("));
+    assert!(unmatched_generated.contains("flux_div_i64("));
+    assert!(!unmatched_generated.contains("flux_div_nonzero_i64("));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 14
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count * count) / count
+}
+app Counter
+"#;
+    let ui_generated = compile_to_c(ui)
+        .expect("UI matching dynamic multiplication/division should share lowering");
+    assert!(ui_generated.contains("flux_mul_i64(flux__ui_state_count, flux__ui_state_count)"));
+    assert!(ui_generated.contains("flux_div_nonzero_i64("));
+    assert!(!ui_generated.contains("flux_div_i64("));
+}
+
+#[test]
 fn formatter_and_semantic_database_preserve_constants() {
     let source = "const ANSWER:i64=40+2\nfn main()->i64 {\n return ANSWER\n}\n";
     let expected = "const ANSWER: i64 = 40 + 2\nfn main() -> i64 {\n    return ANSWER\n}\n";
