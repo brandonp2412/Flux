@@ -4,7 +4,7 @@ use std::net::{TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
@@ -11977,6 +11977,30 @@ pub enum Flag {
     On
 }
 
+pub interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+pub struct Offset {
+    value: i64
+}
+
+fn pointApply(receiver: Point, value: i64) -> i64 {
+    return receiver.value + value
+}
+
+fn offsetApply(receiver: Offset, value: i64) -> i64 {
+    return receiver.value + value
+}
+
+impl Tool for Point {
+    apply: pointApply
+}
+
+impl Tool for Offset {
+    apply: offsetApply
+}
+
 pub type Mapper = fn(i64) -> i64
 
 pub fn addOne(value: i64) -> i64 {
@@ -12003,6 +12027,14 @@ pub fn passText(value: str) -> str {
     return value
 }
 
+pub fn applyTool(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+pub fn passTool(tool: Tool?) -> Tool? {
+    return tool
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -12022,14 +12054,20 @@ fn main() -> i64 {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let point_type = format!("flux__abi_{module_component}__type_Point");
+    let offset_type = format!("flux__abi_{module_component}__type_Offset");
     let flag_type = format!("flux__abi_{module_component}__type_Flag");
     let flag_tag = format!("flux__abi_{module_component}__tag_Flag");
+    let tool_type = format!("flux__abi_{module_component}__interface_Tool");
+    let tool_optional_type = format!("{tool_type}__optional");
+    let tool_point_tag = format!("flux__abi_{module_component}__interface_tag_Tool_Point");
     let add_one = format!("flux__abi_{module_component}__fn_addOne");
     let pass_optional = format!("flux__abi_{module_component}__fn_passOptional");
     let pass_point = format!("flux__abi_{module_component}__fn_passPoint");
     let pass_flag = format!("flux__abi_{module_component}__fn_passFlag");
     let invoke = format!("flux__abi_{module_component}__fn_invoke");
     let pass_text = format!("flux__abi_{module_component}__fn_passText");
+    let apply_tool = format!("flux__abi_{module_component}__fn_applyTool");
+    let pass_tool = format!("flux__abi_{module_component}__fn_passTool");
 
     let header_path = root.join("package.h");
     let generated_path = root.join("package.c");
@@ -12041,7 +12079,7 @@ fn main() -> i64 {
     fs::write(
         &consumer_path,
         format!(
-            "#include \"package.h\"\n#include <string.h>\nstatic int64_t double_value(int64_t value) {{ return value * 2; }}\nint main(void) {{\n    struct flux__optional_i64 maybe = {{ .has_value = true, .value = 9 }};\n    struct {point_type} point = {{ .flux__field_value = 11 }};\n    struct {flag_type} flag = {{ .tag = {flag_tag}_On }};\n    if ({add_one}(41) != 42) return 1;\n    struct flux__optional_i64 optional_result = {pass_optional}(maybe);\n    if (!optional_result.has_value || optional_result.value != 9) return 2;\n    if ({pass_point}(point).flux__field_value != 11) return 3;\n    if ({pass_flag}(flag).tag != {flag_tag}_On) return 4;\n    if ({invoke}(double_value, 21) != 42) return 5;\n    if (strcmp({pass_text}(\"flux\"), \"flux\") != 0) return 6;\n    return 0;\n}}\n"
+            "#include \"package.h\"\n#include <string.h>\nstatic int64_t double_value(int64_t value) {{ return value * 2; }}\nint main(void) {{\n    struct flux__optional_i64 maybe = {{ .has_value = true, .value = 9 }};\n    struct {point_type} point = {{ .flux__field_value = 11 }};\n    struct {offset_type} offset = {{ .flux__field_value = 5 }};\n    struct {flag_type} flag = {{ .tag = {flag_tag}_On }};\n    struct {tool_type} tool = {{0}};\n    tool.tag = {tool_point_tag};\n    tool.value.flux__value_Point = point;\n    if ({add_one}(41) != 42) return 1;\n    struct flux__optional_i64 optional_result = {pass_optional}(maybe);\n    if (!optional_result.has_value || optional_result.value != 9) return 2;\n    if ({pass_point}(point).flux__field_value != 11) return 3;\n    if ({pass_flag}(flag).tag != {flag_tag}_On) return 4;\n    if ({invoke}(double_value, 21) != 42) return 5;\n    if (strcmp({pass_text}(\"flux\"), \"flux\") != 0) return 6;\n    if ({apply_tool}(tool, 31) != 42) return 7;\n    struct {tool_optional_type} optional_tool = {{ .has_value = true, .value = tool }};\n    struct {tool_optional_type} optional_tool_result = {pass_tool}(optional_tool);\n    if (!optional_tool_result.has_value || {apply_tool}(optional_tool_result.value, 31) != 42) return 8;\n    if (offset.flux__field_value != 5) return 9;\n    return 0;\n}}\n"
         ),
     )
     .expect("stable C FFI consumer should be writable");
@@ -12476,6 +12514,160 @@ fn main() -> i64 {
         .expect_err("aggregate callback fields must still reject borrowed list signatures");
     assert_eq!(error.stage, DiagnosticStage::Codegen);
     assert!(error.message.contains("unsupported FFI type 'CallbackBox'"));
+}
+
+#[test]
+fn emits_c_header_for_public_copy_interface_values() {
+    let source = r#"
+pub interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+pub struct Add {
+    amount: i64
+}
+
+pub struct Multiply {
+    amount: i64
+}
+
+fn addApply(receiver: Add, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn multiplyApply(receiver: Multiply, value: i64) -> i64 {
+    return receiver.amount * value
+}
+
+impl Tool for Add {
+    apply: addApply
+}
+
+impl Tool for Multiply {
+    apply: multiplyApply
+}
+
+pub fn run(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+pub fn preserve(tool: Tool?) -> Tool? {
+    return tool
+}
+
+pub type ToolMapper = fn(Tool, i64) -> i64
+
+pub fn invokeTool(mapper: ToolMapper, tool: Tool, value: i64) -> i64 {
+    return mapper(tool, value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let header = compile_to_c_header(source)
+        .expect("public Copy interface values should cross the stable C ABI by value");
+    let generated =
+        compile_to_c(source).expect("public Copy interface ABI fixture should lower to native C");
+    assert!(header.contains("struct flux__iface_Tool {"));
+    assert!(header.contains("flux__iface_tag_Tool_Add = 1"));
+    assert!(header.contains("flux__iface_tag_Tool_Multiply = 2"));
+    assert!(header.contains("struct flux__type_Add flux__value_Add;"));
+    assert!(header.contains("struct flux__type_Multiply flux__value_Multiply;"));
+    assert!(header.contains("struct flux__iface_Tool__optional"));
+    assert!(header.contains(
+        "flux__fn_run(struct flux__iface_Tool flux__local_tool, int64_t flux__local_value)"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux_interface_header_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("temporary interface ABI directory should be writable");
+    let header_path = root.join("flux_interface_api.h");
+    let generated_path = root.join("flux_interface_api.c");
+    let object_path = root.join("flux_interface_api.o");
+    let consumer_path = root.join("consumer.c");
+    let executable_path = root.join("consumer");
+    fs::write(&header_path, &header).expect("generated interface C header should be writable");
+    fs::write(&generated_path, generated).expect("generated interface C should be writable");
+    fs::write(
+        &consumer_path,
+        "#include \"flux_interface_api.h\"\nstatic struct flux__iface_Tool make_tool(void) { struct flux__iface_Tool value = {0}; value.tag = flux__iface_tag_Tool_Add; value.value.flux__value_Add.flux__field_amount = 5; return value; }\nstatic int64_t apply_from_c(struct flux__iface_Tool tool, int64_t value) { return flux__fn_run(tool, value); }\nstatic struct flux__iface_Tool__optional keep_optional(void) { struct flux__iface_Tool__optional value = { .has_value = true, .value = make_tool() }; return flux__fn_preserve(value); }\nint main(void) { struct flux__iface_Tool tool = make_tool(); struct flux__iface_Tool__optional optional = keep_optional(); return flux__fn_run(tool, 37) == 42 && optional.has_value && flux__fn_run(optional.value, 37) == 42 && flux__fn_invokeTool(apply_from_c, tool, 37) == 42 ? 0 : 1; }\n",
+    )
+    .expect("interface ABI C consumer should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-Dmain=flux__embedded_main", "-c"])
+        .arg(&generated_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .expect("clang should compile generated interface ABI C");
+    assert!(
+        compile.status.success(),
+        "generated interface ABI C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let link = Command::new("clang")
+        .args(["-std=c11"])
+        .arg(&consumer_path)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .expect("clang should link the native interface ABI consumer");
+    assert!(
+        link.status.success(),
+        "native interface ABI consumer should link: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&executable_path)
+        .output()
+        .expect("native interface ABI consumer should run");
+    assert!(
+        run.status.success(),
+        "C -> Flux interface ABI calls should preserve layout, dispatch, and optional values"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rejects_c_header_interface_with_private_implementation_layout() {
+    let source = r#"
+pub interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Hidden {
+    amount: i64
+}
+
+fn hiddenApply(receiver: Hidden, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Hidden {
+    apply: hiddenApply
+}
+
+pub fn run(tool: Tool, value: i64) -> i64 {
+    return Tool.apply(tool, value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+
+    let error = compile_to_c_header(source)
+        .expect_err("public interface ABI must not expose a private implementation layout");
+    assert_eq!(error.stage, DiagnosticStage::Codegen);
+    assert!(error.message.contains("unsupported FFI type 'Tool'"));
 }
 
 #[test]

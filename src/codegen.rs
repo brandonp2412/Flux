@@ -54,7 +54,15 @@ pub fn emit_c_header_with_module_names(
             ffi_header_type_supported(&Type::Named(definition.name().to_string()), signatures)
         })
         .collect::<Vec<_>>();
-    let public_value_names = public_value_defs
+    let public_interfaces = program
+        .interfaces
+        .iter()
+        .filter(|definition| {
+            definition.public
+                && ffi_header_type_supported(&Type::Named(definition.name.clone()), signatures)
+        })
+        .collect::<Vec<_>>();
+    let mut public_value_names = public_value_defs
         .iter()
         .map(|definition| {
             (
@@ -63,6 +71,12 @@ pub fn emit_c_header_with_module_names(
             )
         })
         .collect::<HashMap<_, _>>();
+    for definition in &public_interfaces {
+        public_value_names.insert(
+            definition.name.clone(),
+            c_header_interface_type_name(definition, source_modules),
+        );
+    }
     let public_constants = program
         .constants
         .iter()
@@ -129,7 +143,7 @@ pub fn emit_c_header_with_module_names(
     out.push_str("#include <stdbool.h>\n#include <stdint.h>\n\n");
     out.push_str("/* Function str/error values are borrowed const char * values owned by Flux/runtime storage. */\n");
     out.push_str(
-        "/* Public Copy structs/enums cross the ABI by value; their stable layouts are emitted below. */\n",
+        "/* Public Copy structs/enums/interfaces cross the ABI by value; their stable layouts are emitted below. */\n",
     );
     out.push_str(
         "/* Copy optionals cross by value as { bool has_value; T value; }; aggregate wrappers use stable public ABI identities. */\n",
@@ -145,7 +159,15 @@ pub fn emit_c_header_with_module_names(
                 .expect("public FFI value has a header name")
         ));
     }
-    if !public_value_defs.is_empty() {
+    for definition in &public_interfaces {
+        out.push_str(&format!(
+            "struct {};\n",
+            public_value_names
+                .get(&definition.name)
+                .expect("public FFI interface has a header name")
+        ));
+    }
+    if !public_value_defs.is_empty() || !public_interfaces.is_empty() {
         out.push('\n');
     }
     for optional in &public_optional_types {
@@ -255,6 +277,42 @@ pub fn emit_c_header_with_module_names(
                 continue;
             };
             if inner_name == definition.name() {
+                emit_c_header_optional_definition(
+                    &mut out,
+                    optional,
+                    &public_ffi_aliases,
+                    &public_value_names,
+                    &public_optional_names,
+                    signatures,
+                );
+                emitted_optional_types.insert(optional.clone());
+                out.push('\n');
+            }
+        }
+    }
+
+    for definition in &public_interfaces {
+        emit_c_header_interface_definition(
+            &mut out,
+            program,
+            definition,
+            &public_value_names,
+            source_modules,
+            signatures,
+        );
+        out.push('\n');
+
+        for optional in &public_optional_types {
+            if emitted_optional_types.contains(optional) {
+                continue;
+            }
+            let Type::Optional(inner) = signatures.canonical_type(optional) else {
+                continue;
+            };
+            let Type::Named(inner_name) = signatures.canonical_type(&inner) else {
+                continue;
+            };
+            if inner_name == definition.name {
                 emit_c_header_optional_definition(
                     &mut out,
                     optional,
@@ -433,6 +491,31 @@ fn ffi_header_type_supported_inner(
                         )
                     })
                 })
+            } else if let Some(definition) = signatures.interface(&name) {
+                definition.public
+                    && signatures
+                        .implementations()
+                        .values()
+                        .filter(|implementation| implementation.interface_name == name)
+                        .all(|implementation| {
+                            let target = Type::Named(implementation.target_name.clone());
+                            let target_public = signatures
+                                .struct_type(&implementation.target_name)
+                                .map(|definition| definition.public)
+                                .or_else(|| {
+                                    signatures
+                                        .enum_type(&implementation.target_name)
+                                        .map(|definition| definition.public)
+                                })
+                                .unwrap_or(false);
+                            target_public
+                                && ffi_header_type_supported_inner(
+                                    &target,
+                                    signatures,
+                                    visiting,
+                                    allow_function,
+                                )
+                        })
             } else {
                 false
             };
@@ -751,6 +834,38 @@ fn c_header_value_type_name(
     }
 }
 
+fn c_header_interface_type_name(
+    definition: &crate::ast::InterfaceDef,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&definition.name_span.source_id) {
+        format!(
+            "flux__abi_{}__interface_{}",
+            abi_module_component(module),
+            definition.name
+        )
+    } else {
+        interface_c_name(&definition.name)
+    }
+}
+
+fn c_header_interface_tag_value_name(
+    definition: &crate::ast::InterfaceDef,
+    target: &str,
+    source_modules: &HashMap<SourceId, String>,
+) -> String {
+    if let Some(module) = source_modules.get(&definition.name_span.source_id) {
+        format!(
+            "flux__abi_{}__interface_tag_{}_{}",
+            abi_module_component(module),
+            definition.name,
+            target
+        )
+    } else {
+        interface_tag_name(&definition.name, target)
+    }
+}
+
 fn c_header_enum_tag_name(
     definition: &EnumDef,
     source_modules: &HashMap<SourceId, String>,
@@ -781,6 +896,71 @@ fn c_header_enum_tag_value_name(
     } else {
         enum_tag_value_name(&definition.name, variant)
     }
+}
+
+fn emit_c_header_interface_definition(
+    out: &mut String,
+    program: &Program,
+    definition: &crate::ast::InterfaceDef,
+    public_value_names: &HashMap<String, String>,
+    source_modules: &HashMap<SourceId, String>,
+    signatures: &Signatures,
+) {
+    let name = public_value_names
+        .get(&definition.name)
+        .expect("public FFI interface has a header name");
+    let targets = program
+        .implementations
+        .iter()
+        .filter(|implementation| implementation.interface_name == definition.name)
+        .filter_map(|implementation| {
+            let Type::Named(target) =
+                signatures.canonical_type(&Type::Named(implementation.target_name.clone()))
+            else {
+                return None;
+            };
+            Some(target)
+        })
+        .collect::<Vec<_>>();
+
+    if targets.len() > 1 {
+        out.push_str("enum {\n");
+        for (index, target) in targets.iter().enumerate() {
+            out.push_str(&format!(
+                "    {} = {},\n",
+                c_header_interface_tag_value_name(definition, target, source_modules),
+                index + 1
+            ));
+        }
+        out.push_str("};\n");
+    }
+
+    out.push_str(&format!("struct {name} {{\n"));
+    match targets.as_slice() {
+        [] => out.push_str("    int32_t tag;\n"),
+        [target] => out.push_str(&format!(
+            "    struct {} {};\n",
+            public_value_names
+                .get(target)
+                .expect("public FFI interface target has a header name"),
+            interface_value_member_name(target)
+        )),
+        _ => {
+            out.push_str("    int32_t tag;\n");
+            out.push_str("    union {\n");
+            for target in &targets {
+                out.push_str(&format!(
+                    "        struct {} {};\n",
+                    public_value_names
+                        .get(target)
+                        .expect("public FFI interface target has a header name"),
+                    interface_value_member_name(target)
+                ));
+            }
+            out.push_str("    } value;\n");
+        }
+    }
+    out.push_str("};\n");
 }
 
 fn emit_c_header_struct_definition(
