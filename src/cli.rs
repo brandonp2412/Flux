@@ -4120,6 +4120,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
         String role;
         String actionLabel;
         String longPressLabel;
+        String[] customActionLabels;
     }
 
     private boolean restoringInput;
@@ -4147,6 +4148,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private static native void nativeOnContextMenu(int viewId);
     private static native void nativeOnContextMenuSelect(int viewId);
     private static native void nativeOnContextMenuItemSelect(int viewId, int itemIndex);
+    private static native void nativeOnAccessibilityAction(int viewId, int actionIndex);
     private static native void nativeOnDrop(int viewId, String text);
     private static native void nativeOnDrag(int viewId, long offsetX, long offsetY);
     private static native void nativeOnSwipe(int viewId, long velocityX, long velocityY);
@@ -5224,6 +5226,25 @@ __FLUX_PICKER_METHODS__
                     info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
                             AccessibilityNodeInfo.ACTION_LONG_CLICK, metadata.longPressLabel));
                 }
+                if (metadata.customActionLabels != null) {
+                    for (int index = 0; index < metadata.customActionLabels.length; index++) {
+                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                                0x02000000 + index, metadata.customActionLabels[index]));
+                    }
+                }
+            }
+
+            @Override public boolean performAccessibilityAction(View host, int action, android.os.Bundle args) {
+                Object tag = host.getTag();
+                if (tag instanceof FluxAccessibilityMetadata) {
+                    FluxAccessibilityMetadata metadata = (FluxAccessibilityMetadata) tag;
+                    int index = action - 0x02000000;
+                    if (metadata.customActionLabels != null && index >= 0 && index < metadata.customActionLabels.length) {
+                        nativeOnAccessibilityAction(host.getId(), index);
+                        return true;
+                    }
+                }
+                return super.performAccessibilityAction(host, action, args);
             }
         });
     }
@@ -5241,6 +5262,14 @@ __FLUX_PICKER_METHODS__
         FluxAccessibilityMetadata metadata = accessibilityMetadata(view);
         metadata.actionLabel = actionLabel;
         metadata.longPressLabel = longPressLabel;
+        installFluxAccessibilityDelegate(view);
+        view.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+    }
+
+    public void setAccessibilityCustomActions(View view, String[] labels) {
+        if (view == null) return;
+        FluxAccessibilityMetadata metadata = accessibilityMetadata(view);
+        metadata.customActionLabels = labels == null ? null : labels.clone();
         installFluxAccessibilityDelegate(view);
         view.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
@@ -7593,6 +7622,12 @@ mod tests {
         assert!(activity.contains("setAccessibilityRole(View view, String role)"));
         assert!(activity.contains("info.setClassName(className)"));
         assert!(activity.contains("info.setHeading(\"heading\".equals(role))"));
+        assert!(activity.contains(
+            "private static native void nativeOnAccessibilityAction(int viewId, int actionIndex);"
+        ));
+        assert!(activity.contains("setAccessibilityCustomActions(View view, String[] labels)"));
+        assert!(activity.contains("0x02000000 + index"));
+        assert!(activity.contains("nativeOnAccessibilityAction(host.getId(), index)"));
         assert!(activity.contains("String custom = nativeThemeColor(value);"));
         assert!(activity.contains("private native void nativeCreate(String restoredState);"));
         assert!(activity.contains("private native void nativeBuildUi();"));

@@ -25809,6 +25809,92 @@ app Broken
 }
 
 #[test]
+fn named_custom_accessibility_actions_lower_without_user_platform_bridges() {
+    let source = r#"
+fn runAction(index: i64) -> void {
+    print(index)
+}
+
+view Actions {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Document"
+        accessibilityActions: ["Open details", "Archive"]
+        onAccessibilityAction: runAction
+}
+app Actions
+"#;
+
+    check_source(source).expect("named custom accessibility actions should typecheck");
+    let linux =
+        compile_to_c(source).expect("custom accessibility actions remain portable on Linux");
+    assert!(
+        linux.contains(
+            "GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, \"Actions: Open details; Archive\", -1"
+        )
+    );
+
+    let program =
+        fluxc::parser::parse(source).expect("custom accessibility action app should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("custom accessibility action app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("custom accessibility actions should lower to Android");
+    assert!(android.contains("setAccessibilityCustomActions"));
+    assert!(android.contains("NewObjectArray(env, 2, accessibility_actions_string_class, NULL)"));
+    assert!(android.contains("child_accessibility_action_0"));
+    assert!(android.contains("child_accessibility_action_1"));
+    assert!(android.contains("nativeOnAccessibilityAction"));
+    assert!(android.contains("flux__fn_runAction((int64_t)action_index)"));
+
+    let missing_handler = r#"
+view Broken {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Document"
+        accessibilityActions: ["Open details"]
+}
+app Broken
+"#;
+    let errors = check_source_all(missing_handler)
+        .expect_err("custom action labels without a handler must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityActions requires onAccessibilityAction")
+    }));
+
+    let missing_labels = r#"
+fn runAction(index: i64) -> void {
+    print(index)
+}
+
+view Broken {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Document"
+        onAccessibilityAction: runAction
+}
+app Broken
+"#;
+    let errors = check_source_all(missing_labels)
+        .expect_err("custom action handlers without labels must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("onAccessibilityAction requires accessibilityActions")
+    }));
+}
+
+#[test]
 fn toggle_control_binds_native_checked_state_and_functional_transition() {
     let source = r#"
 view Settings {

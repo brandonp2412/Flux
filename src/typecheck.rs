@@ -1387,7 +1387,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "accessibility_long_press_label" => {
                 return Some(Type::Str);
             }
-            "context_menu_items" => {
+            "context_menu_items" | "accessibility_actions" => {
                 return Some(Type::List(Box::new(Type::Str)));
             }
             "min_width"
@@ -1480,7 +1480,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
                     returns: Vec::new(),
                 });
             }
-            "on_context_menu_item_select" => {
+            "on_context_menu_item_select" | "on_accessibility_action" => {
                 return Some(Type::Function {
                     params: vec![Type::I64],
                     returns: Vec::new(),
@@ -1715,6 +1715,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "accessibility_role",
     "accessibility_action_label",
     "accessibility_long_press_label",
+    "accessibility_actions",
     "accessibility_hidden",
     "accessibility_order",
     "on_tap",
@@ -1723,6 +1724,7 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "on_context_menu",
     "on_context_menu_select",
     "on_context_menu_item_select",
+    "on_accessibility_action",
     "on_drop",
     "on_drag",
     "on_swipe",
@@ -2159,6 +2161,57 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         "accessibilityLongPressLabel must not be empty",
                     ));
                 }
+            }
+
+            let accessibility_actions = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "accessibility_actions"
+            });
+            let on_accessibility_action = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "on_accessibility_action"
+            });
+            match (accessibility_actions, on_accessibility_action) {
+                (Some(actions), None) => diagnostics.push(
+                    diag(
+                        actions.name_span,
+                        "accessibilityActions requires onAccessibilityAction on the same element",
+                    )
+                    .with_note("the callback receives the selected zero-based custom-action index"),
+                ),
+                (None, Some(action)) => diagnostics.push(
+                    diag(
+                        action.name_span,
+                        "onAccessibilityAction requires accessibilityActions on the same element",
+                    )
+                    .with_note(
+                        "declare the native custom-action labels as a compile-time string list",
+                    ),
+                ),
+                (Some(actions), Some(_)) => match &actions.value.kind {
+                    ExprKind::List(values) if values.is_empty() => diagnostics.push(diag(
+                        actions.value.span,
+                        "accessibilityActions must contain at least one action label",
+                    )),
+                    ExprKind::List(values) => {
+                        for value in values {
+                            match evaluate_default_expr(value, signatures) {
+                                Ok(ConstantValue::Str(label)) if !label.is_empty() => {}
+                                Ok(ConstantValue::Str(_)) => diagnostics.push(diag(
+                                    value.span,
+                                    "accessibilityActions labels must not be empty",
+                                )),
+                                Ok(_) | Err(_) => diagnostics.push(diag(
+                                    value.span,
+                                    "accessibilityActions must be a compile-time list of string values",
+                                )),
+                            }
+                        }
+                    }
+                    _ => diagnostics.push(diag(
+                        actions.value.span,
+                        "accessibilityActions must be a compile-time list literal of string values",
+                    )),
+                },
+                (None, None) => {}
             }
 
             let long_press = element

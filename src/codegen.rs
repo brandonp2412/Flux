@@ -7299,6 +7299,33 @@ fn emit_android_native_application(
             out.push_str("    if (child_accessibility_action_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_action_label);\n");
             out.push_str("    if (child_accessibility_long_press_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_long_press_label);\n");
         }
+        if let Some(property) = view_property(element, "accessibility_actions") {
+            let actions = static_string_list(&property.value, signatures, "accessibilityActions")?;
+            out.push_str("    jmethodID accessibility_actions_set_id = (*env)->GetMethodID(env, child_class, \"setId\", \"(I)V\");\n");
+            out.push_str("    jclass accessibility_actions_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    jclass accessibility_actions_string_class = (*env)->FindClass(env, \"java/lang/String\");\n");
+            out.push_str("    if (accessibility_actions_set_id == NULL || accessibility_actions_activity_class == NULL || accessibility_actions_string_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility_custom_actions = (*env)->GetMethodID(env, accessibility_actions_activity_class, \"setAccessibilityCustomActions\", \"(Landroid/view/View;[Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_accessibility_custom_actions == NULL) return;\n");
+            out.push_str(&format!("    (*env)->CallVoidMethod(env, child, accessibility_actions_set_id, (jint){element_id});\n"));
+            out.push_str(&format!(
+                "    jobjectArray child_accessibility_actions = (*env)->NewObjectArray(env, {}, accessibility_actions_string_class, NULL);\n",
+                actions.len()
+            ));
+            out.push_str("    if (child_accessibility_actions == NULL) return;\n");
+            for (index, label) in actions.iter().enumerate() {
+                out.push_str(&format!(
+                    "    jstring child_accessibility_action_{index} = (*env)->NewStringUTF(env, {});\n    if (child_accessibility_action_{index} == NULL) return;\n    (*env)->SetObjectArrayElement(env, child_accessibility_actions, {index}, child_accessibility_action_{index});\n    (*env)->DeleteLocalRef(env, child_accessibility_action_{index});\n",
+                    c_string(label)
+                ));
+            }
+            out.push_str("    (*env)->CallVoidMethod(env, activity, set_accessibility_custom_actions, child, child_accessibility_actions);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, child_accessibility_actions);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_actions_string_class);\n");
+            out.push_str(
+                "    (*env)->DeleteLocalRef(env, accessibility_actions_activity_class);\n",
+            );
+        }
         if let Some(property) = view_property(element, "accessibility_hidden") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jclass accessibility_hidden_activity_class = (*env)->GetObjectClass(env, activity);\n");
@@ -8490,6 +8517,25 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str(&format!(
             "        case {element_id}: {}((int64_t)item_index); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, -1); break;\n",
+            function_c_name(function)
+        ));
+    }
+    out.push_str("        default: break;\n    }\n}\n\n");
+
+    out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnAccessibilityAction(JNIEnv *env, jclass activity_class, jint view_id, jint action_index) {\n    (void)activity_class;\n    switch (view_id) {\n");
+    for element in &view.elements {
+        let Some(action) = view_property(element, "on_accessibility_action") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "native onAccessibilityAction requires a named fn(i64) -> void callback",
+            ));
+        };
+        let element_id = stable_android_element_id(&view.name, &element.name);
+        out.push_str(&format!(
+            "        case {element_id}: {}((int64_t)action_index); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, -1); break;\n",
             function_c_name(function)
         ));
     }
@@ -10518,6 +10564,13 @@ fn emit_linux_gtk_application(
             let action_description = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {action_description}, -1);\n"
+            ));
+        } else if let Some(property) = view_property(element, "accessibility_actions") {
+            let actions = static_string_list(&property.value, signatures, "accessibilityActions")?;
+            let action_description = format!("Actions: {}", actions.join("; "));
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {}, -1);\n",
+                c_string(&action_description)
             ));
         }
         if let Some(property) = view_property(element, "accessibility_value") {
