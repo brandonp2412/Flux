@@ -7748,58 +7748,106 @@ fn emit_android_native_application(
         } else {
             (0, false)
         };
-        let margin_top_static = view_property(element, "margin_top")
-            .map(|property| element_margin_value(property, "margin_top", signatures))
-            .transpose()?;
-        let margin_bottom_static = view_property(element, "margin_bottom")
-            .map(|property| element_margin_value(property, "margin_bottom", signatures))
-            .transpose()?;
-        let margin_start_static = view_property(element, "margin_start")
-            .map(|property| element_margin_value(property, "margin_start", signatures))
-            .transpose()?;
-        let margin_end_static = view_property(element, "margin_end")
-            .map(|property| element_margin_value(property, "margin_end", signatures))
-            .transpose()?;
+        let margin_top_property = view_property(element, "margin_top");
+        let margin_bottom_property = view_property(element, "margin_bottom");
+        let margin_start_property = view_property(element, "margin_start");
+        let margin_end_property = view_property(element, "margin_end");
+        let margin_side = |property_name: &str| -> Result<(Option<i64>, bool), Diagnostic> {
+            let Some(property) = view_property(element, property_name) else {
+                return Ok((None, false));
+            };
+            let Some(value) = static_expr_i64(&property.value, signatures) else {
+                return Ok((None, true));
+            };
+            if !(0..=i64::from(i32::MAX)).contains(&value) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("{property_name} must be between 0 and 2147483647"),
+                ));
+            }
+            Ok((Some(value), false))
+        };
+        let (margin_top_static, dynamic_margin_top_explicit) = margin_side("margin_top")?;
+        let (margin_bottom_static, dynamic_margin_bottom_explicit) = margin_side("margin_bottom")?;
+        let (margin_start_static, dynamic_margin_start_explicit) = margin_side("margin_start")?;
+        let (margin_end_static, dynamic_margin_end_explicit) = margin_side("margin_end")?;
         let margin_top = margin_top_static.unwrap_or(margin);
         let margin_bottom = margin_bottom_static.unwrap_or(margin);
         let margin_start = margin_start_static.unwrap_or(margin);
         let margin_end = margin_end_static.unwrap_or(margin);
-        let dynamic_margin_top = dynamic_margin && margin_top_static.is_none();
-        let dynamic_margin_bottom = dynamic_margin && margin_bottom_static.is_none();
-        let dynamic_margin_start = dynamic_margin && margin_start_static.is_none();
-        let dynamic_margin_end = dynamic_margin && margin_end_static.is_none();
-        if dynamic_margin_top
+        let dynamic_margin_top =
+            dynamic_margin_top_explicit || (margin_top_property.is_none() && dynamic_margin);
+        let dynamic_margin_bottom =
+            dynamic_margin_bottom_explicit || (margin_bottom_property.is_none() && dynamic_margin);
+        let dynamic_margin_start =
+            dynamic_margin_start_explicit || (margin_start_property.is_none() && dynamic_margin);
+        let dynamic_margin_end =
+            dynamic_margin_end_explicit || (margin_end_property.is_none() && dynamic_margin);
+        let uses_dynamic_margin_base = dynamic_margin
+            && [
+                margin_top_property,
+                margin_bottom_property,
+                margin_start_property,
+                margin_end_property,
+            ]
+            .iter()
+            .any(|property| property.is_none());
+        let has_dynamic_margin = dynamic_margin_top
             || dynamic_margin_bottom
             || dynamic_margin_start
-            || dynamic_margin_end
+            || dynamic_margin_end;
+        if has_dynamic_margin
             || gap > 0
             || margin_top > 0
             || margin_bottom > 0
             || margin_start > 0
             || margin_end > 0
         {
-            if dynamic_margin {
-                let value = ui_expr_c(
-                    &margin_property
-                        .expect("dynamic margin property exists")
-                        .value,
-                    view,
-                    signatures,
-                )?;
-                out.push_str(&format!(
-                    "    int64_t child_margin = {value};\n    if (child_margin < 0 || child_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
-                ));
-                let margin_value = |dynamic: bool, value: i64| {
-                    if dynamic {
-                        "child_margin".to_string()
+            if has_dynamic_margin {
+                if uses_dynamic_margin_base {
+                    let value = ui_expr_c(
+                        &margin_property
+                            .expect("dynamic margin property exists")
+                            .value,
+                        view,
+                        signatures,
+                    )?;
+                    out.push_str(&format!(
+                        "    int64_t child_margin = {value};\n    if (child_margin < 0 || child_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+                    ));
+                }
+                let mut margin_value = |property_name: &str,
+                                        property: Option<&crate::ast::ViewProperty>,
+                                        static_value: Option<i64>|
+                 -> Result<String, Diagnostic> {
+                    if property.is_some() && static_value.is_none() {
+                        let value = ui_expr_c(
+                            &property.expect("dynamic margin side property exists").value,
+                            view,
+                            signatures,
+                        )?;
+                        let variable = format!("child_{property_name}");
+                        out.push_str(&format!(
+                            "    int64_t {variable} = {value};\n    if ({variable} < 0 || {variable} > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: {property_name} must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+                        ));
+                        Ok(variable)
+                    } else if let Some(value) = static_value {
+                        Ok(format!("INT64_C({value})"))
+                    } else if dynamic_margin {
+                        Ok("child_margin".to_string())
                     } else {
-                        format!("INT64_C({value})")
+                        Ok(format!("INT64_C({margin})"))
                     }
                 };
-                let top = margin_value(dynamic_margin_top, margin_top);
-                let bottom = margin_value(dynamic_margin_bottom, margin_bottom);
-                let start = margin_value(dynamic_margin_start, margin_start);
-                let end = margin_value(dynamic_margin_end, margin_end);
+                let top = margin_value("margin_top", margin_top_property, margin_top_static)?;
+                let bottom = margin_value(
+                    "margin_bottom",
+                    margin_bottom_property,
+                    margin_bottom_static,
+                )?;
+                let start =
+                    margin_value("margin_start", margin_start_property, margin_start_static)?;
+                let end = margin_value("margin_end", margin_end_property, margin_end_static)?;
                 out.push_str(&format!(
                     "    (*env)->CallVoidMethod(env, params, set_margins, (jint)(({start} + INT64_C({gap_half})) * flux__ui_density), (jint)(({top} + INT64_C({gap_half})) * flux__ui_density), (jint)(({end} + INT64_C({gap_half})) * flux__ui_density), (jint)(({bottom} + INT64_C({gap_half})) * flux__ui_density));\n"
                 ));
@@ -10704,6 +10752,10 @@ fn android_ui_element_needs_refresh(
         "padding_start",
         "padding_end",
         "margin",
+        "margin_top",
+        "margin_bottom",
+        "margin_start",
+        "margin_end",
         "tooltip",
         "accessibility_label",
         "accessibility_description",
@@ -11129,35 +11181,69 @@ fn emit_android_ui_refresh(
                 "                if (refresh_padding_method != NULL) (*env)->CallVoidMethod(env, child, refresh_padding_method, (jint)({start} * flux__ui_density), (jint)({top} * flux__ui_density), (jint)({end} * flux__ui_density), (jint)({bottom} * flux__ui_density));\n"
             ));
         }
-        if android_ui_property_needs_refresh(element, "margin", &runtime_names)
-            && let Some(property) = view_property(element, "margin")
+        let dynamic_margin = android_ui_property_needs_refresh(element, "margin", &runtime_names);
+        let dynamic_margin_top =
+            android_ui_property_needs_refresh(element, "margin_top", &runtime_names);
+        let dynamic_margin_bottom =
+            android_ui_property_needs_refresh(element, "margin_bottom", &runtime_names);
+        let dynamic_margin_start =
+            android_ui_property_needs_refresh(element, "margin_start", &runtime_names);
+        let dynamic_margin_end =
+            android_ui_property_needs_refresh(element, "margin_end", &runtime_names);
+        if dynamic_margin
+            || dynamic_margin_top
+            || dynamic_margin_bottom
+            || dynamic_margin_start
+            || dynamic_margin_end
         {
-            let value = ui_expr_c(&property.value, view, signatures)?;
-            let margin_top = view_property(element, "margin_top")
-                .map(|property| element_margin_value(property, "margin_top", signatures))
-                .transpose()?;
-            let margin_bottom = view_property(element, "margin_bottom")
-                .map(|property| element_margin_value(property, "margin_bottom", signatures))
-                .transpose()?;
-            let margin_start = view_property(element, "margin_start")
-                .map(|property| element_margin_value(property, "margin_start", signatures))
-                .transpose()?;
-            let margin_end = view_property(element, "margin_end")
-                .map(|property| element_margin_value(property, "margin_end", signatures))
-                .transpose()?;
-            let margin_value = |value: Option<i64>| {
-                value
-                    .map(|value| format!("INT64_C({value})"))
-                    .unwrap_or_else(|| "refresh_margin".to_string())
-            };
-            let top = margin_value(margin_top);
-            let bottom = margin_value(margin_bottom);
-            let start = margin_value(margin_start);
-            let end = margin_value(margin_end);
+            let margin_property = view_property(element, "margin");
+            let use_dynamic_margin_base = dynamic_margin
+                && ["margin_top", "margin_bottom", "margin_start", "margin_end"]
+                    .iter()
+                    .any(|name| view_property(element, name).is_none());
             let gap_half = i64::from(view.grid.gap.unwrap_or(12)) / 2;
-            out.push_str(&format!(
-                "                int64_t refresh_margin = {value};\n                if (refresh_margin < 0 || refresh_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
-            ));
+            if use_dynamic_margin_base {
+                let value = ui_expr_c(
+                    &margin_property
+                        .expect("dynamic margin property exists")
+                        .value,
+                    view,
+                    signatures,
+                )?;
+                out.push_str(&format!(
+                    "                int64_t refresh_margin = {value};\n                if (refresh_margin < 0 || refresh_margin > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+                ));
+            }
+            let mut margin_value = |property_name: &str,
+                                    dynamic: bool|
+             -> Result<String, Diagnostic> {
+                if dynamic {
+                    let property = view_property(element, property_name)
+                        .expect("dynamic margin side property exists");
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    let variable = format!("refresh_{property_name}");
+                    out.push_str(&format!(
+                            "                int64_t {variable} = {value};\n                if ({variable} < 0 || {variable} > INT32_MAX - INT64_C({gap_half})) {{ fputs(\"Flux runtime error: {property_name} must be non-negative and fit within a 32-bit signed integer after grid gap spacing\\n\", stderr); abort(); }}\n"
+                        ));
+                    Ok(variable)
+                } else if let Some(value) =
+                    static_non_negative_style_i64(element, property_name, signatures)?
+                {
+                    Ok(format!("INT64_C({value})"))
+                } else if dynamic_margin {
+                    Ok("refresh_margin".to_string())
+                } else if let Some(property) = margin_property {
+                    let value = static_expr_i64(&property.value, signatures)
+                        .expect("non-dynamic margin is statically evaluable");
+                    Ok(format!("INT64_C({value})"))
+                } else {
+                    Ok("INT64_C(0)".to_string())
+                }
+            };
+            let top = margin_value("margin_top", dynamic_margin_top)?;
+            let bottom = margin_value("margin_bottom", dynamic_margin_bottom)?;
+            let start = margin_value("margin_start", dynamic_margin_start)?;
+            let end = margin_value("margin_end", dynamic_margin_end)?;
             out.push_str("                jmethodID refresh_get_layout_params = (*env)->GetMethodID(env, child_class, \"getLayoutParams\", \"()Landroid/view/ViewGroup$LayoutParams;\");\n");
             out.push_str("                jobject refresh_layout_params = refresh_get_layout_params == NULL ? NULL : (*env)->CallObjectMethod(env, child, refresh_get_layout_params);\n");
             out.push_str("                if (refresh_layout_params != NULL && !(*env)->ExceptionCheck(env)) {\n");

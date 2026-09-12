@@ -26410,16 +26410,25 @@ fn android_margin_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicMargin {
     state spacing: i64 = 8
+    state topSpacing: i64 = 20
+    state endSpacing: i64 = 12
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto auto
     grid gap: 10
     Button panel at 1,1
         text: "Panel"
         margin: spacing
-        marginTop: 20
+        marginTop: topSpacing
+        marginEnd: endSpacing
     Button grow at 2,1
         text: "Grow"
         onPress: spacing => spacing + 2
+    Button growTop at 3,1
+        text: "Grow top"
+        onPress: topSpacing => topSpacing + 3
+    Button growEnd at 4,1
+        text: "Grow end"
+        onPress: endSpacing => endSpacing + 4
 }
 app DynamicMargin
 "#;
@@ -26436,18 +26445,33 @@ app DynamicMargin
     .expect("dynamic Android margin should lower");
 
     assert!(android.contains("int64_t child_margin = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t child_margin_top = flux__ui_state_topSpacing"));
+    assert!(android.contains("int64_t child_margin_end = flux__ui_state_endSpacing"));
     assert!(android.contains("int64_t refresh_margin = flux__ui_state_spacing"));
+    assert!(android.contains("int64_t refresh_margin_top = flux__ui_state_topSpacing"));
+    assert!(android.contains("int64_t refresh_margin_end = flux__ui_state_endSpacing"));
     assert!(android.contains(
         "margin must be non-negative and fit within a 32-bit signed integer after grid gap spacing"
+    ));
+    assert!(android.contains(
+        "margin_top must be non-negative and fit within a 32-bit signed integer after grid gap spacing"
+    ));
+    assert!(android.contains(
+        "margin_end must be non-negative and fit within a 32-bit signed integer after grid gap spacing"
     ));
     assert!(android.contains("refresh_margin_method"));
     assert!(android.contains("setMargins"));
     assert!(android.contains("getLayoutParams"));
     assert!(android.contains("setLayoutParams"));
-    assert!(android.contains("(INT64_C(20) + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("(child_margin_top + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("(child_margin_end + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("(refresh_margin_top + INT64_C(5)) * flux__ui_density"));
+    assert!(android.contains("(refresh_margin_end + INT64_C(5)) * flux__ui_density"));
     assert!(android.contains("(refresh_margin + INT64_C(5)) * flux__ui_density"));
-    assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0"));
     assert!(android.contains("flux__ui_state_spacing = flux_add_i64"));
+    assert!(android.contains("flux__ui_state_topSpacing = flux_add_i64"));
+    assert!(android.contains("flux__ui_state_endSpacing = flux_add_i64"));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
 
     let static_source = r#"
