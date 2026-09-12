@@ -6214,6 +6214,12 @@ fn main() -> i64 {{
     let (size, sizeError) = file.size("{}")
     print(size)
     print(sizeError)
+    let (fileModified, fileModifiedError) = file.modifiedUnixMillis("{}")
+    print(fileModified > 0)
+    print(fileModifiedError)
+    let (directoryModified, directoryModifiedError) = directory.modifiedUnixMillis("{}")
+    print(directoryModified > 0)
+    print(directoryModifiedError)
     print(file.exists("{}"))
     print(directory.exists("{}"))
     print(file.copy("{}", "{}"))
@@ -6233,6 +6239,8 @@ fn main() -> i64 {{
         path(&content),
         path(&content),
         path(&content),
+        path(&content),
+        path(&nested),
         path(&content),
         path(&content),
         path(&content),
@@ -6255,6 +6263,8 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__fs_write_text"));
     assert!(generated.contains("flux__fs_append_text"));
     assert!(generated.contains("flux__fs_file_size"));
+    assert!(generated.contains("flux__fs_file_modified_unix_millis"));
+    assert!(generated.contains("flux__fs_directory_modified_unix_millis"));
     assert!(generated.contains("flux__fs_copy_file"));
     assert!(generated.contains("flux__fs_rename"));
     assert!(generated.contains("flux__fs_remove_file"));
@@ -6286,8 +6296,8 @@ fn main() -> i64 {{
     assert_eq!(
         lines,
         [
-            "nil", "true", "false", "nil", "nil", "6", "nil", "true", "false", "nil", "nil",
-            "false", "true", "nil", "false", "nil", "false"
+            "nil", "true", "false", "nil", "nil", "6", "nil", "true", "nil", "true", "nil", "true",
+            "false", "nil", "nil", "false", "true", "nil", "false", "nil", "false"
         ]
     );
     assert!(!nested.exists());
@@ -6296,6 +6306,8 @@ fn main() -> i64 {{
 fn hidden() -> void {
     print(file.exists("/tmp/unused-flux-file"))
     let (_size, _failure) = file.size("/tmp/unused-flux-file")
+    let (_modified, _modifiedFailure) = file.modifiedUnixMillis("/tmp/unused-flux-file")
+    let (_directoryModified, _directoryModifiedFailure) = directory.modifiedUnixMillis("/tmp/unused-flux-directory")
     print(file.write("/tmp/unused-flux-file", "unused"))
     print(directory.createAll("/tmp/unused-flux-directory/nested"))
 }
@@ -6307,6 +6319,8 @@ fn main() -> i64 {
         compile_to_c(unused).expect("dead canonical filesystem calls should lower");
     assert!(!unused_generated.contains("flux__fs_is_file"));
     assert!(!unused_generated.contains("flux__fs_file_size"));
+    assert!(!unused_generated.contains("flux__fs_file_modified_unix_millis"));
+    assert!(!unused_generated.contains("flux__fs_directory_modified_unix_millis"));
     assert!(!unused_generated.contains("flux__fs_write_text"));
     assert!(!unused_generated.contains("flux__fs_create_directories"));
 
@@ -6314,6 +6328,8 @@ fn main() -> i64 {
 fn main() -> i64 {
     file.exists(1)
     let (_size, _failure) = file.size(false)
+    let (_modified, _modifiedFailure) = file.modifiedUnixMillis(1)
+    let (_directoryModified, _directoryModifiedFailure) = directory.modifiedUnixMillis(false)
     file.write("x", 1)
     file.copy(false, "x")
     directory.exists(1)
@@ -6327,6 +6343,8 @@ fn main() -> i64 {
     for label in [
         "file.exists path",
         "file.size path",
+        "file.modifiedUnixMillis path",
+        "directory.modifiedUnixMillis path",
         "file.write text",
         "file.copy source",
         "directory.exists path",

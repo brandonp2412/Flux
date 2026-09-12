@@ -1529,6 +1529,10 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
             ("size", "fn file.size(path: str) -> (i64, error)"),
+            (
+                "modifiedUnixMillis",
+                "fn file.modifiedUnixMillis(path: str) -> (i64, error)",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1548,6 +1552,10 @@ fn add_qualified_namespace_completions(
     if namespace == "directory" {
         for (label, detail) in [
             ("exists", "fn directory.exists(path: str) -> bool"),
+            (
+                "modifiedUnixMillis",
+                "fn directory.modifiedUnixMillis(path: str) -> (i64, error)",
+            ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
             ("remove", "fn directory.remove(path: str) -> error"),
@@ -3441,9 +3449,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "size" => {
+                "size" | "modifiedUnixMillis" => {
                     return Some(signature_help_for_builtin(
-                        "file.size",
+                        &format!("file.{member}"),
                         &["path: str"],
                         "(i64, error)",
                         active_parameter,
@@ -3483,6 +3491,14 @@ fn signature_help_for_document_cached(
                         "directory.exists",
                         &["path: str"],
                         "bool",
+                        active_parameter,
+                    ));
+                }
+                "modifiedUnixMillis" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.modifiedUnixMillis",
+                        &["path: str"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -7182,6 +7198,7 @@ mod tests {
         assert!(!file_items.contains("\"label\":\"read\""));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.modifiedUnixMillis(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
@@ -7203,6 +7220,9 @@ mod tests {
         ))
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
+        assert!(
+            directory_items.contains("fn directory.modifiedUnixMillis(path: str) -> (i64, error)")
+        );
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
@@ -8770,6 +8790,46 @@ mod tests {
         .expect("file.size should have signature help")
         .to_json();
         assert!(help.contains("fn file.size(path: str) -> (i64, error)"));
+    }
+
+    #[test]
+    fn signature_help_supports_filesystem_modification_times() {
+        let uri = "file:///tmp/filesystem-modified-signatures.flux";
+        let source = r#"fn main() -> i64 {
+    let (_fileModified, _fileFailure) = file.modifiedUnixMillis("a")
+    let (_directoryModified, _directoryFailure) = directory.modifiedUnixMillis("a")
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "file.modifiedUnixMillis(",
+                "fn file.modifiedUnixMillis(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.modifiedUnixMillis(",
+                "fn directory.modifiedUnixMillis(path: str) -> (i64, error)",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("filesystem modification-time call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("filesystem modification-time call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

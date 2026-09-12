@@ -1393,6 +1393,8 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__locale_format_date_time(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
     {
         out.push_str("#include <time.h>\n");
     }
@@ -4897,12 +4899,26 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     if runtime_usage.contains("flux__fs_copy_file(") {
         out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
     }
-    if runtime_usage.contains("flux__fs_file_size(") {
+    if runtime_usage.contains("flux__fs_file_size(")
+        || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
+    {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
     if runtime_usage.contains("flux__fs_file_size(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_file_size(const char *path) { struct stat info; if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, \"failed to inspect file size\"); if (info.st_size < 0 || (uintmax_t)info.st_size > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, \"file size exceeds i64\"); return flux__fs_i64_result((int64_t)info.st_size, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_modified_unix_millis(const char *path, bool expect_directory) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect modification time\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); int64_t seconds = (int64_t)info.st_mtim.tv_sec; if ((time_t)seconds != info.st_mtim.tv_sec) return flux__fs_i64_result(-1, \"modification time exceeds i64\"); int64_t millis; if (__builtin_mul_overflow(seconds, INT64_C(1000), &millis) || __builtin_add_overflow(millis, (int64_t)(info.st_mtim.tv_nsec / 1000000L), &millis)) return flux__fs_i64_result(-1, \"modification time exceeds i64\"); return flux__fs_i64_result(millis, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_modified_unix_millis(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_modified_unix_millis(const char *path) { return flux__fs_modified_unix_millis(path, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_modified_unix_millis(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_modified_unix_millis(const char *path) { return flux__fs_modified_unix_millis(path, true); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -21670,7 +21686,7 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid file call reached code generation"));
         }
         match name {
-            "exists" | "size" | "remove" => {
+            "exists" | "size" | "modifiedUnixMillis" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -21679,6 +21695,11 @@ fn emit_qualified_call(
                     "exists" => ("flux__fs_is_file", vec![Type::Bool], None),
                     "size" => (
                         "flux__fs_file_size",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "modifiedUnixMillis" => (
+                        "flux__fs_file_modified_unix_millis",
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
@@ -21728,15 +21749,20 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid directory call reached code generation"));
         }
         let path = emit_expr(&args[0], env, signatures)?;
-        let (helper, returns) = match name {
-            "exists" => ("flux__fs_is_directory", vec![Type::Bool]),
-            "create" => ("flux__fs_create_directory", vec![Type::Error]),
-            "createAll" => ("flux__fs_create_directories", vec![Type::Error]),
-            "remove" => ("flux__fs_remove_directory", vec![Type::Error]),
-            "removeAll" => ("flux__fs_remove_directories", vec![Type::Error]),
+        let (helper, returns, multi_value_tag) = match name {
+            "exists" => ("flux__fs_is_directory", vec![Type::Bool], None),
+            "modifiedUnixMillis" => (
+                "flux__fs_directory_modified_unix_millis",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "create" => ("flux__fs_create_directory", vec![Type::Error], None),
+            "createAll" => ("flux__fs_create_directories", vec![Type::Error], None),
+            "remove" => ("flux__fs_remove_directory", vec![Type::Error], None),
+            "removeAll" => ("flux__fs_remove_directories", vec![Type::Error], None),
             _ => return Err(diag(span, "unknown directory call reached code generation")),
         };
-        return Ok((format!("{helper}({})", path.code), returns, None));
+        return Ok((format!("{helper}({})", path.code), returns, multi_value_tag));
     }
     if namespace == "fs" {
         if !named_args.is_empty() {

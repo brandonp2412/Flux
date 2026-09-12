@@ -8237,7 +8237,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "exists" | "size" | "remove" => {
+            "exists" | "size" | "modifiedUnixMillis" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -8253,7 +8253,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
-                    "size" => vec![Type::I64, Type::Error],
+                    "size" | "modifiedUnixMillis" => vec![Type::I64, Type::Error],
                     _ => vec![Type::Error],
                 });
             }
@@ -8319,7 +8319,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "exists" | "create" | "createAll" | "remove" | "removeAll" => {
+            "exists" | "modifiedUnixMillis" | "create" | "createAll" | "remove" | "removeAll" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -8333,10 +8333,10 @@ fn check_qualified_call(
                     &path_type,
                     &format!("directory.{name} path"),
                 )?;
-                return Ok(if name == "exists" {
-                    vec![Type::Bool]
-                } else {
-                    vec![Type::Error]
+                return Ok(match name.as_str() {
+                    "exists" => vec![Type::Bool],
+                    "modifiedUnixMillis" => vec![Type::I64, Type::Error],
+                    _ => vec![Type::Error],
                 });
             }
             _ => {
