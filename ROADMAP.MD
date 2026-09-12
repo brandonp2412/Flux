@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 525
+- Completed baseline units: 526
 - Reported overall progress: **71%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -406,7 +406,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 # Milestone 6 — Concurrency
 
-- [ ] Task model with compiler-owned result/state storage, ownership-safe values across suspension points, and no requirement for source-level generic task/future types in ordinary code.
+- [x] Compiler-owned native task model for the current `async fn` / direct-`await` bootstrap: each reachable async invocation lowers to private task state containing copied arguments, native pthread execution, declared single/multi-value result storage, and deterministic join/free at `await`, with no source-level task/future generic or callback-shaped application API. Task boundaries currently admit only compiler-classified `Copy` parameters/results so borrowed lists and other non-copy values cannot cross threads before sendability/owned-transfer rules exist; unreachable async functions tree-shake without pthread support. Structured concurrency, cancellation propagation, task-integrated timers/event loops, and higher-throughput scheduling remain tracked separately below rather than being implied complete.
 - [ ] Structured concurrency.
 - [ ] Cancellation propagation.
 - [ ] Timers.

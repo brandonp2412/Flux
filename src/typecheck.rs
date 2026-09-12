@@ -2965,6 +2965,45 @@ fn check_function_all(
     }
     if function.asynchronous {
         env.insert("flux__async_context".to_string(), Type::Bool);
+        for param in &function.params {
+            if !signatures.is_copy_type(&param.ty) {
+                diagnostics.push(
+                    diag(
+                        param.type_span,
+                        &format!(
+                            "async parameter '{}' must currently use a Copy type, got {}",
+                            param.name,
+                            param.ty.name()
+                        ),
+                    )
+                    .with_note(
+                        "compiler-owned native tasks may only move Copy values across the worker boundary until owned transfer and sendability rules land",
+                    ),
+                );
+            }
+        }
+        for (index, ty) in function.returns.iter().enumerate() {
+            if !matches!(signatures.canonical_type(ty), Type::Void) && !signatures.is_copy_type(ty)
+            {
+                diagnostics.push(
+                    diag(
+                        function
+                            .return_type_spans
+                            .get(index)
+                            .copied()
+                            .unwrap_or(function.return_span),
+                        &format!(
+                            "async return value {} must currently use a Copy type, got {}",
+                            index + 1,
+                            ty.name()
+                        ),
+                    )
+                    .with_note(
+                        "compiler-owned native tasks may only return Copy values until owned transfer and sendability rules land",
+                    ),
+                );
+            }
+        }
     }
     let return_types = function
         .returns

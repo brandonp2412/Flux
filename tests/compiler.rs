@@ -30633,34 +30633,59 @@ fn main() -> i64 {
 }
 
 #[test]
-fn async_await_frontend_preserves_declared_results_and_blocks_fake_lowering() {
+fn async_await_lowers_to_compiler_owned_native_tasks() {
     let source = r#"
 async fn loadCode(value: i64) -> (i64, error) {
     return value * 2, nil
 }
 
 async fn main() -> i64 {
-    let (code, _failure) = await loadCode(21)
-    return code
+    let (code, failure) = await loadCode(21)
+    if failure != nil:
+        return 1
+    print(code)
+    if code == 42:
+        return 0
+    return 2
 }
 "#;
 
-    check_source(source)
-        .expect("async functions and await should typecheck as a front-end contract");
+    check_source(source).expect("async functions and await should typecheck");
     let formatted = fluxc::formatter::format_source(source).expect("async source should format");
     assert!(formatted.contains("async fn loadCode(value: i64) -> (i64, error) {"));
-    assert!(formatted.contains("let (code, _failure) = await loadCode(21)"));
+    assert!(formatted.contains("let (code, failure) = await loadCode(21)"));
 
-    let lowering = compile_to_c(source).expect_err(
-        "reachable await must not be compiled synchronously before task lowering exists",
-    );
+    let generated = compile_to_c(source).expect("reachable await should lower to native tasks");
+    assert!(generated.contains("struct flux__async_task_loadCode"));
+    assert!(generated.contains("flux__async_start_loadCode(INT64_C(21))"));
+    assert!(generated.contains("flux__async_await_loadCode"));
+    assert!(generated.contains("pthread_create(&flux__task->thread"));
+    assert!(generated.contains("pthread_join(flux__task->thread"));
+    assert!(generated.contains("free(flux__task)"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async API fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async API source should be writable");
+    let binary = root.join("async-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async API binary should build");
     assert!(
-        lowering
-            .message
-            .contains("async/await native task lowering is not implemented yet"),
-        "unexpected async lowering diagnostic: {}",
-        lowering.message
+        built.status.success(),
+        "async API build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
     );
+    let run = Command::new(&binary)
+        .output()
+        .expect("async API binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
 
     let no_suspension = r#"
 async fn main() -> i64 {
@@ -30669,12 +30694,9 @@ async fn main() -> i64 {
 "#;
     check_source(no_suspension).expect("an async function does not require an await expression");
     let lowering = compile_to_c(no_suspension)
-        .expect_err("async functions must not silently lower as synchronous functions");
-    assert!(
-        lowering
-            .message
-            .contains("async/await native task lowering is not implemented yet")
-    );
+        .expect("async functions without nested await still lower through task storage");
+    assert!(lowering.contains("struct flux__async_task_main"));
+    assert!(lowering.contains("flux__async_await_main(flux__async_start_main())"));
 
     let public_async = r#"
 pub async fn compute(value: i64) -> i64 {
@@ -30686,10 +30708,42 @@ fn main() -> i64 {
 }
 "#;
     let header = compile_to_c_header(public_async)
-        .expect_err("public async functions must not masquerade as synchronous C ABI exports");
-    assert!(header.message.contains(
-        "async functions cannot be emitted through the C ABI before native task lowering exists"
-    ));
+        .expect_err("compiler-private async task state must not become a stable C ABI");
+    assert!(
+        header
+            .message
+            .contains("async functions are not exposed through the stable C ABI")
+    );
+
+    let non_copy_parameter = r#"
+async fn sum(values: i64[]) -> i64 {
+    return values.length
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(non_copy_parameter)
+        .expect_err("borrowed list parameters cannot cross an async task boundary");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("async parameter 'values' must currently use a Copy type")
+    }));
+
+    let dead = r#"
+async fn hidden() -> i64 {
+    return 1
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("unreachable async work should tree-shake");
+    assert!(!dead_generated.contains("flux__async_task_hidden"));
+    assert!(!dead_generated.contains("#include <pthread.h>"));
 
     let missing_await = r#"
 async fn loadCode(value: i64) -> i64 {
@@ -30741,6 +30795,8 @@ async fn main() -> i64 {
             .message
             .contains("function 'loadCode' is synchronous and cannot be awaited")
     }));
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

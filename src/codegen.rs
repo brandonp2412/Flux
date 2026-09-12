@@ -103,7 +103,7 @@ pub fn emit_c_header_with_module_names(
         if function.asynchronous {
             return Err(diag(
                 function.keyword_span,
-                "async functions cannot be emitted through the C ABI before native task lowering exists",
+                "async functions are not exposed through the stable C ABI; export a synchronous wrapper that awaits the async work instead",
             ));
         }
         for param in &function.params {
@@ -1481,6 +1481,38 @@ pub fn emit_c_for_target_with_source_metadata(
     {
         out.push('\n');
     }
+    for function in &program.functions {
+        if !reachable_functions.contains(&function.name) || !function.asynchronous {
+            continue;
+        }
+        out.push_str(&format!(
+            "struct {} {{\n",
+            async_task_c_name(&function.name)
+        ));
+        out.push_str("    pthread_t thread;\n");
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "    {} arg_{index};\n",
+                c_type(&param.ty, signatures)
+            ));
+        }
+        match function.returns.as_slice() {
+            [] => {}
+            [ty] => out.push_str(&format!("    {} result;\n", c_type(ty, signatures))),
+            _ => out.push_str(&format!(
+                "    struct {} result;\n",
+                multi_return_struct_name(&function.name)
+            )),
+        }
+        out.push_str("};\n");
+    }
+    if program
+        .functions
+        .iter()
+        .any(|function| reachable_functions.contains(&function.name) && function.asynchronous)
+    {
+        out.push('\n');
+    }
     emit_interface_multi_return_structs(
         &mut out,
         program,
@@ -1490,17 +1522,30 @@ pub fn emit_c_for_target_with_source_metadata(
     );
 
     for function in &program.functions {
-        if reachable_functions.contains(&function.name) {
-            out.push_str(&function_prototype(function, signatures));
-            if function.public
-                && function.name != "main"
-                && function.foreign_symbol.is_none()
-                && let Some(symbol) = abi_export_symbol(function, source_modules)
-            {
-                out.push_str(&format!(" __asm__(\"{symbol}\")"));
-            }
-            out.push_str(";\n");
+        if !reachable_functions.contains(&function.name) {
+            continue;
         }
+        if function.asynchronous {
+            out.push_str(&async_body_prototype(function, signatures));
+            out.push_str(";\n");
+            out.push_str(&async_start_prototype(function, signatures));
+            out.push_str(";\n");
+            out.push_str(&async_await_prototype(function, signatures));
+            out.push_str(";\n");
+            if function.name == "main" {
+                out.push_str("int main(void);\n");
+            }
+            continue;
+        }
+        out.push_str(&function_prototype(function, signatures));
+        if function.public
+            && function.name != "main"
+            && function.foreign_symbol.is_none()
+            && let Some(symbol) = abi_export_symbol(function, source_modules)
+        {
+            out.push_str(&format!(" __asm__(\"{symbol}\")"));
+        }
+        out.push_str(";\n");
     }
     for helper in &function_helpers {
         out.push_str(&function_helper_prototype(helper, signatures)?);
@@ -1536,6 +1581,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__channel_")
+        || runtime_usage.contains("flux__async_task_")
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
@@ -1553,7 +1599,10 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
-    if runtime_usage.contains("flux__worker_") || runtime_usage.contains("flux__channel_") {
+    if runtime_usage.contains("flux__worker_")
+        || runtime_usage.contains("flux__channel_")
+        || runtime_usage.contains("flux__async_task_")
+    {
         out.push_str("#include <pthread.h>\n");
     }
     if runtime_usage.contains("struct flux__optional_i64") {
@@ -13653,13 +13702,24 @@ fn static_minimum_size(
     Ok(Some(value))
 }
 
-fn function_prototype(function: &Function, signatures: &Signatures) -> String {
-    let ret = if function.name == "main" {
-        "int".to_string()
-    } else {
-        c_function_return_type(function, signatures)
-    };
-    let params = if function.params.is_empty() {
+fn async_task_c_name(name: &str) -> String {
+    format!("flux__async_task_{name}")
+}
+
+fn async_body_c_name(name: &str) -> String {
+    format!("flux__async_body_{name}")
+}
+
+fn async_start_c_name(name: &str) -> String {
+    format!("flux__async_start_{name}")
+}
+
+fn async_await_c_name(name: &str) -> String {
+    format!("flux__async_await_{name}")
+}
+
+fn function_params_c(function: &Function, signatures: &Signatures) -> String {
+    if function.params.is_empty() {
         "void".to_string()
     } else {
         function
@@ -13674,7 +13734,43 @@ fn function_prototype(function: &Function, signatures: &Signatures) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+fn async_body_prototype(function: &Function, signatures: &Signatures) -> String {
+    format!(
+        "static {} {}({})",
+        c_function_return_type(function, signatures),
+        async_body_c_name(&function.name),
+        function_params_c(function, signatures)
+    )
+}
+
+fn async_start_prototype(function: &Function, signatures: &Signatures) -> String {
+    format!(
+        "static struct {} *{}({})",
+        async_task_c_name(&function.name),
+        async_start_c_name(&function.name),
+        function_params_c(function, signatures)
+    )
+}
+
+fn async_await_prototype(function: &Function, signatures: &Signatures) -> String {
+    format!(
+        "static {} {}(struct {} *flux__task)",
+        c_function_return_type(function, signatures),
+        async_await_c_name(&function.name),
+        async_task_c_name(&function.name)
+    )
+}
+
+fn function_prototype(function: &Function, signatures: &Signatures) -> String {
+    let ret = if function.name == "main" {
+        "int".to_string()
+    } else {
+        c_function_return_type(function, signatures)
     };
+    let params = function_params_c(function, signatures);
     if let Some(symbol) = &function.foreign_symbol {
         return format!("extern {ret} {symbol}({params})");
     }
@@ -15498,6 +15594,9 @@ fn reachable_function_names(
             &mut references,
             &mut capabilities,
         );
+        if function.asynchronous {
+            collect_named_function_refs_from_block(&function.body, &known, &mut references);
+        }
         for reference in references {
             enqueue_function(&reference, &known, &mut reachable, &mut pending);
         }
@@ -15895,6 +15994,85 @@ fn collect_interface_dispatch_refs_from_expr(
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
+    }
+}
+
+fn collect_named_function_refs_from_block(
+    body: &[Stmt],
+    known: &HashSet<String>,
+    references: &mut HashSet<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Let { expr, .. }
+            | StmtKind::Var { expr, .. }
+            | StmtKind::Assign { expr, .. }
+            | StmtKind::AssignMultiDestructure { expr, .. }
+            | StmtKind::AssignListDestructure { expr, .. }
+            | StmtKind::AssignStructDestructure { expr, .. }
+            | StmtKind::LetDestructure { expr, .. }
+            | StmtKind::LetMultiDestructure { expr, .. }
+            | StmtKind::LetListDestructure { expr, .. }
+            | StmtKind::LetStructDestructure { expr, .. }
+            | StmtKind::Expr(expr) => {
+                collect_named_function_refs_from_expr(expr, known, references)
+            }
+            StmtKind::Return(values) => {
+                for value in values {
+                    collect_named_function_refs_from_expr(value, known, references);
+                }
+            }
+            StmtKind::Shell { expr, redirect, .. } => {
+                collect_named_function_refs_from_expr(expr, known, references);
+                if let Some(redirect) = redirect {
+                    collect_named_function_refs_from_expr(&redirect.path, known, references);
+                }
+            }
+            StmtKind::If {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                collect_named_function_refs_from_expr(cond, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+                collect_named_function_refs_from_block(else_body, known, references);
+            }
+            StmtKind::ForRange {
+                start, end, body, ..
+            } => {
+                collect_named_function_refs_from_expr(start, known, references);
+                collect_named_function_refs_from_expr(end, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                collect_named_function_refs_from_expr(iterable, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::While { cond, body } => {
+                collect_named_function_refs_from_expr(cond, known, references);
+                collect_named_function_refs_from_block(body, known, references);
+            }
+            StmtKind::Match { value, arms } => {
+                collect_named_function_refs_from_expr(value, known, references);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_named_function_refs_from_expr(guard, known, references);
+                    }
+                    collect_named_function_refs_from_block(&arm.body, known, references);
+                }
+            }
+            StmtKind::ListMatch { value, arms } => {
+                collect_named_function_refs_from_expr(value, known, references);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_named_function_refs_from_expr(guard, known, references);
+                    }
+                    collect_named_function_refs_from_block(&arm.body, known, references);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
     }
 }
 
@@ -16362,6 +16540,73 @@ fn emit_source_line(out: &mut String, span: SourceSpan, source_paths: &HashMap<S
     out.push_str(&format!("#line {} \"{}\"\n", span.line.max(1), escaped));
 }
 
+fn emit_async_task_runtime(out: &mut String, function: &Function, signatures: &Signatures) {
+    let task_name = async_task_c_name(&function.name);
+    let runner_name = format!("flux__async_run_{}", function.name);
+    let start_name = async_start_c_name(&function.name);
+    let await_name = async_await_c_name(&function.name);
+    let body_name = async_body_c_name(&function.name);
+    let args = (0..function.params.len())
+        .map(|index| format!("flux__task->arg_{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    out.push_str(&format!(
+        "static void *{runner_name}(void *flux__opaque) {{\n    struct {task_name} *flux__task = (struct {task_name} *)flux__opaque;\n"
+    ));
+    match function.returns.as_slice() {
+        [] => out.push_str(&format!("    {body_name}({args});\n")),
+        _ => out.push_str(&format!("    flux__task->result = {body_name}({args});\n")),
+    }
+    out.push_str("    return NULL;\n}\n");
+
+    out.push_str(&format!(
+        "{} {{\n",
+        async_start_prototype(function, signatures)
+    ));
+    out.push_str(&format!(
+        "    struct {task_name} *flux__task = malloc(sizeof(*flux__task));\n    if (flux__task == NULL) {{ fputs(\"Flux runtime error: unable to allocate async task state\\n\", stderr); abort(); }}\n"
+    ));
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "    flux__task->arg_{index} = {};\n",
+            local_c_name(&param.name)
+        ));
+    }
+    out.push_str(&format!(
+        "    if (pthread_create(&flux__task->thread, NULL, {runner_name}, flux__task) != 0) {{ free(flux__task); fputs(\"Flux runtime error: unable to start async task\\n\", stderr); abort(); }}\n    return flux__task;\n}}\n"
+    ));
+
+    out.push_str(&format!(
+        "{} {{\n",
+        async_await_prototype(function, signatures)
+    ));
+    out.push_str(
+        "    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async task\\n\", stderr); abort(); }\n    if (pthread_join(flux__task->thread, NULL) != 0) { free(flux__task); fputs(\"Flux runtime error: unable to await async task\\n\", stderr); abort(); }\n",
+    );
+    match function.returns.as_slice() {
+        [] => out.push_str("    free(flux__task);\n}\n"),
+        [ty] => {
+            out.push_str(&format!(
+                "    {} flux__result = flux__task->result;\n    free(flux__task);\n    return flux__result;\n}}\n",
+                c_type(ty, signatures)
+            ));
+        }
+        _ => {
+            out.push_str(&format!(
+                "    struct {} flux__result = flux__task->result;\n    free(flux__task);\n    return flux__result;\n}}\n",
+                multi_return_struct_name(&function.name)
+            ));
+        }
+    }
+
+    if function.name == "main" {
+        out.push_str(&format!(
+            "int main(void) {{\n    return (int){await_name}({start_name}());\n}}\n"
+        ));
+    }
+}
+
 fn emit_function(
     out: &mut String,
     function: &Function,
@@ -16370,13 +16615,6 @@ fn emit_function(
     temp_counter: &mut usize,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
-    if function.asynchronous {
-        return Err(diag(
-            function.keyword_span,
-            "async/await native task lowering is not implemented yet",
-        )
-        .with_note("reachable async functions require compiler-owned task/state-machine lowering and must never be emitted as synchronous native functions"));
-    }
     let reachable_spans = cfg
         .nodes()
         .iter()
@@ -16451,7 +16689,11 @@ fn emit_function(
         })
         .collect::<HashMap<_, _>>();
     emit_source_line(out, function.span, source_paths);
-    out.push_str(&function_prototype(function, signatures));
+    if function.asynchronous {
+        out.push_str(&async_body_prototype(function, signatures));
+    } else {
+        out.push_str(&function_prototype(function, signatures));
+    }
     out.push_str(" {\n");
     let mut env = HashMap::new();
     for param in &function.params {
@@ -16477,6 +16719,9 @@ fn emit_function(
         },
     )?;
     out.push_str("}\n");
+    if function.asynchronous {
+        emit_async_task_runtime(out, function, signatures);
+    }
     Ok(())
 }
 
@@ -20541,12 +20786,45 @@ fn emit_expr(
             code: "0".to_string(),
             ty: Type::Optional(Box::new(Type::Void)),
         },
-        ExprKind::Await(_) => {
-            return Err(diag(
-                expr.span,
-                "async/await native task lowering is not implemented yet",
-            )
-            .with_note("the async/await front end is checked, but reachable await expressions require compiler-owned task/state-machine lowering before native code generation"));
+        ExprKind::Await(awaited) => {
+            let ExprKind::Call {
+                name,
+                args,
+                named_args,
+            } = &awaited.kind
+            else {
+                return Err(diag(
+                    awaited.span,
+                    "await lowering currently requires a direct async function call",
+                ));
+            };
+            let signature = signatures.get(name).ok_or_else(|| {
+                diag(
+                    awaited.span,
+                    &format!("unknown async function '{name}' during code generation"),
+                )
+            })?;
+            if !signature.asynchronous {
+                return Err(diag(
+                    awaited.span,
+                    &format!("function '{name}' is synchronous and cannot be awaited"),
+                ));
+            }
+            if signature.returns.len() > 1 {
+                return Err(diag(
+                    expr.span,
+                    "multi-value await reached scalar code generation",
+                ));
+            }
+            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
+            let code = format!(
+                "{}({}({}))",
+                async_await_c_name(name),
+                async_start_c_name(name),
+                rendered.join(", ")
+            );
+            let ty = signature.returns.first().cloned().unwrap_or(Type::Void);
+            EmittedExpr { code, ty }
         }
         ExprKind::Var(name) => {
             if let Some(ty) = env.get(name) {
@@ -23065,11 +23343,42 @@ fn emit_multi_expr(
             };
             emit_multi_expr(&call, env, signatures)
         }
-        ExprKind::Await(_) => Err(diag(
-            expr.span,
-            "async/await native task lowering is not implemented yet",
-        )
-        .with_note("the async/await front end is checked, but reachable await expressions require compiler-owned task/state-machine lowering before native code generation")),
+        ExprKind::Await(awaited) => {
+            let ExprKind::Call {
+                name,
+                args,
+                named_args,
+            } = &awaited.kind
+            else {
+                return Err(diag(
+                    awaited.span,
+                    "await lowering currently requires a direct async function call",
+                ));
+            };
+            let signature = signatures.get(name).ok_or_else(|| {
+                diag(
+                    awaited.span,
+                    &format!("unknown async function '{name}' during code generation"),
+                )
+            })?;
+            if !signature.asynchronous || signature.returns.len() < 2 {
+                return Err(diag(
+                    awaited.span,
+                    &format!("async function '{name}' does not return multiple values"),
+                ));
+            }
+            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
+            Ok((
+                format!(
+                    "{}({}({}))",
+                    async_await_c_name(name),
+                    async_start_c_name(name),
+                    rendered.join(", ")
+                ),
+                multi_return_struct_name(name),
+                signature.returns.clone(),
+            ))
+        }
         ExprKind::Call {
             name,
             args,

@@ -1618,7 +1618,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 definitions: self.scoped_definition_for(name).into_iter().collect(),
             },
             ExprKind::Await(awaited) => {
-                let _ = self.lower_scalar_expr(producer, awaited);
+                let _ = self.lower_expr_values(producer, awaited, false);
                 ControlFlowValueKind::Opaque
             }
             ExprKind::AnonymousFunction { params, body, .. } => {
