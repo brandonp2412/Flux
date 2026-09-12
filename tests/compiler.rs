@@ -31952,6 +31952,84 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_assignment_suspends_without_blocking_worker() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn update(value: i64) -> i64 {
+    var total: i64 = value
+    total = await addOne(total)
+    return total
+}
+
+async fn choose(flag: bool) -> i64 {
+    var total: i64 = 40
+    if flag:
+        total = await addOne(total)
+    else:
+        total = 2
+    return total
+}
+
+async fn pair(value: i64) -> (i64, error) {
+    return value + 1, nil
+}
+
+async fn updatePair(value: i64) -> i64 {
+    var first: i64 = 0
+    (first, _) = await pair(value)
+    return first
+}
+
+async fn main() -> i64 {
+    let direct: i64 = await update(40)
+    let branch: i64 = await choose(true)
+    let skipped: i64 = await choose(false)
+    let pairValue: i64 = await updatePair(40)
+    return direct + branch + skipped + pairValue
+}
+"#;
+
+    check_source(source).expect("direct assignment awaits should typecheck");
+    let generated =
+        compile_to_c(source).expect("direct assignment awaits should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_update"));
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("flux__async_resume_updatePair"));
+    assert!(!generated.contains("flux__async_body_update("));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(!generated.contains("flux__async_body_updatePair("));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+    assert!(!generated.contains("flux__async_await_pair(flux__async_start_pair"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-assignment-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("assignment async fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-assignment");
+    fs::write(&source_path, source).expect("assignment async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("assignment async binary should build");
+    assert!(
+        built.status.success(),
+        "assignment async build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("assignment async binary should run");
+    assert_eq!(status.code(), Some(125));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_optional_promotion_branch_retains_safe_fallback() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {

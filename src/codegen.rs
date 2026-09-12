@@ -14390,11 +14390,17 @@ fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
     match &stmt.kind {
         StmtKind::Let { expr, .. }
         | StmtKind::Var { expr, .. }
+        | StmtKind::Assign {
+            expr,
+            coalescing: false,
+            ..
+        }
         | StmtKind::LetMultiDestructure {
             expr,
             else_return: false,
             ..
         }
+        | StmtKind::AssignMultiDestructure { expr, .. }
         | StmtKind::Expr(expr) => matches!(&expr.kind, ExprKind::Await(_)).then_some(expr),
         StmtKind::Return(values) if values.len() == 1 => {
             matches!(&values[0].kind, ExprKind::Await(_)).then_some(&values[0])
@@ -17713,6 +17719,65 @@ fn emit_async_completed_await(
             env.insert(name.clone(), declared);
             if matches!(stmt.kind, StmtKind::Var { .. }) {
                 mutable.insert(name.clone());
+            }
+        }
+        StmtKind::Assign {
+            name,
+            coalescing: false,
+            ..
+        } => {
+            let [actual] = signature.returns.as_slice() else {
+                return Err(diag(
+                    await_expr.span,
+                    "assignment await changed return arity after type checking",
+                ));
+            };
+            let Some(expected) = env.get(name).map(|ty| signatures.canonical_type(ty)) else {
+                return Err(diag(
+                    stmt.span,
+                    "async continuation assignment target disappeared after type checking",
+                ));
+            };
+            let actual = signatures.canonical_type(actual);
+            if expected != actual || !mutable.contains(name) {
+                return Err(diag(
+                    stmt.span,
+                    "async continuation assignment contract changed after type checking",
+                ));
+            }
+            out.push_str(&format!("{pad}{} = {child}->result;\n", local_c_name(name)));
+        }
+        StmtKind::AssignMultiDestructure { bindings, .. } => {
+            if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
+                return Err(diag(
+                    stmt.span,
+                    "multi-value assignment await changed return arity after type checking",
+                ));
+            }
+            for (index, (binding, actual)) in bindings.iter().zip(&signature.returns).enumerate() {
+                if binding.name == "_" {
+                    continue;
+                }
+                let Some(expected) = env
+                    .get(&binding.name)
+                    .map(|ty| signatures.canonical_type(ty))
+                else {
+                    return Err(diag(
+                        binding.span,
+                        "async continuation assignment target disappeared after type checking",
+                    ));
+                };
+                let actual = signatures.canonical_type(actual);
+                if expected != actual || !mutable.contains(&binding.name) {
+                    return Err(diag(
+                        binding.span,
+                        "async continuation assignment contract changed after type checking",
+                    ));
+                }
+                out.push_str(&format!(
+                    "{pad}{} = {child}->result.v{index};\n",
+                    local_c_name(&binding.name)
+                ));
             }
         }
         StmtKind::LetMultiDestructure { bindings, .. } => {
