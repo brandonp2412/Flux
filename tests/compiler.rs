@@ -15552,6 +15552,118 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_dynamic_negated_additive_inverse_guards() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn addThenNegated(value: i64, offset: i64) -> i64 {
+    return (value + offset) + -offset
+}
+
+fn negatedThenAdd(value: i64, offset: i64) -> i64 {
+    return -offset + (value + offset)
+}
+
+fn negativeInnerThenRestore(value: i64, offset: i64) -> i64 {
+    return (value + -offset) + offset
+}
+
+fn restoreLeftAfterNegativeInner(value: i64, offset: i64) -> i64 {
+    return offset + (value + -offset)
+}
+
+fn subtractThenNegatedSubtract(value: i64, offset: i64) -> i64 {
+    return (value - offset) - -offset
+}
+
+fn subtractNegativeThenSubtract(value: i64, offset: i64) -> i64 {
+    return (value - -offset) - offset
+}
+
+fn addThenNegatedEffect(value: i64, offset: i64) -> i64 {
+    return (observe(value) + offset) + -offset
+}
+
+fn main() -> i64 {
+    print(addThenNegated(10, 3))
+    print(negatedThenAdd(11, 4))
+    print(negativeInnerThenRestore(12, 5))
+    print(restoreLeftAfterNegativeInner(13, 6))
+    print(subtractThenNegatedSubtract(14, 7))
+    print(subtractNegativeThenSubtract(15, 8))
+    return addThenNegatedEffect(16, 9)
+}
+"#;
+
+    check_source(source).expect("dynamic negated additive inverse proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("dynamic negated additive inverse proofs should remove only safe outer guards");
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__local_value, flux__local_offset)) + (flux_neg_i64(flux__local_offset)));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_neg_i64(flux__local_offset)) + (flux_add_i64(flux__local_value, flux__local_offset)));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__local_value, flux_neg_i64(flux__local_offset))) + (flux__local_offset));"
+    ));
+    assert!(generated.contains(
+        "return ((flux__local_offset) + (flux_add_i64(flux__local_value, flux_neg_i64(flux__local_offset))));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_sub_i64(flux__local_value, flux__local_offset)) - (flux_neg_i64(flux__local_offset)));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_sub_i64(flux__local_value, flux_neg_i64(flux__local_offset))) - (flux__local_offset));"
+    ));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful inner operands must still evaluate exactly once",
+    );
+
+    let unmatched = r#"
+fn keepGuard(value: i64, leftOffset: i64, rightOffset: i64) -> i64 {
+    return (value + leftOffset) + -rightOffset
+}
+
+fn main() -> i64 {
+    return keepGuard(9, 2, 3)
+}
+"#;
+    let unmatched_generated = compile_to_c(unmatched)
+        .expect("unmatched dynamic negated addition should retain its outer guard");
+    assert!(unmatched_generated.contains(
+        "return flux_add_i64(flux_add_i64(flux__local_value, flux__local_leftOffset), flux_neg_i64(flux__local_rightOffset));"
+    ));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 4
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count + count) + -count
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI dynamic negated additive inverse proof should share lowering");
+    assert!(ui_generated.contains(
+        "((flux_add_i64(flux__ui_state_count, flux__ui_state_count)) + (flux_neg_i64(flux__ui_state_count)))"
+    ));
+    assert!(!ui_generated.contains(
+        "flux_add_i64(flux_add_i64(flux__ui_state_count, flux__ui_state_count), flux_neg_i64(flux__ui_state_count))"
+    ));
+}
+
+#[test]
 fn eliminates_redundant_checked_signed_additive_inverse_guards() {
     let source = r#"
 const OFFSET: i64 = 7

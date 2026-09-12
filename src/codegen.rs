@@ -16931,6 +16931,23 @@ fn checked_i64_inverse_c(
             (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
         )
     };
+    let opposite_signed_binding = |left: &Expr, right: &Expr| match (&left.kind, &right.kind) {
+        (
+            ExprKind::Var(left_name),
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: right_inner,
+            },
+        ) => matches!(&right_inner.kind, ExprKind::Var(right_name) if left_name == right_name),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: left_inner,
+            },
+            ExprKind::Var(right_name),
+        ) => matches!(&left_inner.kind, ExprKind::Var(left_name) if left_name == right_name),
+        _ => false,
+    };
 
     match op {
         BinOp::Sub => {
@@ -16940,6 +16957,15 @@ fn checked_i64_inverse_c(
                 right: inner_right,
             } = &left.kind
                 && (same_binding(inner_left, right) || same_binding(inner_right, right))
+            {
+                return Some(format!("(({left_code}) - ({right_code}))"));
+            }
+            if let ExprKind::Binary {
+                left: _,
+                op: BinOp::Sub,
+                right: inner_right,
+            } = &left.kind
+                && opposite_signed_binding(inner_right, right)
             {
                 return Some(format!("(({left_code}) - ({right_code}))"));
             }
@@ -16969,6 +16995,26 @@ fn checked_i64_inverse_c(
                 ..
             } = &right.kind
                 && same_binding(left, inner_right)
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+            if let ExprKind::Binary {
+                left: inner_left,
+                op: BinOp::Add,
+                right: inner_right,
+            } = &left.kind
+                && (opposite_signed_binding(inner_left, right)
+                    || opposite_signed_binding(inner_right, right))
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+            if let ExprKind::Binary {
+                left: inner_left,
+                op: BinOp::Add,
+                right: inner_right,
+            } = &right.kind
+                && (opposite_signed_binding(left, inner_left)
+                    || opposite_signed_binding(left, inner_right))
             {
                 return Some(format!("(({left_code}) + ({right_code}))"));
             }
