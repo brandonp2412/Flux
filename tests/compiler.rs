@@ -6203,6 +6203,12 @@ async fn main() -> i64 {
         generated
             .contains("static int flux__finish_main(int result) { flux__worker_cancel_children();")
     );
+    assert!(generated.contains("const char *first_error = state->scope_error"));
+    assert!(generated.contains("const char *first_error = NULL; while (true)"));
+    assert!(
+        generated
+            .contains("bool child_still_registered = flux__worker_find_locked(child_id) != NULL")
+    );
 
     let root = std::env::temp_dir().join(format!(
         "flux-structured-auto-cancel-{}",
@@ -32945,6 +32951,13 @@ async fn main() -> i64 {
     assert!(generated.contains("flux__task->worker_scope_id = flux__async_scope_create();"));
     assert!(generated.contains("flux__async_scope_enter(flux__task->worker_scope_id);"));
     assert!(generated.contains("flux__async_scope_finish()"));
+    assert!(generated.contains("const char *scope_error;"));
+    assert!(generated.contains("flux__task->scope_error = NULL;"));
+    assert!(generated.contains(
+        "if (flux__task->scope_error == NULL) flux__task->scope_error = flux__scope_error;"
+    ));
+    assert!(generated.contains("if (flux__completed_task_"));
+    assert!(generated.contains("->scope_error != NULL) { flux__task->scope_error ="));
 
     let root = std::env::temp_dir().join(format!("flux-async-worker-scope-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
