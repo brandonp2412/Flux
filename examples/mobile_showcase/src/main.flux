@@ -3,8 +3,8 @@ view HorseTinder {
     state passed: bool = false
     grid columns: 1fr 104 56 104 1fr
     grid rows: auto auto auto auto auto auto auto
-    grid gap: 10
-    grid padding: 20
+    grid gap: 8
+    grid padding: 18
     grid scroll: true
     grid overlay: true
 
@@ -31,13 +31,14 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 318
+        minHeight: 300
+        maxHeight: 312
         backgroundColor: "#13151B"
-        borderColor: "#2A303B"
+        borderColor: "#303743"
         borderWidth: 1
-        radius: 26
-        shadowColor: "#0000005C"
-        shadowBlur: 6
+        radius: 28
+        shadowColor: "#00000052"
+        shadowBlur: 4
         shadowOffsetY: 2
 
     Text profileName at 3,1 span columns 5
@@ -105,33 +106,33 @@ view HorseTinder {
         size: 16
         wrap: true
         maxLines: 3
-        lineHeightPercent: 145
-        padding: 16
-        backgroundColor: "#10141B"
-        borderColor: "#2B3440"
+        lineHeightPercent: 140
+        padding: 13
+        backgroundColor: "#11151C"
+        borderColor: "#303845"
         borderWidth: 1
-        radius: 18
-        shadowColor: "#00000038"
+        radius: 20
+        shadowColor: "#00000030"
         shadowBlur: 2
         shadowOffsetY: 1
 
     Button pass at 7,1 span columns 5
         text: "✕"
-        size: 62
+        size: 64
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 100
-        minHeight: 100
-        maxHeight: 100
+        minWidth: 104
+        maxWidth: 104
+        minHeight: 104
         alignX: "center"
-        translateX: -82
-        translateY: -6
+        translateX: -84
+        translateY: -8
         focusable: true
         padding: 0
-        radius: 50
-        backgroundColor: "#181D25"
-        borderColor: "#596575"
-        borderWidth: 2
+        radius: 999
+        backgroundColor: "#171C24"
+        borderColor: "#4E5967"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
@@ -139,21 +140,21 @@ view HorseTinder {
 
     Button like at 7,1 span columns 5
         text: "♥︎"
-        size: 68
+        size: 72
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
-        minWidth: 100
-        minHeight: 100
-        maxHeight: 100
+        minWidth: 104
+        maxWidth: 104
+        minHeight: 104
         alignX: "center"
-        translateX: 82
-        translateY: -6
+        translateX: 84
+        translateY: -8
         focusable: true
         padding: 0
-        radius: 50
-        backgroundColor: "#FF4F67"
-        borderColor: "#FFA0AC"
-        borderWidth: 2
+        radius: 999
+        backgroundColor: "#FF4962"
+        borderColor: "#FF8998"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
@@ -173,7 +174,7 @@ view HorseTinder {
         backgroundColor: "#35141AEF"
         borderColor: "#7D2A38"
         borderWidth: 1
-        radius: 18
+        radius: 20
         shadowColor: "#00000099"
         shadowBlur: 10
         shadowOffsetY: 4
@@ -192,11 +193,11 @@ view HorseTinder {
         backgroundColor: "#101218E8"
         borderColor: "#2A2E38"
         borderWidth: 1
-        radius: 18
+        radius: 20
         shadowColor: "#00000099"
         shadowBlur: 10
         shadowOffsetY: 4
         layoutTransitionMs: motionNormal
 }
 
-app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#07080B", surfaceRaisedColor: "#10141A", textColor: "#F7F8FA", textMutedColor: "#9298A4", accentColor: "#FF4F67", onAccentColor: "#FFFFFF", outlineColor: "#262C35", shadowColor: "#00000080")
+app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#07080B", surfaceRaisedColor: "#11151C", textColor: "#F7F8FA", textMutedColor: "#9298A4", accentColor: "#FF4962", onAccentColor: "#FFFFFF", outlineColor: "#2B323D", shadowColor: "#00000080")
