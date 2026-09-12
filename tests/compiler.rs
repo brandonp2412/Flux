@@ -5857,6 +5857,109 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_join_children_waits_for_direct_children_and_tree_shakes() {
+    let source = r#"
+fn child(channelHandle: i64) -> void {
+    time.sleepMillis(2)
+    let _sendError: error = channel.send(channelHandle, 41)
+}
+fn parent(channelHandle: i64) -> void {
+    let (_childHandle, startError) = worker.startWith(child, channelHandle)
+    if startError != nil:
+        let _sendError: error = channel.send(channelHandle, -1)
+        return
+    let joinError: error = worker.joinChildren()
+    if joinError != nil:
+        let _sendError: error = channel.send(channelHandle, -2)
+        return
+    let _sendError: error = channel.send(channelHandle, 42)
+}
+fn main() -> i64 {
+    let (channelHandle, createError) = channel.create(2)
+    if createError != nil:
+        return 1
+    let (parentHandle, startError) = worker.startWith(parent, channelHandle)
+    if startError != nil:
+        return 2
+    let (first, firstError) = channel.receive(channelHandle)
+    if firstError != nil:
+        return 3
+    let (second, secondError) = channel.receive(channelHandle)
+    if secondError != nil:
+        return 4
+    let joinError: error = worker.join(parentHandle)
+    if joinError != nil:
+        return 5
+    let closeError: error = channel.close(channelHandle)
+    if closeError != nil:
+        return 6
+    print(first)
+    print(second)
+    return 0
+}
+"#;
+
+    check_source(source).expect("worker.joinChildren should typecheck");
+    let generated = compile_to_c(source).expect("worker.joinChildren should lower natively");
+    assert!(generated.contains("static const char *flux__worker_join_children(void)"));
+    assert!(generated.contains("child->parent_id != parent_id"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-worker-join-children-api-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker joinChildren fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker joinChildren source should be writable");
+    let binary = root.join("worker-join-children-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker joinChildren binary should build");
+    assert!(
+        built.status.success(),
+        "worker joinChildren build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker joinChildren binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
+
+    let invalid = r#"
+fn main() -> i64 {
+    print(worker.joinChildren(1))
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("worker.joinChildren arguments must fail");
+    assert!(
+        error
+            .message
+            .contains("worker.joinChildren expects 0 arguments, got 1")
+    );
+
+    let dead = r#"
+fn hidden() -> void {
+    print(worker.joinChildren())
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead joinChildren helper should tree-shake");
+    assert!(!dead_generated.contains("flux__worker_join_children("));
+    assert!(!dead_generated.contains("#include <pthread.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn bounded_channels_pass_i64_values_between_workers_and_tree_shake() {
     let source = r#"
 fn produce(channelHandle: i64) -> void {

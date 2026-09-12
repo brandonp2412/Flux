@@ -1499,6 +1499,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "joinChildren",
+            3,
+            "fn worker.joinChildren() -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "cancel",
             3,
             "fn worker.cancel(handle: i64) -> error",
@@ -3246,6 +3253,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "worker.join",
                         &["handle: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "joinChildren" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.joinChildren",
+                        &[],
                         "error",
                         active_parameter,
                     ));
@@ -8365,11 +8380,12 @@ mod tests {
             )
         );
         assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
+        assert!(completion_items.contains("fn worker.joinChildren() -> error"));
         assert!(completion_items.contains("fn worker.cancel(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.cancelled() -> bool"));
 
         let uri = "file:///tmp/worker-signatures.flux";
-        let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    print(worker.cancel(withHandle))\n    print(worker.cancelled())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
+        let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    print(worker.cancel(withHandle))\n    print(worker.cancelled())\n    print(worker.joinChildren())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -8382,6 +8398,7 @@ mod tests {
             ),
             ("worker.cancel(", "fn worker.cancel(handle: i64) -> error"),
             ("worker.cancelled(", "fn worker.cancelled() -> bool"),
+            ("worker.joinChildren(", "fn worker.joinChildren() -> error"),
             ("worker.join(", "fn worker.join(handle: i64) -> error"),
         ] {
             let line_index = source

@@ -8311,6 +8311,18 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::I64, &actual, "worker.join handle")?;
                 return Ok(vec![Type::Error]);
             }
+            "joinChildren" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "worker.joinChildren expects 0 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                return Ok(vec![Type::Error]);
+            }
             "cancel" => {
                 if args.len() != 1 {
                     return Err(diag(
