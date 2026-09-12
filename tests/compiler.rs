@@ -6062,6 +6062,91 @@ fn main() -> i64 {
 }
 
 #[test]
+fn structured_worker_scopes_cancel_unfinished_children_before_automatic_join() {
+    let source = r#"
+fn cancellableChild(marker: i64) -> void {
+    var waited: i64 = 0
+    while !worker.cancelled() && waited < 200:
+        time.sleepMillis(1)
+        waited = waited + 1
+    if worker.cancelled():
+        print(marker)
+    else:
+        print(-marker)
+}
+fn workerParent() -> void {
+    let (_handle, startError) = worker.startWith(cancellableChild, 1)
+    if startError != nil:
+        print(-11)
+}
+async fn taskParent() -> i64 {
+    let (_handle, startError) = worker.startWith(cancellableChild, 2)
+    if startError != nil:
+        return 12
+    return 0
+}
+async fn main() -> i64 {
+    let (parentHandle, parentError) = worker.start(workerParent)
+    if parentError != nil:
+        return 21
+    let joinError: error = worker.join(parentHandle)
+    if joinError != nil:
+        return 22
+    let taskCode: i64 = await taskParent()
+    if taskCode != 0:
+        return taskCode
+    let (_rootHandle, rootError) = worker.startWith(cancellableChild, 3)
+    if rootError != nil:
+        return 23
+    return 0
+}
+"#;
+
+    check_source(source).expect("automatic structured cancellation should typecheck");
+    let generated = compile_to_c(source).expect("automatic structured cancellation should lower");
+    assert!(generated.contains("else state->entry(); flux__worker_cancel_children(); state->scope_error = flux__worker_join_children()"));
+    assert!(generated.contains("static const char *flux__async_scope_finish(void) { flux__worker_cancel_children(); return flux__worker_join_children(); }"));
+    assert!(
+        generated
+            .contains("static int flux__finish_main(int result) { flux__worker_cancel_children();")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-structured-auto-cancel-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("structured auto-cancel fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("structured auto-cancel source should be writable");
+    let binary = root.join("structured-auto-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("structured auto-cancel binary should build");
+    assert!(
+        built.status.success(),
+        "structured auto-cancel build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("structured auto-cancel binary should run");
+    assert!(
+        run.status.success(),
+        "structured auto-cancel binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n2\n3\n");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_join_children_waits_for_descendants_and_tree_shakes() {
     let source = r#"
 fn grandchild() -> void {
