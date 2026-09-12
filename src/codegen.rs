@@ -15836,6 +15836,27 @@ fn boolean_identity_c(
         return Some(left_code.to_string());
     }
 
+    let absorbed_left_nested_binding = match &left.kind {
+        ExprKind::Binary {
+            left: nested_left,
+            op: nested_op,
+            right: nested_right,
+        } if matches!(
+            (op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        ) =>
+        {
+            (same_boolean_binding_term(right, nested_left)
+                && boolean_absorption_operand_is_discardable(nested_right, signatures))
+                || (same_boolean_binding_term(right, nested_right)
+                    && boolean_absorption_operand_is_discardable(nested_left, signatures))
+        }
+        _ => false,
+    };
+    if absorbed_left_nested_binding {
+        return Some(right_code.to_string());
+    }
+
     let nested_complement_result = match &right.kind {
         ExprKind::Binary {
             left: nested_left,

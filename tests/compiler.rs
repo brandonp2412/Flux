@@ -13839,6 +13839,119 @@ app Status
 }
 
 #[test]
+fn eliminates_absorbed_left_nested_same_binding_boolean_work() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn absorbLeftAnd(value: bool, other: bool) -> bool {
+    return (value || other) && value
+}
+
+fn absorbLeftOr(value: bool, other: bool) -> bool {
+    return (value && other) || value
+}
+
+fn absorbLeftNegatedAnd(value: bool, other: bool) -> bool {
+    return (!value || other) && !value
+}
+
+fn absorbLeftNegatedOr(value: bool, other: bool) -> bool {
+    return (!value && other) || !value
+}
+
+fn keepLeftAnd(value: bool) -> bool {
+    return (value || observe(value)) && value
+}
+
+fn keepLeftOr(value: bool) -> bool {
+    return (value && observe(value)) || value
+}
+
+fn main() -> i64 {
+    print(absorbLeftAnd(true, false))
+    print(absorbLeftOr(false, true))
+    print(absorbLeftNegatedAnd(false, true))
+    print(absorbLeftNegatedOr(true, false))
+    print(keepLeftAnd(false))
+    print(keepLeftOr(true))
+    return 0
+}
+"#;
+
+    check_source(source).expect("left-nested boolean absorption proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("left-nested boolean absorption proofs should lower without redundant work");
+    assert_eq!(generated.matches("return flux__local_value;").count(), 3);
+    assert_eq!(generated.matches("return (!flux__local_value);").count(), 2);
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful nested operands must remain observable",
+    );
+    assert!(!generated.contains("flux__local_value || flux__local_other"));
+    assert!(!generated.contains("flux__local_value && flux__local_other"));
+    assert!(!generated.contains("(!flux__local_value) || flux__local_other"));
+    assert!(!generated.contains("(!flux__local_value) && flux__local_other"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-left-absorption-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary left-absorption directory should be writable");
+    let c_path = root.join("left-absorption.c");
+    let exe_path = root.join("left-absorption");
+    fs::write(&c_path, &generated).expect("generated left-absorption C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile left-absorption C");
+    assert!(
+        compile.status.success(),
+        "left-absorption C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("left-absorption program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = true
+    state other: bool = false
+    Text first at 1,1
+        text: "One"
+        visible: (active || other) && active
+    Text second at 2,1
+        text: "Two"
+        visible: (!active && other) || !active
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI left-nested boolean absorption should share native lowering");
+    assert!(!ui_generated.contains("flux__ui_state_active || flux__ui_state_other"));
+    assert!(!ui_generated.contains("(!(flux__ui_state_active)) && flux__ui_state_other"));
+}
+
+#[test]
 fn eliminates_nested_complementary_boolean_short_circuit_work() {
     let source = r#"
 fn observe(value: bool) -> bool {
