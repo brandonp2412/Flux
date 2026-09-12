@@ -29019,6 +29019,66 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_function_values_are_copy_and_lower_by_value() {
+    let source = r#"
+type Mapper = fn(i64) -> i64
+
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    let present: Mapper? = increment
+    let absent: Mapper? = none
+    let selected: Mapper = present ?? increment
+    print(selected(41))
+    if let mapper = present:
+        print(mapper(1))
+    if absent == none:
+        print(7)
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("Copy function values should support explicit optionals through aliases");
+    let generated = compile_to_c(source).expect("optional function values should lower natively");
+    assert!(generated.contains(
+        "struct flux__optional_i64__to__i64 { bool has_value; flux__fn_i64__to__i64 value; };"
+    ));
+    assert!(generated.contains(".has_value = true, .value = flux__fn_increment"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-function-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional function directory should be writable");
+    let c_path = root.join("optional_function.c");
+    let exe_path = root.join("optional_function");
+    fs::write(&c_path, generated).expect("generated optional function C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional function values");
+    assert!(
+        compile.status.success(),
+        "optional function C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional function program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n2\n7\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn optional_interface_values_are_copy_and_lower_by_value() {
     let source = r#"
 interface Storage {
@@ -29473,7 +29533,7 @@ fn main() -> i64 {
     let error = check_source(non_copy).expect_err("non-Copy optionals must remain rejected");
     assert!(
         error.message.contains(
-            "bootstrap optional values require a Copy scalar, struct, enum, or interface value; got i64[]?"
+            "bootstrap optional values require a Copy scalar, function, struct, enum, or interface value; got i64[]?"
         ),
         "unexpected diagnostic: {}",
         error.message

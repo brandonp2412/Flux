@@ -23687,6 +23687,14 @@ fn emit_function_type_typedefs(
             "typedef {return_type} (*{})({params_text});\n",
             function_type_name(&params, &returns, signatures)
         ));
+        emit_optional_value_definition(
+            out,
+            &Type::Function {
+                params: params.clone(),
+                returns: returns.clone(),
+            },
+            signatures,
+        );
     }
     if !out.ends_with("\n\n") {
         out.push('\n');
@@ -23696,11 +23704,15 @@ fn emit_function_type_typedefs(
 
 fn collect_function_type(ty: &Type, signatures: &Signatures, types: &mut HashSet<Type>) {
     let ty = signatures.canonical_type(ty);
-    if let Type::Function { params, returns } = &ty {
-        for nested in params.iter().chain(returns) {
-            collect_function_type(nested, signatures, types);
+    match &ty {
+        Type::Function { params, returns } => {
+            for nested in params.iter().chain(returns) {
+                collect_function_type(nested, signatures, types);
+            }
+            types.insert(ty);
         }
-        types.insert(ty);
+        Type::Optional(inner) => collect_function_type(inner, signatures, types),
+        _ => {}
     }
 }
 

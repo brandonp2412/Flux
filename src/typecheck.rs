@@ -10616,7 +10616,7 @@ fn require_known_type(
             require_known_type(span, &inner, signatures)?;
             let actual = signatures.canonical_type(&inner);
             match &actual {
-                Type::I64 | Type::Bool | Type::Str | Type::Error => Ok(()),
+                Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Function { .. } => Ok(()),
                 Type::Named(name)
                     if (signatures.struct_type(name).is_some()
                         || signatures.enum_type(name).is_some()
@@ -10628,7 +10628,7 @@ fn require_known_type(
                 _ => Err(diag(
                     span,
                     &format!(
-                        "bootstrap optional values require a Copy scalar, struct, enum, or interface value; got {}?",
+                        "bootstrap optional values require a Copy scalar, function, struct, enum, or interface value; got {}?",
                         actual.name()
                     ),
                 )),
