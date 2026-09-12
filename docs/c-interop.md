@@ -1,6 +1,6 @@
 # C interoperability
 
-Flux can emit a C header for the current stable C export ABI. The versioning and platform-boundary rules are defined in `docs/native-abi.md`:
+Flux can emit a C header for the current stable C export ABI. This package export boundary is Flux's stable C FFI surface today: native C code can call exported Flux functions and pass ABI-safe `Copy` callbacks directly into Flux. Importing arbitrary C symbols from Flux, linker metadata, and ownership-sensitive foreign values remain separate unfinished interoperability work rather than being implied by the stable export contract. The versioning and platform-boundary rules are defined in `docs/native-abi.md`:
 
 ```sh
 flux emit-c-header path/to/package -o flux_api.h

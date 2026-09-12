@@ -11808,6 +11808,134 @@ fn main() -> i64 {
 }
 
 #[test]
+fn stable_package_c_ffi_executes_supported_copy_boundary_end_to_end() {
+    let root = std::env::temp_dir().join(format!("flux-stable-c-ffi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary stable C FFI directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"stable_ffi\"\nentry = \"main.flux\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("stable C FFI manifest should be writable");
+    fs::write(
+        root.join("main.flux"),
+        r#"pub struct Point {
+    value: i64
+}
+
+pub enum Flag {
+    Off
+    On
+}
+
+pub type Mapper = fn(i64) -> i64
+
+pub fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+pub fn passOptional(value: i64?) -> i64? {
+    return value
+}
+
+pub fn passPoint(value: Point) -> Point {
+    return value
+}
+
+pub fn passFlag(value: Flag) -> Flag {
+    return value
+}
+
+pub fn invoke(mapper: Mapper, value: i64) -> i64 {
+    return mapper(value)
+}
+
+pub fn passText(value: str) -> str {
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+    )
+    .expect("stable C FFI source should be writable");
+
+    let header = fluxc::project::compile_to_c_header(&root)
+        .expect("stable package C FFI should emit a header");
+    let generated =
+        fluxc::project::compile_to_c(&root).expect("stable package C FFI should emit C source");
+    assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
+
+    let module_component = "stable_ffi::main"
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let point_type = format!("flux__abi_{module_component}__type_Point");
+    let flag_type = format!("flux__abi_{module_component}__type_Flag");
+    let flag_tag = format!("flux__abi_{module_component}__tag_Flag");
+    let add_one = format!("flux__abi_{module_component}__fn_addOne");
+    let pass_optional = format!("flux__abi_{module_component}__fn_passOptional");
+    let pass_point = format!("flux__abi_{module_component}__fn_passPoint");
+    let pass_flag = format!("flux__abi_{module_component}__fn_passFlag");
+    let invoke = format!("flux__abi_{module_component}__fn_invoke");
+    let pass_text = format!("flux__abi_{module_component}__fn_passText");
+
+    let header_path = root.join("package.h");
+    let generated_path = root.join("package.c");
+    let object_path = root.join("package.o");
+    let consumer_path = root.join("consumer.c");
+    let executable_path = root.join("consumer");
+    fs::write(&header_path, &header).expect("stable C FFI header should be writable");
+    fs::write(&generated_path, generated).expect("stable C FFI output should be writable");
+    fs::write(
+        &consumer_path,
+        format!(
+            "#include \"package.h\"\n#include <string.h>\nstatic int64_t double_value(int64_t value) {{ return value * 2; }}\nint main(void) {{\n    struct flux__optional_i64 maybe = {{ .has_value = true, .value = 9 }};\n    struct {point_type} point = {{ .flux__field_value = 11 }};\n    struct {flag_type} flag = {{ .tag = {flag_tag}_On }};\n    if ({add_one}(41) != 42) return 1;\n    struct flux__optional_i64 optional_result = {pass_optional}(maybe);\n    if (!optional_result.has_value || optional_result.value != 9) return 2;\n    if ({pass_point}(point).flux__field_value != 11) return 3;\n    if ({pass_flag}(flag).tag != {flag_tag}_On) return 4;\n    if ({invoke}(double_value, 21) != 42) return 5;\n    if (strcmp({pass_text}(\"flux\"), \"flux\") != 0) return 6;\n    return 0;\n}}\n"
+        ),
+    )
+    .expect("stable C FFI consumer should be writable");
+
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-Dmain=flux__embedded_main", "-c"])
+        .arg(&generated_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .expect("clang should compile stable Flux C output");
+    assert!(
+        compile.status.success(),
+        "stable Flux C output should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let link = Command::new("clang")
+        .args(["-std=c11"])
+        .arg(&consumer_path)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .expect("clang should link the stable C FFI consumer");
+    assert!(
+        link.status.success(),
+        "stable C FFI consumer should link: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+
+    let run = Command::new(&executable_path)
+        .output()
+        .expect("stable C FFI consumer should execute");
+    assert!(
+        run.status.success(),
+        "stable C FFI consumer should round-trip every supported boundary category"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn emits_c_header_for_public_copy_enum_abi() {
     let source = r#"
 pub struct Point {
