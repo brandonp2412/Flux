@@ -1,21 +1,21 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 1fr
+    grid columns: 1fr auto auto 1fr
     grid rows: auto auto auto auto auto auto auto auto
     grid gap: 10
     grid padding: 18
     grid scroll: true
     grid overlay: true
 
-    Text brand at 1,1
+    Text brand at 1,1 span columns 3
         text: "♥︎  HORSE TINDER"
         color: "#FF4458"
         size: 17
         bold: true
         letterSpacing: 1
 
-    Text nearby at 1,2
+    Text nearby at 1,4
         text: "4 KM  ·  ONLINE"
         color: "textMuted"
         size: 11
@@ -23,7 +23,7 @@ view HorseTinder {
         letterSpacing: 1
         textAlign: "right"
 
-    Image profilePhoto at 2,1 span columns 2
+    Image profilePhoto at 2,1 span columns 4
         source: "assets/buttercup.jpg"
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
@@ -37,13 +37,13 @@ view HorseTinder {
         shadowBlur: 14
         shadowOffsetY: 5
 
-    Text profileName at 3,1
+    Text profileName at 3,1 span columns 3
         text: "BUTTERCUP, 7"
         color: "text"
         size: 29
         bold: true
 
-    Text matchBadge at 3,2
+    Text matchBadge at 3,4
         text: "98% MATCH"
         color: "#FF7182"
         size: 12
@@ -52,12 +52,12 @@ view HorseTinder {
         textAlign: "right"
         alignY: "center"
 
-    Text profileMeta at 4,1 span columns 2
+    Text profileMeta at 4,1 span columns 4
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
         color: "textMuted"
         size: 14
 
-    Text weekend at 5,1
+    Text weekend at 5,1 span columns 2
         text: "BEACH GALLOPS"
         color: "#C5CAD5"
         size: 13
@@ -70,7 +70,7 @@ view HorseTinder {
         borderWidth: 1
         radius: 999
 
-    Text greenFlag at 5,2
+    Text greenFlag at 5,3 span columns 2
         text: "SHARES HAY"
         color: "#BFEBD2"
         size: 13
@@ -83,7 +83,7 @@ view HorseTinder {
         borderWidth: 1
         radius: 999
 
-    Text bio at 6,1 span columns 2
+    Text bio at 6,1 span columns 4
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
         color: "#D9DCE3"
         size: 15
@@ -95,27 +95,41 @@ view HorseTinder {
         borderWidth: 1
         radius: 20
 
-    Button pass at 7,1
+    Button pass at 7,2
         text: "✕"
+        size: 28
         accessibilityLabel: "Pass on Buttercup"
-        minHeight: 64
-        padding: 14
+        minWidth: 72
+        minHeight: 72
+        padding: 16
         radius: 999
-        backgroundColor: "#111319"
-        borderColor: "#2B2F39"
-        borderWidth: 1
+        scalePercent: 112
+        backgroundColor: "#14171D"
+        borderColor: "#353B46"
+        borderWidth: 2
+        shadowColor: "#00000077"
+        shadowBlur: 12
+        shadowOffsetY: 5
         onPress: passed => !passed
 
-    Button like at 7,2
+    Button like at 7,3
         text: "♥︎"
+        size: 30
         accessibilityLabel: "Like Buttercup"
-        minHeight: 64
+        minWidth: 72
+        minHeight: 72
         primary: true
-        padding: 14
+        padding: 16
         radius: 999
+        scalePercent: 112
+        borderColor: "#FF7182"
+        borderWidth: 2
+        shadowColor: "#FF445855"
+        shadowBlur: 18
+        shadowOffsetY: 6
         onPress: liked => !liked
 
-    Text result at 8,1 span columns 2
+    Text result at 8,1 span columns 4
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
         color: "#FFD9DE"
@@ -129,7 +143,7 @@ view HorseTinder {
         radius: 18
         layoutTransitionMs: motionNormal
 
-    Text passedNote at 8,1 span columns 2
+    Text passedNote at 8,1 span columns 4
         text: "Passed. The photobomber is taking it personally."
         visible: passed
         color: "textMuted"

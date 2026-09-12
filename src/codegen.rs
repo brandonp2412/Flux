@@ -5875,6 +5875,25 @@ fn emit_android_native_application(
                 if primary { "JNI_TRUE" } else { "JNI_FALSE" }
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, button_style_activity_class);\n");
+            if let Some(property) = view_property(element, "size") {
+                let Some(value) = static_expr_i64(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Android Button.size must be a compile-time i64 value",
+                    ));
+                };
+                if value <= 0 || value > i64::from(i32::MAX) {
+                    return Err(diag(
+                        property.value.span,
+                        "Button.size must be greater than zero and fit within a 32-bit signed integer",
+                    ));
+                }
+                out.push_str("    jmethodID button_set_text_size = (*env)->GetMethodID(env, child_class, \"setTextSize\", \"(F)V\");\n");
+                out.push_str("    if (button_set_text_size == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, child, button_set_text_size, (jfloat){value});\n"
+                ));
+            }
         }
         if let Some(property) = view_property(element, "shortcut") {
             let Some(value) = static_expr_str(&property.value, signatures) else {
@@ -9922,6 +9941,25 @@ fn emit_linux_gtk_application(
                 out.push_str(&format!(
                     "    gtk_widget_add_css_class({variable}, \"flux-button\");\n"
                 ));
+                if let Some(property) = view_property(element, "size") {
+                    let Some(value) = static_expr_i64(&property.value, signatures) else {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Linux Button.size must be a compile-time i64 value",
+                        ));
+                    };
+                    if value <= 0 || value > i64::from(i32::MAX) {
+                        return Err(diag(
+                            property.value.span,
+                            "Button.size must be greater than zero and fit within a 32-bit signed integer",
+                        ));
+                    }
+                    let label = format!("flux__ui_button_label_{}", element.name);
+                    let attrs = format!("flux__ui_button_attrs_{}", element.name);
+                    out.push_str(&format!(
+                        "    GtkWidget *{label} = gtk_button_get_child(GTK_BUTTON({variable}));\n    if (GTK_IS_LABEL({label})) {{ PangoAttrList *{attrs} = pango_attr_list_new(); pango_attr_list_insert({attrs}, pango_attr_size_new({value} * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({label}), {attrs}); pango_attr_list_unref({attrs}); }}\n"
+                    ));
+                }
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(

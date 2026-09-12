@@ -1505,6 +1505,7 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         | ("Text", "max_lines")
         | ("Text", "max_width_chars") => Some(Type::I64),
         ("Button", "text") => Some(Type::Str),
+        ("Button", "size") => Some(Type::I64),
         ("Button", "enabled") => Some(Type::Bool),
         ("Button", "primary") => Some(Type::Bool),
         ("Button", "on_press") | ("Toggle", "on_change") | ("Radio", "on_select") => {
@@ -1802,7 +1803,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "max_width_chars",
             "color",
         ],
-        "Button" => &["text", "enabled", "primary", "on_press"],
+        "Button" => &["text", "size", "enabled", "primary", "on_press"],
         "TextInput" => &[
             "text",
             "placeholder",

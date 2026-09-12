@@ -20763,6 +20763,43 @@ app Clipped
 }
 
 #[test]
+fn button_text_size_lowers_natively() {
+    let source = r#"
+view ButtonIcons {
+    grid columns: 1fr 1fr
+    grid rows: auto
+    Button pass at 1,1
+        text: "✕"
+        size: 30
+    Button like at 1,2
+        text: "♥︎"
+        size: 32
+        primary: true
+}
+app ButtonIcons
+"#;
+    check_source(source).expect("Button.size should typecheck as an i64 property");
+
+    let linux = compile_to_c(source).expect("Button.size should lower on Linux");
+    assert!(linux.contains("gtk_button_get_child(GTK_BUTTON(flux__ui_pass))"));
+    assert!(linux.contains("pango_attr_size_new(30 * PANGO_SCALE)"));
+    assert!(linux.contains("pango_attr_size_new(32 * PANGO_SCALE)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("button-size fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Button.size should lower on Android");
+    assert!(android.contains("\"setTextSize\""));
+    assert!(android.contains("button_set_text_size, (jfloat)30"));
+    assert!(android.contains("button_set_text_size, (jfloat)32"));
+}
+
+#[test]
 fn semantic_ui_colors_lower_through_native_theme_tokens() {
     let source = r#"
 view Palette {
