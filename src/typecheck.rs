@@ -8962,441 +8962,51 @@ fn check_qualified_call(
                 &format!("android.{name} accepts positional arguments only"),
             ));
         }
-        match name.as_str() {
-            "sdkInt" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!("android.sdkInt expects 0 arguments, got {}", args.len()),
-                    ));
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "hasSystemFeature" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.hasSystemFeature expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &actual,
-                    "android.hasSystemFeature feature",
-                )?;
-                return Ok(vec![Type::Bool]);
-            }
-            "vibrate" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("android.vibrate expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "android.vibrate durationMs",
-                )?;
-                return Ok(Vec::new());
-            }
-            "keepScreenOn" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.keepScreenOn expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Bool,
-                    &actual,
-                    "android.keepScreenOn enabled",
-                )?;
-                return Ok(Vec::new());
-            }
-            "finishActivity" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.finishActivity expects 0 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                return Ok(Vec::new());
-            }
-            "scheduleBackgroundJob" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.scheduleBackgroundJob expects 2 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                for (index, label) in [(0, "jobId"), (1, "delayMs")] {
-                    let actual = type_of_expr(&args[index], env, signatures)?;
-                    require_type(
-                        args[index].span,
-                        &Type::I64,
-                        &actual,
-                        &format!("android.scheduleBackgroundJob {label}"),
-                    )?;
-                }
-                return Ok(vec![Type::Bool]);
-            }
-            "cancelBackgroundJob" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.cancelBackgroundJob expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "android.cancelBackgroundJob jobId",
-                )?;
-                return Ok(Vec::new());
-            }
-            "openUrl" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("android.openUrl expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "android.openUrl url")?;
-                return Ok(Vec::new());
-            }
-            "share" | "setClipboardText" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("android.{name} expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &actual,
-                    &format!("android.{name} text"),
-                )?;
-                return Ok(Vec::new());
-            }
-            "focusNext" | "focusPrevious" => {
-                if args.len() > 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.{name} expects 0 or 1 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                if let Some(wrap) = args.first() {
-                    let actual = type_of_expr(wrap, env, signatures)?;
-                    require_type(
-                        wrap.span,
-                        &Type::Bool,
-                        &actual,
-                        &format!("android.{name} wrap"),
-                    )?;
-                }
-                return Ok(Vec::new());
-            }
-            "showKeyboard"
-            | "hideKeyboard"
-            | "openAppSettings"
-            | "openNotificationSettings"
-            | "focusFirst"
-            | "focusLast"
-            | "clearFocus" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!("android.{name} expects 0 arguments, got {}", args.len()),
-                    ));
-                }
-                return Ok(Vec::new());
-            }
-            "selectionStart" | "selectionEnd" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!("android.{name} expects 0 arguments, got {}", args.len()),
-                    ));
-                }
-                return Ok(vec![Type::I64]);
-            }
-            "setCaret" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("android.setCaret expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    "android.setCaret position",
-                )?;
-                return Ok(vec![Type::Bool]);
-            }
-            "setSelection" => {
-                if args.len() != 2 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.setSelection expects 2 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                for (index, label) in [(0, "start"), (1, "end")] {
-                    let actual = type_of_expr(&args[index], env, signatures)?;
-                    require_type(
-                        args[index].span,
-                        &Type::I64,
-                        &actual,
-                        &format!("android.setSelection {label}"),
-                    )?;
-                }
-                return Ok(vec![Type::Bool]);
-            }
-            "setImeAction" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.setImeAction expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &actual,
-                    "android.setImeAction action",
-                )?;
-                return Ok(vec![Type::Bool]);
-            }
-            "pickFile" | "pickMedia" | "pickDirectory" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!("android.{name} expects 1 argument, got {}", args.len()),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                let expected = Type::Function {
+        let Some(binding) = crate::android_bindings::binding_named(name) else {
+            return Err(diag(
+                *name_span,
+                &format!("android module has no function '{name}'"),
+            ));
+        };
+        let required = binding.required_param_count();
+        if args.len() < required || args.len() > binding.params.len() {
+            let expected = if required == binding.params.len() {
+                format!(
+                    "{} argument{}",
+                    required,
+                    if required == 1 { "" } else { "s" }
+                )
+            } else {
+                format!("{required} or {} arguments", binding.params.len())
+            };
+            return Err(diag(
+                span,
+                &format!("android.{name} expects {expected}, got {}", args.len()),
+            ));
+        }
+        for (argument, parameter) in args.iter().zip(binding.params.iter()) {
+            let actual = type_of_expr(argument, env, signatures)?;
+            let expected = match parameter.ty {
+                crate::android_bindings::AndroidBindingType::I64 => Type::I64,
+                crate::android_bindings::AndroidBindingType::Bool => Type::Bool,
+                crate::android_bindings::AndroidBindingType::Str => Type::Str,
+                crate::android_bindings::AndroidBindingType::StrCallback => Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
-                };
-                require_type(
-                    args[0].span,
-                    &expected,
-                    &actual,
-                    &format!("android.{name} callback"),
-                )?;
-                return Ok(Vec::new());
-            }
-            "createNotificationChannel" => {
-                if args.len() != 3 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.createNotificationChannel expects 3 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                for (index, label) in [(0, "id"), (1, "name"), (2, "description")] {
-                    let actual = type_of_expr(&args[index], env, signatures)?;
-                    require_type(
-                        args[index].span,
-                        &Type::Str,
-                        &actual,
-                        &format!("android.createNotificationChannel {label}"),
-                    )?;
-                }
-                return Ok(Vec::new());
-            }
-            "permissionGranted" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.permissionGranted expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &actual,
-                    "android.permissionGranted permission",
-                )?;
-                return Ok(vec![Type::Bool]);
-            }
-            "requestPermission" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.requestPermission expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &actual,
-                    "android.requestPermission permission",
-                )?;
-                return Ok(Vec::new());
-            }
-            "notificationPermissionGranted" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.notificationPermissionGranted expects 0 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                return Ok(vec![Type::Bool]);
-            }
-            "requestNotificationPermission" => {
-                if !args.is_empty() {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.requestNotificationPermission expects 0 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                return Ok(Vec::new());
-            }
-            "notify" => {
-                if args.len() != 4 {
-                    return Err(diag(
-                        span,
-                        &format!("android.notify expects 4 arguments, got {}", args.len()),
-                    ));
-                }
-                let channel = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &channel,
-                    "android.notify channelId",
-                )?;
-                let notification_id = type_of_expr(&args[1], env, signatures)?;
-                require_type(
-                    args[1].span,
-                    &Type::I64,
-                    &notification_id,
-                    "android.notify notificationId",
-                )?;
-                let title = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::Str, &title, "android.notify title")?;
-                let body = type_of_expr(&args[3], env, signatures)?;
-                require_type(args[3].span, &Type::Str, &body, "android.notify body")?;
-                return Ok(Vec::new());
-            }
-            "notifyUrlAction" => {
-                if args.len() != 6 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.notifyUrlAction expects 6 arguments, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let channel = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::Str,
-                    &channel,
-                    "android.notifyUrlAction channelId",
-                )?;
-                let notification_id = type_of_expr(&args[1], env, signatures)?;
-                require_type(
-                    args[1].span,
-                    &Type::I64,
-                    &notification_id,
-                    "android.notifyUrlAction notificationId",
-                )?;
-                for (index, label) in [(2, "title"), (3, "body"), (4, "actionLabel"), (5, "url")] {
-                    let actual = type_of_expr(&args[index], env, signatures)?;
-                    require_type(
-                        args[index].span,
-                        &Type::Str,
-                        &actual,
-                        &format!("android.notifyUrlAction {label}"),
-                    )?;
-                }
-                return Ok(Vec::new());
-            }
-            "cancelNotification" => {
-                if args.len() != 1 {
-                    return Err(diag(
-                        span,
-                        &format!(
-                            "android.cancelNotification expects 1 argument, got {}",
-                            args.len()
-                        ),
-                    ));
-                }
-                let notification_id = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &notification_id,
-                    "android.cancelNotification notificationId",
-                )?;
-                return Ok(Vec::new());
-            }
-            _ => {
-                return Err(diag(
-                    *name_span,
-                    &format!("android module has no function '{name}'"),
-                ));
-            }
+                },
+            };
+            require_type(
+                argument.span,
+                &expected,
+                &actual,
+                &format!("android.{name} {}", parameter.name),
+            )?;
         }
+        return Ok(match binding.returns {
+            crate::android_bindings::AndroidBindingReturn::Void => Vec::new(),
+            crate::android_bindings::AndroidBindingReturn::I64 => vec![Type::I64],
+            crate::android_bindings::AndroidBindingReturn::Bool => vec![Type::Bool],
+        });
     }
     if let Some(definition) = signatures.enum_type(namespace) {
         require_visible_declaration(

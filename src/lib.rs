@@ -1,3 +1,4 @@
+pub mod android_bindings;
 pub mod ast;
 pub mod cli;
 pub mod codegen;

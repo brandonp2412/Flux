@@ -595,6 +595,18 @@ struct AndroidSigningConfig {
     release: bool,
 }
 
+fn validate_android_binding_availability(generated_c: &str, min_sdk: u32) -> Result<(), CliError> {
+    if let Some(binding) =
+        crate::android_bindings::first_unavailable_reachable_binding(generated_c, min_sdk)
+    {
+        return Err(CliError::Message(format!(
+            "android.{} requires minSdk {}, but this package configures min_sdk = {}",
+            binding.name, binding.minimum_sdk, min_sdk
+        )));
+    }
+    Ok(())
+}
+
 fn build_android_command(
     args: &[String],
     default_mode: BuildMode,
@@ -657,6 +669,7 @@ fn build_android_command(
     let generated = analysis
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .map_err(|diagnostic| diagnostic.to_string())?;
+    validate_android_binding_availability(&generated, manifest.android.min_sdk)?;
     let output = options.output.unwrap_or_else(|| {
         let file_name = match options.kind {
             AndroidArtifactKind::Apk => format!(
