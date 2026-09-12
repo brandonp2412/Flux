@@ -14721,6 +14721,133 @@ app Status
 }
 
 #[test]
+fn eliminates_complementary_boolean_resolution_work() {
+    let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn resolveOrLeft(value: bool, other: bool) -> bool {
+    return value || (!value && observe(other))
+}
+
+fn resolveOrRight(value: bool, other: bool) -> bool {
+    return value || (observe(other) && !value)
+}
+
+fn resolveAndLeft(value: bool, other: bool) -> bool {
+    return value && (!value || observe(other))
+}
+
+fn resolveAndRight(value: bool, other: bool) -> bool {
+    return value && (observe(other) || !value)
+}
+
+fn resolveLeftAnd(value: bool, other: bool) -> bool {
+    return (!value || observe(other)) && value
+}
+
+fn resolveLeftOr(value: bool, other: bool) -> bool {
+    return (!value && observe(other)) || value
+}
+
+fn main() -> i64 {
+    print(resolveOrLeft(false, true))
+    print(resolveOrRight(false, false))
+    print(resolveAndLeft(true, false))
+    print(resolveAndRight(true, true))
+    print(resolveLeftAnd(true, false))
+    print(resolveLeftOr(false, true))
+    return 0
+}
+"#;
+
+    check_source(source).expect("boolean resolution proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("boolean resolution proofs should remove redundant complements");
+    assert_eq!(
+        generated
+            .matches("return (flux__local_value || flux__fn_observe(flux__local_other));")
+            .count(),
+        3,
+    );
+    assert_eq!(
+        generated
+            .matches("return (flux__local_value && flux__fn_observe(flux__local_other));")
+            .count(),
+        3,
+    );
+    assert!(!generated.contains("!flux__local_value"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_other)")
+            .count(),
+        6,
+        "effectful residual operands must remain exactly once per source expression",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-boolean-resolution-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary boolean-resolution directory should be writable");
+    let c_path = root.join("boolean-resolution.c");
+    let exe_path = root.join("boolean-resolution");
+    fs::write(&c_path, &generated).expect("generated boolean-resolution C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile boolean-resolution C");
+    assert!(
+        compile.status.success(),
+        "boolean-resolution C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("boolean-resolution program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\ntrue\nfalse\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\nfalse\ntrue\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state active: bool = true
+    state other: bool = false
+    Text first at 1,1
+        text: "One"
+        visible: active || (!active && other)
+    Text second at 2,1
+        text: "Two"
+        visible: active && (!active || other)
+    Text third at 3,1
+        text: "Three"
+        visible: (!active || other) && active
+    Text fourth at 4,1
+        text: "Four"
+        visible: (!active && other) || active
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI boolean resolution should share native lowering");
+    assert!(ui_generated.contains("(flux__ui_state_active || flux__ui_state_other)"));
+    assert!(ui_generated.contains("(flux__ui_state_active && flux__ui_state_other)"));
+    assert!(!ui_generated.contains("(!(flux__ui_state_active))"));
+}
+
+#[test]
 fn eliminates_redundant_double_boolean_negation() {
     let source = r#"
 fn observe(value: bool) -> bool {

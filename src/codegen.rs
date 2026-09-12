@@ -12167,6 +12167,14 @@ fn ui_expr_c(
             {
                 return Ok(code);
             }
+            if let Some(other) = boolean_resolution_other(*op, left, right) {
+                let other_code = ui_expr_c(other, view, signatures)?;
+                return Ok(format!("({left_code} {} {other_code})", c_operator(*op)));
+            }
+            if let Some(other) = boolean_left_resolution_other(*op, left, right) {
+                let other_code = ui_expr_c(other, view, signatures)?;
+                return Ok(format!("({right_code} {} {other_code})", c_operator(*op)));
+            }
             if let Some(code) =
                 checked_i64_identity_c(*op, left, right, &left_code, &right_code, signatures)
             {
@@ -16311,6 +16319,54 @@ fn boolean_absorption_operand_is_discardable(expr: &Expr, signatures: &Signature
                 expr: inner,
             } if matches!(inner.kind, ExprKind::Var(_))
         )
+}
+
+fn boolean_resolution_other<'a>(op: BinOp, left: &Expr, right: &'a Expr) -> Option<&'a Expr> {
+    if !matches!(op, BinOp::And | BinOp::Or) {
+        return None;
+    }
+    let ExprKind::Binary {
+        left: nested_left,
+        op: nested_op,
+        right: nested_right,
+    } = &right.kind
+    else {
+        return None;
+    };
+    if !matches!(
+        (op, *nested_op),
+        (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+    ) {
+        return None;
+    }
+    if complementary_boolean_binding_term(left, nested_left) {
+        Some(nested_right)
+    } else if complementary_boolean_binding_term(left, nested_right) {
+        Some(nested_left)
+    } else {
+        None
+    }
+}
+
+fn boolean_left_resolution_other<'a>(op: BinOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
+    if !matches!(op, BinOp::And | BinOp::Or) {
+        return None;
+    }
+    let ExprKind::Binary {
+        left: nested_left,
+        op: nested_op,
+        right: nested_right,
+    } = &left.kind
+    else {
+        return None;
+    };
+    if !matches!(
+        (op, *nested_op),
+        (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+    ) {
+        return None;
+    }
+    complementary_boolean_binding_term(nested_left, right).then_some(nested_right)
 }
 
 fn boolean_identity_c(
@@ -20917,6 +20973,17 @@ fn emit_expr(
                 signatures,
             ) {
                 code
+            } else if let Some(other) = boolean_resolution_other(*op, left, right) {
+                let other = emit_expr(other, env, signatures)?;
+                format!("({} {} {})", emitted_left.code, c_operator(*op), other.code)
+            } else if let Some(other) = boolean_left_resolution_other(*op, left, right) {
+                let other = emit_expr(other, env, signatures)?;
+                format!(
+                    "({} {} {})",
+                    emitted_right.code,
+                    c_operator(*op),
+                    other.code
+                )
             } else if let Some(code) = checked_i64_identity_c(
                 *op,
                 left,
