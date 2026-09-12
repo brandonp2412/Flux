@@ -2241,6 +2241,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 property_name,
                 "onPress"
                     | "onChange"
+                    | "onSubmit"
                     | "onSelect"
                     | "onTap"
                     | "onDoubleTap"
@@ -2253,6 +2254,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     | "onBlur"
                     | "on_press"
                     | "on_change"
+                    | "on_submit"
                     | "on_select"
                     | "on_tap"
                     | "on_double_tap"
@@ -2264,10 +2266,37 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                     | "on_focus"
                     | "on_blur"
             ) {
-                if let Some((raw_state, _)) = value_source.split_once("=>") {
-                    let state = raw_state.trim();
+                if let Some((raw_targets, _)) = value_source.split_once("=>") {
+                    let targets = raw_targets.split(',').map(str::trim).collect::<Vec<_>>();
+                    if targets.is_empty()
+                        || targets.len() > 2
+                        || targets.iter().any(|target| target.is_empty())
+                    {
+                        return Err(diag(
+                            property_line.number,
+                            "view state transitions use 'state => expression' or 'state, value => expression'",
+                        ));
+                    }
+                    let state = targets[0];
                     validate_identifier(state, property_line.number)?;
-                    let state_offset = value_source.find(state).unwrap_or(0);
+                    let event_value = targets.get(1).copied();
+                    if let Some(event_value) = event_value {
+                        validate_identifier(event_value, property_line.number)?;
+                        if event_value == state {
+                            return Err(diag(
+                                property_line.number,
+                                "view event value binding must differ from the target state",
+                            ));
+                        }
+                    }
+                    let state_offset = raw_targets.find(state).unwrap_or(0);
+                    let event_value_span = event_value.map(|event_value| {
+                        SourceSpan::new(
+                            property_line.number,
+                            value_column + raw_targets.find(event_value).unwrap_or(0),
+                            event_value.len(),
+                        )
+                    });
                     let expression_offset = value_source.find("=>").unwrap_or(0) + 2;
                     let (expression_source, expression_column) = trim_with_column(
                         &value_source[expression_offset..],
@@ -2287,6 +2316,8 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                                 value_column + state_offset,
                                 state.len(),
                             ),
+                            event_value: event_value.map(str::to_string),
+                            event_value_span,
                         }),
                         expression_source,
                         expression_column,

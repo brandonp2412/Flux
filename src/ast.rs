@@ -410,6 +410,8 @@ pub struct ViewProperty {
 pub struct ViewStateTransition {
     pub state: String,
     pub state_span: SourceSpan,
+    pub event_value: Option<String>,
+    pub event_value_span: Option<SourceSpan>,
 }
 
 #[derive(Debug, Clone)]

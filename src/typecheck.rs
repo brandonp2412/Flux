@@ -2348,11 +2348,7 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                                 TEXT_INPUT_VALIDATION_STATES.join(", ")
                             )),
                         ),
-                        Ok(_) => {}
-                        Err(_) => diagnostics.push(diag(
-                            property.value.span,
-                            "TextInput.validationState must be a compile-time string value",
-                        )),
+                        Ok(_) | Err(_) => {}
                     }
                 }
                 if internal_property == "transition_easing" {
@@ -2378,25 +2374,50 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 }
                 if let Some(transition) = &property.transition {
                     let internal_property = source_name_to_internal(&property.name);
-                    let transition_property = matches!(
+                    let text_value_event = matches!(
                         (element.kind.as_str(), internal_property.as_str()),
-                        ("Button", "on_press")
-                            | ("Toggle", "on_change")
-                            | ("Radio", "on_select")
-                            | (_, "on_tap")
-                            | (_, "on_double_tap")
-                            | (_, "on_long_press")
-                            | (_, "on_context_menu")
-                            | (_, "on_context_menu_select")
-                            | (_, "on_hover")
-                            | (_, "on_leave")
-                            | (_, "on_focus")
-                            | (_, "on_blur")
+                        ("TextInput", "on_change") | ("TextInput", "on_submit")
                     );
+                    let transition_property = text_value_event
+                        || matches!(
+                            (element.kind.as_str(), internal_property.as_str()),
+                            ("Button", "on_press")
+                                | ("Toggle", "on_change")
+                                | ("Radio", "on_select")
+                                | (_, "on_tap")
+                                | (_, "on_double_tap")
+                                | (_, "on_long_press")
+                                | (_, "on_context_menu")
+                                | (_, "on_context_menu_select")
+                                | (_, "on_hover")
+                                | (_, "on_leave")
+                                | (_, "on_focus")
+                                | (_, "on_blur")
+                        );
                     if !transition_property {
                         diagnostics.push(diag(
                             property.span,
-                            "view state transitions are valid only for event properties such as Button.onPress, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress/onContextMenu/onContextMenuSelect, onHover/onLeave, or onFocus/onBlur",
+                            "view state transitions are valid only for event properties such as Button.onPress, TextInput.onChange/onSubmit, Toggle.onChange, Radio.onSelect, onTap/onDoubleTap/onLongPress/onContextMenu/onContextMenuSelect, onHover/onLeave, or onFocus/onBlur",
+                        ));
+                        continue;
+                    }
+                    if transition.event_value.is_some() && !text_value_event {
+                        diagnostics.push(diag(
+                            transition.event_value_span.unwrap_or(transition.state_span),
+                            &format!(
+                                "{}.{} does not provide an event value; use 'state => expression'",
+                                element.kind, property.name
+                            ),
+                        ));
+                        continue;
+                    }
+                    if text_value_event && transition.event_value.is_none() {
+                        diagnostics.push(diag(
+                            transition.state_span,
+                            &format!(
+                                "{}.{} state transitions bind the incoming text; use 'state, value => value'",
+                                element.kind, property.name
+                            ),
                         ));
                         continue;
                     }
@@ -2411,7 +2432,29 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                         ));
                         continue;
                     };
-                    match type_of_expr(&property.value, &property_env, signatures) {
+                    let mut transition_env = property_env.clone();
+                    if let Some(event_value) = &transition.event_value {
+                        if transition_env.contains_key(event_value) {
+                            diagnostics.push(diag(
+                                transition.event_value_span.unwrap_or(transition.state_span),
+                                &format!(
+                                    "view event value binding '{event_value}' conflicts with an existing view binding"
+                                ),
+                            ));
+                            continue;
+                        }
+                        transition_env.insert(event_value.clone(), Type::Str);
+                        if text_value_event
+                            && !matches!(&property.value.kind, ExprKind::Var(name) if name == event_value)
+                        {
+                            diagnostics.push(diag(
+                                property.value.span,
+                                "TextInput event-value transitions currently assign the incoming text directly; use 'state, value => value'",
+                            ));
+                            continue;
+                        }
+                    }
+                    match type_of_expr(&property.value, &transition_env, signatures) {
                         Ok(actual) => {
                             let expected = signatures.canonical_type(&state.ty);
                             if let Err(diagnostic) = require_type(

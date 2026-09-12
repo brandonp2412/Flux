@@ -5487,6 +5487,9 @@ fn emit_android_native_application(
     }
 
     out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic float flux__ui_density = 1.0f;\n");
+    if view_uses_text_input_validation(view) {
+        out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
+    }
     for element in &view.elements {
         if view_property(element, "drag_translate").is_some() {
             out.push_str(&format!(
@@ -5539,6 +5542,12 @@ fn emit_android_native_application(
                     "static const char *{state_name} = {};\n",
                     c_string(&initial)
                 ));
+                if view_state_accepts_text_input_value(view, &state.name) {
+                    out.push_str(&format!(
+                        "static char *{} = NULL;\n",
+                        ui_owned_state_c_name(&state.name)
+                    ));
+                }
             }
             _ => {
                 return Err(diag(
@@ -5547,6 +5556,19 @@ fn emit_android_native_application(
                 ));
             }
         }
+    }
+    for state in &view.states {
+        if signatures.canonical_type(&state.ty) != Type::Str
+            || !view_state_accepts_text_input_value(view, &state.name)
+        {
+            continue;
+        }
+        let state_name = ui_state_c_name(&state.name);
+        let owned_name = ui_owned_state_c_name(&state.name);
+        let setter_name = ui_set_state_c_name(&state.name);
+        out.push_str(&format!(
+            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
+        ));
     }
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
@@ -5983,22 +6005,11 @@ fn emit_android_native_application(
         }
         if element.kind == "TextInput" {
             let validation_state = match view_property(element, "validation_state") {
-                Some(property) => {
-                    let Some(state) = static_expr_str(&property.value, signatures) else {
-                        return Err(diag(
-                            property.value.span,
-                            "bootstrap Android TextInput.validationState must be a compile-time string value",
-                        ));
-                    };
-                    if !typecheck::TEXT_INPUT_VALIDATION_STATES.contains(&state.as_str()) {
-                        return Err(diag(
-                            property.value.span,
-                            &format!("unsupported TextInput.validationState '{state}'"),
-                        ));
-                    }
-                    state
-                }
-                None => "normal".to_string(),
+                Some(property) => format!(
+                    "flux__ui_validation_state({})",
+                    ui_expr_c(&property.value, view, signatures)?
+                ),
+                None => c_string("normal"),
             };
             out.push_str(
                 "    jclass input_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
@@ -6007,8 +6018,7 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_input = (*env)->GetMethodID(env, input_style_activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;Ljava/lang/String;)V\");\n");
             out.push_str("    if (style_input == NULL) return;\n");
             out.push_str(&format!(
-                "    jstring child_validation_state = (*env)->NewStringUTF(env, {});\n    (*env)->CallVoidMethod(env, activity, style_input, child, child_validation_state);\n    if (child_validation_state != NULL) (*env)->DeleteLocalRef(env, child_validation_state);\n",
-                c_string(&validation_state)
+                "    jstring child_validation_state = (*env)->NewStringUTF(env, {validation_state});\n    (*env)->CallVoidMethod(env, activity, style_input, child, child_validation_state);\n    if (child_validation_state != NULL) (*env)->DeleteLocalRef(env, child_validation_state);\n"
             ));
             out.push_str("    (*env)->DeleteLocalRef(env, input_style_activity_class);\n");
         }
@@ -8374,15 +8384,32 @@ fn emit_android_native_application(
             let Some(action) = view_property(element, property_name) else {
                 continue;
             };
+            let element_id = stable_android_element_id(&view.name, &element.name);
+            if let Some(transition) = &action.transition {
+                if transition.event_value.is_some() {
+                    let state_index = ui_state_index(view, &transition.state);
+                    out.push_str(&format!(
+                        "        case {element_id}: {}(value); if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
+                        ui_set_state_c_name(&transition.state)
+                    ));
+                    continue;
+                }
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                let state_index = ui_state_index(view, &transition.state);
+                out.push_str(&format!(
+                    "        case {element_id}: {} = {next}; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, {state_index}); break;\n",
+                    ui_state_c_name(&transition.state)
+                ));
+                continue;
+            }
             let ExprKind::Var(function) = &action.value.kind else {
                 return Err(diag(
                     action.value.span,
                     &format!(
-                        "bootstrap Android TextInput.{property_name} lowering requires a named fn(str) -> void callback"
+                        "bootstrap Android TextInput.{property_name} lowering requires a named fn(str) -> void callback or state transition"
                     ),
                 ));
             };
-            let element_id = stable_android_element_id(&view.name, &element.name);
             out.push_str(&format!(
                 "        case {element_id}: {}(value); break;\n",
                 function_c_name(function)
@@ -8685,6 +8712,9 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
     ));
+    if view_uses_text_input_validation(view) {
+        out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
+    }
     out.push_str(
         "static gchar *flux__ui_image_source_path(const char *source) {\n    if (source == NULL) return g_strdup(\"\");\n    if (!g_str_has_prefix(source, \"asset://\")) return g_strdup(source);\n    const char *relative = source + 8;\n    if (*relative == '\\0' || *relative == '/' || strstr(relative, \"../\") != NULL || g_str_has_suffix(relative, \"/..\")) return g_strdup(\"\");\n    const char *override_root = getenv(\"FLUX_ASSET_ROOT\");\n    if (override_root != NULL && *override_root != '\\0') return g_build_filename(override_root, relative, NULL);\n    GError *error = NULL;\n    gchar *executable = g_file_read_link(\"/proc/self/exe\", &error);\n    if (executable == NULL) {\n        if (error != NULL) g_error_free(error);\n        return g_build_filename(\"assets\", relative, NULL);\n    }\n    gchar *directory = g_path_get_dirname(executable);\n    gchar *resolved = g_build_filename(directory, \"assets\", relative, NULL);\n    g_free(directory);\n    g_free(executable);\n    return resolved;\n}\n"
     );
@@ -8740,6 +8770,12 @@ fn emit_linux_gtk_application(
                     "static const char *{state_name} = {};\n",
                     c_string(&initial)
                 ));
+                if view_state_accepts_text_input_value(view, &state.name) {
+                    out.push_str(&format!(
+                        "static char *{} = NULL;\n",
+                        ui_owned_state_c_name(&state.name)
+                    ));
+                }
             }
             _ => {
                 return Err(diag(
@@ -8748,6 +8784,19 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
+    }
+    for state in &view.states {
+        if signatures.canonical_type(&state.ty) != Type::Str
+            || !view_state_accepts_text_input_value(view, &state.name)
+        {
+            continue;
+        }
+        let state_name = ui_state_c_name(&state.name);
+        let owned_name = ui_owned_state_c_name(&state.name);
+        let setter_name = ui_set_state_c_name(&state.name);
+        out.push_str(&format!(
+            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
+        ));
     }
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
@@ -8841,11 +8890,32 @@ fn emit_linux_gtk_application(
                 let Some(action) = view_property(element, property_name) else {
                     continue;
                 };
+                if let Some(transition) = &action.transition {
+                    let setter = ui_set_state_c_name(&transition.state);
+                    let state_index = ui_state_index(view, &transition.state);
+                    if multiline && property_name == "on_change" {
+                        out.push_str(&format!(
+                            "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data; GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); }}\n",
+                            element.name,
+                        ));
+                    } else if multiline {
+                        out.push_str(&format!(
+                            "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data; if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); return TRUE; }}\n",
+                            element.name,
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {setter}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed({state_index}); }}\n",
+                            element.name,
+                        ));
+                    }
+                    continue;
+                }
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
                         action.value.span,
                         &format!(
-                            "bootstrap TextInput.{property_name} lowering requires a named fn(str) -> void callback"
+                            "bootstrap TextInput.{property_name} lowering requires a named fn(str) -> void callback or state transition"
                         ),
                     ));
                 };
@@ -9634,24 +9704,9 @@ fn emit_linux_gtk_application(
                 }
             }
             "TextInput" => {
-                let validation_state = match view_property(element, "validation_state") {
-                    Some(property) => {
-                        let Some(state) = static_expr_str(&property.value, signatures) else {
-                            return Err(diag(
-                                property.value.span,
-                                "bootstrap Linux TextInput.validationState must be a compile-time string value",
-                            ));
-                        };
-                        if !typecheck::TEXT_INPUT_VALIDATION_STATES.contains(&state.as_str()) {
-                            return Err(diag(
-                                property.value.span,
-                                &format!("unsupported TextInput.validationState '{state}'"),
-                            ));
-                        }
-                        state
-                    }
-                    None => "normal".to_string(),
-                };
+                let validation_state = view_property(element, "validation_state")
+                    .map(|property| ui_expr_c(&property.value, view, signatures))
+                    .transpose()?;
                 let multiline = match view_property(element, "multiline") {
                     Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
                         diag(
@@ -9733,9 +9788,10 @@ fn emit_linux_gtk_application(
                         "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, TRUE, -1);\n"
                     ));
                 }
-                if validation_state != "normal" {
+                if let Some(validation_state) = validation_state {
                     out.push_str(&format!(
-                        "    gtk_widget_add_css_class({variable}, \"flux-input-{validation_state}\");\n"
+                        "    const char *flux__validation_{} = flux__ui_validation_state({validation_state});\n    if (strcmp(flux__validation_{}, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", flux__validation_{}); gtk_widget_add_css_class({variable}, validation_class); g_free(validation_class); }}\n",
+                        element.name, element.name, element.name
                     ));
                 }
                 if let Some(property) = view_property(element, "enabled") {
@@ -10895,7 +10951,7 @@ fn android_ui_element_needs_refresh(
             "max_width_chars",
         ],
         "Button" => &["text"],
-        "TextInput" => &["placeholder"],
+        "TextInput" => &["placeholder", "validation_state"],
         "Image" => &["source", "alt", "can_shrink"],
         "Toggle" => &["label", "checked"],
         "Radio" => &["label", "selected"],
@@ -11697,6 +11753,19 @@ fn emit_android_ui_refresh(
                     );
                     out.push_str("                }\n");
                 }
+                if android_ui_property_needs_refresh(element, "validation_state", &runtime_names)
+                    && let Some(property) = view_property(element, "validation_state")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                jstring refresh_validation_state = flux__android_utf8_string(env, flux__ui_validation_state({value}));\n"
+                    ));
+                    out.push_str("                if (refresh_validation_state != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_input_style = (*env)->GetMethodID(env, activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;Ljava/lang/String;)V\");\n");
+                    out.push_str("                    if (refresh_input_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_input_style, child, refresh_validation_state);\n");
+                    out.push_str("                    (*env)->DeleteLocalRef(env, refresh_validation_state);\n");
+                    out.push_str("                }\n");
+                }
             }
             "Image" => {
                 let source_dynamic =
@@ -11894,6 +11963,33 @@ fn ui_zero_arg_event_body(
 
 fn ui_state_c_name(name: &str) -> String {
     format!("flux__ui_state_{name}")
+}
+
+fn ui_owned_state_c_name(name: &str) -> String {
+    format!("flux__ui_state_owned_{name}")
+}
+
+fn ui_set_state_c_name(name: &str) -> String {
+    format!("flux__ui_set_state_{name}")
+}
+
+fn view_state_accepts_text_input_value(view: &crate::ast::ViewDef, state_name: &str) -> bool {
+    view.elements.iter().any(|element| {
+        element.kind == "TextInput"
+            && ["on_change", "on_submit"].iter().any(|property_name| {
+                view_property(element, property_name).is_some_and(|property| {
+                    property.transition.as_ref().is_some_and(|transition| {
+                        transition.state == state_name && transition.event_value.is_some()
+                    })
+                })
+            })
+    })
+}
+
+fn view_uses_text_input_validation(view: &crate::ast::ViewDef) -> bool {
+    view.elements.iter().any(|element| {
+        element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+    })
 }
 
 fn ui_derived_c_name(name: &str) -> String {
@@ -12446,6 +12542,14 @@ fn emit_ui_refresh(
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_widget_set_tooltip_text({widget}, {value});\n"
+            ));
+        }
+        if element.kind == "TextInput"
+            && let Some(property) = view_property(element, "validation_state")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({content_widget} != NULL) {{ gtk_widget_remove_css_class({content_widget}, \"flux-input-error\"); gtk_widget_remove_css_class({content_widget}, \"flux-input-success\"); gtk_widget_remove_css_class({content_widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state({value}); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({content_widget}, validation_class); g_free(validation_class); }} }}\n"
             ));
         }
         if let Some(property) = view_property(element, "accessibility_label") {

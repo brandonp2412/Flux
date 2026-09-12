@@ -377,11 +377,14 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
         lines.insert(element.line, placement);
         for property in &element.properties {
             let value = match &property.transition {
-                Some(transition) => format!(
-                    "{} => {}",
-                    transition.state,
-                    format_expr(&property.value, 0)
-                ),
+                Some(transition) => {
+                    let target = transition
+                        .event_value
+                        .as_ref()
+                        .map(|event_value| format!("{}, {event_value}", transition.state))
+                        .unwrap_or_else(|| transition.state.clone());
+                    format!("{target} => {}", format_expr(&property.value, 0))
+                }
                 None => format_expr(&property.value, 0),
             };
             lines.insert(property.line, format!("        {}: {value}", property.name));

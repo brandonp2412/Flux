@@ -21266,7 +21266,8 @@ app Form
     assert!(linux.contains(".flux-input-error { border-color: @flux_danger;"));
     assert!(linux.contains(".flux-input-success { border-color: @flux_success;"));
     assert!(linux.contains(".flux-input-warning { border-color: @flux_warning;"));
-    assert!(linux.contains("gtk_widget_add_css_class(flux__ui_email, \"flux-input-error\")"));
+    assert!(linux.contains("flux__ui_validation_state(\"error\")"));
+    assert!(linux.contains("g_strdup_printf(\"flux-input-%s\""));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("validation-state fixture should analyze");
@@ -21279,7 +21280,40 @@ app Form
     .expect("TextInput validation state should lower on Android");
     assert!(android.contains("styleTextInput"));
     assert!(android.contains("Landroid/widget/EditText;Ljava/lang/String;)V"));
-    assert!(android.contains("NewStringUTF(env, \"error\")"));
+    assert!(android.contains("NewStringUTF(env, flux__ui_validation_state(\"error\"))"));
+
+    let dynamic = r#"
+view Form {
+    state validation: str = "normal"
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput email at 1,1
+        validationState: validation
+    Button invalidate at 2,1
+        text: "Mark invalid"
+        onPress: validation => "error"
+}
+app Form
+"#;
+    check_source(dynamic).expect("TextInput validation state may be driven by Flux state");
+    let linux = compile_to_c(dynamic).expect("dynamic validation should lower on Linux");
+    assert!(linux.contains("gtk_widget_remove_css_class(flux__ui_email, \"flux-input-error\")"));
+    assert!(
+        linux.contains(
+            "const char *validation = flux__ui_validation_state(flux__ui_state_validation)"
+        )
+    );
+    let database = fluxc::semantic::SemanticDatabase::analyze(dynamic, SourceId::UNKNOWN)
+        .expect("dynamic validation fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic validation should lower on Android");
+    assert!(android.contains("flux__ui_validation_state(flux__ui_state_validation)"));
+    assert!(android.contains("refresh_input_style"));
 
     let invalid = r#"
 view Form {
@@ -22740,6 +22774,75 @@ app Screen
             .message
             .contains("accessibilityRole must be a compile-time string value")
     }));
+}
+
+#[test]
+fn text_input_event_value_transition_updates_flux_owned_text_state() {
+    let source = r#"
+view Form {
+    state query: str = ""
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput input at 1,1
+        text: query
+        onChange: query, value => value
+        onSubmit: query, submitted => submitted
+    Text mirror at 2,1
+        text: query
+}
+app Form
+"#;
+    check_source(source).expect("TextInput should bind incoming text into view state");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("TextInput state transition should format canonically");
+    assert!(formatted.contains("onChange: query, value => value"));
+    assert!(formatted.contains("onSubmit: query, submitted => submitted"));
+
+    let linux = compile_to_c(source).expect("editable TextInput state should lower on Linux");
+    assert!(linux.contains("static char *flux__ui_state_owned_query = NULL;"));
+    assert!(linux.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(linux.contains(
+        "flux__ui_set_state_query(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed(0);"
+    ));
+
+    let program = fluxc::parser::parse(source).expect("editable TextInput state should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("editable TextInput state should typecheck for Android");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("editable TextInput state should lower on Android");
+    assert!(android.contains("static char *flux__ui_state_owned_query = NULL;"));
+    assert!(android.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(android.contains("flux__ui_set_state_query(value); if (flux__android_activity != NULL) flux__android_ui_refresh"));
+
+    let missing_value = source.replace(
+        "onChange: query, value => value",
+        "onChange: query => \"fixed\"",
+    );
+    let errors = check_source_all(&missing_value)
+        .expect_err("TextInput state transitions should bind the native text value explicitly");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("state transitions bind the incoming text")
+    }));
+
+    let transformed_value = source.replace(
+        "onChange: query, value => value",
+        "onChange: query, value => \"fixed\"",
+    );
+    let errors = check_source_all(&transformed_value).expect_err(
+        "bootstrap editable state should not pretend to own arbitrary string expressions",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("assign the incoming text directly"))
+    );
 }
 
 #[test]
