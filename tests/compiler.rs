@@ -15418,6 +15418,61 @@ app Counter
 }
 
 #[test]
+fn reuses_checked_negation_for_same_negated_binding_arithmetic() {
+    let source = r#"
+fn subtract(value: i64) -> i64 {
+    return (-value) - (-value)
+}
+
+fn divide(value: i64) -> i64 {
+    return (-value) / (-value)
+}
+
+fn main() -> i64 {
+    print(subtract(7))
+    return divide(2)
+}
+"#;
+
+    check_source(source).expect("same negated binding arithmetic should typecheck");
+    let generated = compile_to_c(source)
+        .expect("same negated binding arithmetic should reuse one checked negation");
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), INT64_C(0));"));
+    assert!(generated.contains("return flux_div_self_i64(flux_neg_i64(flux__local_value));"));
+    assert!(!generated.contains("flux_sub_i64(flux_neg_i64"));
+    assert!(!generated.contains("flux_div_i64(flux_neg_i64"));
+    assert_eq!(
+        generated.matches("flux_neg_i64(flux__local_value)").count(),
+        2,
+        "subtraction and division should each evaluate the checked negation once",
+    );
+    assert!(generated.contains("if (value == INT64_MIN)"));
+    assert!(generated.contains("flux_div_self_i64(int64_t value) { if (value == 0)"));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Button action at 1,1
+        text: "Reset"
+        onPress: count => (-count) - (-count)
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI same negated binding arithmetic should share checked lowering");
+    assert!(ui_generated.contains("((void)(flux_neg_i64(flux__ui_state_count)), INT64_C(0))"));
+    assert_eq!(
+        ui_generated
+            .matches("flux_neg_i64(flux__ui_state_count)")
+            .count(),
+        1,
+        "UI lowering should also evaluate the checked negation once",
+    );
+}
+
+#[test]
 fn eliminates_redundant_guards_across_equivalent_checked_negation_forms() {
     let source = r#"
 const NEG_ONE: i64 = -1

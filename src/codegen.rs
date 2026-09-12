@@ -18311,6 +18311,31 @@ fn checked_i64_reduction(
         }
     }
 
+    let same_checked_negated_binding = matches!(
+        (&left.kind, &right.kind),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: left_inner,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: right_inner,
+            }
+        ) if matches!(
+            (&left_inner.kind, &right_inner.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        )
+    );
+    if same_checked_negated_binding {
+        if matches!(op, BinOp::Sub) {
+            return Some(CheckedI64Reduction::ZeroAfterLeft);
+        }
+        if matches!(op, BinOp::Div) {
+            return Some(CheckedI64Reduction::SelfDivide);
+        }
+    }
+
     if matches!(op, BinOp::Add) {
         match (&left.kind, &right.kind) {
             (
