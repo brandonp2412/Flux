@@ -5740,6 +5740,81 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_handles_cannot_escape_their_structured_scope() {
+    let source = r#"
+fn target() -> void {
+    time.sleepMillis(20)
+}
+fn intruder(targetHandle: i64) -> void {
+    let joinError: error = worker.join(targetHandle)
+    if joinError == nil:
+        print(-1)
+    else:
+        print(41)
+    let cancelError: error = worker.cancel(targetHandle)
+    if cancelError == nil:
+        print(-2)
+    else:
+        print(42)
+}
+fn main() -> i64 {
+    let (targetHandle, targetError) = worker.start(target)
+    if targetError != nil:
+        return 1
+    let (intruderHandle, intruderError) = worker.startWith(intruder, targetHandle)
+    if intruderError != nil:
+        return 2
+    let intruderJoinError: error = worker.join(intruderHandle)
+    if intruderJoinError != nil:
+        return 3
+    let targetJoinError: error = worker.join(targetHandle)
+    if targetJoinError != nil:
+        return 4
+    return 0
+}
+"#;
+
+    check_source(source).expect("scoped worker handles should typecheck");
+    let generated = compile_to_c(source).expect("scoped worker handles should lower natively");
+    assert!(generated.contains("worker.join handle is outside the current worker scope"));
+    assert!(generated.contains("worker.cancel handle is outside the current worker scope"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-worker-scope-ownership-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker scope fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker scope source should be writable");
+    let binary = root.join("worker-scope-ownership");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker scope binary should build");
+    assert!(
+        built.status.success(),
+        "worker scope build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker scope binary should run");
+    assert!(
+        run.status.success(),
+        "worker scope binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_cancellation_is_cooperative_and_propagates_to_descendants() {
     let source = r#"
 fn child(channelHandle: i64) -> void {
