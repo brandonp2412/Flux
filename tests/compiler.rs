@@ -13144,6 +13144,22 @@ fn absorbNegatedOr(value: bool) -> bool {
     return !value || (!value && observe(value))
 }
 
+fn absorbRightAnd(value: bool, other: bool) -> bool {
+    return value && (other || value)
+}
+
+fn absorbRightOr(value: bool, other: bool) -> bool {
+    return value || (other && value)
+}
+
+fn absorbRightNegatedAnd(value: bool, other: bool) -> bool {
+    return !value && (other || !value)
+}
+
+fn absorbRightNegatedOr(value: bool, other: bool) -> bool {
+    return !value || (other && !value)
+}
+
 fn keepEffect(value: bool) -> bool {
     return value && (observe(value) || value)
 }
@@ -13153,6 +13169,10 @@ fn main() -> i64 {
     print(absorbOr(false))
     print(absorbNegatedAnd(true))
     print(absorbNegatedOr(false))
+    print(absorbRightAnd(true, false))
+    print(absorbRightOr(false, true))
+    print(absorbRightNegatedAnd(true, false))
+    print(absorbRightNegatedOr(false, true))
     print(keepEffect(true))
     return 0
 }
@@ -13163,8 +13183,24 @@ fn main() -> i64 {
         .expect("boolean absorption proofs should lower without redundant work");
     assert!(generated.contains("static inline bool flux__fn_absorbAnd"));
     assert!(generated.contains("static inline bool flux__fn_absorbOr"));
-    assert!(generated.contains("return flux__local_value;"));
-    assert!(generated.contains("return (!flux__local_value);"));
+    assert_eq!(generated.matches("return flux__local_value;").count(), 5);
+    assert_eq!(generated.matches("return (!flux__local_value);").count(), 4);
+    assert!(generated.contains(
+        "static inline bool flux__fn_absorbRightAnd(bool flux__local_value, bool flux__local_other)"
+    ));
+    assert!(generated.contains(
+        "static inline bool flux__fn_absorbRightOr(bool flux__local_value, bool flux__local_other)"
+    ));
+    assert!(generated.contains(
+        "static inline bool flux__fn_absorbRightNegatedAnd(bool flux__local_value, bool flux__local_other)"
+    ));
+    assert!(generated.contains(
+        "static inline bool flux__fn_absorbRightNegatedOr(bool flux__local_value, bool flux__local_other)"
+    ));
+    assert!(!generated.contains("flux__local_other || flux__local_value"));
+    assert!(!generated.contains("flux__local_other && flux__local_value"));
+    assert!(!generated.contains("flux__local_other || (!flux__local_value)"));
+    assert!(!generated.contains("flux__local_other && (!flux__local_value)"));
     assert_eq!(
         generated
             .matches("flux__fn_observe(flux__local_value)")
@@ -13176,14 +13212,21 @@ fn main() -> i64 {
     let ui = r#"
 view Status {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto auto
     state active: bool = true
+    state other: bool = false
     Text first at 1,1
         text: "One"
         visible: active && (active || !active)
     Text second at 2,1
         text: "Two"
         visible: !active || (!active && active)
+    Text third at 3,1
+        text: "Three"
+        visible: active && (other || active)
+    Text fourth at 4,1
+        text: "Four"
+        visible: !active || (other && !active)
 }
 app Status
 "#;
@@ -13191,6 +13234,8 @@ app Status
         compile_to_c(ui).expect("UI boolean absorption should share native lowering");
     assert!(!ui_generated.contains("flux__ui_state_active && ("));
     assert!(!ui_generated.contains("(!(flux__ui_state_active)) || ("));
+    assert!(!ui_generated.contains("flux__ui_state_other || flux__ui_state_active"));
+    assert!(!ui_generated.contains("flux__ui_state_other && (!(flux__ui_state_active))"));
 }
 
 #[test]

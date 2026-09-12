@@ -14921,6 +14921,40 @@ fn same_binding_comparison_c(op: BinOp, left: &Expr, right: &Expr) -> Option<&'s
     }
 }
 
+fn same_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
+    match (&left.kind, &right.kind) {
+        (ExprKind::Var(left_name), ExprKind::Var(right_name)) => left_name == right_name,
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => matches!(
+            (&left_inner.kind, &right_inner.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        ),
+        _ => false,
+    }
+}
+
+fn boolean_absorption_operand_is_discardable(expr: &Expr, signatures: &Signatures) -> bool {
+    matches!(
+        typecheck::constant_primitive_value(expr, signatures),
+        Some(ConstantValue::Bool(_))
+    ) || matches!(expr.kind, ExprKind::Var(_))
+        || matches!(
+            &expr.kind,
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: inner,
+            } if matches!(inner.kind, ExprKind::Var(_))
+        )
+}
+
 fn boolean_identity_c(
     op: BinOp,
     left: &Expr,
@@ -15006,73 +15040,23 @@ fn boolean_identity_c(
         return None;
     }
 
-    if matches!(
-        (&left.kind, &right.kind),
-        (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-    ) {
+    if same_boolean_binding_term(left, right) {
         return Some(left_code.to_string());
     }
 
-    let same_negated_binding = match (&left.kind, &right.kind) {
-        (
-            ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: left_inner,
-            },
-            ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: right_inner,
-            },
-        ) => matches!(
-            (&left_inner.kind, &right_inner.kind),
-            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-        ),
-        _ => false,
-    };
-    if same_negated_binding {
-        return Some(left_code.to_string());
-    }
-
-    let absorbed_nested_binding = match (&left.kind, &right.kind) {
-        (
-            ExprKind::Var(left_name),
-            ExprKind::Binary {
-                left: nested_left,
-                op: nested_op,
-                ..
-            },
-        ) if matches!(
+    let absorbed_nested_binding = match &right.kind {
+        ExprKind::Binary {
+            left: nested_left,
+            op: nested_op,
+            right: nested_right,
+        } if matches!(
             (op, *nested_op),
             (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
         ) =>
         {
-            matches!(&nested_left.kind, ExprKind::Var(nested_name) if left_name == nested_name)
-        }
-        (
-            ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: left_inner,
-            },
-            ExprKind::Binary {
-                left: nested_left,
-                op: nested_op,
-                ..
-            },
-        ) if matches!(
-            (op, *nested_op),
-            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
-        ) =>
-        {
-            matches!(
-                (&left_inner.kind, &nested_left.kind),
-                (
-                    ExprKind::Var(left_name),
-                    ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: nested_inner,
-                    },
-                ) if matches!(&nested_inner.kind, ExprKind::Var(nested_name) if left_name == nested_name)
-            )
+            same_boolean_binding_term(left, nested_left)
+                || (same_boolean_binding_term(left, nested_right)
+                    && boolean_absorption_operand_is_discardable(nested_left, signatures))
         }
         _ => false,
     };
