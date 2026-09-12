@@ -16911,6 +16911,7 @@ fn package_import_namespace_loads_declared_path_dependencies() {
         "import \"pkg:math_alias/src/lib.flux\"\nfn main() -> i64 { answer() }\n",
     )
     .expect("app entry should be writable");
+    fluxc::project::write_lockfile(&app).expect("path dependency lockfile should be writable");
 
     let (_, sources) = fluxc::project::load(&app).expect("path dependency import should load");
     let module_names = sources
@@ -16940,6 +16941,12 @@ fn package_import_namespace_loads_declared_path_dependencies() {
     }));
 
     fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"sample-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath_alias = { path = \"../math\", version = \"^1.2.0\" }\n",
+    )
+    .expect("valid dependency manifest should be restorable");
+    fluxc::project::write_lockfile(&app).expect("restored dependency lockfile should be writable");
+    fs::write(
         app.join("src/main.flux"),
         "import \"pkg:missing/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
     )
@@ -16961,6 +16968,7 @@ fn package_import_namespace_loads_declared_path_dependencies() {
         "import \"pkg:remote/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
     )
     .expect("registry app entry should be writable");
+    fluxc::project::write_lockfile(&app).expect("registry requirement lockfile should be writable");
     let errors = fluxc::project::check(&app)
         .expect_err("unresolved registry dependency must not pretend to be local");
     assert!(errors.iter().any(|error| {
@@ -16968,6 +16976,101 @@ fn package_import_namespace_loads_declared_path_dependencies() {
             .message
             .contains("package dependency 'remote' requires dependency resolution")
     }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
+    let root = std::env::temp_dir().join(format!("flux-package-lockfile-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let math = root.join("math");
+    let util = root.join("util");
+    for package in [&app, &math, &util] {
+        fs::create_dir_all(package.join("src")).expect("package directory should be writable");
+    }
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath = { path = \"../math\", version = \"^1.2.0\" }\nremote = \"~3.4.0\"\nsource = { git = \"https://example.test/source.git\", rev = \"abc123\" }\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        math.join("flux.toml"),
+        "[package]\nname = \"math\"\nversion = \"1.4.3\"\nentry = \"src/lib.flux\"\n\n[dependencies]\nutil = { path = \"../util\", version = \"^2.0.0\" }\n",
+    )
+    .expect("math manifest should be writable");
+    fs::write(
+        util.join("flux.toml"),
+        "[package]\nname = \"util\"\nversion = \"2.0.0\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("util manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:math/src/lib.flux\"\nfn main() -> i64 { answer() }\n",
+    )
+    .expect("app source should be writable");
+    fs::write(
+        math.join("src/lib.flux"),
+        "import \"pkg:util/src/lib.flux\"\npub fn answer() -> i64 { value() }\n",
+    )
+    .expect("math source should be writable");
+    fs::write(util.join("src/lib.flux"), "pub fn value() -> i64 { 42 }\n")
+        .expect("util source should be writable");
+
+    let missing =
+        fluxc::project::check(&app).expect_err("dependencies without a lockfile must fail");
+    assert!(
+        missing
+            .iter()
+            .any(|error| error.message.contains("require a current flux.lock"))
+    );
+
+    let lock = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lock")
+        .arg(&app)
+        .output()
+        .expect("flux lock should run");
+    assert!(
+        lock.status.success(),
+        "flux lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let lock_path = app.join("flux.lock");
+    assert!(String::from_utf8_lossy(&lock.stdout).contains("locked:"));
+    let first = fs::read_to_string(&lock_path).expect("lockfile should be readable");
+    assert!(first.contains("version = 1"));
+    assert!(first.contains("id = \"math\""));
+    assert!(first.contains("package = \"math\""));
+    assert!(first.contains("version = \"1.4.3\""));
+    assert!(first.contains("source = \"path:../math\""));
+    assert!(first.contains("id = \"math/util\""));
+    assert!(first.contains("source = \"path:../util\""));
+    assert!(first.contains("source = \"registry:~3.4.0\""));
+    assert!(first.contains("source = \"git:https://example.test/source.git#abc123\""));
+
+    fluxc::project::write_lockfile(&app).expect("lockfile regeneration should succeed");
+    assert_eq!(
+        fs::read_to_string(&lock_path).expect("regenerated lockfile should be readable"),
+        first,
+        "identical dependency inputs must produce byte-identical lockfiles"
+    );
+    fluxc::project::check(&app).expect("locked path dependency graph should typecheck");
+
+    fs::write(
+        util.join("flux.toml"),
+        "[package]\nname = \"util\"\nversion = \"2.0.1\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("util version should be writable");
+    let stale =
+        fluxc::project::check(&app).expect_err("changed dependency metadata must stale the lock");
+    assert!(
+        stale
+            .iter()
+            .any(|error| error.message.contains("lockfile") && error.message.contains("stale"))
+    );
+    fluxc::project::write_lockfile(&app).expect("stale lockfile should refresh deterministically");
+    fluxc::project::check(&app).expect("refreshed lockfile should restore the build");
 
     let _ = fs::remove_dir_all(&root);
 }
