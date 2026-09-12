@@ -6240,6 +6240,93 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn structured_worker_cancellation_interrupts_blocking_timers() {
+    let source = r#"
+fn sleepingChild() -> void {
+    time.sleepMillis(3000)
+    if worker.cancelled():
+        print(1)
+    else:
+        print(-1)
+}
+fn deadlineChild() -> void {
+    let deadline: i64 = time.monotonicMillis() + 3000
+    time.sleepUntilMonotonic(deadline)
+    if worker.cancelled():
+        print(2)
+    else:
+        print(-2)
+}
+fn main() -> i64 {
+    let (_sleepHandle, sleepError) = worker.start(sleepingChild)
+    if sleepError != nil:
+        return 11
+    let (_deadlineHandle, deadlineError) = worker.start(deadlineChild)
+    if deadlineError != nil:
+        return 12
+    time.sleepMillis(100)
+    return 0
+}
+"#;
+
+    check_source(source).expect("cancellation-aware worker timers should typecheck");
+    let generated = compile_to_c(source).expect("cancellation-aware worker timers should lower");
+    assert!(generated.contains("if (flux__worker_current_id > 0)"));
+    assert!(generated.contains("if (flux__worker_cancelled()) return;"));
+    assert!(generated.contains("duration_ms > INT64_C(50) ? INT64_C(50) : duration_ms"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-structured-timer-cancel-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("structured timer cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source)
+        .expect("structured timer cancellation source should be writable");
+    let binary = root.join("structured-timer-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("structured timer cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "structured timer cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let started = Instant::now();
+    let run = Command::new(&binary)
+        .output()
+        .expect("structured timer cancellation binary should run");
+    let elapsed = started.elapsed();
+    assert!(
+        run.status.success(),
+        "structured timer cancellation binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "structured cancellation should interrupt 3-second worker timers, took {elapsed:?}"
+    );
+    let mut values = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(|line| {
+            line.parse::<i64>()
+                .expect("timer cancellation marker should be i64")
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    assert_eq!(values, vec![1, 2]);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_join_children_waits_for_descendants_and_tree_shakes() {
     let source = r#"
 fn grandchild() -> void {
