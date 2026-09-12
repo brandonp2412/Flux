@@ -20,7 +20,7 @@ The package-format version covers the schema and semantics of `flux.toml`; it is
 
 ## Compatibility policy
 
-Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]`, `[constants]`, and `[translations]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
+Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, and `entry`), the optional `[dependencies]`, `[constants]`, `[translations]`, and `[native]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules.
 
 `[dependencies]` is an additive version-1 extension. Registry entries use quoted exact/caret/tilde SemVer requirements or `"*"`; local development entries use `{ path = "relative/path" }` and may add `version = "^1.2.3"` (or another supported SemVer requirement) when they must satisfy the same version contract as a registry package; Git development entries use `{ git = "repository-url", rev = "immutable-revision" }`. The manifest parser validates names, source shape, required fields, duplicates, relative local paths, and dependency requirement syntax.
 
@@ -40,6 +40,21 @@ productName = "Example"
 Flux source reads these values through the explicit `package` namespace, for example `package.apiVersion`. They participate in ordinary constant expressions and parameter defaults and are substituted during compilation, so there is no runtime configuration lookup or generated mutable global. Each package owns its namespace: source loaded from a path dependency resolves `package.*` against that dependency's own `flux.toml`, not the importing application's manifest.
 
 Localized string resources use `[translations]`; `locale.text`, `locale.select`, and `locale.plural` resolve the compiled entries described in the language reference. Both tables are package-owned manifest data rather than platform-specific bridge APIs.
+
+## Native/plugin metadata
+
+Packages that carry native integration metadata may declare a `[native]` table:
+
+```toml
+[native]
+plugin = true
+libraries = ["sqlite3", "ssl"]
+search_paths = ["native/lib"]
+```
+
+`plugin` marks the package as a native/plugin package for tooling and future package-resolution policy; it defaults to `false`. `libraries` records logical native library names without embedding platform linker flags. Names are restricted to portable ASCII linker-name characters, sorted, and de-duplicated. `search_paths` records package-relative native library locations, rejects absolute paths and `.`/`..` traversal, resolves against the package root, and is likewise normalized deterministically.
+
+This table is metadata only. It does not silently add linker flags or load foreign code. Stable C/native imports, ownership-safe FFI, and per-platform package implementations remain explicit Milestone 19 work, so package metadata cannot bypass Flux's binding or ownership rules.
 
 ## Reproducible lockfile
 

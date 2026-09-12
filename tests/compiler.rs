@@ -16552,6 +16552,9 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
     assert_eq!(parsed.android.version_code, 1);
     assert_eq!(parsed.android.min_sdk, 23);
     assert_eq!(parsed.android.target_sdk, 36);
+    assert!(!parsed.native.plugin);
+    assert!(parsed.native.libraries.is_empty());
+    assert!(parsed.native.search_paths.is_empty());
     assert_eq!(
         fluxc::project::resolve_entry(&root).expect("directory should resolve through flux.toml"),
         parsed.entry
@@ -16699,6 +16702,72 @@ fn package_manifest_parses_strict_dependency_sources() {
             .message
             .contains("duplicate [dependencies] entry 'dupe'")
     }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_manifest_parses_native_plugin_metadata_strictly() {
+    let root = std::env::temp_dir().join(format!("flux-native-metadata-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary native package should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"native-plugin\"\nentry = \"src/main.flux\"\n\n[native]\nplugin = true\nlibraries = [\"sqlite3\", \"ssl\", \"sqlite3\"]\nsearch_paths = [\"native/lib\", \"vendor/lib\", \"native/lib\"]\n",
+    )
+    .expect("native metadata manifest should be writable");
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("native metadata should parse");
+    assert!(parsed.native.plugin);
+    assert_eq!(
+        parsed.native.libraries,
+        vec!["sqlite3".to_string(), "ssl".to_string()]
+    );
+    assert_eq!(
+        parsed.native.search_paths,
+        vec![root.join("native/lib"), root.join("vendor/lib")]
+    );
+
+    let invalid_cases = [
+        (
+            "bad-bool",
+            "plugin = \"yes\"",
+            "[native].plugin must be true or false",
+        ),
+        (
+            "bad-library",
+            "libraries = [\"ssl;rm\"]",
+            "[native].libraries entries must be non-empty logical library names",
+        ),
+        (
+            "absolute-path",
+            "search_paths = [\"/usr/lib\"]",
+            "[native].search_paths entries must be non-empty package-relative paths",
+        ),
+        (
+            "escaping-path",
+            "search_paths = [\"../outside\"]",
+            "[native].search_paths entries must be non-empty package-relative paths",
+        ),
+    ];
+    for (name, native_field, expected) in invalid_cases {
+        fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"native-plugin\"\nentry = \"src/main.flux\"\n\n[native]\n{native_field}\n"
+            ),
+        )
+        .expect("invalid native manifest should be writable");
+        let errors = fluxc::project::read_manifest(&manifest)
+            .expect_err(&format!("{name} native metadata must be rejected"));
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "{name} should report '{expected}', got {errors:?}"
+        );
+    }
 
     let _ = fs::remove_dir_all(&root);
 }

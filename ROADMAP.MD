@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 507
+- Completed baseline units: 508
 - Reported overall progress: **69%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -870,7 +870,7 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Package registry.
 - [x] Semantic versioning/resolution: package dependencies now use a deterministic SemVer 2.0 precedence/matching engine for exact, caret, tilde, wildcard, prerelease, and build-metadata forms; the resolver selects the highest compatible candidate independent of registry transport. Local path dependencies may declare an optional `version` requirement that is enforced against the dependency package before any module import is loaded, while registry/Git fetching and reproducible pinning remain separately tracked by the registry/lockfile items.
 - [x] Reproducible lockfile: `flux lock <package-dir|flux.toml>` writes deterministic format-v1 `flux.lock` data for the complete declared dependency graph, recursively pinning currently loadable path-package identity/version/source metadata while recording immutable Git revisions and unresolved registry requirements for their future transports. Package-aware loading rejects missing/stale locks before compiling, dependency-metadata drift invalidates cached analysis, and unchanged inputs regenerate byte-identical lockfiles; exact fetched registry versions/checksums remain naturally downstream of the still-unimplemented registry transport rather than weakening current reproducibility.
-- [ ] Native/plugin package metadata.
+- [x] Native/plugin package metadata: package format v1 supports a strict optional `[native]` table with a tooling/plugin marker, deterministic logical native-library names, and package-root-resolved search paths that reject absolute or traversal forms. The metadata is deliberately non-executing: it does not inject linker flags or bypass the still-separate stable-FFI, ownership, or per-platform implementation work.
 - [ ] Per-platform package implementations.
 
 # Milestone 20 — Accessibility and internationalization

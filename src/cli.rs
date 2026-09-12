@@ -6769,6 +6769,7 @@ mod tests {
             dependencies: std::collections::BTreeMap::new(),
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
+            native: crate::project::NativePackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,
@@ -6817,6 +6818,7 @@ mod tests {
             dependencies: std::collections::BTreeMap::new(),
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
+            native: crate::project::NativePackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,

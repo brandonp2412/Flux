@@ -201,6 +201,13 @@ pub struct AndroidPackageConfig {
     pub key_alias: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NativePackageConfig {
+    pub plugin: bool,
+    pub libraries: Vec<String>,
+    pub search_paths: Vec<PathBuf>,
+}
+
 pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 pub const PACKAGE_LOCK_FORMAT_VERSION: u32 = 1;
 
@@ -229,6 +236,7 @@ pub struct PackageManifest {
     pub dependencies: BTreeMap<String, PackageDependency>,
     pub constants: BTreeMap<String, typecheck::ConstantValue>,
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
+    pub native: NativePackageConfig,
     pub android: AndroidPackageConfig,
 }
 
@@ -539,6 +547,9 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_deep_links = None::<Vec<String>>;
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
+    let mut native_plugin = None::<bool>;
+    let mut native_libraries = None::<Vec<String>>;
+    let mut native_search_paths = None::<Vec<String>>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
     let mut constants = BTreeMap::<String, typecheck::ConstantValue>::new();
     let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -562,7 +573,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             let table = line[1..line.len() - 1].trim();
             if !matches!(
                 table,
-                "package" | "android" | "dependencies" | "constants" | "translations"
+                "package" | "android" | "native" | "dependencies" | "constants" | "translations"
             ) {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
@@ -749,6 +760,55 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 }
                 translations.insert(key.to_string(), localized);
             }
+            Some("native") => match key {
+                "plugin" => {
+                    let value = match raw_value {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            diagnostics.push(manifest_diagnostic(
+                                source_id,
+                                line_number,
+                                "[native].plugin must be true or false",
+                            ));
+                            continue;
+                        }
+                    };
+                    if native_plugin.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            "duplicate [native] field 'plugin'",
+                        ));
+                    }
+                }
+                "libraries" | "search_paths" => {
+                    let value = match parse_manifest_string_array(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    let slot = if key == "libraries" {
+                        &mut native_libraries
+                    } else {
+                        &mut native_search_paths
+                    };
+                    if slot.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("duplicate [native] field '{key}'"),
+                        ));
+                    }
+                }
+                _ => diagnostics.push(manifest_diagnostic(
+                    source_id,
+                    line_number,
+                    format!("unknown [native] field '{key}'"),
+                )),
+            },
             Some("android") => match key {
                 "application_id" | "keystore" | "key_alias" => {
                     let value = match parse_manifest_string(raw_value) {
@@ -824,7 +884,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], or [android]",
+                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], or [android]",
             )),
         }
     }
@@ -927,6 +987,30 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[android].keystore and [android].key_alias must be configured together",
         ));
     }
+    if let Some(libraries) = native_libraries.as_ref() {
+        for library in libraries {
+            if !valid_native_library_name(library) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "[native].libraries entries must be non-empty logical library names using ASCII letters, digits, '.', '_', '+', or '-'; invalid value '{library}'"
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(search_paths) = native_search_paths.as_ref() {
+        for search_path in search_paths {
+            if !valid_native_search_path(search_path) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "[native].search_paths entries must be non-empty package-relative paths without '.' or '..' components; invalid value '{search_path}'"
+                    ),
+                ));
+            }
+        }
+    }
     let Some(entry_value) = entry.filter(|entry| !entry.is_empty()) else {
         diagnostics.push(Diagnostic::global(
             DiagnosticStage::Parse,
@@ -953,9 +1037,10 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
 
     let package_root = canonical_manifest
         .parent()
-        .expect("canonical manifest path has a parent");
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
     let canonical_entry = canonical_source(&package_root.join(entry_path), "package entry")?;
-    if !canonical_entry.starts_with(package_root) {
+    if !canonical_entry.starts_with(&package_root) {
         return Err(vec![Diagnostic::global(
             DiagnosticStage::Parse,
             "[package].entry must remain inside the package root",
@@ -1004,6 +1089,25 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         dependencies,
         constants,
         translations,
+        native: NativePackageConfig {
+            plugin: native_plugin.unwrap_or(false),
+            libraries: {
+                let mut libraries = native_libraries.unwrap_or_default();
+                libraries.sort();
+                libraries.dedup();
+                libraries
+            },
+            search_paths: {
+                let mut paths = native_search_paths
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|path| package_root.join(path))
+                    .collect::<Vec<_>>();
+                paths.sort();
+                paths.dedup();
+                paths
+            },
+        },
     })
 }
 
@@ -1381,6 +1485,27 @@ fn valid_package_constant_name(value: &str) -> bool {
                 | "none"
                 | "error"
         )
+}
+
+fn valid_native_library_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn valid_native_search_path(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let path = Path::new(value);
+    !path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
 }
 
 fn valid_dependency_name(value: &str) -> bool {
