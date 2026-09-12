@@ -78,7 +78,7 @@ When choosing work, pull the smallest prerequisites from later milestones forwar
 - [x] **Native-first platform lowering:** current Linux UI lowers directly to GTK4/native Wayland integration, Android uses direct NDK APIs where available (including API-level/lifecycle entry points) and compiler-generated direct JNI/framework calls only where Android requires JVM APIs, and unreachable helpers are tree-shaken. Future backends remain required to use the thinnest optimizable native boundary rather than a mandatory framework runtime.
 - [x] The LSP, debugger, profiler, formatter, test runner, package tooling, and hot reload are first-class parts of the language product: all are exposed through the user-facing `flux` workflow, reuse compiler-native source/diagnostic/build semantics rather than separate framework layers, and have checked-in regression coverage. Production-depth follow-ups remain tracked in their dedicated milestones without reopening this product-integration principle.
 
-API naming rule: the ordinary/default operation gets the shortest obvious spelling; extra words qualify genuinely non-default variants rather than the common case. For example, ordinary text-file reading is `file.read`, not `fs.readText`.
+API ergonomics rules: the ordinary/default operation gets the shortest obvious spelling; extra words qualify genuinely non-default variants rather than the common case. For example, ordinary text-file reading is `file.read`, not `fs.readText`. One-shot operations that naturally produce a result must not expose callback-shaped application APIs merely to work around runtime ownership or scheduling; use ordinary return values for synchronous work and `async`/`await` for asynchronous work. Compiler/runtime callbacks may remain internal implementation details, and inherently event-driven APIs such as UI event handlers may still accept functions.
 
 ## Current compiler baseline
 
@@ -309,11 +309,11 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 
 ## Async/generator ergonomics
 
-Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model.
+Adapt the convenience of Dart's async language features while preserving Flux's explicit error-return model. The intended source model is native `async fn` plus `await`: an async function keeps its ordinary declared return shape, calling it creates compiler-owned task state, and `await` yields those declared values directly. Flux should not require a source-level `Future<T>`/`Promise<T>` generic or user-visible completion callback to express ordinary asynchronous work.
 
-- [ ] Async functions.
-- [ ] `await` or Flux-equivalent suspension syntax.
-- [ ] Async failures returned explicitly, not thrown as exceptions.
+- [ ] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
+- [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
+- [ ] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
 - [ ] Streams/sequences as explicit types/capabilities.
 - [ ] Generator functions.
 - [ ] `yield` / `yield from` equivalent if it fits ownership rules.
@@ -385,7 +385,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Byte buffers.
 - [ ] Paths and filesystem APIs.
   - [x] Bootstrap compiler-owned filesystem capabilities: the ordinary API is now split into short `file.*` / `directory.*` operations (`file.exists`, `file.write`, `file.append`, `file.copy`, `file.rename`, `file.remove`, `directory.exists`, `directory.create`, recursive `directory.createAll`, `directory.remove`, and recursive `directory.removeAll`) while the older `fs.*` spellings remain accepted for compatibility. All are strictly typed, lower directly to native/POSIX filesystem primitives, return explicit Flux `error` values for mutations, participate in LSP qualified completion/signature help, and tree-shake completely when unreachable. Recursive directory creation validates existing path components are directories and releases its temporary native path buffer on every exit path; recursive removal does not follow directory symlinks and releases per-entry traversal buffers on every path.
-  - [ ] Owned path/string results, directory enumeration, richer filesystem metadata/errors, and ownership-safe byte I/O after owned strings/collections exist. Bootstrap text file reads are available through `file.read(path, maxBytes, callback) -> (i64, error)`: file contents are validated as NUL-free text and lent only for the exact `fn(str) -> void` callback scope, with compile-time/runtime size bounds and no escaping allocation. Callback-free scalar metadata now includes `file.size(path) -> (i64, error)`, which validates a regular file, reports byte size without allocation, participates in LSP tooling, and tree-shakes when unreachable; owned read results and directory listings remain blocked on owned strings/collections rather than adding further callback-shaped APIs.
+  - [ ] Owned path/string results, directory enumeration, richer filesystem metadata/errors, and ownership-safe byte I/O after owned strings/collections exist. Do not expose a callback-shaped text-read stopgap. The canonical text API is reserved as callback-free `await file.read(path)`, yielding owned text plus an explicit `error` once owned strings and the task/`await` model can make that lifetime sound. Callback-free scalar metadata already includes `file.size(path) -> (i64, error)`, which validates a regular file, reports byte size without allocation, participates in LSP tooling, and tree-shakes when unreachable; directory listings likewise wait for owned collections instead of adding callback APIs.
 - [ ] Date/time/duration.
   - [x] Bootstrap native scalar time primitives: `time.unixMillis()` exposes wall-clock Unix milliseconds, `time.monotonicMillis()` provides an elapsed-time clock, and `time.sleepMillis(durationMs)` performs an EINTR-safe native sleep with compile-time rejection of constant negative durations plus a runtime guard for dynamic negatives. The helpers are tree-shaken when unreachable and participate in qualified LSP completion/signature help; calendar values, time zones, formatting, and richer duration types remain pending.
   - [x] Allocation-free UTC calendar decomposition from Unix milliseconds: `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` are strictly typed scalar accessors, normalize negative pre-epoch timestamps correctly, lower through the native UTC calendar conversion on current targets, participate in LSP completion/signature help, and tree-shake when unreachable. First-class calendar values, formatting, named time zones/local-time conversion, and richer duration types remain pending.
@@ -406,7 +406,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 # Milestone 6 — Concurrency
 
-- [ ] Task model.
+- [ ] Task model with compiler-owned result/state storage, ownership-safe values across suspension points, and no requirement for source-level generic task/future types in ordinary code.
 - [ ] Structured concurrency.
 - [ ] Cancellation propagation.
 - [ ] Timers.

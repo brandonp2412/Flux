@@ -8237,34 +8237,6 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "read" => {
-                if args.len() != 3 {
-                    return Err(diag(
-                        span,
-                        &format!("file.read expects 3 arguments, got {}", args.len()),
-                    ));
-                }
-                let path_type = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &path_type, "file.read path")?;
-                let max_bytes = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &max_bytes, "file.read maxBytes")?;
-                if matches!(
-                    constant_primitive_value(&args[1], signatures),
-                    Some(ConstantValue::I64(value)) if !(0..=65536).contains(&value)
-                ) {
-                    return Err(diag(
-                        args[1].span,
-                        "file.read maxBytes must be between 0 and 65536",
-                    ));
-                }
-                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
-                let expected = Type::Function {
-                    params: vec![Type::Str],
-                    returns: Vec::new(),
-                };
-                require_type(args[2].span, &expected, &callback, "file.read callback")?;
-                return Ok(vec![Type::I64, Type::Error]);
-            }
             "exists" | "size" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(
