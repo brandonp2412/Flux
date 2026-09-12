@@ -6590,6 +6590,8 @@ mod tests {
         ));
         assert!(element.contains("accessibilityLabel: str"));
         assert!(element.contains("accessibilityValue: str"));
+        assert!(element.contains("accessibilityActionLabel: str"));
+        assert!(element.contains("accessibilityLongPressLabel: str"));
         assert!(element.contains("accessibilityOrder: i64"));
         assert!(element.contains("focusScope: i64"));
         assert!(element.contains("focusable: bool"));

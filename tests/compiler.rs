@@ -24233,6 +24233,88 @@ app Actions
 }
 
 #[test]
+fn android_accessibility_action_labels_follow_native_activation_paths() {
+    let source = r#"
+fn tapped() -> void {
+    print("tap")
+}
+
+fn held() -> void {
+    print("hold")
+}
+
+view Actions {
+    state tapLabel: str = "Open details"
+    state holdLabel: str = "More options"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Open"
+        onTap: tapped
+        accessibilityActionLabel: tapLabel
+    Text more at 2,1
+        text: "More"
+        onLongPress: held
+        accessibilityLongPressLabel: holdLabel
+}
+app Actions
+"#;
+
+    check_source(source).expect("labelled accessibility actions should typecheck");
+    compile_to_c(source).expect("labelled accessibility actions remain portable on Linux");
+    let program = fluxc::parser::parse(source).expect("accessibility action app should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("accessibility action app should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("accessibility action labels should lower to Android");
+    assert!(android.contains("setAccessibilityActionLabels"));
+    assert!(android.contains("child_accessibility_action_label"));
+    assert!(android.contains("child_accessibility_long_press_label"));
+    assert!(android.contains("refresh_accessibility_action_labels"));
+
+    let missing_action = r#"
+view Broken {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Broken"
+        accessibilityActionLabel: "Open"
+}
+app Broken
+"#;
+    let errors = check_source_all(missing_action)
+        .expect_err("action labels without actions must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityActionLabel requires a primary activation action")
+    }));
+
+    let missing_long_press = r#"
+view Broken {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Broken"
+        accessibilityLongPressLabel: "More options"
+}
+app Broken
+"#;
+    let errors = check_source_all(missing_long_press)
+        .expect_err("long-press labels without long-press behavior must be rejected");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityLongPressLabel requires a long-press action")
+    }));
+}
+
+#[test]
 fn toggle_control_binds_native_checked_state_and_functional_transition() {
     let source = r#"
 view Settings {

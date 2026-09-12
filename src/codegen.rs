@@ -7047,6 +7047,37 @@ fn emit_android_native_application(
             out.push_str("    (*env)->DeleteLocalRef(env, accessibility_role_activity_class);\n");
             out.push_str("    (*env)->DeleteLocalRef(env, child_accessibility_role);\n");
         }
+        let accessibility_action_label = view_property(element, "accessibility_action_label");
+        let accessibility_long_press_label =
+            view_property(element, "accessibility_long_press_label");
+        if accessibility_action_label.is_some() || accessibility_long_press_label.is_some() {
+            if let Some(property) = accessibility_action_label {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    jstring child_accessibility_action_label = flux__android_utf8_string(env, {value});\n"
+                ));
+                out.push_str("    if (child_accessibility_action_label == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_accessibility_action_label = NULL;\n");
+            }
+            if let Some(property) = accessibility_long_press_label {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "    jstring child_accessibility_long_press_label = flux__android_utf8_string(env, {value});\n"
+                ));
+                out.push_str("    if (child_accessibility_long_press_label == NULL) return;\n");
+            } else {
+                out.push_str("    jstring child_accessibility_long_press_label = NULL;\n");
+            }
+            out.push_str("    jclass accessibility_action_activity_class = (*env)->GetObjectClass(env, activity);\n");
+            out.push_str("    if (accessibility_action_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID set_accessibility_action_labels = (*env)->GetMethodID(env, accessibility_action_activity_class, \"setAccessibilityActionLabels\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+            out.push_str("    if (set_accessibility_action_labels == NULL) return;\n");
+            out.push_str("    (*env)->CallVoidMethod(env, activity, set_accessibility_action_labels, child, child_accessibility_action_label, child_accessibility_long_press_label);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, accessibility_action_activity_class);\n");
+            out.push_str("    if (child_accessibility_action_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_action_label);\n");
+            out.push_str("    if (child_accessibility_long_press_label != NULL) (*env)->DeleteLocalRef(env, child_accessibility_long_press_label);\n");
+        }
         if let Some(property) = view_property(element, "accessibility_hidden") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str("    jclass accessibility_hidden_activity_class = (*env)->GetObjectClass(env, activity);\n");
@@ -10817,6 +10848,8 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "accessibility_label"
             | "accessibility_description"
             | "accessibility_value"
+            | "accessibility_action_label"
+            | "accessibility_long_press_label"
             | "accessibility_hidden"
             | "translate_x"
             | "translate_y"
@@ -10975,6 +11008,8 @@ fn android_ui_element_needs_refresh(
         "accessibility_label",
         "accessibility_description",
         "accessibility_value",
+        "accessibility_action_label",
+        "accessibility_long_press_label",
         "accessibility_hidden",
         "translate_x",
         "translate_y",
@@ -11930,6 +11965,41 @@ fn emit_android_ui_refresh(
             out.push_str("                jmethodID refresh_accessibility_value_method = (*env)->GetMethodID(env, activity_class, \"setAccessibilityValue\", \"(Landroid/view/View;Ljava/lang/String;)V\");\n");
             out.push_str("                if (refresh_accessibility_value_method != NULL && refresh_accessibility_value != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility_value_method, child, refresh_accessibility_value);\n");
             out.push_str("                if (refresh_accessibility_value != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_value);\n");
+        }
+        let accessibility_action_needs_refresh = android_ui_property_needs_refresh(
+            element,
+            "accessibility_action_label",
+            &runtime_names,
+        ) || android_ui_property_needs_refresh(
+            element,
+            "accessibility_long_press_label",
+            &runtime_names,
+        );
+        if accessibility_action_needs_refresh {
+            if let Some(property) = view_property(element, "accessibility_action_label") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                jstring refresh_accessibility_action_label = flux__android_utf8_string(env, {value});\n"
+                ));
+            } else {
+                out.push_str(
+                    "                jstring refresh_accessibility_action_label = NULL;\n",
+                );
+            }
+            if let Some(property) = view_property(element, "accessibility_long_press_label") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "                jstring refresh_accessibility_long_press_label = flux__android_utf8_string(env, {value});\n"
+                ));
+            } else {
+                out.push_str(
+                    "                jstring refresh_accessibility_long_press_label = NULL;\n",
+                );
+            }
+            out.push_str("                jmethodID refresh_accessibility_action_labels = (*env)->GetMethodID(env, activity_class, \"setAccessibilityActionLabels\", \"(Landroid/view/View;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+            out.push_str("                if (refresh_accessibility_action_labels != NULL) (*env)->CallVoidMethod(env, activity, refresh_accessibility_action_labels, child, refresh_accessibility_action_label, refresh_accessibility_long_press_label);\n");
+            out.push_str("                if (refresh_accessibility_action_label != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_action_label);\n");
+            out.push_str("                if (refresh_accessibility_long_press_label != NULL) (*env)->DeleteLocalRef(env, refresh_accessibility_long_press_label);\n");
         }
         if android_ui_property_needs_refresh(element, "accessibility_hidden", &runtime_names)
             && let Some(property) = view_property(element, "accessibility_hidden")

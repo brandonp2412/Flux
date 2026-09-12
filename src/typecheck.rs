@@ -1382,7 +1382,9 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
             | "accessibility_label"
             | "accessibility_description"
             | "accessibility_value"
-            | "accessibility_role" => {
+            | "accessibility_role"
+            | "accessibility_action_label"
+            | "accessibility_long_press_label" => {
                 return Some(Type::Str);
             }
             "context_menu_items" => {
@@ -1711,6 +1713,8 @@ const COMMON_VIEW_PROPERTIES: &[&str] = &[
     "accessibility_description",
     "accessibility_value",
     "accessibility_role",
+    "accessibility_action_label",
+    "accessibility_long_press_label",
     "accessibility_hidden",
     "accessibility_order",
     "on_tap",
@@ -2091,6 +2095,70 @@ fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut 
                 )
             {
                 diagnostics.push(diagnostic);
+            }
+
+            let accessibility_action_label = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "accessibility_action_label"
+            });
+            if let Some(label) = accessibility_action_label {
+                let has_primary_action = element.properties.iter().any(|property| {
+                    let name = source_name_to_internal(&property.name);
+                    name == "on_tap"
+                        || (element.kind == "Button" && name == "on_press")
+                        || (element.kind == "Toggle" && name == "on_change")
+                        || (element.kind == "Radio" && name == "on_select")
+                });
+                if !has_primary_action {
+                    diagnostics.push(
+                        diag(
+                            label.name_span,
+                            "accessibilityActionLabel requires a primary activation action on the same element",
+                        )
+                        .with_note(
+                            "add onTap, Button.onPress, Toggle.onChange, or Radio.onSelect so the labelled native accessibility action has behavior",
+                        ),
+                    );
+                }
+                if matches!(evaluate_default_expr(&label.value, signatures), Ok(ConstantValue::Str(value)) if value.is_empty())
+                {
+                    diagnostics.push(diag(
+                        label.value.span,
+                        "accessibilityActionLabel must not be empty",
+                    ));
+                }
+            }
+            let accessibility_long_press_label = element.properties.iter().find(|property| {
+                source_name_to_internal(&property.name) == "accessibility_long_press_label"
+            });
+            if let Some(label) = accessibility_long_press_label {
+                let has_long_press_action = element.properties.iter().any(|property| {
+                    matches!(
+                        source_name_to_internal(&property.name).as_str(),
+                        "on_long_press"
+                            | "on_context_menu"
+                            | "context_menu_label"
+                            | "context_menu_items"
+                            | "drag_text"
+                    )
+                });
+                if !has_long_press_action {
+                    diagnostics.push(
+                        diag(
+                            label.name_span,
+                            "accessibilityLongPressLabel requires a long-press action on the same element",
+                        )
+                        .with_note(
+                            "add onLongPress, context-menu behavior, or dragText so the labelled native long-click action has behavior",
+                        ),
+                    );
+                }
+                if matches!(evaluate_default_expr(&label.value, signatures), Ok(ConstantValue::Str(value)) if value.is_empty())
+                {
+                    diagnostics.push(diag(
+                        label.value.span,
+                        "accessibilityLongPressLabel must not be empty",
+                    ));
+                }
             }
 
             let long_press = element

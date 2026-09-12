@@ -4098,6 +4098,13 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<String, Integer> shortcutViewIds = new HashMap<>();
     private final Set<String> shortcutTapActions = new HashSet<>();
     private final Set<String> shortcutFocusedOnly = new HashSet<>();
+
+    private static final class FluxAccessibilityMetadata {
+        String role;
+        String actionLabel;
+        String longPressLabel;
+    }
+
     private boolean restoringInput;
     private boolean restoringFocus;
     private boolean restoringCheckedState;
@@ -5158,24 +5165,63 @@ __FLUX_PICKER_METHODS__
         if (Build.VERSION.SDK_INT >= 30) view.setStateDescription(value);
     }
 
-    public void setAccessibilityRole(View view, String role) {
-        if (role == null) return;
-        if (Build.VERSION.SDK_INT >= 28) view.setAccessibilityHeading("heading".equals(role));
-        final String className;
-        if ("button".equals(role)) className = "android.widget.Button";
-        else if ("textBox".equals(role)) className = "android.widget.EditText";
-        else if ("checkbox".equals(role)) className = "android.widget.CheckBox";
-        else if ("radio".equals(role)) className = "android.widget.RadioButton";
-        else if ("image".equals(role)) className = "android.widget.ImageView";
-        else if ("switch".equals(role)) className = "android.widget.Switch";
-        else className = "android.widget.TextView";
+    private FluxAccessibilityMetadata accessibilityMetadata(View view) {
+        Object existing = view.getTag();
+        if (existing instanceof FluxAccessibilityMetadata) return (FluxAccessibilityMetadata) existing;
+        FluxAccessibilityMetadata metadata = new FluxAccessibilityMetadata();
+        view.setTag(metadata);
+        return metadata;
+    }
+
+    private void installFluxAccessibilityDelegate(View view) {
         view.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
-                info.setClassName(className);
-                if (Build.VERSION.SDK_INT >= 28) info.setHeading("heading".equals(role));
+                Object tag = host.getTag();
+                if (!(tag instanceof FluxAccessibilityMetadata)) return;
+                FluxAccessibilityMetadata metadata = (FluxAccessibilityMetadata) tag;
+                String role = metadata.role;
+                if (role != null) {
+                    final String className;
+                    if ("button".equals(role)) className = "android.widget.Button";
+                    else if ("textBox".equals(role)) className = "android.widget.EditText";
+                    else if ("checkbox".equals(role)) className = "android.widget.CheckBox";
+                    else if ("radio".equals(role)) className = "android.widget.RadioButton";
+                    else if ("image".equals(role)) className = "android.widget.ImageView";
+                    else if ("switch".equals(role)) className = "android.widget.Switch";
+                    else className = "android.widget.TextView";
+                    info.setClassName(className);
+                    if (Build.VERSION.SDK_INT >= 28) info.setHeading("heading".equals(role));
+                }
+                if (metadata.actionLabel != null && !metadata.actionLabel.isEmpty()) {
+                    info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+                    info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                            AccessibilityNodeInfo.ACTION_CLICK, metadata.actionLabel));
+                }
+                if (metadata.longPressLabel != null && !metadata.longPressLabel.isEmpty()) {
+                    info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK);
+                    info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                            AccessibilityNodeInfo.ACTION_LONG_CLICK, metadata.longPressLabel));
+                }
             }
         });
+    }
+
+    public void setAccessibilityRole(View view, String role) {
+        if (view == null) return;
+        FluxAccessibilityMetadata metadata = accessibilityMetadata(view);
+        metadata.role = role;
+        if (Build.VERSION.SDK_INT >= 28) view.setAccessibilityHeading("heading".equals(role));
+        installFluxAccessibilityDelegate(view);
+    }
+
+    public void setAccessibilityActionLabels(View view, String actionLabel, String longPressLabel) {
+        if (view == null) return;
+        FluxAccessibilityMetadata metadata = accessibilityMetadata(view);
+        metadata.actionLabel = actionLabel;
+        metadata.longPressLabel = longPressLabel;
+        installFluxAccessibilityDelegate(view);
+        view.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
 
     public void setAccessibilityHidden(View view, boolean hidden) {
@@ -7389,6 +7435,10 @@ mod tests {
         ));
         assert!(activity.contains("getAssets().open(assetSource)"));
         assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(input)"));
+        assert!(activity.contains("setAccessibilityActionLabels"));
+        assert!(activity.contains("AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK"));
+        assert!(activity.contains("AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK"));
+        assert!(activity.contains("view.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)"));
         assert!(!activity.contains("nativeOnPickerResult"));
         assert!(!activity.contains("onBackPressed"));
         assert!(!activity.contains("KEYCODE_BACK"));
