@@ -5072,6 +5072,14 @@ __FLUX_PICKER_METHODS__
             view.setImageDrawable(null);
             return;
         }
+        if (!source.contains("://")) {
+            String assetSource = source.startsWith("assets/") ? source.substring(7) : source;
+            try (java.io.InputStream input = getAssets().open(assetSource)) {
+                view.setImageBitmap(android.graphics.BitmapFactory.decodeStream(input));
+                return;
+            } catch (java.io.IOException ignored) {
+            }
+        }
         Uri uri = source.contains("://") ? Uri.parse(source) : Uri.fromFile(new File(source));
         view.setImageURI(uri);
     }
@@ -5440,6 +5448,45 @@ fn ensure_parent_directory(output: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+fn stage_android_package_assets(
+    manifest: &fluxc::project::PackageManifest,
+    staging_root: &Path,
+) -> Result<bool, CliError> {
+    let package_root = manifest
+        .path
+        .parent()
+        .ok_or_else(|| "Android package manifest has no parent directory".to_string())?;
+    let source_root = package_root.join("assets");
+    if !source_root.is_dir() {
+        return Ok(false);
+    }
+    let destination_root = staging_root.join("assets");
+    copy_android_asset_directory(&source_root, &destination_root)?;
+    Ok(true)
+}
+
+fn copy_android_asset_directory(source: &Path, destination: &Path) -> Result<(), CliError> {
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("failed to create Android asset directory: {error}"))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("failed to read Android asset directory: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("failed to read Android asset entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect Android asset entry: {error}"))?;
+        let destination_path = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_android_asset_directory(&entry.path(), &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &destination_path)
+                .map_err(|error| format!("failed to stage Android asset: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn build_android_aab(
     c_source: &str,
     manifest: &fluxc::project::PackageManifest,
@@ -5453,6 +5500,7 @@ fn build_android_aab(
     fs::create_dir_all(base.join("manifest")).map_err(|error| {
         format!("failed to create Android App Bundle staging directory: {error}")
     })?;
+    stage_android_package_assets(manifest, &base)?;
 
     for abi in [
         AndroidAbi::Arm64V8a,
@@ -5580,6 +5628,7 @@ fn build_android_apk(
     let manifest_path = staging.join("AndroidManifest.xml");
     fs::write(&manifest_path, manifest_xml)
         .map_err(|error| format!("failed to write Android manifest: {error}"))?;
+    let has_assets = stage_android_package_assets(manifest, &staging)?;
     let unsigned = staging.join("unsigned.apk");
     let aapt2 = toolchain.build_tools.join("aapt2");
     run_checked(
@@ -5604,6 +5653,9 @@ fn build_android_apk(
         .arg("lib");
     if android_has_generated_java(c_source) {
         zip.arg("classes.dex");
+    }
+    if has_assets {
+        zip.arg("assets");
     }
     run_checked(&mut zip, "zip Android application payload")?;
     let aligned = staging.join("aligned.apk");
@@ -7146,6 +7198,8 @@ mod tests {
         assert!(activity.contains(
             "if (maxWidthChars >= 0) view.setMaxEms(maxWidthChars == 0 ? Integer.MAX_VALUE : maxWidthChars);"
         ));
+        assert!(activity.contains("getAssets().open(assetSource)"));
+        assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(input)"));
         assert!(!activity.contains("nativeOnPickerResult"));
         assert!(!activity.contains("onBackPressed"));
         assert!(!activity.contains("KEYCODE_BACK"));

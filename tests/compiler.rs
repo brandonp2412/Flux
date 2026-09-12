@@ -9151,7 +9151,7 @@ fn main() -> i64 {
     compile_to_c(nested_loops).expect("nested loop ownership flow should lower natively");
 
     let unsafe_nested_loops = r#"
-fn unsafe() -> i64 {
+fn invalidNestedMove() -> i64 {
     let source: i64[] = [4, 5]
     for outer in 0..2:
         for inner in 0..1:
@@ -9163,7 +9163,7 @@ fn unsafe() -> i64 {
 }
 
 fn main() -> i64 {
-    return unsafe()
+    return invalidNestedMove()
 }
 "#;
     let errors = check_source_all(unsafe_nested_loops)
