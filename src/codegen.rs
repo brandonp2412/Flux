@@ -15741,48 +15741,87 @@ fn checked_i64_inverse_c(
         Some(ConstantValue::I64(value)) if value != 0 => Some(value),
         _ => None,
     };
+    let constants_cancel =
+        |expr: &Expr, outer: i64| constant_i64(expr).and_then(i64::checked_neg) == Some(outer);
 
     match op {
         BinOp::Sub => {
-            let outer = constant_i64(right)?;
-            let ExprKind::Binary {
-                left: inner_left,
-                op: BinOp::Add,
-                right: inner_right,
-            } = &left.kind
-            else {
-                return None;
-            };
-            if constant_i64(inner_left) == Some(outer) || constant_i64(inner_right) == Some(outer) {
-                Some(format!("(({left_code}) - ({right_code}))"))
-            } else {
-                None
+            if let Some(outer) = constant_i64(right) {
+                match &left.kind {
+                    ExprKind::Binary {
+                        left: inner_left,
+                        op: BinOp::Add,
+                        right: inner_right,
+                    } if constant_i64(inner_left) == Some(outer)
+                        || constant_i64(inner_right) == Some(outer) =>
+                    {
+                        return Some(format!("(({left_code}) - ({right_code}))"));
+                    }
+                    ExprKind::Binary {
+                        op: BinOp::Sub,
+                        right: inner_right,
+                        ..
+                    } if constants_cancel(inner_right, outer) => {
+                        return Some(format!("(({left_code}) - ({right_code}))"));
+                    }
+                    _ => {}
+                }
             }
+
+            if let Some(outer) = constant_i64(left)
+                && let ExprKind::Binary {
+                    left: inner_left,
+                    op: BinOp::Sub,
+                    ..
+                } = &right.kind
+                && constant_i64(inner_left) == Some(outer)
+            {
+                return Some(format!("(({left_code}) - ({right_code}))"));
+            }
+            None
         }
         BinOp::Add => {
             if let Some(outer) = constant_i64(right) {
-                if let ExprKind::Binary {
-                    op: BinOp::Sub,
-                    right: inner_right,
-                    ..
-                } = &left.kind
-                {
-                    if constant_i64(inner_right) == Some(outer) {
+                match &left.kind {
+                    ExprKind::Binary {
+                        op: BinOp::Sub,
+                        right: inner_right,
+                        ..
+                    } if constant_i64(inner_right) == Some(outer) => {
                         return Some(format!("(({left_code}) + ({right_code}))"));
                     }
+                    ExprKind::Binary {
+                        left: inner_left,
+                        op: BinOp::Add,
+                        right: inner_right,
+                    } if constants_cancel(inner_left, outer)
+                        || constants_cancel(inner_right, outer) =>
+                    {
+                        return Some(format!("(({left_code}) + ({right_code}))"));
+                    }
+                    _ => {}
                 }
             }
 
             if let Some(outer) = constant_i64(left) {
-                if let ExprKind::Binary {
-                    op: BinOp::Sub,
-                    right: inner_right,
-                    ..
-                } = &right.kind
-                {
-                    if constant_i64(inner_right) == Some(outer) {
+                match &right.kind {
+                    ExprKind::Binary {
+                        op: BinOp::Sub,
+                        right: inner_right,
+                        ..
+                    } if constant_i64(inner_right) == Some(outer) => {
                         return Some(format!("(({left_code}) + ({right_code}))"));
                     }
+                    ExprKind::Binary {
+                        left: inner_left,
+                        op: BinOp::Add,
+                        right: inner_right,
+                    } if constants_cancel(inner_left, outer)
+                        || constants_cancel(inner_right, outer) =>
+                    {
+                        return Some(format!("(({left_code}) + ({right_code}))"));
+                    }
+                    _ => {}
                 }
             }
             None

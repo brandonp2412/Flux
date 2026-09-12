@@ -14228,6 +14228,112 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_signed_additive_inverse_guards() {
+    let source = r#"
+const OFFSET: i64 = 7
+const NEG_OFFSET: i64 = -7
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn addThenNegative(value: i64) -> i64 {
+    return (value + OFFSET) + NEG_OFFSET
+}
+
+fn negativeThenAdd(value: i64) -> i64 {
+    return NEG_OFFSET + (value + OFFSET)
+}
+
+fn addLeftThenNegative(value: i64) -> i64 {
+    return (OFFSET + value) + NEG_OFFSET
+}
+
+fn negativeThenAddLeft(value: i64) -> i64 {
+    return NEG_OFFSET + (OFFSET + value)
+}
+
+fn addThenNegativeEffect(value: i64) -> i64 {
+    return (observe(value) + OFFSET) + NEG_OFFSET
+}
+
+fn subtractThenNegativeSubtract(value: i64) -> i64 {
+    return (value - OFFSET) - NEG_OFFSET
+}
+
+fn constantSubtractInverse(value: i64) -> i64 {
+    return OFFSET - (OFFSET - value)
+}
+
+fn main() -> i64 {
+    print(addThenNegative(10))
+    print(negativeThenAdd(11))
+    print(addLeftThenNegative(12))
+    print(negativeThenAddLeft(13))
+    print(addThenNegativeEffect(14))
+    print(subtractThenNegativeSubtract(15))
+    return constantSubtractInverse(16)
+}
+"#;
+
+    check_source(source).expect("signed additive inverse proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("signed additive inverse proofs should remove only the outer checked operations");
+    assert_eq!(
+        generated.matches("flux_add_i64(").count(),
+        6,
+        "five checked inner additions plus the helper definition should remain",
+    );
+    assert_eq!(
+        generated.matches("flux_sub_i64(").count(),
+        3,
+        "two checked inner subtractions plus the helper definition should remain",
+    );
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful operands must still evaluate exactly once",
+    );
+
+    let unmatched = r#"
+fn keepAddGuard(value: i64) -> i64 {
+    return (value + 7) + 3
+}
+
+fn keepSubtractGuard(value: i64) -> i64 {
+    return (value - 7) - 3
+}
+
+fn main() -> i64 {
+    print(keepAddGuard(9))
+    return keepSubtractGuard(10)
+}
+"#;
+    let unmatched_generated =
+        compile_to_c(unmatched).expect("unmatched additive operations should still lower");
+    assert!(unmatched_generated.matches("flux_add_i64(").count() >= 3);
+    assert!(unmatched_generated.matches("flux_sub_i64(").count() >= 3);
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 14
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count + 7) + -7
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI signed additive inverse proof should share lowering");
+    assert_eq!(ui_generated.matches("flux_add_i64(").count(), 2);
+}
+
+#[test]
 fn eliminates_redundant_checked_multiply_after_matching_constant_division() {
     let source = r#"
 const FACTOR: i64 = 7
