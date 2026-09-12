@@ -8054,6 +8054,38 @@ fn check_qualified_call(
                 require_type(args[0].span, &expected, &actual, "frame.request callback")?;
                 return Ok(Vec::new());
             }
+            "timeline" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("frame.timeline expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let duration_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &duration_type,
+                    "frame.timeline durationMs",
+                )?;
+                if let Some(ConstantValue::I64(duration)) =
+                    constant_primitive_value(&args[0], signatures)
+                {
+                    if duration < 0 {
+                        return Err(diag(
+                            args[0].span,
+                            "frame.timeline durationMs must be non-negative",
+                        ));
+                    }
+                }
+                let actual = type_of_expr(&args[1], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::I64],
+                    returns: Vec::new(),
+                };
+                require_type(args[1].span, &expected, &actual, "frame.timeline callback")?;
+                return Ok(Vec::new());
+            }
             _ => {
                 return Err(diag(
                     *name_span,

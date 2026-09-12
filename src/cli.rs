@@ -5219,26 +5219,60 @@ __FLUX_PICKER_METHODS__
         );
     }
     let frame_enabled = c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnFrame");
-    let frame_declarations = if frame_enabled {
-        "    private static native void nativeOnFrame(long callback);"
-    } else {
-        ""
-    };
-    let frame_methods = if frame_enabled {
-        r#"
+    let timeline_enabled =
+        c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame");
+    let mut frame_declarations = String::new();
+    let mut frame_methods = String::new();
+    if frame_enabled {
+        frame_declarations.push_str("    private static native void nativeOnFrame(long callback);");
+        frame_methods.push_str(
+            r#"
 
     public void fluxRequestFrame(long callback) {
         View root = getWindow() == null ? null : getWindow().getDecorView();
         if (root != null) root.postOnAnimation(() -> nativeOnFrame(callback));
-    }"#
-    } else {
-        ""
-    };
+    }"#,
+        );
+    }
+    if timeline_enabled {
+        if !frame_declarations.is_empty() {
+            frame_declarations.push('\n');
+        }
+        frame_declarations.push_str(
+            "    private static native void nativeOnTimelineFrame(long callback, long progress);",
+        );
+        frame_methods.push_str(
+            r#"
+
+    public void fluxStartTimeline(long durationMs, long callback) {
+        View root = getWindow() == null ? null : getWindow().getDecorView();
+        if (root == null) return;
+        final long safeDurationMs = Math.max(0L, durationMs);
+        final long durationNanos = safeDurationMs > Long.MAX_VALUE / 1000000L
+                ? Long.MAX_VALUE
+                : safeDurationMs * 1000000L;
+        root.postOnAnimation(new Runnable() {
+            private long startNanos = -1L;
+
+            @Override public void run() {
+                long now = System.nanoTime();
+                if (startNanos < 0L) startNanos = now;
+                long elapsed = Math.max(0L, now - startNanos);
+                long progress = durationNanos == 0L || elapsed >= durationNanos
+                        ? 1000L
+                        : Math.min(1000L, (long)(((double) elapsed * 1000.0) / (double) durationNanos));
+                nativeOnTimelineFrame(callback, progress);
+                if (progress < 1000L) root.postOnAnimation(this);
+            }
+        });
+    }"#,
+        );
+    }
     source
         .replace("__FLUX_DIALOG_DECLARATIONS__", dialog_declarations.as_str())
         .replace("__FLUX_DIALOG_METHODS__", dialog_methods.as_str())
-        .replace("__FLUX_FRAME_DECLARATIONS__", frame_declarations)
-        .replace("__FLUX_FRAME_METHODS__", frame_methods)
+        .replace("__FLUX_FRAME_DECLARATIONS__", frame_declarations.as_str())
+        .replace("__FLUX_FRAME_METHODS__", frame_methods.as_str())
         .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations)
         .replace("__FLUX_PICKER_METHODS__", picker_methods)
 }
@@ -6934,7 +6968,24 @@ mod tests {
         );
         assert!(frame_activity.contains("public void fluxRequestFrame(long callback)"));
         assert!(frame_activity.contains("root.postOnAnimation(() -> nativeOnFrame(callback));"));
+        assert!(!frame_activity.contains("nativeOnTimelineFrame"));
+        assert!(!frame_activity.contains("fluxStartTimeline"));
         assert!(!frame_activity.contains("__FLUX_FRAME_"));
+        let timeline_activity = android_activity_java_source(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer, jlong progress);",
+        );
+        assert!(timeline_activity.contains(
+            "private static native void nativeOnTimelineFrame(long callback, long progress);"
+        ));
+        assert!(
+            timeline_activity
+                .contains("public void fluxStartTimeline(long durationMs, long callback)")
+        );
+        assert!(timeline_activity.contains("root.postOnAnimation(new Runnable()"));
+        assert!(timeline_activity.contains("nativeOnTimelineFrame(callback, progress);"));
+        assert!(timeline_activity.contains("if (progress < 1000L) root.postOnAnimation(this);"));
+        assert!(!timeline_activity.contains("nativeOnFrame(long callback)"));
+        assert!(!timeline_activity.contains("__FLUX_FRAME_"));
         let picker_activity = android_activity_java_source(
             "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnPickerResult(JNIEnv *env, jobject activity, jint kind, jstring uri);",
         );

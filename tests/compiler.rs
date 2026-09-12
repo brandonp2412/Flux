@@ -19203,6 +19203,97 @@ app StaticScreen
 }
 
 #[test]
+fn portable_animation_timeline_is_typed_native_and_tree_shaken() {
+    let source = r#"
+fn animate(_progress: i64) -> void {
+}
+
+fn startAnimation() -> void {
+    frame.timeline(200, animate)
+}
+
+view TimelineScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Timeline"
+}
+app TimelineScreen(onStart: startAnimation)
+"#;
+    check_source(source).expect("frame.timeline should accept duration plus i64 progress callback");
+
+    let linux = compile_to_c(source).expect("frame.timeline should lower to the GTK frame clock");
+    assert!(linux.contains("FluxFrameTimeline"));
+    assert!(linux.contains("gdk_frame_clock_get_frame_time"));
+    assert!(linux.contains("G_SOURCE_CONTINUE"));
+    assert!(linux.contains("flux__frame_timeline(INT64_C(200)"));
+    assert!(linux.contains("timeline->callback(progress)"));
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("animation timeline fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("frame.timeline should lower through generated Android activity glue");
+    assert!(android.contains("fluxStartTimeline"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame"));
+    assert!(android.contains("(jlong)duration_ms"));
+    assert!(android.contains("callback((int64_t)progress)"));
+    assert!(!android.contains("gdk_frame_clock_get_frame_time"));
+
+    let negative = r#"
+fn animate(_progress: i64) -> void {
+}
+fn startAnimation() -> void {
+    frame.timeline(-1, animate)
+}
+view TimelineScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+}
+app TimelineScreen(onStart: startAnimation)
+"#;
+    let error = check_source(negative).expect_err("negative constant timelines must be rejected");
+    assert!(error.message.contains("durationMs must be non-negative"));
+
+    let wrong_callback = r#"
+fn animate() -> void {
+}
+fn startAnimation() -> void {
+    frame.timeline(200, animate)
+}
+view TimelineScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Bad"
+}
+app TimelineScreen(onStart: startAnimation)
+"#;
+    let error =
+        check_source(wrong_callback).expect_err("timeline callback signature must be exact");
+    assert!(error.message.contains("frame.timeline callback"));
+
+    let unused = r#"
+view StaticTimelineScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Static"
+}
+app StaticTimelineScreen
+"#;
+    let linux = compile_to_c(unused).expect("ordinary UI should compile without timeline support");
+    assert!(!linux.contains("FluxFrameTimeline"));
+    assert!(!linux.contains("flux__frame_timeline_tick"));
+}
+
+#[test]
 fn view_environment_tracks_window_geometry_orientation_and_scale() {
     let source = r#"
 view Responsive {

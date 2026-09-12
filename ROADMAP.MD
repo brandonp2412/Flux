@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 508
+- Completed baseline units: 509
 - Reported overall progress: **69%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -682,7 +682,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Adaptive components where platform differences are valuable for the current native application backends: Flux keeps one semantic source contract while the compiler chooses native controls/emphasis appropriate to Linux and Android. Semantic `Toggle` now keeps the native labeled `GtkCheckButton` on Linux but lowers to `android.widget.Switch` on Android with theme-aware thumb/track colors through the shared `CompoundButton` callback/accessibility/refresh contract; future adaptive substitutions should be added only when a concrete platform capability or UX difference warrants them.
   - [x] Bootstrap responsive property adaptation can use the read-only window/orientation/scale environment in ordinary conditional expressions, so native element text/visibility/enabled/accessibility and other already state-aware properties can react to window changes without a controller or widget rebuild. Responsive grid-track definitions, component substitution, and compile-time-only style properties remain pending.
   - [x] Bootstrap `Button.primary: bool` maps an explicit compile-time primary action to native platform emphasis without exposing platform widget APIs in Flux source: Linux uses GTK's `suggested-action` style class, while Android resolves the active native theme accent, applies it through the platform button tint surface, derives contrasting label text, keeps an explicit lower-emphasis disabled color state, and preserves ordinary Android pressed/focus/accessibility behavior.
-- [ ] Animation timelines.
+- [x] Animation timelines through compiler-owned `frame.timeline(durationMs, callback)`: a non-negative `i64` duration drives an exact `fn(i64) -> void` callback with normalized `0..1000` progress on native frames, including a final `1000` callback. Linux lowers directly to the GTK frame clock and Android to `View.postOnAnimation` through compiler-generated JNI/Activity glue; invalid constant durations/callback shapes fail statically, dynamic negative durations fail safely, LSP completion/signature help expose the API, and unused timeline support tree-shakes completely without a controller/animation-object runtime.
 - [x] Easing/springs.
   - [x] Bootstrap property transitions accept compile-time `transitionEasing` values `linear`, `ease`, `easeIn`, `easeOut`, `easeInOut`, `spring`, `springGentle`, and `springSnappy`. Ordinary easing maps to native GTK timing functions; the spring roles map to compiler-owned overshooting cubic-bezier curves with no animation object/runtime allocation. Static checking rejects unsupported/non-constant easing names, LSP value completion exposes the canonical roles, and the existing reduced-motion override remains authoritative.
 - [x] Property transitions.

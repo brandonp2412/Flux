@@ -1327,6 +1327,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__locale_region(")
         || uses_locale_resources;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
+    let uses_frame_timeline = runtime_usage.contains("flux__frame_timeline(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
@@ -2202,9 +2203,18 @@ fn emit_runtime_prelude(
         out.push_str("static gboolean flux__frame_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; (void)clock; FluxFrameRequest *request = (FluxFrameRequest *)data; if (request != NULL && request->callback != NULL) request->callback(); return G_SOURCE_REMOVE; }\n");
         out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL) return; GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return; FluxFrameRequest *request = g_new0(FluxFrameRequest, 1); request->callback = callback; gtk_widget_add_tick_callback(GTK_WIDGET(window), flux__frame_tick, request, g_free); }\n");
     }
+    if uses_frame_timeline && uses_gtk {
+        out.push_str("typedef struct { void (*callback)(int64_t); int64_t duration_ms; gint64 start_us; } FluxFrameTimeline;\n");
+        out.push_str("static gboolean flux__frame_timeline_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; FluxFrameTimeline *timeline = (FluxFrameTimeline *)data; if (timeline == NULL || timeline->callback == NULL) return G_SOURCE_REMOVE; gint64 now_us = gdk_frame_clock_get_frame_time(clock); if (timeline->start_us < 0) timeline->start_us = now_us; gint64 elapsed_us = now_us - timeline->start_us; long double elapsed_ms = (long double)elapsed_us / 1000.0L; int64_t progress = timeline->duration_ms <= 0 || elapsed_ms >= (long double)timeline->duration_ms ? INT64_C(1000) : (int64_t)(elapsed_ms * 1000.0L / (long double)timeline->duration_ms); if (progress < 0) progress = 0; if (progress > 1000) progress = 1000; timeline->callback(progress); return progress >= 1000 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE; }\n");
+        out.push_str("static void flux__frame_timeline(int64_t duration_ms, void (*callback)(int64_t)) { if (callback == NULL) return; if (duration_ms < 0) { fputs(\"Flux runtime error: frame.timeline durationMs must be non-negative\\n\", stderr); abort(); } GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return; FluxFrameTimeline *timeline = g_new0(FluxFrameTimeline, 1); timeline->callback = callback; timeline->duration_ms = duration_ms; timeline->start_us = -1; gtk_widget_add_tick_callback(GTK_WIDGET(window), flux__frame_timeline_tick, timeline, g_free); }\n");
+    }
     if uses_frame_request && uses_android {
         out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL || flux__android_activity == NULL) return; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity); if (activity_class != NULL) { jmethodID request_frame = (*env)->GetMethodID(env, activity_class, \"fluxRequestFrame\", \"(J)V\"); if (request_frame != NULL) (*env)->CallVoidMethod(env, activity, request_frame, (jlong)(intptr_t)callback); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); }\n");
         out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer) { (void)env; (void)activity_class; void (*callback)(void) = (void (*)(void))(intptr_t)callback_pointer; if (callback != NULL) callback(); }\n");
+    }
+    if uses_frame_timeline && uses_android {
+        out.push_str("static void flux__frame_timeline(int64_t duration_ms, void (*callback)(int64_t)) { if (callback == NULL || flux__android_activity == NULL) return; if (duration_ms < 0) { fputs(\"Flux runtime error: frame.timeline durationMs must be non-negative\\n\", stderr); abort(); } bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity); if (activity_class != NULL) { jmethodID start_timeline = (*env)->GetMethodID(env, activity_class, \"fluxStartTimeline\", \"(JJ)V\"); if (start_timeline != NULL) (*env)->CallVoidMethod(env, activity, start_timeline, (jlong)duration_ms, (jlong)(intptr_t)callback); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); }\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer, jlong progress) { (void)env; (void)activity_class; void (*callback)(int64_t) = (void (*)(int64_t))(intptr_t)callback_pointer; if (callback != NULL) callback((int64_t)progress); }\n");
     }
     if uses_portable_focus && uses_gtk {
         out.push_str("static GtkWindow *flux__focus_active_window(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; return gtk_application_get_active_window(GTK_APPLICATION(application)); }\n");
@@ -20291,15 +20301,29 @@ fn emit_qualified_call(
         }
     }
     if namespace == "frame" {
-        if !named_args.is_empty() || args.len() != 1 || name != "request" {
+        if !named_args.is_empty() {
             return Err(diag(span, "invalid frame call reached code generation"));
         }
-        let callback = emit_expr(&args[0], env, signatures)?;
-        return Ok((
-            format!("flux__frame_request({})", callback.code),
-            Vec::new(),
-            None,
-        ));
+        match name {
+            "request" if args.len() == 1 => {
+                let callback = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__frame_request({})", callback.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            "timeline" if args.len() == 2 => {
+                let duration = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__frame_timeline({}, {})", duration.code, callback.code),
+                    Vec::new(),
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "invalid frame call reached code generation")),
+        }
     }
     if namespace == "clipboard" {
         if !named_args.is_empty() || args.len() != 1 {

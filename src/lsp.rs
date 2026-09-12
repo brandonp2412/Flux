@@ -1548,6 +1548,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn frame.request(callback: fn() -> void) -> void",
         );
+        push_completion_item(
+            items,
+            seen,
+            "timeline",
+            3,
+            "fn frame.timeline(durationMs: i64, callback: fn(i64) -> void) -> void",
+        );
         return true;
     }
     if namespace == "clipboard" {
@@ -3345,13 +3352,26 @@ fn signature_help_for_document_cached(
                 _ => {}
             }
         }
-        if namespace == "frame" && member == "request" {
-            return Some(signature_help_for_builtin(
-                "frame.request",
-                &["callback: fn() -> void"],
-                "void",
-                active_parameter,
-            ));
+        if namespace == "frame" {
+            match member {
+                "request" => {
+                    return Some(signature_help_for_builtin(
+                        "frame.request",
+                        &["callback: fn() -> void"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                "timeline" => {
+                    return Some(signature_help_for_builtin(
+                        "frame.timeline",
+                        &["durationMs: i64", "callback: fn(i64) -> void"],
+                        "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
         }
         if namespace == "clipboard" {
             match member {
@@ -8687,8 +8707,11 @@ mod tests {
         ))
         .to_json();
         assert!(items.contains("fn frame.request(callback: fn() -> void) -> void"));
+        assert!(
+            items.contains("fn frame.timeline(durationMs: i64, callback: fn(i64) -> void) -> void")
+        );
 
-        let signature_source = "fn drawFrame() -> void {\n    print(\"frame\")\n}\nfn main() -> i64 {\n    frame.request(drawFrame)\n    return 0\n}\n";
+        let signature_source = "fn drawFrame() -> void {\n    print(\"frame\")\n}\nfn animate(_progress: i64) -> void {\n}\nfn main() -> i64 {\n    frame.request(drawFrame)\n    frame.timeline(200, animate)\n    return 0\n}\n";
         let signature_documents = HashMap::from([(uri.to_string(), signature_source.to_string())]);
         let needle = "frame.request(";
         let line_index = signature_source
@@ -8708,6 +8731,28 @@ mod tests {
         .expect("frame request should have signature help")
         .to_json();
         assert!(help.contains("fn frame.request(callback: fn() -> void) -> void"));
+
+        let timeline_needle = "frame.timeline(";
+        let timeline_line_index = signature_source
+            .lines()
+            .position(|line| line.contains(timeline_needle))
+            .expect("frame timeline line should exist");
+        let timeline_line = signature_source.lines().nth(timeline_line_index).unwrap();
+        let timeline_cursor = timeline_line.find(timeline_needle).unwrap() + timeline_needle.len();
+        let timeline_help = signature_help_for_document(
+            uri,
+            signature_source,
+            &signature_documents,
+            timeline_line_index,
+            timeline_cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("frame timeline should have signature help")
+        .to_json();
+        assert!(
+            timeline_help
+                .contains("fn frame.timeline(durationMs: i64, callback: fn(i64) -> void) -> void")
+        );
     }
 
     #[test]
