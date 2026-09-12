@@ -2,143 +2,164 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     grid columns: 1fr 1fr
-    grid rows: auto auto auto auto auto auto auto auto auto auto auto
-    grid gap: 10
-    grid padding: 16
+    grid rows: auto auto auto auto auto auto auto auto auto
+    grid gap: 12
+    grid padding: 18
     grid scroll: true
+    grid overlay: true
 
-    Text brand at 1,1 span columns 2
-        text: "HORSE TINDER  ·  NEIGHBORHOOD"
-        color: "#BE185D"
-        size: 12
+    Text brand at 1,1
+        text: "♥︎  HORSE TINDER"
+        color: "#E94057"
+        size: 18
         bold: true
         letterSpacing: 1
 
-    Text title at 2,1 span columns 2
-        text: "Find your stable relationship."
-        color: "#111827"
-        size: 28
+    Text nearby at 1,2
+        text: "NEARBY  ·  4 KM"
+        color: "textMuted"
+        size: 12
         bold: true
-        wrap: true
-        maxLines: 2
-        marginBottom: 2
+        letterSpacing: 1
+        textAlign: "right"
 
-    Text profile at 3,1 span columns 2
-        text: "🐴\nBUTTERCUP, 7\nPalomino · 16.1 hands\n📍 4 km away"
-        color: "#4A1D2F"
-        size: 24
+    Text profileCard at 2,1 span columns 2
+        text: ""
+        minHeight: 360
+        backgroundColor: "#FCE7EE"
+        borderColor: "#F8B7C8"
+        borderWidth: 1
+        radius: 32
+        shadowColor: "#7A243A22"
+        shadowBlur: 24
+        shadowOffsetY: 10
+
+    Text horse at 2,1 span columns 2
+        text: "🐴"
+        size: 84
+        textAlign: "center"
+        alignY: "center"
+        accessibilityHidden: true
+        translateY: -72
+
+    Text profileName at 2,1 span columns 2
+        text: "BUTTERCUP, 7"
+        color: "#351B24"
+        size: 30
         bold: true
         textAlign: "center"
-        wrap: true
-        maxLines: 6
-        padding: 18
-        minHeight: 190
-        backgroundColor: "#FCE7F3"
-        borderColor: "#F9A8D4"
-        borderWidth: 1
-        radius: 28
-        shadowColor: "#83184324"
-        shadowBlur: 22
-        shadowOffsetY: 8
+        alignY: "center"
+        translateY: 58
 
-    Text chemistry at 4,1 span columns 2
-        text: "98% mane chemistry  ·  verified carrot enthusiast"
-        color: "#9D174D"
+    Text profileMeta at 2,1 span columns 2
+        text: "Palomino  ·  16.1 hands"
+        color: "#6D3B4B"
+        size: 17
+        bold: true
+        textAlign: "center"
+        alignY: "center"
+        translateY: 104
+
+    Text chemistry at 3,1 span columns 2
+        text: "✓  98% mane chemistry    ·    carrot verified"
+        color: "#B4234C"
         size: 14
         bold: true
         textAlign: "center"
         padding: 10
-        backgroundColor: "#FDF2F8"
-        radius: 16
+        backgroundColor: "#FFF0F4"
+        radius: 999
 
-    Text weekend at 5,1
-        text: "WEEKEND\nBeach gallops\nthen snacks"
-        color: "#1E3A8A"
-        size: 16
+    Text weekend at 4,1
+        text: "WEEKEND\nBeach gallops\n+ snacks"
+        color: "#25314A"
+        size: 15
         bold: true
         wrap: true
-        padding: 12
-        minHeight: 78
-        backgroundColor: "#EFF6FF"
-        radius: 18
-
-    Text greenFlag at 5,2
-        text: "GREEN FLAG\nShares hay\nwithout drama"
-        color: "#14532D"
-        size: 16
-        bold: true
-        wrap: true
-        padding: 12
-        minHeight: 78
-        backgroundColor: "#F0FDF4"
-        radius: 18
-
-    Text bio at 6,1 span columns 2
-        text: "About Buttercup\nEmotionally available. Great listener. Once jumped a tiny fence and has mentioned it at every dinner since."
-        color: "#374151"
-        size: 16
-        wrap: true
-        maxLines: 6
         padding: 14
-        backgroundColor: "#FFFFFF"
-        borderColor: "#E5E7EB"
+        minHeight: 86
+        backgroundColor: "#F3F5F9"
+        radius: 18
+
+    Text greenFlag at 4,2
+        text: "GREEN FLAG\nShares hay.\nNo drama."
+        color: "#1E5539"
+        size: 15
+        bold: true
+        wrap: true
+        padding: 14
+        minHeight: 86
+        backgroundColor: "#EEF8F2"
+        radius: 18
+
+    Text bio at 5,1 span columns 2
+        text: "Emotionally available. Great listener. Won't stop bringing up the one tiny fence she jumped in 2024."
+        color: "text"
+        size: 16
+        wrap: true
+        maxLines: 4
+        padding: 16
+        backgroundColor: "surfaceRaised"
+        borderColor: "outline"
         borderWidth: 1
         radius: 20
 
-    Text prompt at 7,1 span columns 2
-        text: "Ideal first date:  sunset trail, suspiciously expensive apples, home before the flies get weird."
-        color: "#6B21A8"
-        size: 15
-        wrap: true
-        maxLines: 4
-        padding: 12
-        backgroundColor: "#FAF5FF"
-        radius: 18
-
-    Button pass at 8,1
-        text: "✕  Pass"
+    Button pass at 6,1
+        text: "✕"
+        accessibilityLabel: "Pass on Buttercup"
+        minHeight: 62
         padding: 14
-        radius: 18
+        radius: 999
         backgroundColor: "#FFFFFF"
-        borderColor: "#D1D5DB"
+        borderColor: "#E4D8DC"
         borderWidth: 1
+        shadowColor: "#351B2418"
+        shadowBlur: 10
+        shadowOffsetY: 4
         onPress: passed => !passed
 
-    Button like at 8,2
-        text: "♥  Like"
+    Button like at 6,2
+        text: "♥︎"
+        accessibilityLabel: "Like Buttercup"
+        minHeight: 62
         primary: true
         padding: 14
-        radius: 18
+        radius: 999
+        shadowColor: "#E9405740"
+        shadowBlur: 12
+        shadowOffsetY: 5
         onPress: liked => !liked
 
-    Text matched at 9,1 span columns 2
-        text: "IT'S A MATCH  ·  Buttercup also likes your pasture situation."
+    Text result at 7,1 span columns 2
+        text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
-        color: "#9D174D"
-        size: 15
+        color: "#A51F46"
+        size: 14
         bold: true
         textAlign: "center"
-        padding: 16
-        backgroundColor: "#FCE7F3"
+        padding: 14
+        backgroundColor: "#FFF0F4"
         radius: 18
+        layoutTransitionMs: motionNormal
 
-    Text passedNote at 10,1 span columns 2
-        text: "Passed. Somewhere, a horse has dramatically stared into the middle distance."
+    Text passedNote at 8,1 span columns 2
+        text: "Passed. Buttercup will pretend not to care."
         visible: passed
-        color: "#475569"
+        color: "textMuted"
         size: 14
         textAlign: "center"
         padding: 14
-        backgroundColor: "#F8FAFC"
-        radius: 16
+        backgroundColor: "#F5F5F6"
+        radius: 18
+        layoutTransitionMs: motionNormal
 
-    Text footer at 11,1 span columns 2
-        text: "No endless swiping. Just premium-grade horsing around."
-        color: "#64748B"
+    Text footer at 9,1 span columns 2
+        text: "No endless swiping. Just stable relationships."
+        color: "textMuted"
         size: 12
         textAlign: "center"
-        marginTop: 4
-        marginBottom: 12
+        marginTop: 2
+        marginBottom: 10
 }
 
-app HorseTinder(title: "Horse Tinder", theme: "light")
+app HorseTinder(title: "Horse Tinder", theme: "light", surfaceColor: "#FFF9FB", surfaceRaisedColor: "#FFFFFF", textColor: "#22191C", textMutedColor: "#776B70", accentColor: "#E94057", onAccentColor: "#FFFFFF", outlineColor: "#E7DDE1", shadowColor: "#351B2424")

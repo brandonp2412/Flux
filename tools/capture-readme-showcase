@@ -53,7 +53,7 @@ adb -s "$DEVICE" shell wm density 360 >/dev/null
 adb -s "$DEVICE" shell wm user-rotation lock 0 >/dev/null
 adb -s "$DEVICE" shell am force-stop app.flux.showcase
 adb -s "$DEVICE" shell am start -W -n app.flux.showcase/app.flux.runtime.FluxActivity >/dev/null
-sleep 1
+sleep 2
 adb -s "$DEVICE" exec-out screencap -p > "$CAPTURE"
 
 if ! file "$CAPTURE" | grep -q 'PNG image data, 1080 x 1920'; then
