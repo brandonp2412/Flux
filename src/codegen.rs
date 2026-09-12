@@ -20377,11 +20377,48 @@ fn checked_negation_operand<'a>(expr: &'a Expr, signatures: &Signatures) -> Opti
     }
 }
 
+fn checked_i64_identity_operand<'a>(expr: &'a Expr, signatures: &Signatures) -> Option<&'a Expr> {
+    let constant_i64 = |expr: &Expr| match typecheck::constant_primitive_value(expr, signatures) {
+        Some(ConstantValue::I64(value)) => Some(value),
+        _ => None,
+    };
+
+    match &expr.kind {
+        ExprKind::Binary {
+            left,
+            op: BinOp::Add,
+            right,
+        } if constant_i64(left) == Some(0) => Some(right),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Add | BinOp::Sub,
+            right,
+        } if constant_i64(right) == Some(0) => Some(left),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Mul,
+            right,
+        } if constant_i64(left) == Some(1) => Some(right),
+        ExprKind::Binary {
+            left,
+            op: BinOp::Mul | BinOp::Div,
+            right,
+        } if constant_i64(right) == Some(1) => Some(left),
+        _ => None,
+    }
+}
+
 fn same_pure_i64_expression(left: &Expr, right: &Expr, signatures: &Signatures) -> bool {
     if let (Some(left), Some(right)) = (
         checked_negation_operand(left, signatures),
         checked_negation_operand(right, signatures),
     ) {
+        return same_pure_i64_expression(left, right, signatures);
+    }
+    if let Some(left) = checked_i64_identity_operand(left, signatures) {
+        return same_pure_i64_expression(left, right, signatures);
+    }
+    if let Some(right) = checked_i64_identity_operand(right, signatures) {
         return same_pure_i64_expression(left, right, signatures);
     }
 

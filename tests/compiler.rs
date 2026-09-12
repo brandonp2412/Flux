@@ -16381,6 +16381,127 @@ app Status
 }
 
 #[test]
+fn normalizes_checked_i64_identity_wrappers_for_equivalence() {
+    let source = r#"
+const ZERO: i64 = 0
+const ONE: i64 = 1
+
+fn compare(value: i64) -> bool {
+    return (value + ZERO) == (ONE * value)
+}
+
+fn subtractEquivalent(value: i64) -> i64 {
+    return (value - ZERO) - (value / ONE)
+}
+
+fn addEquivalent(value: i64) -> i64 {
+    return (value * ONE) + (ONE * value)
+}
+
+fn divideEquivalent(value: i64) -> i64 {
+    return (value + ZERO) / (value - ZERO)
+}
+
+fn nestedEqual(value: i64, offset: i64) -> bool {
+    return ((value + offset) + ZERO) == (value + offset)
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectfulEqual(value: i64) -> bool {
+    return (observe(value) + ZERO) == observe(value)
+}
+
+fn main() -> i64 {
+    print(compare(3))
+    print(subtractEquivalent(4))
+    print(addEquivalent(5))
+    print(divideEquivalent(6))
+    print(nestedEqual(7, 8))
+    print(effectfulEqual(9))
+    return 0
+}
+"#;
+
+    check_source(source).expect("identity-equivalent checked arithmetic should typecheck");
+    let generated = compile_to_c(source)
+        .expect("identity-equivalent checked arithmetic should reuse one pure evaluation");
+    assert!(generated.contains("return ((void)(flux__local_value), true);"));
+    assert!(generated.contains("return ((void)(flux__local_value), INT64_C(0));"));
+    assert!(generated.contains("return __extension__ ({ int64_t flux__checked_reuse = flux__local_value; flux_add_i64(flux__checked_reuse, flux__checked_reuse); });"));
+    assert!(generated.contains("return flux_div_self_i64(flux__local_value);"));
+    assert!(
+        generated.contains(
+            "return ((void)(flux_add_i64(flux__local_value, flux__local_offset)), true);"
+        )
+    );
+    assert_eq!(
+        generated
+            .matches("flux_add_i64(flux__local_value, flux__local_offset)")
+            .count(),
+        1,
+        "nested identity wrappers should not duplicate the checked inner expression",
+    );
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful identity-looking expressions must retain both source evaluations",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-identity-equivalence-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary identity-equivalence directory should be writable");
+    let c_path = root.join("identity-equivalence.c");
+    let exe_path = root.join("identity-equivalence");
+    fs::write(&c_path, &generated).expect("generated identity-equivalence C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile identity-equivalence C");
+    assert!(
+        compile.status.success(),
+        "identity-equivalence C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("identity-equivalence program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\n0\n10\n1\ntrue\n9\n9\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "Ready"
+        visible: (count + 0) == (1 * count)
+}
+app Status
+"#;
+    let ui_generated = compile_to_c(ui)
+        .expect("UI identity-equivalent arithmetic should share optimized lowering");
+    assert!(ui_generated.contains("((void)(flux__ui_state_count), true)"));
+}
+
+#[test]
 fn reuses_equivalent_pure_checked_i64_arithmetic_operands() {
     let source = r#"
 fn addEquivalent(value: i64, offset: i64) -> i64 {
