@@ -14075,8 +14075,8 @@ struct AsyncContinuationPlan {
 #[derive(Clone)]
 struct AsyncBranchAwaitPlan {
     statement_index: usize,
-    await_in_then: bool,
-    await_indices: Vec<usize>,
+    then_await_indices: Vec<usize>,
+    else_await_indices: Vec<usize>,
 }
 
 fn expr_contains_await(expr: &Expr) -> bool {
@@ -14314,20 +14314,16 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     {
         return None;
     }
-    let then_awaits = block_direct_await_indices(body)?;
-    let else_awaits = block_direct_await_indices(else_body)?;
-    match (then_awaits.is_empty(), else_awaits.is_empty()) {
-        (false, true) => Some(AsyncBranchAwaitPlan {
+    let then_await_indices = block_direct_await_indices(body)?;
+    let else_await_indices = block_direct_await_indices(else_body)?;
+    if then_await_indices.is_empty() && else_await_indices.is_empty() {
+        None
+    } else {
+        Some(AsyncBranchAwaitPlan {
             statement_index,
-            await_in_then: true,
-            await_indices: then_awaits,
-        }),
-        (true, false) => Some(AsyncBranchAwaitPlan {
-            statement_index,
-            await_in_then: false,
-            await_indices: else_awaits,
-        }),
-        _ => None,
+            then_await_indices,
+            else_await_indices,
+        })
     }
 }
 
@@ -14488,20 +14484,26 @@ fn async_continuation_plan(
             else {
                 return None;
             };
-            let await_block = if branch.await_in_then {
-                body
-            } else {
-                else_body
-            };
-            let last_await = *branch.await_indices.last()?;
-            collect_async_saved_locals(
-                await_block,
-                last_await,
-                &env,
-                signatures,
-                &mut locals,
-                &mut mutable,
-            )?;
+            if let Some(last_await) = branch.then_await_indices.last().copied() {
+                collect_async_saved_locals(
+                    body,
+                    last_await,
+                    &env,
+                    signatures,
+                    &mut locals,
+                    &mut mutable,
+                )?;
+            }
+            if let Some(last_await) = branch.else_await_indices.last().copied() {
+                collect_async_saved_locals(
+                    else_body,
+                    last_await,
+                    &env,
+                    signatures,
+                    &mut locals,
+                    &mut mutable,
+                )?;
+            }
         }
 
         match &stmt.kind {
@@ -17684,6 +17686,122 @@ fn emit_async_suspend(
     Ok(())
 }
 
+fn emit_async_branch_resume_states(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    await_block: &[Stmt],
+    await_indices: &[usize],
+    first_state: usize,
+    tail_start: usize,
+    mut branch_env: HashMap<String, Type>,
+    mut branch_mutable: HashSet<String>,
+    outer_env: &HashMap<String, Type>,
+    outer_mutable: &HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let Some(first_await) = await_indices.first().copied() else {
+        return Ok(());
+    };
+    let pad = "            ";
+    let mut state_context = context;
+    state_context.async_state_machine = true;
+    let mut previous_await = first_await;
+    let mut segment_start = first_await + 1;
+
+    for offset in 0..await_indices.len() {
+        let state = first_state + offset;
+        out.push_str(&format!("        case {state}: {{\n"));
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        for (name, ty) in &plan.locals {
+            if branch_env.contains_key(name) {
+                out.push_str(&format!(
+                    "{pad}{} {} = flux__task->{};\n",
+                    c_type(ty, signatures),
+                    local_c_name(name),
+                    async_saved_local_field_name(name)
+                ));
+            }
+        }
+        out.push_str(&format!("{pad}{{\n"));
+        let awaited_stmt = &await_block[previous_await];
+        emit_async_completed_await(
+            out,
+            "                ",
+            awaited_stmt,
+            function,
+            &mut branch_env,
+            &mut branch_mutable,
+            signatures,
+            temp_counter,
+        )?;
+        let next_await = await_indices.get(offset + 1).copied();
+        let segment_end = next_await.unwrap_or(await_block.len());
+        emit_block(
+            out,
+            &await_block[segment_start..segment_end],
+            4,
+            &mut branch_env,
+            &mut branch_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+        if let Some(await_index) = next_await {
+            let next_stmt = &await_block[await_index];
+            emit_source_line(out, next_stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                "                ",
+                next_stmt,
+                state + 1,
+                function,
+                plan,
+                &branch_env,
+                signatures,
+            )?;
+            previous_await = await_index;
+            segment_start = await_index + 1;
+        }
+        out.push_str(&format!("{pad}}}\n"));
+
+        if next_await.is_none() {
+            let mut resumed_fallthrough_env = outer_env.clone();
+            let mut resumed_fallthrough_mutable = outer_mutable.clone();
+            emit_block(
+                out,
+                &function.body[tail_start..],
+                3,
+                &mut resumed_fallthrough_env,
+                &mut resumed_fallthrough_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            if function.returns.is_empty() {
+                out.push_str(&format!(
+                    "{pad}{}(flux__task);\n{pad}return;\n",
+                    async_finish_c_name(&function.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+                ));
+            }
+        }
+        out.push_str("        }\n");
+    }
+    Ok(())
+}
+
 fn emit_async_branch_continuation_function(
     out: &mut String,
     function: &Function,
@@ -17705,17 +17823,6 @@ fn emit_async_branch_continuation_function(
             "async branch continuation plan no longer points at an if statement",
         ));
     };
-    let (await_block, other_block) = if branch.await_in_then {
-        (body.as_slice(), else_body.as_slice())
-    } else {
-        (else_body.as_slice(), body.as_slice())
-    };
-    let first_await = *branch.await_indices.first().ok_or_else(|| {
-        diag(
-            function.body[branch.statement_index].span,
-            "async branch continuation plan has no await state",
-        )
-    })?;
     let task_name = async_task_c_name(&function.name);
     let mut state_context = context;
     state_context.async_state_machine = true;
@@ -17758,20 +17865,22 @@ fn emit_async_branch_continuation_function(
     let condition = emit_expr(cond, &env, signatures)?;
     out.push_str(&format!("{pad}if {} {{\n", c_condition(&condition.code)));
 
-    let mut branch_env = outer_env.clone();
-    let mut branch_mutable = outer_mutable.clone();
-    if branch.await_in_then {
+    let mut then_env = outer_env.clone();
+    let mut then_mutable = outer_mutable.clone();
+    let mut else_env = outer_env.clone();
+    let mut else_mutable = outer_mutable.clone();
+    if let Some(first_await) = branch.then_await_indices.first().copied() {
         emit_block(
             out,
-            &await_block[..first_await],
+            &body[..first_await],
             4,
-            &mut branch_env,
-            &mut branch_mutable,
+            &mut then_env,
+            &mut then_mutable,
             signatures,
             temp_counter,
             state_context,
         )?;
-        let awaited_stmt = &await_block[first_await];
+        let awaited_stmt = &body[first_await];
         emit_source_line(out, awaited_stmt.span, context.source_paths);
         emit_async_suspend(
             out,
@@ -17780,63 +17889,61 @@ fn emit_async_branch_continuation_function(
             1,
             function,
             plan,
-            &branch_env,
+            &then_env,
             signatures,
         )?;
-        if else_body.is_empty() {
-            out.push_str(&format!("{pad}}}\n"));
-        } else {
-            out.push_str(&format!("{pad}}} else {{\n"));
-            let mut other_env = outer_env.clone();
-            let mut other_mutable = outer_mutable.clone();
+    } else {
+        emit_block(
+            out,
+            body,
+            4,
+            &mut then_env,
+            &mut then_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+    }
+
+    if else_body.is_empty() {
+        out.push_str(&format!("{pad}}}\n"));
+    } else {
+        out.push_str(&format!("{pad}}} else {{\n"));
+        if let Some(first_await) = branch.else_await_indices.first().copied() {
             emit_block(
                 out,
-                other_block,
+                &else_body[..first_await],
                 4,
-                &mut other_env,
-                &mut other_mutable,
+                &mut else_env,
+                &mut else_mutable,
                 signatures,
                 temp_counter,
                 state_context,
             )?;
-            out.push_str(&format!("{pad}}}\n"));
+            let awaited_stmt = &else_body[first_await];
+            emit_source_line(out, awaited_stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                "                ",
+                awaited_stmt,
+                branch.then_await_indices.len() + 1,
+                function,
+                plan,
+                &else_env,
+                signatures,
+            )?;
+        } else {
+            emit_block(
+                out,
+                else_body,
+                4,
+                &mut else_env,
+                &mut else_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
         }
-    } else {
-        let mut other_env = outer_env.clone();
-        let mut other_mutable = outer_mutable.clone();
-        emit_block(
-            out,
-            other_block,
-            4,
-            &mut other_env,
-            &mut other_mutable,
-            signatures,
-            temp_counter,
-            state_context,
-        )?;
-        out.push_str(&format!("{pad}}} else {{\n"));
-        emit_block(
-            out,
-            &await_block[..first_await],
-            4,
-            &mut branch_env,
-            &mut branch_mutable,
-            signatures,
-            temp_counter,
-            state_context,
-        )?;
-        let awaited_stmt = &await_block[first_await];
-        emit_source_line(out, awaited_stmt.span, context.source_paths);
-        emit_async_suspend(
-            out,
-            "                ",
-            awaited_stmt,
-            1,
-            function,
-            plan,
-            &branch_env,
-            signatures,
-        )?;
         out.push_str(&format!("{pad}}}\n"));
     }
 
@@ -17864,95 +17971,40 @@ fn emit_async_branch_continuation_function(
     }
     out.push_str("        }\n");
 
-    let mut previous_await = first_await;
-    let mut segment_start = first_await + 1;
-    for state in 1..=branch.await_indices.len() {
-        out.push_str(&format!("        case {state}: {{\n"));
-        for (index, param) in function.params.iter().enumerate() {
-            out.push_str(&format!(
-                "{pad}{} {} = flux__task->arg_{index};\n",
-                c_type(&param.ty, signatures),
-                local_c_name(&param.name)
-            ));
-        }
-        for (name, ty) in &plan.locals {
-            if branch_env.contains_key(name) {
-                out.push_str(&format!(
-                    "{pad}{} {} = flux__task->{};\n",
-                    c_type(ty, signatures),
-                    local_c_name(name),
-                    async_saved_local_field_name(name)
-                ));
-            }
-        }
-        out.push_str(&format!("{pad}{{\n"));
-        let awaited_stmt = &await_block[previous_await];
-        emit_async_completed_await(
-            out,
-            "                ",
-            awaited_stmt,
-            function,
-            &mut branch_env,
-            &mut branch_mutable,
-            signatures,
-            temp_counter,
-        )?;
-        let next_await = branch.await_indices.get(state).copied();
-        let segment_end = next_await.unwrap_or(await_block.len());
-        emit_block(
-            out,
-            &await_block[segment_start..segment_end],
-            4,
-            &mut branch_env,
-            &mut branch_mutable,
-            signatures,
-            temp_counter,
-            state_context,
-        )?;
-        if let Some(await_index) = next_await {
-            let next_stmt = &await_block[await_index];
-            emit_source_line(out, next_stmt.span, context.source_paths);
-            emit_async_suspend(
-                out,
-                "                ",
-                next_stmt,
-                state + 1,
-                function,
-                plan,
-                &branch_env,
-                signatures,
-            )?;
-            previous_await = await_index;
-            segment_start = await_index + 1;
-        }
-        out.push_str(&format!("{pad}}}\n"));
+    emit_async_branch_resume_states(
+        out,
+        function,
+        signatures,
+        plan,
+        body,
+        &branch.then_await_indices,
+        1,
+        branch.statement_index + 1,
+        then_env,
+        then_mutable,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        context,
+    )?;
 
-        if next_await.is_none() {
-            let mut resumed_fallthrough_env = outer_env.clone();
-            let mut resumed_fallthrough_mutable = outer_mutable.clone();
-            emit_block(
-                out,
-                &function.body[branch.statement_index + 1..],
-                3,
-                &mut resumed_fallthrough_env,
-                &mut resumed_fallthrough_mutable,
-                signatures,
-                temp_counter,
-                state_context,
-            )?;
-            if function.returns.is_empty() {
-                out.push_str(&format!(
-                    "{pad}{}(flux__task);\n{pad}return;\n",
-                    async_finish_c_name(&function.name)
-                ));
-            } else {
-                out.push_str(&format!(
-                    "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-                ));
-            }
-        }
-        out.push_str("        }\n");
-    }
+    emit_async_branch_resume_states(
+        out,
+        function,
+        signatures,
+        plan,
+        else_body,
+        &branch.else_await_indices,
+        branch.then_await_indices.len() + 1,
+        branch.statement_index + 1,
+        else_env,
+        else_mutable,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        context,
+    )?;
+
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
     out.push_str("    }\n}\n");
     Ok(())
