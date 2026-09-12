@@ -17298,9 +17298,38 @@ fn checked_i64_inverse_c(
     };
     let constants_cancel =
         |expr: &Expr, outer: i64| constant_i64(expr).and_then(i64::checked_neg) == Some(outer);
+    let additive_shift = |expr: &Expr| match &expr.kind {
+        ExprKind::Binary {
+            left,
+            op: BinOp::Add,
+            right,
+        } => match (constant_i64(left), constant_i64(right)) {
+            (Some(shift), None) | (None, Some(shift)) => Some(shift),
+            _ => None,
+        },
+        ExprKind::Binary {
+            op: BinOp::Sub,
+            right,
+            ..
+        } => constant_i64(right).and_then(i64::checked_neg),
+        _ => None,
+    };
+    let additive_shift_composition_is_safe = |inner: &Expr, outer_shift: i64| {
+        additive_shift(inner).is_some_and(|inner_shift| {
+            ((inner_shift > 0 && outer_shift < 0) || (inner_shift < 0 && outer_shift > 0))
+                && outer_shift.unsigned_abs() <= inner_shift.unsigned_abs()
+        })
+    };
 
     match op {
         BinOp::Sub => {
+            if let Some(outer) = constant_i64(right)
+                && let Some(outer_shift) = outer.checked_neg()
+                && additive_shift_composition_is_safe(left, outer_shift)
+            {
+                return Some(format!("(({left_code}) - ({right_code}))"));
+            }
+
             if let Some(outer) = constant_i64(right) {
                 match &left.kind {
                     ExprKind::Binary {
@@ -17336,6 +17365,17 @@ fn checked_i64_inverse_c(
             None
         }
         BinOp::Add => {
+            if let Some(outer) = constant_i64(right)
+                && additive_shift_composition_is_safe(left, outer)
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+            if let Some(outer) = constant_i64(left)
+                && additive_shift_composition_is_safe(right, outer)
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+
             if let Some(outer) = constant_i64(right) {
                 match &left.kind {
                     ExprKind::Binary {

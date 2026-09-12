@@ -15401,7 +15401,7 @@ fn addRightAfterSubtract(value: i64) -> i64 {
 }
 
 fn unmatched(value: i64) -> i64 {
-    return (value + OFFSET) - 3
+    return (value + 3) - OFFSET
 }
 
 fn main() -> i64 {
@@ -15445,7 +15445,7 @@ fn main() -> i64 {
     );
     assert!(
         generated.contains(
-            "return flux_sub_i64(flux_add_i64(flux__local_value, INT64_C(7)), INT64_C(3));"
+            "return flux_sub_i64(flux_add_i64(flux__local_value, INT64_C(3)), INT64_C(7));"
         )
     );
 
@@ -15468,6 +15468,106 @@ app Counter
     assert!(
         !ui_generated
             .contains("flux_sub_i64(flux_add_i64(flux__ui_state_count, INT64_C(7)), INT64_C(7))")
+    );
+}
+
+#[test]
+fn eliminates_redundant_checked_partial_constant_additive_guards() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn addThenPartiallySubtract(value: i64) -> i64 {
+    return (value + 7) - 3
+}
+
+fn subtractThenPartiallyAdd(value: i64) -> i64 {
+    return (value - 7) + 3
+}
+
+fn addLeftAfterSubtract(value: i64) -> i64 {
+    return 3 + (value - 7)
+}
+
+fn effectfulAddThenPartiallySubtract(value: i64) -> i64 {
+    return (observe(value) + 7) - 3
+}
+
+fn tooMuchCancellation(value: i64) -> i64 {
+    return (value + 3) - 7
+}
+
+fn sameDirection(value: i64) -> i64 {
+    return (value + 7) + 3
+}
+
+fn main() -> i64 {
+    print(addThenPartiallySubtract(10))
+    print(subtractThenPartiallyAdd(11))
+    print(addLeftAfterSubtract(12))
+    print(effectfulAddThenPartiallySubtract(13))
+    print(tooMuchCancellation(14))
+    return sameDirection(15)
+}
+"#;
+
+    check_source(source).expect("partial constant additive proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("partial constant additive proofs should remove only proven redundant guards");
+    assert!(
+        generated
+            .contains("return ((flux_add_i64(flux__local_value, INT64_C(7))) - (INT64_C(3)));")
+    );
+    assert!(
+        generated
+            .contains("return ((flux_sub_i64(flux__local_value, INT64_C(7))) + (INT64_C(3)));")
+    );
+    assert!(
+        generated
+            .contains("return ((INT64_C(3)) + (flux_sub_i64(flux__local_value, INT64_C(7))));")
+    );
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__fn_observe(flux__local_value), INT64_C(7))) - (INT64_C(3)));"
+    ));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        1,
+        "effectful inner operands must still evaluate exactly once",
+    );
+    assert!(
+        generated.contains(
+            "return flux_sub_i64(flux_add_i64(flux__local_value, INT64_C(3)), INT64_C(7));"
+        )
+    );
+    assert!(
+        generated.contains(
+            "return flux_add_i64(flux_add_i64(flux__local_value, INT64_C(7)), INT64_C(3));"
+        )
+    );
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Button action at 1,1
+        text: "Partial"
+        onPress: count => (count + 7) - 3
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI partial additive proof should share native lowering");
+    assert!(
+        ui_generated.contains("((flux_add_i64(flux__ui_state_count, INT64_C(7))) - (INT64_C(3)))")
+    );
+    assert!(
+        !ui_generated
+            .contains("flux_sub_i64(flux_add_i64(flux__ui_state_count, INT64_C(7)), INT64_C(3))")
     );
 }
 
