@@ -14631,6 +14631,86 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_dynamic_additive_inverse_guards() {
+    let source = r#"
+fn addThenSubtract(value: i64, offset: i64) -> i64 {
+    return (value + offset) - offset
+}
+
+fn addLeftThenSubtract(value: i64, offset: i64) -> i64 {
+    return (offset + value) - offset
+}
+
+fn subtractThenAdd(value: i64, offset: i64) -> i64 {
+    return (value - offset) + offset
+}
+
+fn addThenSubtractRight(value: i64, offset: i64) -> i64 {
+    return offset + (value - offset)
+}
+
+fn subtractNested(value: i64, offset: i64) -> i64 {
+    return value - (value - offset)
+}
+
+fn unmatched(value: i64, leftOffset: i64, rightOffset: i64) -> i64 {
+    return (value + leftOffset) - rightOffset
+}
+
+fn main() -> i64 {
+    print(addThenSubtract(10, 3))
+    print(addLeftThenSubtract(11, 4))
+    print(subtractThenAdd(12, 5))
+    print(addThenSubtractRight(13, 6))
+    print(subtractNested(14, 7))
+    return unmatched(15, 8, 2)
+}
+"#;
+
+    check_source(source).expect("dynamic additive inverse proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("dynamic additive inverse proofs should remove only safe outer guards");
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__local_value, flux__local_offset)) - (flux__local_offset));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_add_i64(flux__local_offset, flux__local_value)) - (flux__local_offset));"
+    ));
+    assert!(generated.contains(
+        "return ((flux_sub_i64(flux__local_value, flux__local_offset)) + (flux__local_offset));"
+    ));
+    assert!(generated.contains(
+        "return ((flux__local_offset) + (flux_sub_i64(flux__local_value, flux__local_offset)));"
+    ));
+    assert!(generated.contains(
+        "return ((flux__local_value) - (flux_sub_i64(flux__local_value, flux__local_offset)));"
+    ));
+    assert!(generated.contains(
+        "return flux_sub_i64(flux_add_i64(flux__local_value, flux__local_leftOffset), flux__local_rightOffset);"
+    ));
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 4
+    Button action at 1,1
+        text: "Keep"
+        onPress: count => (count + count) - count
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI dynamic additive inverse proof should share lowering");
+    assert!(ui_generated.contains(
+        "((flux_add_i64(flux__ui_state_count, flux__ui_state_count)) - (flux__ui_state_count))"
+    ));
+    assert!(!ui_generated.contains(
+        "flux_sub_i64(flux_add_i64(flux__ui_state_count, flux__ui_state_count), flux__ui_state_count)"
+    ));
+}
+
+#[test]
 fn eliminates_redundant_checked_signed_additive_inverse_guards() {
     let source = r#"
 const OFFSET: i64 = 7

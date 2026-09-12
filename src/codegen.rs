@@ -16373,6 +16373,57 @@ fn checked_i64_inverse_c(
     right_code: &str,
     signatures: &Signatures,
 ) -> Option<String> {
+    let same_binding = |left: &Expr, right: &Expr| {
+        matches!(
+            (&left.kind, &right.kind),
+            (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
+        )
+    };
+
+    match op {
+        BinOp::Sub => {
+            if let ExprKind::Binary {
+                left: inner_left,
+                op: BinOp::Add,
+                right: inner_right,
+            } = &left.kind
+                && (same_binding(inner_left, right) || same_binding(inner_right, right))
+            {
+                return Some(format!("(({left_code}) - ({right_code}))"));
+            }
+            if let ExprKind::Binary {
+                left: inner_left,
+                op: BinOp::Sub,
+                ..
+            } = &right.kind
+                && same_binding(left, inner_left)
+            {
+                return Some(format!("(({left_code}) - ({right_code}))"));
+            }
+        }
+        BinOp::Add => {
+            if let ExprKind::Binary {
+                op: BinOp::Sub,
+                right: inner_right,
+                ..
+            } = &left.kind
+                && same_binding(inner_right, right)
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+            if let ExprKind::Binary {
+                op: BinOp::Sub,
+                right: inner_right,
+                ..
+            } = &right.kind
+                && same_binding(left, inner_right)
+            {
+                return Some(format!("(({left_code}) + ({right_code}))"));
+            }
+        }
+        _ => {}
+    }
+
     let constant_i64 = |expr: &Expr| match typecheck::constant_primitive_value(expr, signatures) {
         Some(ConstantValue::I64(value)) if value != 0 => Some(value),
         _ => None,
