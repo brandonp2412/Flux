@@ -1523,6 +1523,16 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "file" {
+        push_completion_item(
+            items,
+            seen,
+            "read",
+            3,
+            "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
+        );
+        return true;
+    }
     if namespace == "fs" {
         for (label, detail) in [
             ("exists", "fn fs.exists(path: str) -> bool"),
@@ -1544,10 +1554,6 @@ fn add_qualified_namespace_completions(
             (
                 "removeDirectories",
                 "fn fs.removeDirectories(path: str) -> error",
-            ),
-            (
-                "readText",
-                "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
             ),
             (
                 "writeText",
@@ -3401,6 +3407,14 @@ fn signature_help_for_document_cached(
                 _ => {}
             }
         }
+        if namespace == "file" && member == "read" {
+            return Some(signature_help_for_builtin(
+                "file.read",
+                &["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
+                "(i64, error)",
+                active_parameter,
+            ));
+        }
         if namespace == "fs" {
             match member {
                 "exists" | "isFile" | "isDirectory" => {
@@ -3417,14 +3431,6 @@ fn signature_help_for_document_cached(
                         &format!("fs.{member}"),
                         &["path: str"],
                         "error",
-                        active_parameter,
-                    ));
-                }
-                "readText" => {
-                    return Some(signature_help_for_builtin(
-                        "fs.readText",
-                        &["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
-                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -6852,7 +6858,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -7075,6 +7081,24 @@ mod tests {
         assert!(time_items.contains("fn time.utcWeekday(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.utcDayOfYear(unixMillis: i64) -> i64"));
 
+        let file_line = source
+            .lines()
+            .position(|line| line.trim() == "file.")
+            .expect("file completion line should exist");
+        let file_source = source.lines().nth(file_line).unwrap();
+        let file_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(file_line),
+            Some(file_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(file_items.contains(
+            "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"
+        ));
+
         let fs_line = source
             .lines()
             .position(|line| line.trim() == "fs.")
@@ -7092,9 +7116,6 @@ mod tests {
         assert!(fs_items.contains("fn fs.exists(path: str) -> bool"));
         assert!(fs_items.contains("fn fs.createDirectories(path: str) -> error"));
         assert!(fs_items.contains("fn fs.removeDirectories(path: str) -> error"));
-        assert!(fs_items.contains(
-            "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"
-        ));
         assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
         assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
         assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
@@ -8516,7 +8537,7 @@ mod tests {
     #[test]
     fn signature_help_supports_filesystem_capabilities() {
         let uri = "file:///tmp/filesystem-signatures.flux";
-        let source = "fn consume(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    let (_bytes, _readError) = fs.readText(\"a\", 64, consume)\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
+        let source = "fn consume(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    let (_bytes, _readError) = file.read(\"a\", 64, consume)\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("fs.exists(", "fn fs.exists(path: str) -> bool"),
@@ -8540,8 +8561,8 @@ mod tests {
                 "fn fs.removeDirectories(path: str) -> error",
             ),
             (
-                "fs.readText(",
-                "fn fs.readText(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
+                "file.read(",
+                "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
             ),
             (
                 "fs.writeText(",

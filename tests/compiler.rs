@@ -6138,7 +6138,7 @@ fn main() -> i64 {
 }
 
 #[test]
-fn filesystem_read_text_is_bounded_borrowed_tree_shaken_and_runnable() {
+fn file_read_is_bounded_borrowed_tree_shaken_and_runnable() {
     let root = std::env::temp_dir().join(format!("flux-fs-read-text-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("filesystem read fixture should be writable");
@@ -6154,10 +6154,10 @@ fn consume(text: str) -> void {{
     print(text)
 }}
 fn main() -> i64 {{
-    let (bytes, readError) = fs.readText("{path}", 64, consume)
+    let (bytes, readError) = file.read("{path}", 64, consume)
     print(bytes)
     print(readError)
-    let (overflowBytes, overflowError) = fs.readText("{path}", 4, consume)
+    let (overflowBytes, overflowError) = file.read("{path}", 4, consume)
     print(overflowBytes)
     print(overflowError)
     return 0
@@ -6175,7 +6175,7 @@ fn consume(text: str) -> void {
     print(text)
 }
 fn hidden() -> void {
-    let (_bytes, _failure) = fs.readText("/tmp/unused-flux-read", 64, consume)
+    let (_bytes, _failure) = file.read("/tmp/unused-flux-read", 64, consume)
 }
 fn main() -> i64 {
     return 0
@@ -6188,8 +6188,9 @@ fn main() -> i64 {
 fn wrong(_value: i64) -> void {
 }
 fn main() -> i64 {
-    let (_negativeBytes, _negativeError) = fs.readText("x", -1, wrong)
-    let (_callbackBytes, _callbackError) = fs.readText("x", 1, wrong)
+    let (_negativeBytes, _negativeError) = file.read("x", -1, wrong)
+    let (_callbackBytes, _callbackError) = file.read("x", 1, wrong)
+    let (_legacyBytes, _legacyError) = fs.readText("x", 1, wrong)
     return 0
 }
 "#;
@@ -6197,13 +6198,18 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("fs.readText maxBytes must be between 0 and 65536")
+            .contains("file.read maxBytes must be between 0 and 65536")
     }));
     assert!(
         errors
             .iter()
-            .any(|error| error.message.contains("fs.readText callback"))
+            .any(|error| error.message.contains("file.read callback"))
     );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("fs module has no function 'readText'")
+    }));
 
     let source_path = root.join("main.flux");
     fs::write(&source_path, &source).expect("filesystem read source should be writable");

@@ -4900,7 +4900,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     if runtime_usage.contains("flux__fs_read_text(") {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_read_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
-        out.push_str("static inline struct flux__fs_i64_error flux__fs_read_text(const char *path, int64_t max_bytes, void (*callback)(const char *)) { if (max_bytes < 0 || max_bytes > 65536) return flux__fs_read_result(-1, \"readText maxBytes must be between 0 and 65536\"); FILE *file = fopen(path, \"rb\"); if (file == NULL) return flux__fs_read_result(-1, \"failed to open file for reading\"); char buffer[65537]; size_t requested = (size_t)max_bytes + 1u; size_t read_count = fread(buffer, 1, requested, file); if (ferror(file)) { fclose(file); return flux__fs_read_result(-1, \"failed to read file\"); } if (read_count > (size_t)max_bytes) { fclose(file); return flux__fs_read_result(-1, \"file exceeds maxBytes\"); } if (memchr(buffer, '\\0', read_count) != NULL) { fclose(file); return flux__fs_read_result(-1, \"file text contains a NUL byte\"); } buffer[read_count] = '\\0'; if (fclose(file) != 0) return flux__fs_read_result(-1, \"failed to close file after reading\"); callback(buffer); return flux__fs_read_result((int64_t)read_count, NULL); }\n");
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_read_text(const char *path, int64_t max_bytes, void (*callback)(const char *)) { if (max_bytes < 0 || max_bytes > 65536) return flux__fs_read_result(-1, \"file.read maxBytes must be between 0 and 65536\"); FILE *file = fopen(path, \"rb\"); if (file == NULL) return flux__fs_read_result(-1, \"failed to open file for reading\"); char buffer[65537]; size_t requested = (size_t)max_bytes + 1u; size_t read_count = fread(buffer, 1, requested, file); if (ferror(file)) { fclose(file); return flux__fs_read_result(-1, \"failed to read file\"); } if (read_count > (size_t)max_bytes) { fclose(file); return flux__fs_read_result(-1, \"file exceeds maxBytes\"); } if (memchr(buffer, '\\0', read_count) != NULL) { fclose(file); return flux__fs_read_result(-1, \"file text contains a NUL byte\"); } buffer[read_count] = '\\0'; if (fclose(file) != 0) return flux__fs_read_result(-1, \"failed to close file after reading\"); callback(buffer); return flux__fs_read_result((int64_t)read_count, NULL); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -21639,6 +21639,30 @@ fn emit_qualified_call(
             _ => return Err(diag(span, "unknown time call reached code generation")),
         }
     }
+    if namespace == "file" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid file call reached code generation"));
+        }
+        match name {
+            "read" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid file call reached code generation"));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__fs_read_text({}, {}, {})",
+                        path.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__fs_i64_error".to_string()),
+                ));
+            }
+            _ => return Err(diag(span, "unknown file call reached code generation")),
+        }
+    }
     if namespace == "fs" {
         if !named_args.is_empty() {
             return Err(diag(
@@ -21679,25 +21703,6 @@ fn emit_qualified_call(
                     _ => "flux__fs_remove_directories",
                 };
                 return Ok((format!("{helper}({})", path.code), vec![Type::Error], None));
-            }
-            "readText" => {
-                if args.len() != 3 {
-                    return Err(diag(
-                        span,
-                        "invalid filesystem call reached code generation",
-                    ));
-                }
-                let path = emit_expr(&args[0], env, signatures)?;
-                let max_bytes = emit_expr(&args[1], env, signatures)?;
-                let callback = emit_expr(&args[2], env, signatures)?;
-                return Ok((
-                    format!(
-                        "flux__fs_read_text({}, {}, {})",
-                        path.code, max_bytes.code, callback.code
-                    ),
-                    vec![Type::I64, Type::Error],
-                    Some("flux__fs_i64_error".to_string()),
-                ));
             }
             "writeText" | "appendText" => {
                 if args.len() != 2 {
