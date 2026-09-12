@@ -5934,6 +5934,99 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_cancellation_interrupts_blocked_channel_operations() {
+    let source = r#"
+fn blockedSender(channelHandle: i64) -> void {
+    let sendError: error = channel.send(channelHandle, 99)
+    if sendError == nil:
+        print(-1)
+    else:
+        print(1)
+}
+fn blockedReceiver(channelHandle: i64) -> void {
+    let (_value, receiveError) = channel.receive(channelHandle)
+    if receiveError == nil:
+        print(-2)
+    else:
+        print(2)
+}
+fn main() -> i64 {
+    let (channelHandle, createError) = channel.create(1)
+    if createError != nil:
+        return 1
+    let prefillError: error = channel.send(channelHandle, 7)
+    if prefillError != nil:
+        return 2
+    let (senderHandle, senderStartError) = worker.startWith(blockedSender, channelHandle)
+    if senderStartError != nil:
+        return 3
+    let senderCancelError: error = worker.cancel(senderHandle)
+    if senderCancelError != nil:
+        return 4
+    let senderJoinError: error = worker.join(senderHandle)
+    if senderJoinError != nil:
+        return 5
+    let (prefill, prefillReceiveError) = channel.receive(channelHandle)
+    if prefillReceiveError != nil || prefill != 7:
+        return 6
+    let (receiverHandle, receiverStartError) = worker.startWith(blockedReceiver, channelHandle)
+    if receiverStartError != nil:
+        return 7
+    let receiverCancelError: error = worker.cancel(receiverHandle)
+    if receiverCancelError != nil:
+        return 8
+    let receiverJoinError: error = worker.join(receiverHandle)
+    if receiverJoinError != nil:
+        return 9
+    let closeError: error = channel.close(channelHandle)
+    if closeError != nil:
+        return 10
+    return 0
+}
+"#;
+
+    check_source(source).expect("cancelled blocking channel operations should typecheck");
+    let generated =
+        compile_to_c(source).expect("cancelled blocking channel operations should lower natively");
+    assert!(generated.contains("static void flux__channel_wake_all(void)"));
+    assert!(generated.contains("flux__channel_wake_all(); return NULL"));
+    assert!(generated.contains("channel.send cancelled by worker scope"));
+    assert!(generated.contains("channel.receive cancelled by worker scope"));
+
+    let root =
+        std::env::temp_dir().join(format!("flux-worker-channel-cancel-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker channel cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker channel cancellation source should be writable");
+    let binary = root.join("worker-channel-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker channel cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "worker channel cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker channel cancellation binary should run");
+    assert!(
+        run.status.success(),
+        "worker channel cancellation binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n2\n");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_cancel_children_cancels_the_current_scope_recursively_and_tree_shakes() {
     let source = r#"
 fn directChild(channelHandle: i64) -> void {
