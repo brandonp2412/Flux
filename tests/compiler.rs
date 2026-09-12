@@ -25031,7 +25031,12 @@ app Actions
 "#;
 
     check_source(source).expect("labelled accessibility actions should typecheck");
-    compile_to_c(source).expect("labelled accessibility actions remain portable on Linux");
+    let linux =
+        compile_to_c(source).expect("labelled accessibility actions remain portable on Linux");
+    let tap_description = "GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_state_tapLabel, -1";
+    let hold_description = "GTK_ACCESSIBLE(flux__ui_more), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__ui_state_holdLabel, -1";
+    assert!(linux.matches(tap_description).count() >= 2);
+    assert!(linux.matches(hold_description).count() >= 2);
     let program = fluxc::parser::parse(source).expect("accessibility action app should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("accessibility action app should typecheck");
@@ -25046,6 +25051,31 @@ app Actions
     assert!(android.contains("child_accessibility_action_label"));
     assert!(android.contains("child_accessibility_long_press_label"));
     assert!(android.contains("refresh_accessibility_action_labels"));
+
+    let explicit_description = r#"
+fn tapped() -> void {
+    print("tap")
+}
+
+view DescribedAction {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Open"
+        onTap: tapped
+        accessibilityDescription: "Opens the selected item"
+        accessibilityActionLabel: "Open item"
+}
+app DescribedAction
+"#;
+    let linux = compile_to_c(explicit_description)
+        .expect("explicit accessible descriptions should coexist with action labels");
+    assert!(linux.contains(
+        "GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, \"Opens the selected item\", -1"
+    ));
+    assert!(!linux.contains(
+        "GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, \"Open item\", -1"
+    ));
 
     let missing_action = r#"
 view Broken {

@@ -10464,6 +10464,13 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {description}, -1);\n"
             ));
+        } else if let Some(property) = view_property(element, "accessibility_action_label")
+            .or_else(|| view_property(element, "accessibility_long_press_label"))
+        {
+            let action_description = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {action_description}, -1);\n"
+            ));
         }
         if let Some(property) = view_property(element, "accessibility_value") {
             let value = ui_expr_c(&property.value, view, signatures)?;
@@ -13033,6 +13040,13 @@ fn emit_ui_refresh(
             ));
         }
         if let Some(property) = view_property(element, "accessibility_description") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
+            ));
+        } else if let Some(property) = view_property(element, "accessibility_action_label")
+            .or_else(|| view_property(element, "accessibility_long_press_label"))
+        {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "    if ({widget} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, {value}, -1);\n"
