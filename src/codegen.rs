@@ -8003,6 +8003,23 @@ fn emit_linux_gtk_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
+    for field_name in [
+        "onConfigurationChanged",
+        "onLowMemory",
+        "onSaveState",
+        "onRestoreState",
+    ] {
+        if let Some(field) = application
+            .metadata
+            .iter()
+            .find(|field| field.name == field_name)
+        {
+            return Err(diag(
+                field.name_span,
+                &format!("application {field_name} lifecycle callback is not supported on Linux"),
+            ));
+        }
+    }
     let view = program
         .views
         .iter()

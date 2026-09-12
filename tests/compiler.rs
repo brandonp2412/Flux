@@ -22639,6 +22639,38 @@ app Screen(onSaveState: badSave, onRestoreState: badRestore)
 }
 
 #[test]
+fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
+    let cases = [
+        ("onConfigurationChanged", "fn callback() -> void {\n}\n"),
+        ("onLowMemory", "fn callback() -> void {\n}\n"),
+        (
+            "onSaveState",
+            "fn callback() -> str {\n    return \"saved\"\n}\n",
+        ),
+        (
+            "onRestoreState",
+            "fn callback(value: str) -> void {\n    print(value)\n}\n",
+        ),
+    ];
+
+    for (field, callback) in cases {
+        let source = format!(
+            "{callback}view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n}}\napp Screen({field}: callback)\n"
+        );
+        check_source(&source).expect("target-specific lifecycle metadata should typecheck first");
+        let error = compile_to_c(&source)
+            .expect_err("Linux must reject lifecycle callbacks it cannot honor");
+        assert!(
+            error.message.contains(&format!(
+                "application {field} lifecycle callback is not supported on Linux"
+            )),
+            "unexpected diagnostic for {field}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn portable_clipboard_text_access_lowers_to_native_application_backends() {
     let source = r#"
 fn received(value: str) -> void {
