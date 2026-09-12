@@ -1,27 +1,28 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr 104 44 104 1fr
+    grid columns: 1fr 104 52 104 1fr
     grid rows: auto auto auto auto auto auto auto
     grid gap: 9
-    grid padding: 20
+    grid padding: 18
     grid scroll: true
     grid overlay: true
 
-    Text brand at 1,1 span columns 3
+    Text brand at 1,1 span columns 5
         text: "♥︎  HORSE TINDER"
-        color: "#FF5268"
-        size: 22
+        color: "#FF5A70"
+        size: 23
         bold: true
         letterSpacing: 1
 
-    Text nearby at 1,4 span columns 2
+    Text nearby at 1,1 span columns 5
         text: "4 KM  ·  ONLINE"
-        color: "#B1B6C0"
+        color: "#A7ADB8"
         size: 12
         bold: true
         letterSpacing: 1
         textAlign: "right"
+        alignX: "end"
 
     Image profilePhoto at 2,1 span columns 5
         source: "assets/buttercup.jpg"
@@ -30,30 +31,31 @@ view HorseTinder {
         clip: true
         minHeight: 326
         backgroundColor: "#13151B"
-        borderColor: "#353B47"
+        borderColor: "#303642"
         borderWidth: 1
-        radius: 30
-        shadowColor: "#00000055"
-        shadowBlur: 8
-        shadowOffsetY: 3
+        radius: 28
+        shadowColor: "#00000066"
+        shadowBlur: 10
+        shadowOffsetY: 4
 
-    Text profileName at 3,1 span columns 3
+    Text profileName at 3,1 span columns 5
         text: "Buttercup, 7"
         color: "text"
-        size: 31
+        size: 32
         bold: true
 
-    Text matchBadge at 3,4 span columns 2
+    Text matchBadge at 3,1 span columns 5
         text: "98% MATCH"
         color: "#FF93A0"
         size: 12
         bold: true
         letterSpacing: 1
         textAlign: "center"
+        alignX: "end"
         alignY: "center"
         padding: 8
-        backgroundColor: "#35151F"
-        borderColor: "#6A3340"
+        backgroundColor: "#3D1722"
+        borderColor: "#793746"
         borderWidth: 1
         radius: 999
 
@@ -62,29 +64,31 @@ view HorseTinder {
         color: "#B8BDC7"
         size: 14
 
-    Text weekend at 5,1 span columns 2
+    Text weekend at 5,1 span columns 5
         text: "BEACH GALLOPS"
-        color: "#C5CAD5"
+        color: "#D2D6DF"
         size: 13
         bold: true
         letterSpacing: 1
         textAlign: "center"
+        alignX: "start"
         padding: 12
-        backgroundColor: "#191D25"
-        borderColor: "#303643"
+        backgroundColor: "#1A1E26"
+        borderColor: "#343B48"
         borderWidth: 1
         radius: 999
 
-    Text greenFlag at 5,4 span columns 2
+    Text greenFlag at 5,1 span columns 5
         text: "SHARES HAY"
-        color: "#BFEBD2"
+        color: "#C9F0DA"
         size: 13
         bold: true
         letterSpacing: 1
         textAlign: "center"
+        alignX: "end"
         padding: 12
-        backgroundColor: "#14251C"
-        borderColor: "#31513B"
+        backgroundColor: "#15271D"
+        borderColor: "#345B40"
         borderWidth: 1
         radius: 999
 
@@ -95,46 +99,51 @@ view HorseTinder {
         wrap: true
         maxLines: 3
         lineHeightPercent: 142
-        padding: 15
-        backgroundColor: "#11151B"
-        borderColor: "#303744"
+        padding: 16
+        backgroundColor: "#12161D"
+        borderColor: "#303846"
         borderWidth: 1
-        radius: 20
+        radius: 18
+        shadowColor: "#00000044"
+        shadowBlur: 5
+        shadowOffsetY: 2
 
-    Button pass at 7,2
+    Button pass at 7,1 span columns 5
         text: "✕"
-        size: 52
+        size: 54
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 100
-        maxWidth: 100
-        minHeight: 100
+        minWidth: 104
+        maxWidth: 104
+        minHeight: 104
         alignX: "center"
+        translateX: -78
         focusable: true
         padding: 0
-        radius: 50
-        backgroundColor: "#161A22"
-        borderColor: "#4A5260"
-        borderWidth: 2
+        radius: 52
+        backgroundColor: "#181C24"
+        borderColor: "#414956"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
         onPress: passed => !passed
 
-    Button like at 7,4
+    Button like at 7,1 span columns 5
         text: "♥︎"
-        size: 56
+        size: 60
         accessibilityLabel: "Like Buttercup"
-        minWidth: 100
-        maxWidth: 100
-        minHeight: 100
+        minWidth: 104
+        maxWidth: 104
+        minHeight: 104
         alignX: "center"
+        translateX: 78
         focusable: true
         primary: true
         padding: 0
-        radius: 50
+        radius: 52
         backgroundColor: "#FF4458"
-        borderColor: "#FF8592"
-        borderWidth: 2
+        borderColor: "#FF7585"
+        borderWidth: 1
         shadowColor: "#00000000"
         shadowBlur: 0
         shadowOffsetY: 0
