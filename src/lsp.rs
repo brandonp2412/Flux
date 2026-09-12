@@ -1218,6 +1218,10 @@ fn add_qualified_namespace_completions(
                 "fn net.sendText(socket: i64, text: str) -> error",
             ),
             (
+                "sendTextWithTimeout",
+                "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
                 "sendTextParts",
                 "fn net.sendTextParts(socket: i64, parts: str[]) -> error",
             ),
@@ -2862,6 +2866,14 @@ fn signature_help_for_document_cached(
                         "net.sendText",
                         &["socket: i64", "text: str"],
                         "error",
+                        active_parameter,
+                    ));
+                }
+                "sendTextWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.sendTextWithTimeout",
+                        &["socket: i64", "text: str", "timeoutMillis: i64"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -6841,6 +6853,9 @@ mod tests {
             )
         );
         assert!(net_items.contains("fn net.sendText(socket: i64, text: str) -> error"));
+        assert!(net_items.contains(
+            "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
+        ));
         assert!(net_items.contains("fn net.sendTextParts(socket: i64, parts: str[]) -> error"));
         assert!(
             net_items.contains(
@@ -7809,6 +7824,34 @@ mod tests {
             help.contains(
                 "fn net.localAddress(socket: i64, callback: fn(str, i64) -> void) -> error"
             )
+        );
+    }
+
+    #[test]
+    fn signature_help_supports_timed_text_send() {
+        let uri = "file:///tmp/timed-send-signature.flux";
+        let source = "fn main() -> i64 {\n    let (sent, failure) = net.sendTextWithTimeout(1, \"hello\", 1000)\n    print(sent)\n    print(failure)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.sendTextWithTimeout("))
+            .expect("timed-send call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.sendTextWithTimeout(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("timed-send call should have signature help")
+        .to_json();
+        assert!(
+            help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)")
+                || help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)")
         );
     }
 

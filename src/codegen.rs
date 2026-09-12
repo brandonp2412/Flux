@@ -1360,6 +1360,7 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__locale_format_date_time(")
+        || runtime_usage.contains("flux__net_send_text_with_timeout(")
     {
         out.push_str("#include <time.h>\n");
     }
@@ -3760,6 +3761,66 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__net_send_text(") {
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__net_send_text_with_timeout(") {
+        out.push_str(r#"static inline int64_t flux__net_monotonic_millis(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    if (now.tv_sec > (time_t)(INT64_MAX / INT64_C(1000))) return -1;
+    return (int64_t)now.tv_sec * INT64_C(1000) + (int64_t)(now.tv_nsec / 1000000L);
+}
+static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_t socket_handle, const char *text, int64_t timeout_millis) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, "sendTextWithTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "sendTextWithTimeout requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_result(-1, "sendTextWithTimeout requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "sendTextWithTimeout requires a nonblocking TCP socket");
+    size_t length = strlen(text);
+    size_t offset = 0;
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        int64_t now = flux__net_monotonic_millis();
+        if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_result(-1, "failed to start send timeout");
+        deadline = now + timeout_millis;
+    }
+    while (offset < length) {
+        size_t remaining = length - offset;
+        size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining;
+        ssize_t sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL);
+        if (sent > 0) {
+            offset += (size_t)sent;
+            continue;
+        }
+        if (sent == 0) return flux__net_result((int64_t)offset, "socket made no send progress");
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return flux__net_result((int64_t)offset, "failed to send text");
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            int64_t now = flux__net_monotonic_millis();
+            if (now < 0) return flux__net_result((int64_t)offset, "failed to query send timeout");
+            if (now >= deadline) return flux__net_result((int64_t)offset, "sendTextWithTimeout timed out");
+            int64_t remaining_millis = deadline - now;
+            wait_millis = remaining_millis > INT_MAX ? INT_MAX : (int)remaining_millis;
+        }
+        struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready;
+        do { ready = poll(&descriptor, 1, wait_millis); } while (ready < 0 && errno == EINTR);
+        if (ready == 0) return flux__net_result((int64_t)offset, "sendTextWithTimeout timed out");
+        if (ready < 0) return flux__net_result((int64_t)offset, "failed to wait for socket writability");
+        if ((descriptor.revents & POLLNVAL) != 0) return flux__net_result((int64_t)offset, "invalid socket handle");
+        if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result((int64_t)offset, "socket closed while waiting to send");
+    }
+    return flux__net_result((int64_t)offset, NULL);
+}
+"#);
     }
     if runtime_usage.contains("flux__net_http_receive_request_head(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_http_receive_request_head(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *, const char *, const char *)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveRequestHead maxBytes must be between 1 and 65536\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"HTTP request requires a TCP socket\"); char buffer[65537]; size_t length = 0; bool complete = false; while (length < (size_t)max_bytes) { ssize_t received; do { received = recv((int)socket_handle, buffer + length, 1, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive HTTP request head\"); if (received == 0) return flux__net_result(-1, \"connection closed before HTTP request head completed\"); if (buffer[length] == '\\0') return flux__net_result(-1, \"HTTP request head contains a NUL byte\"); length += 1; if (length >= 4 && memcmp(buffer + length - 4, \"\\r\\n\\r\\n\", 4) == 0) { complete = true; break; } } if (!complete) return flux__net_result(-1, \"HTTP request head exceeds maxBytes\"); buffer[length] = '\\0'; char *line_end = strstr(buffer, \"\\r\\n\"); if (line_end == NULL) return flux__net_result(-1, \"malformed HTTP request line\"); *line_end = '\\0'; char *method = buffer; char *first_space = strchr(method, ' '); if (first_space == NULL || first_space == method) return flux__net_result(-1, \"malformed HTTP request line\"); *first_space = '\\0'; char *target = first_space + 1; char *second_space = strchr(target, ' '); if (second_space == NULL || second_space == target) return flux__net_result(-1, \"malformed HTTP request line\"); *second_space = '\\0'; char *version = second_space + 1; if (version[0] == '\\0' || strchr(version, ' ') != NULL) return flux__net_result(-1, \"malformed HTTP request line\"); for (const unsigned char *cursor = (const unsigned char *)method; *cursor != '\\0'; cursor += 1) if (*cursor <= 0x20 || *cursor == 0x7f) return flux__net_result(-1, \"invalid HTTP method\"); for (const unsigned char *cursor = (const unsigned char *)target; *cursor != '\\0'; cursor += 1) if (*cursor <= 0x20 || *cursor == 0x7f) return flux__net_result(-1, \"invalid HTTP request target\"); if (strcmp(version, \"HTTP/1.1\") != 0 && strcmp(version, \"HTTP/1.0\") != 0) return flux__net_result(-1, \"unsupported HTTP version\"); callback(socket_handle, method, target, version); return flux__net_result((int64_t)length, NULL); }\n");
@@ -19833,6 +19894,22 @@ fn emit_qualified_call(
                     format!("{}({}, {})", helper, socket_handle.code, callback.code),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "sendTextWithTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let text = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_with_timeout({}, {}, {})",
+                        socket_handle.code, text.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "sendText" => {

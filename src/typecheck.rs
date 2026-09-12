@@ -6734,6 +6734,48 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "sendTextWithTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "net.sendTextWithTimeout expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.sendTextWithTimeout socket",
+                )?;
+                let text = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &text,
+                    "net.sendTextWithTimeout text",
+                )?;
+                let timeout = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &timeout,
+                    "net.sendTextWithTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.sendTextWithTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "sendText" => {
                 if args.len() != 2 {
                     return Err(diag(

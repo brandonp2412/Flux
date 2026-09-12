@@ -3960,6 +3960,99 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_timed_text_send_applies_nonblocking_backpressure_and_tree_shakes() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("timed-send listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    let (blockedBytes, blockedError) = net.sendTextWithTimeout(socket, "blocked", 100)
+    print(blockedBytes)
+    print(blockedError)
+    print(net.setNonblocking(socket, true))
+    let (sentBytes, sendError) = net.sendTextWithTimeout(socket, "hello world", 1000)
+    print(sentBytes)
+    print(sendError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("timed text send should typecheck");
+    let generated = compile_to_c(&source).expect("timed text send should lower");
+    assert!(generated.contains("#include <time.h>"));
+    assert!(generated.contains("flux__net_send_text_with_timeout("));
+    assert!(generated.contains("clock_gettime(CLOCK_MONOTONIC"));
+    assert!(generated.contains("poll(&descriptor, 1, wait_millis)"));
+    assert!(generated.contains("sendTextWithTimeout requires a nonblocking TCP socket"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-timed-send-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("timed-send fixture should be writable");
+    let source_path = root.join("timed-send.flux");
+    fs::write(&source_path, &source).expect("timed-send source should be writable");
+    let binary = root.join("timed-send");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("timed-send binary should build");
+    assert!(
+        built.status.success(),
+        "timed-send build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux timed-send client should connect");
+        let mut request = [0u8; 11];
+        stream
+            .read_exact(&mut request)
+            .expect("timed send should deliver the full payload");
+        assert_eq!(&request, b"hello world");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("timed-send binary should run");
+    server.join().expect("timed-send server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n-1\nsendTextWithTimeout requires a nonblocking TCP socket\nnil\n11\nnil\nnil\n"
+    );
+
+    let invalid_timeout = check_source(
+        "fn main() -> i64 {\n    let (sent, failure) = net.sendTextWithTimeout(1, \"hello\", -2)\n    print(sent)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("timed send should reject invalid constant timeout");
+    assert!(
+        invalid_timeout.message.contains(
+            "net.sendTextWithTimeout timeoutMillis must be -1 or between 0 and 2147483647"
+        )
+    );
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    let (sent, failure) = net.sendTextWithTimeout(socket, "hidden", 10)
+    print(sent)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead timed send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_with_timeout("));
+    assert!(!unused_generated.contains("clock_gettime(CLOCK_MONOTONIC"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("scatter/gather listener should bind");
     let port = listener.local_addr().unwrap().port();
