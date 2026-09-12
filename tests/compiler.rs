@@ -23605,6 +23605,41 @@ app Layout
 }
 
 #[test]
+fn native_alignment_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicAlignment {
+    state horizontal: str = "start"
+    state vertical: str = "center"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Aligned"
+        alignX: horizontal
+        alignY: vertical
+    Button move at 2,1
+        text: "Move"
+        onPress: horizontal => "end"
+}
+app DynamicAlignment
+"#;
+
+    check_source(source).expect("dynamic native alignment should typecheck");
+    let generated = compile_to_c(source).expect("dynamic native alignment should lower");
+    assert!(
+        generated.contains("const char *refresh_align_x_label_name = flux__ui_state_horizontal")
+    );
+    assert!(generated.contains("const char *refresh_align_y_label_name = flux__ui_state_vertical"));
+    assert!(generated.contains("gtk_widget_set_halign(flux__ui_label, refresh_align_x_label)"));
+    assert!(generated.contains("gtk_widget_set_valign(flux__ui_label, refresh_align_y_label)"));
+    assert!(generated.contains("align_x must be one of 'start', 'center', 'end', or 'fill'"));
+    assert!(generated.contains("align_y must be one of 'start', 'center', 'end', or 'fill'"));
+    assert!(
+        generated
+            .contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1) {")
+    );
+}
+
+#[test]
 fn native_elements_support_state_visibility_and_minimum_size_constraints() {
     let source = r#"
 view Screen {
@@ -28681,6 +28716,74 @@ app StaticMargin
     .expect("static Android margin should lower");
     assert!(!static_android.contains("refresh_margin_method"));
     assert!(!static_android.contains("int64_t child_margin ="));
+}
+
+#[test]
+fn android_alignment_refreshes_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicAlignment {
+    state horizontal: str = "start"
+    state vertical: str = "center"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Aligned"
+        alignX: horizontal
+        alignY: vertical
+    Button move at 2,1
+        text: "Move"
+        onPress: horizontal => "end"
+}
+app DynamicAlignment
+"#;
+
+    check_source(source).expect("dynamic Android alignment should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dynamic Android alignment should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("dynamic Android alignment should lower");
+
+    assert!(android.contains("const char *flux__align_x_label_name = flux__ui_state_horizontal"));
+    assert!(android.contains("const char *flux__align_y_label_name = flux__ui_state_vertical"));
+    assert!(android.contains("const char *refresh_align_x_name = flux__ui_state_horizontal"));
+    assert!(android.contains("const char *refresh_align_y_name = flux__ui_state_vertical"));
+    assert!(android.contains("refresh_align_gravity"));
+    assert!(android.contains("refresh_align_set_layout_params"));
+    assert!(android.contains("align_x must be one of 'start', 'center', 'end', or 'fill'"));
+    assert!(android.contains("align_y must be one of 'start', 'center', 'end', or 'fill'"));
+    assert!(
+        android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1) {")
+    );
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticAlignment {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Static"
+        alignX: "center"
+        alignY: "end"
+}
+app StaticAlignment
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android alignment should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android alignment should lower");
+    assert!(!static_android.contains("refresh_align_gravity"));
+    assert!(!static_android.contains("refresh_align_x_name"));
 }
 
 #[test]

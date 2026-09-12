@@ -8253,38 +8253,69 @@ fn emit_android_native_application(
                 ));
             }
         }
-        let alignment = |property_name: &str, horizontal: bool| -> Result<i32, Diagnostic> {
+        let alignment = |property_name: &str,
+                         horizontal: bool|
+         -> Result<Option<i32>, Diagnostic> {
             let Some(property) = view_property(element, property_name) else {
-                return Ok(0);
+                return Ok(Some(0));
             };
             let Some(value) = static_expr_str(&property.value, signatures) else {
-                return Err(diag(
-                    property.value.span,
-                    &format!("bootstrap Android {property_name} must be a compile-time string"),
-                ));
+                return Ok(None);
             };
             match (horizontal, value.as_str()) {
-                (true, "start") => Ok(8_388_611),
-                (true, "center") => Ok(1),
-                (true, "end") => Ok(8_388_613),
-                (true, "fill") => Ok(7),
-                (false, "start") => Ok(48),
-                (false, "center") => Ok(16),
-                (false, "end") => Ok(80),
-                (false, "fill") => Ok(112),
+                (true, "start") => Ok(Some(8_388_611)),
+                (true, "center") => Ok(Some(1)),
+                (true, "end") => Ok(Some(8_388_613)),
+                (true, "fill") => Ok(Some(7)),
+                (false, "start") => Ok(Some(48)),
+                (false, "center") => Ok(Some(16)),
+                (false, "end") => Ok(Some(80)),
+                (false, "fill") => Ok(Some(112)),
                 _ => Err(diag(
                     property.value.span,
                     &format!("{property_name} must be one of 'start', 'center', 'end', or 'fill'"),
                 )),
             }
         };
-        let gravity = alignment("align_x", true)? | alignment("align_y", false)?;
-        if gravity != 0 {
+        let align_x = alignment("align_x", true)?;
+        let align_y = alignment("align_y", false)?;
+        if align_x.is_none() || align_y.is_none() {
+            let mut alignment_value = |property_name: &str,
+                                       horizontal: bool,
+                                       static_value: Option<i32>|
+             -> Result<String, Diagnostic> {
+                if let Some(value) = static_value {
+                    return Ok(value.to_string());
+                }
+                let property = view_property(element, property_name)
+                    .expect("dynamic alignment property exists");
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let start = if horizontal { 8_388_611 } else { 48 };
+                let center = if horizontal { 1 } else { 16 };
+                let end = if horizontal { 8_388_613 } else { 80 };
+                let fill = if horizontal { 7 } else { 112 };
+                let local = format!("flux__{property_name}_{}", element.name);
+                out.push_str(&format!(
+                    "    const char *{local}_name = {value};\n    jint {local};\n    if (strcmp({local}_name, \"start\") == 0) {local} = {start}; else if (strcmp({local}_name, \"center\") == 0) {local} = {center}; else if (strcmp({local}_name, \"end\") == 0) {local} = {end}; else if (strcmp({local}_name, \"fill\") == 0) {local} = {fill}; else {{ fputs(\"Flux runtime error: {property_name} must be one of 'start', 'center', 'end', or 'fill'\\n\", stderr); abort(); }}\n"
+                ));
+                Ok(local)
+            };
+            let align_x = alignment_value("align_x", true, align_x)?;
+            let align_y = alignment_value("align_y", false, align_y)?;
             out.push_str("    jmethodID set_gravity = (*env)->GetMethodID(env, params_class, \"setGravity\", \"(I)V\");\n");
             out.push_str("    if (set_gravity == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, params, set_gravity, (jint){gravity});\n"
+                "    (*env)->CallVoidMethod(env, params, set_gravity, (jint)({align_x} | {align_y}));\n"
             ));
+        } else {
+            let gravity = align_x.unwrap_or(0) | align_y.unwrap_or(0);
+            if gravity != 0 {
+                out.push_str("    jmethodID set_gravity = (*env)->GetMethodID(env, params_class, \"setGravity\", \"(I)V\");\n");
+                out.push_str("    if (set_gravity == NULL) return;\n");
+                out.push_str(&format!(
+                    "    (*env)->CallVoidMethod(env, params, set_gravity, (jint){gravity});\n"
+                ));
+            }
         }
         let fixed_width = column_tracks
             .iter()
@@ -11055,6 +11086,8 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | "enabled"
             | "focusable"
             | "clip"
+            | "align_x"
+            | "align_y"
             | "min_width"
             | "min_height"
             | "max_width"
@@ -11230,6 +11263,8 @@ fn android_ui_element_needs_refresh(
         "visible",
         "enabled",
         "focusable",
+        "align_x",
+        "align_y",
         "min_width",
         "min_height",
         "max_width",
@@ -11852,6 +11887,62 @@ fn emit_android_ui_refresh(
             out.push_str("                    if (refresh_set_layout_params != NULL) (*env)->CallVoidMethod(env, child, refresh_set_layout_params, refresh_layout_params);\n");
             out.push_str(
                 "                    (*env)->DeleteLocalRef(env, refresh_layout_params);\n",
+            );
+            out.push_str("                } else if ((*env)->ExceptionCheck(env)) {\n                    (*env)->ExceptionClear(env);\n                }\n");
+        }
+        let dynamic_align_x = android_ui_property_needs_refresh(element, "align_x", &runtime_names);
+        let dynamic_align_y = android_ui_property_needs_refresh(element, "align_y", &runtime_names);
+        if dynamic_align_x || dynamic_align_y {
+            let mut alignment_value = |property_name: &str,
+                                       horizontal: bool,
+                                       dynamic: bool|
+             -> Result<String, Diagnostic> {
+                let Some(property) = view_property(element, property_name) else {
+                    return Ok("0".to_string());
+                };
+                if !dynamic {
+                    let value = static_expr_str(&property.value, signatures)
+                        .expect("non-dynamic alignment is statically evaluable");
+                    let mapped = match (horizontal, value.as_str()) {
+                        (true, "start") => 8_388_611,
+                        (true, "center") => 1,
+                        (true, "end") => 8_388_613,
+                        (true, "fill") => 7,
+                        (false, "start") => 48,
+                        (false, "center") => 16,
+                        (false, "end") => 80,
+                        (false, "fill") => 112,
+                        _ => unreachable!("static alignment was validated during construction"),
+                    };
+                    return Ok(mapped.to_string());
+                }
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let start = if horizontal { 8_388_611 } else { 48 };
+                let center = if horizontal { 1 } else { 16 };
+                let end = if horizontal { 8_388_613 } else { 80 };
+                let fill = if horizontal { 7 } else { 112 };
+                let local = format!("refresh_{property_name}");
+                out.push_str(&format!(
+                    "                const char *{local}_name = {value};\n                jint {local};\n                if (strcmp({local}_name, \"start\") == 0) {local} = {start}; else if (strcmp({local}_name, \"center\") == 0) {local} = {center}; else if (strcmp({local}_name, \"end\") == 0) {local} = {end}; else if (strcmp({local}_name, \"fill\") == 0) {local} = {fill}; else {{ fputs(\"Flux runtime error: {property_name} must be one of 'start', 'center', 'end', or 'fill'\\n\", stderr); abort(); }}\n"
+                ));
+                Ok(local)
+            };
+            let align_x = alignment_value("align_x", true, dynamic_align_x)?;
+            let align_y = alignment_value("align_y", false, dynamic_align_y)?;
+            out.push_str("                jmethodID refresh_align_get_layout_params = (*env)->GetMethodID(env, child_class, \"getLayoutParams\", \"()Landroid/view/ViewGroup$LayoutParams;\");\n");
+            out.push_str("                jobject refresh_align_params = refresh_align_get_layout_params == NULL ? NULL : (*env)->CallObjectMethod(env, child, refresh_align_get_layout_params);\n");
+            out.push_str("                if (refresh_align_params != NULL && !(*env)->ExceptionCheck(env)) {\n");
+            out.push_str("                    jclass refresh_align_params_class = (*env)->GetObjectClass(env, refresh_align_params);\n");
+            out.push_str("                    if (refresh_align_params_class != NULL) {\n");
+            out.push_str("                        jmethodID refresh_align_gravity = (*env)->GetMethodID(env, refresh_align_params_class, \"setGravity\", \"(I)V\");\n");
+            out.push_str(&format!(
+                "                        if (refresh_align_gravity != NULL) (*env)->CallVoidMethod(env, refresh_align_params, refresh_align_gravity, (jint)({align_x} | {align_y}));\n"
+            ));
+            out.push_str("                        (*env)->DeleteLocalRef(env, refresh_align_params_class);\n                    }\n");
+            out.push_str("                    jmethodID refresh_align_set_layout_params = (*env)->GetMethodID(env, child_class, \"setLayoutParams\", \"(Landroid/view/ViewGroup$LayoutParams;)V\");\n");
+            out.push_str("                    if (refresh_align_set_layout_params != NULL) (*env)->CallVoidMethod(env, child, refresh_align_set_layout_params, refresh_align_params);\n");
+            out.push_str(
+                "                    (*env)->DeleteLocalRef(env, refresh_align_params);\n",
             );
             out.push_str("                } else if ((*env)->ExceptionCheck(env)) {\n                    (*env)->ExceptionClear(env);\n                }\n");
         }
@@ -13106,6 +13197,19 @@ fn emit_ui_refresh(
                 "    if ({widget} != NULL) gtk_widget_set_focusable({widget}, {value});\n"
             ));
         }
+        for (property_name, setter) in [("align_x", "halign"), ("align_y", "valign")] {
+            let Some(property) = view_property(element, property_name) else {
+                continue;
+            };
+            if static_expr_str(&property.value, signatures).is_some() {
+                continue;
+            }
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let local = format!("refresh_{property_name}_{}", element.name);
+            out.push_str(&format!(
+                "    const char *{local}_name = {value};\n    GtkAlign {local};\n    if (strcmp({local}_name, \"start\") == 0) {local} = GTK_ALIGN_START; else if (strcmp({local}_name, \"center\") == 0) {local} = GTK_ALIGN_CENTER; else if (strcmp({local}_name, \"end\") == 0) {local} = GTK_ALIGN_END; else if (strcmp({local}_name, \"fill\") == 0) {local} = GTK_ALIGN_FILL; else {{ fputs(\"Flux runtime error: {property_name} must be one of 'start', 'center', 'end', or 'fill'\\n\", stderr); abort(); }}\n    if ({widget} != NULL) gtk_widget_set_{setter}({widget}, {local});\n"
+            ));
+        }
         let dynamic_min_width = view_property(element, "min_width")
             .filter(|property| static_expr_i64(&property.value, signatures).is_none());
         let dynamic_min_height = view_property(element, "min_height")
@@ -13438,10 +13542,7 @@ fn emit_element_alignment(
             continue;
         };
         let Some(value) = static_expr_str(&property.value, signatures) else {
-            return Err(diag(
-                property.value.span,
-                &format!("{property_name} must be a compile-time string"),
-            ));
+            continue;
         };
         let alignment = match value.as_str() {
             "start" => "GTK_ALIGN_START",
