@@ -32193,7 +32193,7 @@ async fn main() -> i64 {
 }
 
 #[test]
-fn async_await_optional_promotion_branch_retains_safe_fallback() {
+fn async_await_optional_promotion_branches_suspend_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
     return value + 1
@@ -32206,16 +32206,41 @@ async fn choose(value: i64?) -> i64 {
     return 0
 }
 
+async fn chooseElse(value: i64?) -> i64 {
+    if value == none:
+        return 0
+    else:
+        let next: i64 = await addOne(value)
+        return next
+}
+
+async fn chooseLocal(value: i64?) -> i64 {
+    let saved: i64? = value
+    if saved != none:
+        let next: i64 = await addOne(saved)
+        return next
+    return 0
+}
+
 async fn main() -> i64 {
-    return await choose(41)
+    let first: i64 = await choose(41)
+    let second: i64 = await chooseElse(41)
+    let third: i64 = await chooseLocal(41)
+    return first + second + third
 }
 "#;
 
     check_source(source).expect("optional promotion around await should typecheck");
     let generated = compile_to_c(source)
-        .expect("optional promotion around await should retain the safe fallback");
-    assert!(generated.contains("flux__async_body_choose("));
-    assert!(generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+        .expect("optional promotion around await should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("flux__async_resume_chooseElse"));
+    assert!(generated.contains("flux__async_resume_chooseLocal"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(!generated.contains("flux__async_body_chooseElse("));
+    assert!(!generated.contains("flux__async_body_chooseLocal("));
+    assert!(generated.contains("saved_flux__local_saved.has_value = true"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
 
     let root = std::env::temp_dir().join(format!(
         "flux-async-optional-promotion-{}",
@@ -32241,7 +32266,7 @@ async fn main() -> i64 {
     let status = Command::new(&binary)
         .status()
         .expect("optional promotion async binary should run");
-    assert_eq!(status.code(), Some(42));
+    assert_eq!(status.code(), Some(126));
     let _ = fs::remove_dir_all(&root);
 }
 

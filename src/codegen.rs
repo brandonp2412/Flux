@@ -14473,17 +14473,6 @@ fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
     Some(await_indices)
 }
 
-fn async_branch_condition_uses_promotion(cond: &Expr) -> bool {
-    let ExprKind::Binary { left, op, right } = &cond.kind else {
-        return false;
-    };
-    matches!(op, BinOp::Eq | BinOp::Ne)
-        && matches!(
-            (&left.kind, &right.kind),
-            (ExprKind::Var(_), ExprKind::None) | (ExprKind::None, ExprKind::Var(_))
-        )
-}
-
 fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
     let await_statements = function
         .body
@@ -14505,8 +14494,7 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     else {
         return None;
     };
-    if binding.is_some() || expr_contains_await(cond) || async_branch_condition_uses_promotion(cond)
-    {
+    if binding.is_some() || expr_contains_await(cond) {
         return None;
     }
     let then_await_indices = block_direct_await_indices(body)?;
@@ -17921,12 +17909,29 @@ fn emit_async_suspend(
             &format!("unknown async function '{callee}' during continuation lowering"),
         )
     })?;
-    for (name, _) in &plan.locals {
-        if env.contains_key(name) {
+    for (name, saved_ty) in &plan.locals {
+        let Some(current_ty) = env.get(name) else {
+            continue;
+        };
+        let saved_ty = signatures.canonical_type(saved_ty);
+        let current_ty = signatures.canonical_type(current_ty);
+        let field = async_saved_local_field_name(name);
+        if saved_ty == current_ty {
             out.push_str(&format!(
-                "{pad}flux__task->{} = {};\n",
-                async_saved_local_field_name(name),
+                "{pad}flux__task->{field} = {};\n",
                 local_c_name(name)
+            ));
+        } else if let Type::Optional(inner) = &saved_ty
+            && signatures.canonical_type(inner) == current_ty
+        {
+            out.push_str(&format!(
+                "{pad}flux__task->{field}.has_value = true;\n{pad}flux__task->{field}.value = {};\n",
+                local_c_name(name)
+            ));
+        } else {
+            return Err(diag(
+                stmt.span,
+                "async continuation local type changed across suspension",
             ));
         }
     }
@@ -17973,21 +17978,53 @@ fn emit_async_branch_resume_states(
         let state = first_state + offset;
         out.push_str(&format!("        case {state}: {{\n"));
         for (index, param) in function.params.iter().enumerate() {
+            let original_ty = signatures.canonical_type(&param.ty);
+            let restored_ty = branch_env
+                .get(&param.name)
+                .map(|ty| signatures.canonical_type(ty))
+                .unwrap_or_else(|| original_ty.clone());
+            let value = if restored_ty == original_ty {
+                format!("flux__task->arg_{index}")
+            } else if let Type::Optional(inner) = &original_ty
+                && signatures.canonical_type(inner) == restored_ty
+            {
+                format!("flux__task->arg_{index}.value")
+            } else {
+                return Err(diag(
+                    function.span,
+                    "async continuation parameter type changed across suspension",
+                ));
+            };
             out.push_str(&format!(
-                "{pad}{} {} = flux__task->arg_{index};\n",
-                c_type(&param.ty, signatures),
+                "{pad}{} {} = {value};\n",
+                c_type(&restored_ty, signatures),
                 local_c_name(&param.name)
             ));
         }
-        for (name, ty) in &plan.locals {
-            if branch_env.contains_key(name) {
-                out.push_str(&format!(
-                    "{pad}{} {} = flux__task->{};\n",
-                    c_type(ty, signatures),
-                    local_c_name(name),
-                    async_saved_local_field_name(name)
+        for (name, saved_ty) in &plan.locals {
+            let Some(current_ty) = branch_env.get(name) else {
+                continue;
+            };
+            let saved_ty = signatures.canonical_type(saved_ty);
+            let current_ty = signatures.canonical_type(current_ty);
+            let field = async_saved_local_field_name(name);
+            let value = if current_ty == saved_ty {
+                format!("flux__task->{field}")
+            } else if let Type::Optional(inner) = &saved_ty
+                && signatures.canonical_type(inner) == current_ty
+            {
+                format!("flux__task->{field}.value")
+            } else {
+                return Err(diag(
+                    function.span,
+                    "async continuation local type changed while restoring suspension state",
                 ));
-            }
+            };
+            out.push_str(&format!(
+                "{pad}{} {} = {value};\n",
+                c_type(&current_ty, signatures),
+                local_c_name(name)
+            ));
         }
         out.push_str(&format!("{pad}{{\n"));
         let awaited_stmt = &await_block[previous_await];
@@ -18121,13 +18158,43 @@ fn emit_async_branch_continuation_function(
     )?;
     let outer_env = env.clone();
     let outer_mutable = mutable.clone();
-    let condition = emit_expr(cond, &env, signatures)?;
-    out.push_str(&format!("{pad}if {} {{\n", c_condition(&condition.code)));
+    let promotion = optional_presence_promotion(cond, &env, &mutable, signatures).map(
+        |(name, inner, present_in_then)| {
+            let temp = format!("flux__optional_promotion_{}", *temp_counter);
+            *temp_counter += 1;
+            (name, inner, present_in_then, temp)
+        },
+    );
+    let condition = if let Some((name, inner, present_in_then, temp)) = &promotion {
+        let optional_ty = Type::Optional(Box::new(inner.clone()));
+        out.push_str(&format!(
+            "{pad}{} {temp} = {};\n",
+            c_type(&optional_ty, signatures),
+            local_c_name(name)
+        ));
+        if *present_in_then {
+            format!("{temp}.has_value")
+        } else {
+            format!("!{temp}.has_value")
+        }
+    } else {
+        let condition = emit_expr(cond, &env, signatures)?;
+        c_condition(&condition.code)
+    };
+    out.push_str(&format!("{pad}if ({condition}) {{\n"));
 
     let mut then_env = outer_env.clone();
     let mut then_mutable = outer_mutable.clone();
     let mut else_env = outer_env.clone();
     let mut else_mutable = outer_mutable.clone();
+    if let Some((name, inner, true, temp)) = &promotion {
+        out.push_str(&format!(
+            "{pad}    {} {} = {temp}.value;\n",
+            c_type(inner, signatures),
+            local_c_name(name)
+        ));
+        then_env.insert(name.clone(), inner.clone());
+    }
     if let Some(first_await) = branch.then_await_indices.first().copied() {
         emit_block(
             out,
@@ -18168,6 +18235,14 @@ fn emit_async_branch_continuation_function(
         out.push_str(&format!("{pad}}}\n"));
     } else {
         out.push_str(&format!("{pad}}} else {{\n"));
+        if let Some((name, inner, false, temp)) = &promotion {
+            out.push_str(&format!(
+                "{pad}    {} {} = {temp}.value;\n",
+                c_type(inner, signatures),
+                local_c_name(name)
+            ));
+            else_env.insert(name.clone(), inner.clone());
+        }
         if let Some(first_await) = branch.else_await_indices.first().copied() {
             emit_block(
                 out,
