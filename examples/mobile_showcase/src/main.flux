@@ -1,21 +1,21 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
-    grid columns: 1fr auto auto 1fr
+    grid columns: 1fr 86 28 86 1fr
     grid rows: auto auto auto auto auto auto auto auto
     grid gap: 10
     grid padding: 18
     grid scroll: true
     grid overlay: true
 
-    Text brand at 1,1 span columns 3
+    Text brand at 1,1 span columns 4
         text: "♥︎  HORSE TINDER"
         color: "#FF4458"
         size: 17
         bold: true
         letterSpacing: 1
 
-    Text nearby at 1,4
+    Text nearby at 1,5
         text: "4 KM  ·  ONLINE"
         color: "textMuted"
         size: 11
@@ -23,7 +23,7 @@ view HorseTinder {
         letterSpacing: 1
         textAlign: "right"
 
-    Image profilePhoto at 2,1 span columns 4
+    Image profilePhoto at 2,1 span columns 5
         source: "assets/buttercup.jpg"
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
@@ -37,13 +37,13 @@ view HorseTinder {
         shadowBlur: 14
         shadowOffsetY: 5
 
-    Text profileName at 3,1 span columns 3
+    Text profileName at 3,1 span columns 4
         text: "BUTTERCUP, 7"
         color: "text"
         size: 29
         bold: true
 
-    Text matchBadge at 3,4
+    Text matchBadge at 3,5
         text: "98% MATCH"
         color: "#FF7182"
         size: 12
@@ -52,7 +52,7 @@ view HorseTinder {
         textAlign: "right"
         alignY: "center"
 
-    Text profileMeta at 4,1 span columns 4
+    Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  16.1 hands  ·  4 km away"
         color: "textMuted"
         size: 14
@@ -70,7 +70,7 @@ view HorseTinder {
         borderWidth: 1
         radius: 999
 
-    Text greenFlag at 5,3 span columns 2
+    Text greenFlag at 5,4 span columns 2
         text: "SHARES HAY"
         color: "#BFEBD2"
         size: 13
@@ -83,7 +83,7 @@ view HorseTinder {
         borderWidth: 1
         radius: 999
 
-    Text bio at 6,1 span columns 4
+    Text bio at 6,1 span columns 5
         text: "Emotionally available. Great listener. Her best friend refuses to stay out of profile photos."
         color: "#D9DCE3"
         size: 15
@@ -95,41 +95,39 @@ view HorseTinder {
         borderWidth: 1
         radius: 20
 
-    Button pass at 7,2
+    Button pass at 7,1 span columns 5
         text: "✕"
-        size: 28
+        size: 30
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 72
-        minHeight: 72
-        padding: 16
+        minWidth: 86
+        maxWidth: 86
+        minHeight: 86
+        alignX: "center"
+        padding: 0
         radius: 999
-        scalePercent: 112
-        backgroundColor: "#14171D"
-        borderColor: "#353B46"
+        translateX: -57
+        backgroundColor: "#15181F"
+        borderColor: "#3A404C"
         borderWidth: 2
-        shadowColor: "#00000077"
-        shadowBlur: 12
-        shadowOffsetY: 5
         onPress: passed => !passed
 
-    Button like at 7,3
+    Button like at 7,1 span columns 5
         text: "♥︎"
-        size: 30
+        size: 32
         accessibilityLabel: "Like Buttercup"
-        minWidth: 72
-        minHeight: 72
+        minWidth: 86
+        maxWidth: 86
+        minHeight: 86
+        alignX: "center"
         primary: true
-        padding: 16
+        padding: 0
         radius: 999
-        scalePercent: 112
+        translateX: 57
         borderColor: "#FF7182"
         borderWidth: 2
-        shadowColor: "#FF445855"
-        shadowBlur: 18
-        shadowOffsetY: 6
         onPress: liked => !liked
 
-    Text result at 8,1 span columns 4
+    Text result at 8,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
         color: "#FFD9DE"
@@ -143,7 +141,7 @@ view HorseTinder {
         radius: 18
         layoutTransitionMs: motionNormal
 
-    Text passedNote at 8,1 span columns 4
+    Text passedNote at 8,1 span columns 5
         text: "Passed. The photobomber is taking it personally."
         visible: passed
         color: "textMuted"
