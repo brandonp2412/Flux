@@ -31510,6 +31510,7 @@ async fn main() -> i64 {
     assert!(generated.contains("pthread_cond_wait"));
     assert!(!generated.contains("pthread_join("));
     assert!(generated.contains("free(flux__task)"));
+    assert!(!generated.contains("struct flux__worker_state"));
 
     let root = std::env::temp_dir().join(format!("flux-async-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -31643,6 +31644,71 @@ async fn main() -> i64 {
             .message
             .contains("function 'loadCode' is synchronous and cannot be awaited")
     }));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn nested_async_tasks_drain_worker_children_before_completion() {
+    let source = r#"
+fn delayedChild() -> void {
+    time.sleepMillis(20)
+    print(41)
+}
+
+async fn ready() -> i64 {
+    return 0
+}
+
+async fn launchChild() -> i64 {
+    let readyCode: i64 = await ready()
+    if readyCode != 0:
+        return readyCode
+    let (_handle, startError) = worker.start(delayedChild)
+    if startError != nil:
+        return 1
+    return 0
+}
+
+async fn main() -> i64 {
+    let code: i64 = await launchChild()
+    if code != 0:
+        return code
+    print(42)
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested async worker scope should typecheck");
+    let generated = compile_to_c(source).expect("nested async worker scope should lower");
+    assert!(generated.contains("static int64_t flux__async_scope_create(void)"));
+    assert!(generated.contains("flux__task->worker_scope_id = flux__async_scope_create();"));
+    assert!(generated.contains("flux__async_scope_enter(flux__task->worker_scope_id);"));
+    assert!(generated.contains("flux__async_scope_finish()"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-worker-scope-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async worker scope fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async worker scope source should be writable");
+    let binary = root.join("async-worker-scope");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async worker scope binary should build");
+    assert!(
+        built.status.success(),
+        "async worker scope build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("async worker scope binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "41\n42\n");
 
     let _ = fs::remove_dir_all(&root);
 }

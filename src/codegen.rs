@@ -1485,6 +1485,7 @@ pub fn emit_c_for_target_with_source_metadata(
         out.push_str("    int state;\n");
         out.push_str("    void (*continuation)(void *, void *);\n");
         out.push_str("    void *continuation_context;\n");
+        out.push_str("    int64_t worker_scope_id;\n");
         for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
                 "    {} arg_{index};\n",
@@ -5133,6 +5134,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
         out.push_str("static struct flux__worker_state *flux__worker_head = NULL;\n");
         out.push_str("static int64_t flux__worker_next_id = INT64_C(1);\n");
+        out.push_str("static int64_t flux__worker_next_scope_id = INT64_C(-1);\n");
         out.push_str("static _Thread_local int64_t flux__worker_current_id = INT64_C(0);\n");
         out.push_str("static struct flux__worker_state *flux__worker_find_locked(int64_t id) { struct flux__worker_state *state = flux__worker_head; while (state != NULL && state->id != id) state = state->next; return state; }\n");
         out.push_str("static bool flux__worker_descends_from_locked(struct flux__worker_state *state, int64_t ancestor_id) { int64_t parent_id = state->parent_id; while (parent_id > 0) { if (parent_id == ancestor_id) return true; struct flux__worker_state *parent = flux__worker_find_locked(parent_id); if (parent == NULL) return false; parent_id = parent->parent_id; } return false; }\n");
@@ -5143,11 +5145,21 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static const char *flux__worker_join(int64_t handle) { if (handle <= 0) return \"worker.join received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join received an unknown or already joined handle\"; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join is already waiting for this handle\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join failed to join the native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *scope_error = state->scope_error; struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return scope_error; }\n");
         out.push_str("static const char *flux__worker_join_tree(int64_t handle) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return NULL; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren found a descendant already being joined\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren failed to join a descendant native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *scope_error = state->scope_error; pthread_mutex_unlock(&flux__worker_mutex); if (scope_error != NULL) return scope_error; while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != handle) child = child->next; if (child == NULL) { struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); free(state); return NULL; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return error; } } }\n");
         out.push_str("static const char *flux__worker_join_children(void) { int64_t parent_id = flux__worker_current_id; while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != parent_id) child = child->next; if (child == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return NULL; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL) return error; } }\n");
+        out.push_str("static int64_t flux__async_scope_create(void) { pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_scope_id == INT64_MIN) { pthread_mutex_unlock(&flux__worker_mutex); fputs(\"Flux runtime error: async worker scope space exhausted\\n\", stderr); abort(); } int64_t scope_id = flux__worker_next_scope_id; flux__worker_next_scope_id -= INT64_C(1); pthread_mutex_unlock(&flux__worker_mutex); return scope_id; }\n");
+        out.push_str("static void flux__async_scope_enter(int64_t scope_id) { flux__worker_current_id = scope_id; }\n");
+        out.push_str("static const char *flux__async_scope_finish(void) { return flux__worker_join_children(); }\n");
         out.push_str("static int flux__finish_main(int result) { const char *error = flux__worker_join_children(); if (error != NULL) { fputs(\"Flux worker scope error: \", stderr); fputs(error, stderr); fputc('\\n', stderr); return result == 0 ? 1 : result; } return result; }\n");
         out.push_str("static const char *flux__worker_cancel(int64_t handle) { if (handle <= 0) return \"worker.cancel received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *root = flux__worker_find_locked(handle); if (root == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.cancel received an unknown or already joined handle\"; } for (struct flux__worker_state *state = flux__worker_head; state != NULL; state = state->next) { if (state->id == handle || flux__worker_descends_from_locked(state, handle)) state->cancel_requested = true; } pthread_mutex_unlock(&flux__worker_mutex); return NULL; }\n");
         out.push_str("static bool flux__worker_cancelled(void) { int64_t current_id = flux__worker_current_id; if (current_id <= 0) return false; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(current_id); bool cancelled = state != NULL && state->cancel_requested; pthread_mutex_unlock(&flux__worker_mutex); return cancelled; }\n");
-    } else if runtime_usage.contains("flux__finish_main(") {
-        out.push_str("#define flux__finish_main(result) (result)\n");
+    } else {
+        if runtime_usage.contains("flux__finish_main(") {
+            out.push_str("#define flux__finish_main(result) (result)\n");
+        }
+        if runtime_usage.contains("flux__async_task_") {
+            out.push_str("#define flux__async_scope_create() INT64_C(0)\n");
+            out.push_str("#define flux__async_scope_enter(scope_id) ((void)(scope_id))\n");
+            out.push_str("#define flux__async_scope_finish() ((const char *)NULL)\n");
+        }
     }
 
     if runtime_usage.contains("flux__channel_") {
@@ -17538,6 +17550,8 @@ fn emit_async_task_runtime(
     out.push_str("    free(flux__task);\n}\n");
 
     out.push_str(&format!("{} {{\n", async_finish_prototype(function)));
+    out.push_str("    const char *flux__scope_error = flux__async_scope_finish();\n");
+    out.push_str("    if (flux__scope_error != NULL) { fputs(\"Flux async worker scope error: \", stderr); fputs(flux__scope_error, stderr); fputc('\\n', stderr); abort(); }\n");
     out.push_str("    if (flux__task->continuation != NULL) {\n");
     out.push_str(
         "        void (*flux__continuation)(void *, void *) = flux__task->continuation;\n",
@@ -17553,6 +17567,7 @@ fn emit_async_task_runtime(
     out.push_str(&format!(
         "static void *{runner_name}(void *flux__opaque) {{\n    struct {task_name} *flux__task = (struct {task_name} *)flux__opaque;\n"
     ));
+    out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
     if continuation_lowered {
         out.push_str(&format!("    {resume_name}(flux__task, NULL);\n"));
     } else {
@@ -17575,6 +17590,7 @@ fn emit_async_task_runtime(
     out.push_str("    if (pthread_cond_init(&flux__task->completed, NULL) != 0) { pthread_mutex_destroy(&flux__task->mutex); free(flux__task); fputs(\"Flux runtime error: unable to initialize async task condition\\n\", stderr); abort(); }\n");
     out.push_str("    flux__task->done = false;\n    flux__task->state = 0;\n");
     out.push_str("    flux__task->continuation = flux__continuation;\n    flux__task->continuation_context = flux__context;\n");
+    out.push_str("    flux__task->worker_scope_id = flux__async_scope_create();\n");
     for (index, param) in function.params.iter().enumerate() {
         out.push_str(&format!(
             "    flux__task->arg_{index} = {};\n",
@@ -17981,6 +17997,7 @@ fn emit_async_branch_continuation_function(
         "    struct {task_name} *flux__task = (struct {task_name} *)flux__context;\n"
     ));
     out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
+    out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
     out.push_str("    switch (flux__task->state) {\n");
 
     let mut env = function
@@ -18190,6 +18207,7 @@ fn emit_async_continuation_function(
         "    struct {task_name} *flux__task = (struct {task_name} *)flux__context;\n"
     ));
     out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
+    out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
     out.push_str("    switch (flux__task->state) {\n");
 
     let mut env = function
