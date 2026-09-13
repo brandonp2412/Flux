@@ -183,7 +183,12 @@ app Screen(title: "Stateful Windows", width: 720, height: 480)
 
     assert!(generated.contains("BS_AUTOCHECKBOX"));
     assert!(generated.contains("WS_GROUP | BS_AUTORADIOBUTTON"));
-    assert!(generated.contains("case WM_SIZE: flux__win_layout"));
+    assert!(generated.contains("case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam)"));
+    assert!(generated.contains("flux__ui_window_height = (int64_t)HIWORD(lparam)"));
+    assert!(
+        generated
+            .contains("flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height)")
+    );
     assert!(generated.contains("MoveWindow(flux__ui_toggle"));
     assert!(
         generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_caption)")
@@ -198,6 +203,75 @@ app Screen(title: "Stateful Windows", width: 720, height: 480)
     assert!(generated.contains("flux__ui_state_selected = INT64_C(1)"));
     assert!(generated.contains("flux__win_refresh();"));
     assert!(generated.contains("CreateWindowExA(0, \"STATIC\", \"Summary\""));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
+fn windows_text_input_supports_controlled_state_submit_and_native_edit_options() {
+    let source = r#"
+fn submitted(value: str) -> void {
+    print(value)
+}
+view Screen {
+    state query: str = "seed"
+    state locked: bool = false
+    state secret: bool = true
+    derived caption: str = query
+    derived roomy: bool = windowWidth >= 600
+    grid columns: 1fr
+    grid rows: auto auto auto
+    TextInput input at 1,1
+        text: query
+        placeholder: "Search"
+        readOnly: locked
+        password: secret
+        maxLength: 32
+        onChange: query, value => value
+        onSubmit: submitted
+    TextInput secondary at 2,1
+        maxLength: 16
+    Text preview at 3,1
+        text: caption
+        visible: roomy
+}
+app Screen(title: "Windows input")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows TextInput source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows TextInput source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows TextInput source should lower to native Win32 C");
+
+    assert!(generated.contains("#include <commctrl.h>"));
+    assert!(generated.contains("static const char *flux__ui_state_query = \"seed\""));
+    assert!(generated.contains("static char *flux__ui_state_owned_query = NULL"));
+    assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(generated.contains("flux__ui_set_state_query(text);"));
+    assert!(
+        generated.contains("flux__win_set_text_if_changed(flux__ui_input, flux__ui_state_query)")
+    );
+    assert!(generated.contains("flux__ui_derived_caption = flux__ui_state_query"));
+    assert!(generated.contains("static int64_t flux__ui_window_width"));
+    assert!(generated.contains("flux__ui_derived_roomy = (flux__ui_window_width >= INT64_C(600))"));
+    assert!(generated.contains("case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam)"));
+    assert!(generated.contains("flux__win_submit_0"));
+    assert!(generated.contains("WM_KEYDOWN && wparam == VK_RETURN"));
+    assert!(generated.contains("SetLastError(0);"));
+    assert!(generated.contains("SetWindowLongPtrA(flux__ui_input, GWLP_WNDPROC"));
+    assert!(generated.contains("flux__win_set_cue(flux__ui_input, \"Search\")"));
+    assert!(generated.contains("EM_SETREADONLY"));
+    assert!(generated.contains("EM_SETPASSWORDCHAR"));
+    assert!(generated.contains("EM_LIMITTEXT"));
+    assert!(generated.contains("flux__win_max_length_input"));
+    assert!(generated.contains("flux__win_max_length_secondary"));
+    assert!(generated.contains("INT64_C(32)"));
+    assert!(generated.contains("INT64_C(16)"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }

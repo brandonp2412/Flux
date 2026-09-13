@@ -1835,7 +1835,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <gtk/gtk.h>\n");
     }
     if uses_windows {
-        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
+        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
@@ -10508,12 +10508,9 @@ fn emit_windows_native_application(
         .unwrap_or(i64::from(bootstrap_height));
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
-    let gap = i64::from(view.grid.gap.unwrap_or(12));
-    let padding = i64::from(view.grid.padding.unwrap_or(20));
-    let columns = view.grid.columns.len().max(1) as i64;
-    let rows = view.grid.rows.len().max(1) as i64;
-
-    out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic bool flux__win_refreshing = false;\n");
+    out.push_str(&format!(
+        "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
+    ));
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -10607,6 +10604,7 @@ fn emit_windows_native_application(
         "static bool flux__win_refreshing = false;\nstatic void flux__win_refresh(void);\n",
     );
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
+    out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     for (index, element) in view.elements.iter().enumerate() {
         let action_name = match element.kind.as_str() {
             "Button" => "on_press",
@@ -10648,22 +10646,49 @@ fn emit_windows_native_application(
         if element.kind != "TextInput" {
             continue;
         }
-        let Some(action) = view_property(element, "on_change") else {
-            continue;
-        };
-        if action.transition.is_some() {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows TextInput state transitions remain pending; use a named fn(str) -> void callback",
-            ));
+        for (property_name, callback_name) in [("on_change", "change"), ("on_submit", "submit")] {
+            let Some(action) = view_property(element, property_name) else {
+                continue;
+            };
+            let action_body = if let Some(transition) = &action.transition {
+                let setter = ui_set_state_c_name(&transition.state);
+                format!("{setter}(text);")
+            } else {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        &format!(
+                            "bootstrap Windows TextInput.{property_name} requires a named fn(str) -> void callback or state transition"
+                        ),
+                    ));
+                };
+                format!("{}(text);", function_c_name(function))
+            };
+            out.push_str(&format!("static void flux__win_{callback_name}_{index}(HWND control) {{ if (flux__win_refreshing) return; int length = GetWindowTextLengthA(control); if (length < 0) return; char *text = (char *)malloc((size_t)length + 1); if (text == NULL) return; if (GetWindowTextA(control, text, length + 1) > 0 || length == 0) {{ {action_body} }} free(text); flux__win_refresh(); }}\n"));
         }
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows TextInput.onChange requires a named fn(str) -> void callback",
-            ));
-        };
-        out.push_str(&format!("static void flux__win_change_{index}(HWND control) {{ if (flux__win_refreshing) return; int length = GetWindowTextLengthA(control); if (length < 0) return; char *text = (char *)malloc((size_t)length + 1); if (text == NULL) return; if (GetWindowTextA(control, text, length + 1) > 0 || length == 0) {}(text); free(text); flux__win_refresh(); }}\n", function_c_name(function)));
+        if view_property(element, "on_submit").is_some() {
+            let multiline = match view_property(element, "multiline") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Windows TextInput.multiline must be a compile-time bool value",
+                    )
+                })?,
+                None => false,
+            };
+            let submit_on_enter = match view_property(element, "submit_on_enter") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Windows TextInput.submitOnEnter must be a compile-time bool value",
+                    )
+                })?,
+                None => !multiline,
+            };
+            if submit_on_enter {
+                out.push_str(&format!("static WNDPROC flux__win_input_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_input_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_{index}(hwnd); return 0; }} return CallWindowProcA(flux__win_input_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+            }
+        }
     }
     let gap = i64::from(view.grid.gap.unwrap_or(12));
     let padding = i64::from(view.grid.padding.unwrap_or(20));
@@ -10679,13 +10704,20 @@ fn emit_windows_native_application(
         out.push_str(&format!("if ({variable} != NULL) {{ int x = {padding} + {column_offset} * column_width; int y = {padding} + {row_offset} * row_height; int control_width = {column_span} * column_width - {gap}; int control_height = {row_span} * row_height - {gap}; if (control_width < 40) control_width = 40; if (control_height < 28) control_height = 28; MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
+    for derived in &view.derived {
+        let value = ui_expr_c(&derived.value, view, signatures)?;
+        out.push_str(&format!(
+            "{} = {value};\n",
+            ui_derived_c_name(&derived.name)
+        ));
+    }
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);
         let text_property = match element.kind.as_str() {
             "Text" | "Button" | "Header" => Some("text"),
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => Some("label"),
             "Card" => Some("title"),
-            "TextInput" => Some("value"),
+            "TextInput" => Some("text"),
             _ => None,
         };
         if let Some(property_name) = text_property {
@@ -10707,6 +10739,41 @@ fn emit_windows_native_application(
             out.push_str(&format!(
                 "if ({variable} != NULL) EnableWindow({variable}, ({value}) ? TRUE : FALSE);\n"
             ));
+        }
+        if element.kind == "TextInput" {
+            if let Some(property) = view_property(element, "placeholder") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!("flux__win_set_cue({variable}, {value});\n"));
+            }
+            if let Some(property) = view_property(element, "read_only") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!("if ({variable} != NULL) SendMessageA({variable}, EM_SETREADONLY, ({value}) ? TRUE : FALSE, 0);\n"));
+            }
+            if let Some(property) = view_property(element, "password") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let multiline = match view_property(element, "multiline") {
+                    Some(multiline) => static_expr_bool(&multiline.value, signatures).ok_or_else(|| {
+                        diag(
+                            multiline.value.span,
+                            "bootstrap Windows TextInput.multiline must be a compile-time bool value",
+                        )
+                    })?,
+                    None => false,
+                };
+                let invalid_multiline = if multiline {
+                    format!(
+                        "if ({value}) {{ fputs(\"Flux runtime error: TextInput.password and TextInput.multiline cannot both be true\\n\", stderr); abort(); }} "
+                    )
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!("{invalid_multiline}if ({variable} != NULL) {{ bool flux__win_password = ({value}); SendMessageA({variable}, EM_SETPASSWORDCHAR, flux__win_password ? (WPARAM)'*' : 0, 0); InvalidateRect({variable}, NULL, TRUE); }}\n"));
+            }
+            if let Some(property) = view_property(element, "max_length") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                let max_length = format!("flux__win_max_length_{}", element.name);
+                out.push_str(&format!("int64_t {max_length} = {value}; if ({max_length} < 0 || {max_length} > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }} if ({variable} != NULL) SendMessageA({variable}, EM_LIMITTEXT, (WPARAM){max_length}, 0);\n"));
+            }
         }
         let checked_property = match element.kind.as_str() {
             "Toggle" => Some("checked"),
@@ -10750,7 +10817,7 @@ fn emit_windows_native_application(
             out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE && !flux__win_refreshing) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
         }
     }
-    out.push_str("default: break; } break; case WM_SIZE: flux__win_layout((int)LOWORD(lparam), (int)HIWORD(lparam)); return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
+    out.push_str("default: break; } break; case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam); flux__ui_window_height = (int64_t)HIWORD(lparam); flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height); flux__win_refresh(); return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
     out.push_str("static int flux__win_run(void) { HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     for (index, element) in view.elements.iter().enumerate() {
@@ -10762,7 +10829,7 @@ fn emit_windows_native_application(
         let cell_height =
             (((height - padding * 2 + gap) / rows) * element.row_span as i64 - gap).max(28);
         let text_property = match element.kind.as_str() {
-            "TextInput" => "value",
+            "TextInput" => "text",
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
             "Card" => "title",
             _ => "text",
@@ -10795,9 +10862,15 @@ fn emit_windows_native_application(
                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON",
             ),
             "TextInput" => {
-                let multiline = view_property(element, "multiline")
-                    .and_then(|property| static_expr_bool(&property.value, signatures))
-                    .unwrap_or(false);
+                let multiline = match view_property(element, "multiline") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Windows TextInput.multiline must be a compile-time bool value",
+                        )
+                    })?,
+                    None => false,
+                };
                 if multiline {
                     (
                         "EDIT",
@@ -10841,8 +10914,42 @@ fn emit_windows_native_application(
             "0".to_string()
         };
         out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {text}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        if element.kind == "TextInput" {
+            let multiline = match view_property(element, "multiline") {
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Windows TextInput.multiline must be a compile-time bool value",
+                    )
+                })?,
+                None => false,
+            };
+            if let Some(property) = view_property(element, "password")
+                && static_expr_bool(&property.value, signatures) == Some(true)
+                && multiline
+            {
+                return Err(diag(
+                    property.value.span,
+                    "TextInput.password and TextInput.multiline cannot both be true",
+                ));
+            }
+            if view_property(element, "on_submit").is_some() {
+                let submit_on_enter = match view_property(element, "submit_on_enter") {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Windows TextInput.submitOnEnter must be a compile-time bool value",
+                        )
+                    })?,
+                    None => !multiline,
+                };
+                if submit_on_enter {
+                    out.push_str(&format!("SetLastError(0); flux__win_input_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_input_proc_{index}); if (flux__win_input_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+                }
+            }
+        }
     }
-    out.push_str("flux__win_refresh(); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) flux__win_layout((int)(flux__win_client.right - flux__win_client.left), (int)(flux__win_client.bottom - flux__win_client.top));\n");
+    out.push_str("RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { flux__ui_window_width = (int64_t)(flux__win_client.right - flux__win_client.left); flux__ui_window_height = (int64_t)(flux__win_client.bottom - flux__win_client.top); flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height); } flux__win_refresh();\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }
