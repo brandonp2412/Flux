@@ -64,6 +64,13 @@ pub struct ProjectAnalysisCacheStats {
     pub misses: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IncrementalTypecheckStats {
+    pub runs: usize,
+    pub rechecked_modules: usize,
+    pub full_runs: usize,
+}
+
 #[derive(Debug, Clone)]
 struct CachedProjectAnalysis {
     analysis: ProjectAnalysis,
@@ -127,8 +134,12 @@ impl ModuleParseCache {
 pub struct ProjectAnalysisCache {
     entries: HashMap<PathBuf, CachedProjectAnalysis>,
     module_parses: ModuleParseCache,
+    invalidated_paths: HashSet<PathBuf>,
     hits: usize,
     misses: usize,
+    incremental_typecheck_runs: usize,
+    incremental_typecheck_modules: usize,
+    full_typecheck_runs: usize,
 }
 
 impl ProjectAnalysisCache {
@@ -140,26 +151,69 @@ impl ProjectAnalysisCache {
         let key = cache_target_key(target)?;
         if let Some(entry) = self.entries.get(&key)
             && cached_analysis_is_current(&key, entry, overlays)
+            && !self.entry_is_invalidated(&key, entry)
         {
             self.hits += 1;
             return Ok(entry.analysis.clone());
         }
 
         self.misses += 1;
-        let analysis = analyze_with_overlays_and_parse_cache(
+        let previous = self.entries.get(&key).cloned();
+        let report = load_report_with_overlays_and_parse_cache(
             target,
             overlays,
-            &mut self.module_parses,
+            Some(&mut self.module_parses),
             codegen::NativeTarget::Linux,
         )?;
+        if !report.diagnostics.is_empty() {
+            return Err(report.diagnostics);
+        }
+
+        let current_manifest_text = manifest_snapshot(&key);
+        let current_package_manifests = package_manifest_snapshots(&report.sources);
+        let incremental_sources = previous.as_ref().and_then(|previous| {
+            (previous.manifest_text == current_manifest_text
+                && previous.package_manifest_texts == current_package_manifests)
+                .then(|| changed_source_ids(&previous.analysis.sources, &report.sources))
+                .flatten()
+                .filter(|changed| {
+                    !changed.is_empty()
+                        && changed.iter().all(|source_id| {
+                            module_type_surface(&previous.analysis.program, *source_id)
+                                == module_type_surface(&report.program, *source_id)
+                        })
+                })
+        });
+
+        let analysis = if let (Some(previous), Some(changed_sources)) =
+            (previous.as_ref(), incremental_sources.as_ref())
+        {
+            self.incremental_typecheck_runs += 1;
+            self.incremental_typecheck_modules += changed_sources.len();
+            typecheck::check_changed_sources_with_signatures(
+                &report.program,
+                &previous.analysis.signatures,
+                changed_sources,
+            )?;
+            ProjectAnalysis {
+                program: report.program,
+                signatures: previous.analysis.signatures.clone(),
+                sources: report.sources,
+                translations: report.translations,
+            }
+        } else {
+            self.full_typecheck_runs += 1;
+            analyze_with_overlays_report(report)?
+        };
         self.entries.insert(
             key.clone(),
             CachedProjectAnalysis {
-                package_manifest_texts: package_manifest_snapshots(&analysis.sources),
+                package_manifest_texts: current_package_manifests,
                 analysis: analysis.clone(),
-                manifest_text: manifest_snapshot(&key),
+                manifest_text: current_manifest_text,
             },
         );
+        self.clear_invalidations_for_analysis(&key, &analysis);
         Ok(analysis)
     }
 
@@ -167,18 +221,12 @@ impl ProjectAnalysisCache {
         let Ok(path) = fs::canonicalize(path) else {
             return;
         };
-        self.entries.retain(|target, entry| {
-            target != &path
-                && !entry
-                    .analysis
-                    .sources
-                    .iter()
-                    .any(|source| source.path == path)
-        });
+        self.invalidated_paths.insert(path);
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.invalidated_paths.clear();
     }
 
     pub const fn stats(&self) -> ProjectAnalysisCacheStats {
@@ -190,6 +238,30 @@ impl ProjectAnalysisCache {
 
     pub const fn module_parse_stats(&self) -> ModuleParseCacheStats {
         self.module_parses.stats()
+    }
+
+    pub const fn incremental_typecheck_stats(&self) -> IncrementalTypecheckStats {
+        IncrementalTypecheckStats {
+            runs: self.incremental_typecheck_runs,
+            rechecked_modules: self.incremental_typecheck_modules,
+            full_runs: self.full_typecheck_runs,
+        }
+    }
+
+    fn entry_is_invalidated(&self, target: &Path, entry: &CachedProjectAnalysis) -> bool {
+        self.invalidated_paths.contains(target)
+            || entry
+                .analysis
+                .sources
+                .iter()
+                .any(|source| self.invalidated_paths.contains(&source.path))
+    }
+
+    fn clear_invalidations_for_analysis(&mut self, target: &Path, analysis: &ProjectAnalysis) {
+        self.invalidated_paths.remove(target);
+        for source in &analysis.sources {
+            self.invalidated_paths.remove(&source.path);
+        }
     }
 }
 
@@ -302,6 +374,129 @@ fn package_manifest_snapshots(sources: &[ProjectSource]) -> BTreeMap<PathBuf, St
         }
     }
     manifests
+}
+
+fn changed_source_ids(
+    previous: &[ProjectSource],
+    current: &[ProjectSource],
+) -> Option<HashSet<SourceId>> {
+    if previous.len() != current.len() {
+        return None;
+    }
+    let previous_by_path = previous
+        .iter()
+        .map(|source| (&source.path, source))
+        .collect::<HashMap<_, _>>();
+    let mut changed = HashSet::new();
+    for source in current {
+        let previous = previous_by_path.get(&source.path)?;
+        if previous.source_id != source.source_id {
+            return None;
+        }
+        if previous.text != source.text {
+            changed.insert(source.source_id);
+        }
+    }
+    Some(changed)
+}
+
+fn module_type_surface(program: &Program, source_id: SourceId) -> String {
+    use std::fmt::Write as _;
+
+    let mut surface = String::new();
+    let imports = program
+        .imports
+        .iter()
+        .filter(|definition| definition.path_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let aliases = program
+        .aliases
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let interfaces = program
+        .interfaces
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let implementations = program
+        .implementations
+        .iter()
+        .filter(|definition| definition.interface_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let structs = program
+        .structs
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let enums = program
+        .enums
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let constants = program
+        .constants
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+    let routes = program
+        .routes
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+        .collect::<Vec<_>>();
+
+    write!(
+        surface,
+        "imports={imports:?};aliases={aliases:?};interfaces={interfaces:?};implementations={implementations:?};structs={structs:?};enums={enums:?};constants={constants:?};routes={routes:?};"
+    )
+    .expect("writing a String cannot fail");
+
+    if let Some(application) = program
+        .application
+        .as_ref()
+        .filter(|definition| definition.keyword_span.source_id == source_id)
+    {
+        write!(surface, "application={application:?};").expect("writing a String cannot fail");
+    }
+
+    for view in program
+        .views
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+    {
+        write!(
+            surface,
+            "view=({:?},{:?},{:?},{:?},{:?},{:?});",
+            view.public, view.name, view.name_span, view.keyword_span, view.params, view.line
+        )
+        .expect("writing a String cannot fail");
+    }
+
+    for function in program
+        .functions
+        .iter()
+        .filter(|definition| definition.name_span.source_id == source_id)
+    {
+        write!(
+            surface,
+            "function=({:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?});",
+            function.public,
+            function.foreign_symbol,
+            function.unsafe_foreign,
+            function.asynchronous,
+            function.name,
+            function.name_span,
+            function.keyword_span,
+            function.params,
+            function.returns,
+            function.return_span,
+            function.return_type_spans,
+            function.line
+        )
+        .expect("writing a String cannot fail");
+    }
+
+    surface
 }
 
 fn cached_analysis_is_current(
@@ -491,20 +686,6 @@ pub fn analyze_package_test(
         package_constants: loader.package_constants,
         translations: manifest.translations,
     })
-}
-
-fn analyze_with_overlays_and_parse_cache(
-    entry: &Path,
-    overlays: &HashMap<PathBuf, String>,
-    parse_cache: &mut ModuleParseCache,
-    native_target: codegen::NativeTarget,
-) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
-    analyze_with_overlays_report(load_report_with_overlays_and_parse_cache(
-        entry,
-        overlays,
-        Some(parse_cache),
-        native_target,
-    )?)
 }
 
 fn analyze_with_overlays_report(

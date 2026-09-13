@@ -25167,6 +25167,147 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 }
 
 #[test]
+fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-incremental-typecheck-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary incremental project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial analysis should succeed");
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 0,
+            rechecked_modules: 0,
+            full_runs: 1,
+        }
+    );
+
+    let dependency = fs::canonicalize(dependency).expect("dependency should canonicalize");
+    fs::write(&dependency, "pub fn value() -> i64 { true }\n")
+        .expect("invalid body update should be writable");
+    cache.invalidate_path(&dependency);
+    let diagnostics = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("body-only type errors must be caught by incremental checking");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected i64, got bool")),
+        "incremental body checking should preserve normal type diagnostics"
+    );
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 1,
+            rechecked_modules: 1,
+            full_runs: 1,
+        }
+    );
+
+    fs::write(&dependency, "pub fn value() -> i64 { 2 }\n")
+        .expect("valid body update should be writable");
+    cache.invalidate_path(&dependency);
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("valid body-only edit should reuse the prior typed graph");
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 2,
+            rechecked_modules: 2,
+            full_runs: 1,
+        }
+    );
+
+    fs::write(&dependency, "pub fn value() -> str { \"changed\" }\n")
+        .expect("signature update should be writable");
+    cache.invalidate_path(&dependency);
+    let diagnostics = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("signature changes must fall back to whole-program checking");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected i64, got str")),
+        "fallback analysis should recheck reverse dependents"
+    );
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 2,
+            rechecked_modules: 2,
+            full_runs: 2,
+        }
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-incremental-view-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary incremental view project should be writable");
+    let entry = root.join("main.flux");
+    let valid = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+        visible: true
+}
+app Screen
+"#;
+    fs::write(&entry, valid).expect("view source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial view analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("view entry should canonicalize");
+    let invalid = valid.replace("visible: true", "visible: 1");
+    fs::write(&entry, invalid).expect("invalid view body update should be writable");
+    cache.invalidate_path(&entry);
+    let diagnostics = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("incremental view checking must reject invalid properties");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected bool, got i64")),
+        "changed view bodies should run the ordinary view type checker"
+    );
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 1,
+            rechecked_modules: 1,
+            full_runs: 1,
+        }
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn package_constants_are_typed_scoped_and_folded_per_package() {
     let root = std::env::temp_dir().join(format!("flux-package-constants-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

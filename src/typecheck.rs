@@ -1431,6 +1431,34 @@ pub fn check_all_with_package_constants(
     }
 }
 
+pub(crate) fn check_changed_sources_with_signatures(
+    program: &Program,
+    signatures: &Signatures,
+    changed_sources: &HashSet<SourceId>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+
+    if program
+        .views
+        .iter()
+        .any(|view| changed_sources.contains(&view.name_span.source_id))
+    {
+        validate_views(program, signatures, &mut diagnostics);
+    }
+
+    for function in &program.functions {
+        if changed_sources.contains(&function.name_span.source_id) {
+            check_function_all(function, signatures, &mut diagnostics);
+        }
+    }
+
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
 pub const VIEW_ENVIRONMENT_BINDINGS: &[(&str, Type)] = &[
     ("windowWidth", Type::I64),
     ("windowHeight", Type::I64),
