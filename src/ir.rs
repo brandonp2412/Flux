@@ -1611,6 +1611,7 @@ impl<'a> ControlFlowBuilder<'a> {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)
+            | ExprKind::InterpolatedString(_)
             | ExprKind::Nil
             | ExprKind::None => ControlFlowValueKind::Literal,
             ExprKind::Var(name) => ControlFlowValueKind::NameRead {
@@ -2540,6 +2541,7 @@ fn record_expr_types(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}

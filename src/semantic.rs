@@ -537,6 +537,7 @@ fn collect_expr_pattern_symbols(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}

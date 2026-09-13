@@ -11512,6 +11512,52 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_allocation_free_compile_time_string_interpolation() {
+    let source = r#"
+const BANNER: str = "${LABEL}ship-${COUNT}-$READY"
+const LABEL: str = "Flux"
+const COUNT: i64 = 7
+const READY: bool = true
+
+fn main() -> i64 {
+    print("banner=$BANNER cost=\$5")
+    return 0
+}
+"#;
+
+    check_source(source).expect("compile-time interpolation should typecheck");
+    let generated =
+        compile_to_c(source).expect("compile-time interpolation should fold to C literals");
+    assert!(generated.contains("banner=Fluxship-7-true cost=$5"));
+
+    let formatted = fluxc::formatter::format_source(source).expect("interpolation should format");
+    assert!(formatted.contains("const BANNER: str = \"${LABEL}ship-$COUNT-$READY\""));
+    assert!(formatted.contains("print(\"banner=$BANNER cost=\\$5\")"));
+    let formatted_again = fluxc::formatter::format_source(&formatted)
+        .expect("formatted interpolation should reparse");
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn rejects_runtime_string_interpolation_until_owned_strings_exist() {
+    let source = r#"
+fn main() -> i64 {
+    let label: str = "runtime"
+    print("value=$label")
+    return 0
+}
+"#;
+
+    let error =
+        check_source(source).expect_err("runtime interpolation must not borrow scratch storage");
+    assert!(
+        error
+            .message
+            .contains("runtime string interpolation requires owned-string lifetime semantics")
+    );
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {

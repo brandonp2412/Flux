@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, FlowDirection, Function, GridTrack, ListMatchPattern, MatchPattern,
-    ShellRedirectMode, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+    BinOp, Expr, ExprKind, FlowDirection, Function, GridTrack, InterpolatedStringPart,
+    ListMatchPattern, MatchPattern, ShellRedirectMode, Stmt, StmtKind, StructPatternField, Type,
+    UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
 use crate::parser;
@@ -1029,6 +1030,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
         ExprKind::Int(value) => value.to_string(),
         ExprKind::Bool(value) => value.to_string(),
         ExprKind::Str(value) => format_string(value),
+        ExprKind::InterpolatedString(parts) => format_interpolated_string(parts),
         ExprKind::Nil => "nil".to_string(),
         ExprKind::None => "none".to_string(),
         ExprKind::Var(name) => name.clone(),
@@ -1311,16 +1313,54 @@ fn unescaped_triple_quote_count(input: &str) -> usize {
     count
 }
 
-fn format_string(value: &str) -> String {
-    let mut out = String::from("\"");
+fn push_formatted_string_text(out: &mut String, value: &str, escape_dollar: bool) {
     for ch in value.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
+            '$' if escape_dollar => out.push_str("\\$"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             ch => out.push(ch),
+        }
+    }
+}
+
+fn format_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    push_formatted_string_text(&mut out, value, true);
+    out.push('"');
+    out
+}
+
+fn format_interpolated_string(parts: &[InterpolatedStringPart]) -> String {
+    let mut out = String::from("\"");
+    for (index, part) in parts.iter().enumerate() {
+        match part {
+            InterpolatedStringPart::Text(value) => {
+                push_formatted_string_text(&mut out, value, true);
+            }
+            InterpolatedStringPart::Binding { name, .. } => {
+                let needs_braces = parts.get(index + 1).is_some_and(|next| {
+                    matches!(
+                        next,
+                        InterpolatedStringPart::Text(value)
+                            if value
+                                .as_bytes()
+                                .first()
+                                .is_some_and(|byte| *byte == b'_' || byte.is_ascii_alphanumeric())
+                    )
+                });
+                if needs_braces {
+                    out.push_str("${");
+                    out.push_str(name);
+                    out.push('}');
+                } else {
+                    out.push('$');
+                    out.push_str(name);
+                }
+            }
         }
     }
     out.push('"');

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, ConstantDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
-    Program, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+    BinOp, ConstantDef, Expr, ExprKind, Function, InterpolatedStringPart, ListMatchPattern,
+    MatchPattern, NamedArg, Program, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::ir::ControlFlowGraph;
@@ -3681,6 +3681,13 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
             collect_expr_reads(left, reads);
             collect_expr_reads(right, reads);
         }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let InterpolatedStringPart::Binding { name, .. } = part {
+                    reads.insert(name.clone());
+                }
+            }
+        }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
@@ -5412,6 +5419,34 @@ pub fn type_of_expr(
         ExprKind::Int(_) => Ok(Type::I64),
         ExprKind::Bool(_) => Ok(Type::Bool),
         ExprKind::Str(_) => Ok(Type::Str),
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                let InterpolatedStringPart::Binding { name, span } = part else {
+                    continue;
+                };
+                if env.contains_key(name) {
+                    return Err(diag(
+                        *span,
+                        "runtime string interpolation requires owned-string lifetime semantics; interpolate compile-time constants only for now",
+                    ));
+                }
+                let Some(constant) = signatures.constant(name) else {
+                    return Err(diag(
+                        *span,
+                        &format!("unknown compile-time constant '{name}' in string interpolation"),
+                    ));
+                };
+                require_visible_declaration(
+                    *span,
+                    constant.span,
+                    constant.public,
+                    "constant",
+                    name,
+                    signatures,
+                )?;
+            }
+            Ok(Type::Str)
+        }
         ExprKind::Nil => Ok(Type::Error),
         ExprKind::None => Ok(Type::Optional(Box::new(Type::Void))),
         ExprKind::Var(name) => {
@@ -9809,6 +9844,34 @@ fn evaluate_default_expr(
         ExprKind::Int(value) => Ok(ConstantValue::I64(*value)),
         ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
+        ExprKind::InterpolatedString(parts) => {
+            let mut value = String::new();
+            for part in parts {
+                match part {
+                    InterpolatedStringPart::Text(text) => value.push_str(text),
+                    InterpolatedStringPart::Binding { name, span } => {
+                        let Some(constant) = signatures.constant(name) else {
+                            return Err(diag(
+                                *span,
+                                &format!(
+                                    "unknown compile-time constant '{name}' in string interpolation"
+                                ),
+                            ));
+                        };
+                        require_visible_declaration(
+                            *span,
+                            constant.span,
+                            constant.public,
+                            "constant",
+                            name,
+                            signatures,
+                        )?;
+                        value.push_str(&constant_value_string(&constant.value));
+                    }
+                }
+            }
+            Ok(ConstantValue::Str(value))
+        }
         ExprKind::Var(name) => {
             let Some(constant) = signatures.constant(name) else {
                 return Err(diag(
@@ -9971,6 +10034,34 @@ fn evaluate_constant_expr(
         ExprKind::Int(value) => Ok(ConstantValue::I64(*value)),
         ExprKind::Bool(value) => Ok(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Ok(ConstantValue::Str(value.clone())),
+        ExprKind::InterpolatedString(parts) => {
+            let mut value = String::new();
+            for part in parts {
+                match part {
+                    InterpolatedStringPart::Text(text) => value.push_str(text),
+                    InterpolatedStringPart::Binding { name, span } => {
+                        let Some(definition) = definitions.get(name.as_str()) else {
+                            return Err(diag(
+                                *span,
+                                &format!("unknown constant '{name}' in string interpolation"),
+                            ));
+                        };
+                        require_visible_declaration(
+                            *span,
+                            definition.name_span,
+                            definition.public,
+                            "constant",
+                            name,
+                            signatures,
+                        )?;
+                        let constant =
+                            evaluate_constant(name, definitions, signatures, cache, stack)?;
+                        value.push_str(&constant_value_string(&constant.value));
+                    }
+                }
+            }
+            Ok(ConstantValue::Str(value))
+        }
         ExprKind::Var(name) => {
             let Some(definition) = definitions.get(name.as_str()) else {
                 return Err(diag(
@@ -10079,6 +10170,14 @@ fn evaluate_constant_expr(
             expr.span,
             "constant expressions currently support primitive literals, constant references, and primitive operators",
         )),
+    }
+}
+
+fn constant_value_string(value: &ConstantValue) -> String {
+    match value {
+        ConstantValue::I64(value) => value.to_string(),
+        ConstantValue::Bool(value) => value.to_string(),
+        ConstantValue::Str(value) => value.clone(),
     }
 }
 

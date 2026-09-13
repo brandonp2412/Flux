@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, EnumDef, Expr, ExprKind, Function, ListMatchPattern, MatchPattern, NamedArg,
-    PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind, StructDef, StructPatternField,
-    Type, TypeAlias, UnaryOp,
+    BinOp, EnumDef, Expr, ExprKind, Function, InterpolatedStringPart, ListMatchPattern,
+    MatchPattern, NamedArg, PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind,
+    StructDef, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signature, Signatures, type_of_expr};
@@ -16042,6 +16042,7 @@ fn collect_interface_names_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -16247,6 +16248,7 @@ fn collect_enum_variant_refs_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -16730,6 +16732,7 @@ fn collect_value_type_names_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -17044,6 +17047,7 @@ fn collect_interface_pack_facts_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -17618,6 +17622,7 @@ fn collect_interface_dispatch_refs_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -17861,6 +17866,7 @@ fn collect_named_function_refs_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None => {}
     }
@@ -18142,6 +18148,7 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -24695,6 +24702,12 @@ fn emit_expr(
             code: c_string(value),
             ty: Type::Str,
         },
+        ExprKind::InterpolatedString(_) => {
+            return Err(diag(
+                expr.span,
+                "string interpolation reached code generation without compile-time folding",
+            ));
+        }
         ExprKind::Nil => EmittedExpr {
             code: "NULL".to_string(),
             ty: Type::Error,
@@ -28375,6 +28388,7 @@ fn collect_update_helpers_from_expr(
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => {}
@@ -28848,6 +28862,36 @@ fn fold_primitive_expr(
         ExprKind::Int(value) => Some(ConstantValue::I64(*value)),
         ExprKind::Bool(value) => Some(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Some(ConstantValue::Str(value.clone())),
+        ExprKind::InterpolatedString(parts) => {
+            let mut value = String::new();
+            for part in parts {
+                match part {
+                    InterpolatedStringPart::Text(text) => value.push_str(text),
+                    InterpolatedStringPart::Binding { name, span } => {
+                        if env.contains_key(name) {
+                            return Err(diag(
+                                *span,
+                                "runtime string interpolation requires owned-string lifetime semantics",
+                            ));
+                        }
+                        let Some(constant) = signatures.constant(name) else {
+                            return Err(diag(
+                                *span,
+                                &format!(
+                                    "unknown compile-time constant '{name}' in string interpolation"
+                                ),
+                            ));
+                        };
+                        match &constant.value {
+                            ConstantValue::I64(item) => value.push_str(&item.to_string()),
+                            ConstantValue::Bool(item) => value.push_str(&item.to_string()),
+                            ConstantValue::Str(item) => value.push_str(item),
+                        }
+                    }
+                }
+            }
+            Some(ConstantValue::Str(value))
+        }
         ExprKind::Var(name) => {
             if env.contains_key(name) {
                 None

@@ -688,6 +688,12 @@ pub struct StructPatternField {
     pub nested: Option<Box<StructPattern>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpolatedStringPart {
+    Text(String),
+    Binding { name: String, span: SourceSpan },
+}
+
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub line: usize,
@@ -700,6 +706,7 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Str(String),
+    InterpolatedString(Vec<InterpolatedStringPart>),
     Nil,
     None,
     Var(String),

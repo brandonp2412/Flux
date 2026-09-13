@@ -2,11 +2,11 @@ use crate::ast::{
     ApplicationDef, ApplicationMetadataField, BinOp, Binding, ConstantDef, EnumDef, EnumPayload,
     EnumVariant, Expr, ExprKind, FlowDirection, Function, GridLayout, GridTrack, ImportDef,
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
-    ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern, MatchArm, MatchExprArm,
-    MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp, Program, RelationalPattern,
-    RouteDef, ShellRedirect, ShellRedirectMode, Stmt, StmtKind, StructDef, StructField,
-    StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias, UnaryOp, ViewDef,
-    ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
+    InterpolatedStringPart, ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern,
+    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp,
+    Program, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode, Stmt, StmtKind,
+    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
+    UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -898,6 +898,13 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
             attach_expr_source(left, source_id);
             attach_expr_source(right, source_id);
         }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let InterpolatedStringPart::Binding { span, .. } = part {
+                    *span = span.with_source(source_id);
+                }
+            }
+        }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
@@ -1210,6 +1217,13 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
         ExprKind::Binary { left, right, .. } => {
             shift_expr_columns(left, offset);
             shift_expr_columns(right, offset);
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let InterpolatedStringPart::Binding { span, .. } = part {
+                    span.column += offset;
+                }
+            }
         }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
@@ -4954,6 +4968,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
 enum TokenKind {
     Int(i64),
     Str(String),
+    InterpolatedString(Vec<InterpolatedStringPart>),
     Ident(String),
     True,
     False,
@@ -5514,6 +5529,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
         } else if byte == b'"' {
             index += 1;
             let mut value = String::new();
+            let mut parts = Vec::new();
             let mut closed = false;
             while index < bytes.len() {
                 match bytes[index] {
@@ -5533,6 +5549,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                             b't' => '\t',
                             b'"' => '"',
                             b'\\' => '\\',
+                            b'$' => '$',
                             other => {
                                 return Err(Diagnostic::new(
                                     DiagnosticStage::Parse,
@@ -5543,6 +5560,51 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                         };
                         value.push(escaped);
                         index += 1;
+                    }
+                    b'$' => {
+                        if !value.is_empty() {
+                            parts.push(InterpolatedStringPart::Text(std::mem::take(&mut value)));
+                        }
+                        index += 1;
+                        let braced = bytes.get(index) == Some(&b'{');
+                        if braced {
+                            index += 1;
+                        }
+                        let name_start = index;
+                        if index >= bytes.len()
+                            || !(bytes[index] == b'_' || bytes[index].is_ascii_alphabetic())
+                        {
+                            return Err(Diagnostic::new(
+                                DiagnosticStage::Parse,
+                                SourceSpan::new(line, column + start, (index - start).max(1)),
+                                "string interpolation expects a binding name after '$'",
+                            ));
+                        }
+                        index += 1;
+                        while index < bytes.len()
+                            && (bytes[index] == b'_' || bytes[index].is_ascii_alphanumeric())
+                        {
+                            index += 1;
+                        }
+                        let name_end = index;
+                        if braced {
+                            if bytes.get(index) != Some(&b'}') {
+                                return Err(Diagnostic::new(
+                                    DiagnosticStage::Parse,
+                                    SourceSpan::new(
+                                        line,
+                                        column + name_start,
+                                        name_end - name_start,
+                                    ),
+                                    "expected '}' after string interpolation binding",
+                                ));
+                            }
+                            index += 1;
+                        }
+                        parts.push(InterpolatedStringPart::Binding {
+                            name: input[name_start..name_end].to_string(),
+                            span: SourceSpan::new(line, column + name_start, name_end - name_start),
+                        });
                     }
                     other if other.is_ascii() => {
                         value.push(other as char);
@@ -5563,7 +5625,14 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                     "unterminated string literal",
                 ));
             }
-            TokenKind::Str(value)
+            if parts.is_empty() {
+                TokenKind::Str(value)
+            } else {
+                if !value.is_empty() {
+                    parts.push(InterpolatedStringPart::Text(value));
+                }
+                TokenKind::InterpolatedString(parts)
+            }
         } else if byte == b'_' || byte.is_ascii_alphabetic() {
             index += 1;
             while index < bytes.len()
@@ -6361,6 +6430,11 @@ impl ExprParser<'_> {
                 line: self.line,
                 span: token_span,
                 kind: ExprKind::Str(value),
+            }),
+            TokenKind::InterpolatedString(parts) => Ok(Expr {
+                line: self.line,
+                span: token_span,
+                kind: ExprKind::InterpolatedString(parts),
             }),
             TokenKind::True => Ok(Expr {
                 line: self.line,
