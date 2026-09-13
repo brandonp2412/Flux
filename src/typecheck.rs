@@ -1522,7 +1522,8 @@ pub fn view_property_type(kind: &str, property: &str) -> Option<Type> {
         ("TextInput", "text")
         | ("TextInput", "placeholder")
         | ("TextInput", "keyboard_type")
-        | ("TextInput", "validation_state") => Some(Type::Str),
+        | ("TextInput", "validation_state")
+        | ("TextInput", "validation_message") => Some(Type::Str),
         ("TextInput", "enabled")
         | ("TextInput", "read_only")
         | ("TextInput", "password")
@@ -1824,6 +1825,7 @@ pub fn view_property_names(kind: &str) -> Vec<String> {
             "max_length",
             "keyboard_type",
             "validation_state",
+            "validation_message",
             "on_change",
             "on_submit",
         ],

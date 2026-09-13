@@ -6169,6 +6169,9 @@ fn emit_android_native_application(
                 ),
                 None => c_string("normal"),
             };
+            let validation_message = view_property(element, "validation_message")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?;
             out.push_str(
                 "    jclass input_style_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
@@ -6176,8 +6179,15 @@ fn emit_android_native_application(
             out.push_str("    jmethodID style_input = (*env)->GetMethodID(env, input_style_activity_class, \"styleTextInput\", \"(Landroid/widget/EditText;Ljava/lang/String;)V\");\n");
             out.push_str("    if (style_input == NULL) return;\n");
             out.push_str(&format!(
-                "    jstring child_validation_state = (*env)->NewStringUTF(env, {validation_state});\n    (*env)->CallVoidMethod(env, activity, style_input, child, child_validation_state);\n    if (child_validation_state != NULL) (*env)->DeleteLocalRef(env, child_validation_state);\n"
+                "    jstring child_validation_state = (*env)->NewStringUTF(env, {validation_state});\n    (*env)->CallVoidMethod(env, activity, style_input, child, child_validation_state);\n"
             ));
+            if let Some(validation_message) = validation_message {
+                out.push_str("    jmethodID set_validation_message = (*env)->GetMethodID(env, input_style_activity_class, \"setTextInputValidationMessage\", \"(Landroid/widget/EditText;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+                out.push_str(&format!(
+                    "    jstring child_validation_message = (*env)->NewStringUTF(env, {validation_message});\n    if (set_validation_message != NULL && child_validation_state != NULL && child_validation_message != NULL) (*env)->CallVoidMethod(env, activity, set_validation_message, child, child_validation_state, child_validation_message);\n    if (child_validation_message != NULL) (*env)->DeleteLocalRef(env, child_validation_message);\n"
+                ));
+            }
+            out.push_str("    if (child_validation_state != NULL) (*env)->DeleteLocalRef(env, child_validation_state);\n");
             out.push_str("    (*env)->DeleteLocalRef(env, input_style_activity_class);\n");
         }
         if matches!(element.kind.as_str(), "Toggle" | "Radio") {
@@ -10261,6 +10271,19 @@ fn emit_linux_gtk_application(
                         element.name, element.name, element.name
                     ));
                 }
+                if let Some(property) = view_property(element, "validation_message") {
+                    let message = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    const char *flux__validation_message_{} = {message};\n    gtk_widget_set_tooltip_text({variable}, (flux__validation_message_{} != NULL && flux__validation_message_{}[0] != '\\0') ? flux__validation_message_{} : NULL);\n    gtk_accessible_update_property(GTK_ACCESSIBLE({variable}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, flux__validation_message_{}, -1);\n",
+                        element.name, element.name, element.name, element.name, element.name
+                    ));
+                    if !multiline {
+                        out.push_str(&format!(
+                            "    gtk_entry_set_icon_from_icon_name(GTK_ENTRY({variable}), GTK_ENTRY_ICON_SECONDARY, (flux__validation_message_{} != NULL && flux__validation_message_{}[0] != '\\0') ? \"dialog-information-symbolic\" : NULL);\n    gtk_entry_set_icon_tooltip_text(GTK_ENTRY({variable}), GTK_ENTRY_ICON_SECONDARY, flux__validation_message_{});\n",
+                            element.name, element.name, element.name
+                        ));
+                    }
+                }
                 if let Some(property) = view_property(element, "enabled") {
                     let enabled = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
@@ -11306,6 +11329,7 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Button", "primary")
             | ("TextInput", "placeholder")
             | ("TextInput", "validation_state")
+            | ("TextInput", "validation_message")
             | ("Image", "source")
             | ("Image", "alt")
             | ("Image", "fit")
@@ -11478,7 +11502,7 @@ fn android_ui_element_needs_refresh(
             "max_width_chars",
         ],
         "Button" => &["text", "size", "primary"],
-        "TextInput" => &["placeholder", "validation_state"],
+        "TextInput" => &["placeholder", "validation_state", "validation_message"],
         "Image" => &["source", "alt", "fit", "can_shrink"],
         "Toggle" => &["label", "checked"],
         "Radio" => &["label", "selected"],
@@ -12463,6 +12487,32 @@ fn emit_android_ui_refresh(
                     out.push_str("                    (*env)->DeleteLocalRef(env, refresh_validation_state);\n");
                     out.push_str("                }\n");
                 }
+                if let Some(message_property) = view_property(element, "validation_message")
+                    && (android_ui_property_needs_refresh(
+                        element,
+                        "validation_message",
+                        &runtime_names,
+                    ) || android_ui_property_needs_refresh(
+                        element,
+                        "validation_state",
+                        &runtime_names,
+                    ))
+                {
+                    let message = ui_expr_c(&message_property.value, view, signatures)?;
+                    let state = view_property(element, "validation_state")
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .transpose()?
+                        .unwrap_or_else(|| c_string("normal"));
+                    out.push_str(&format!(
+                        "                jstring refresh_validation_message_state = flux__android_utf8_string(env, flux__ui_validation_state({state}));\n                jstring refresh_validation_message = flux__android_utf8_string(env, {message});\n"
+                    ));
+                    out.push_str("                if (refresh_validation_message_state != NULL && refresh_validation_message != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_validation_message_method = (*env)->GetMethodID(env, activity_class, \"setTextInputValidationMessage\", \"(Landroid/widget/EditText;Ljava/lang/String;Ljava/lang/String;)V\");\n");
+                    out.push_str("                    if (refresh_validation_message_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_validation_message_method, child, refresh_validation_message_state, refresh_validation_message);\n");
+                    out.push_str("                }\n");
+                    out.push_str("                if (refresh_validation_message_state != NULL) (*env)->DeleteLocalRef(env, refresh_validation_message_state);\n");
+                    out.push_str("                if (refresh_validation_message != NULL) (*env)->DeleteLocalRef(env, refresh_validation_message);\n");
+                }
             }
             "Image" => {
                 let source_dynamic =
@@ -12743,7 +12793,9 @@ fn view_state_accepts_text_input_value(view: &crate::ast::ViewDef, state_name: &
 
 fn view_uses_text_input_validation(view: &crate::ast::ViewDef) -> bool {
     view.elements.iter().any(|element| {
-        element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+        element.kind == "TextInput"
+            && (view_property(element, "validation_state").is_some()
+                || view_property(element, "validation_message").is_some())
     })
 }
 
@@ -13321,6 +13373,22 @@ fn emit_ui_refresh(
             out.push_str(&format!(
                 "    if ({content_widget} != NULL) {{ gtk_widget_remove_css_class({content_widget}, \"flux-input-error\"); gtk_widget_remove_css_class({content_widget}, \"flux-input-success\"); gtk_widget_remove_css_class({content_widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state({value}); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({content_widget}, validation_class); g_free(validation_class); }} }}\n"
             ));
+        }
+        if element.kind == "TextInput"
+            && let Some(property) = view_property(element, "validation_message")
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            let multiline = view_property(element, "multiline")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false);
+            out.push_str(&format!(
+                "    if ({content_widget} != NULL) {{ const char *message = {value}; gtk_widget_set_tooltip_text({content_widget}, (message != NULL && message[0] != '\\0') ? message : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({content_widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, message, -1); }}\n"
+            ));
+            if !multiline {
+                out.push_str(&format!(
+                    "    if ({content_widget} != NULL) {{ const char *message = {value}; gtk_entry_set_icon_from_icon_name(GTK_ENTRY({content_widget}), GTK_ENTRY_ICON_SECONDARY, (message != NULL && message[0] != '\\0') ? \"dialog-information-symbolic\" : NULL); gtk_entry_set_icon_tooltip_text(GTK_ENTRY({content_widget}), GTK_ENTRY_ICON_SECONDARY, message); }}\n"
+                ));
+            }
         }
         if let Some(property) = view_property(element, "accessibility_label") {
             let value = ui_expr_c(&property.value, view, signatures)?;
