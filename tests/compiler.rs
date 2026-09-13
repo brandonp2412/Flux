@@ -36824,6 +36824,7 @@ async fn resumed() -> i64 {
     print(label)
     let code: i64 = await ready()
     label = "after"
+    print(label)
     return code - 1
 }
 
@@ -36833,11 +36834,60 @@ async fn main() -> i64 {
 "#;
 
     check_source(assigned_after_await_source)
-        .expect("post-await writes should keep non-Send mutable locals task-local");
-    let assigned_after_await_generated = compile_to_c(assigned_after_await_source)
-        .expect("post-await writes should retain blocking lowering for non-Send locals");
-    assert!(!assigned_after_await_generated.contains("flux__async_resume_resumed"));
-    assert!(assigned_after_await_generated.contains("flux__async_body_resumed"));
+        .expect("post-await overwrite should not move a stale non-Send value across suspension");
+    let assigned_after_await_generated = compile_to_c(assigned_after_await_source).expect(
+        "post-await overwrite should support continuation lowering with fresh local storage",
+    );
+    assert!(assigned_after_await_generated.contains("flux__async_resume_resumed"));
+    assert!(!assigned_after_await_generated.contains("flux__async_body_resumed("));
+    assert!(!assigned_after_await_generated.contains("saved_label"));
+    assert!(assigned_after_await_generated.contains("const char * flux__local_label;"));
+
+    let read_before_overwrite = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    var label: str = "before"
+    let code: i64 = await ready()
+    print(label)
+    label = "after"
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    let read_before_overwrite_generated = compile_to_c(read_before_overwrite)
+        .expect("live non-Send pre-await values should remain valid through blocking lowering");
+    assert!(!read_before_overwrite_generated.contains("flux__async_resume_resumed"));
+    assert!(read_before_overwrite_generated.contains("flux__async_body_resumed"));
+
+    let nested_coalescing_read = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    var label: str? = "before"
+    let code: i64 = await ready()
+    if code == 1:
+        label ??= "after"
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    let nested_coalescing_generated = compile_to_c(nested_coalescing_read)
+        .expect("coalescing assignment should count as a read of its optional target");
+    assert!(!nested_coalescing_generated.contains("flux__async_resume_resumed"));
+    assert!(nested_coalescing_generated.contains("flux__async_body_resumed"));
 }
 
 #[test]

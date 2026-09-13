@@ -3500,12 +3500,22 @@ pub(crate) fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
         match &stmt.kind {
             StmtKind::Let { expr, .. }
             | StmtKind::Var { expr, .. }
-            | StmtKind::Assign { expr, .. }
             | StmtKind::AssignMultiDestructure { expr, .. }
             | StmtKind::AssignListDestructure { expr, .. }
             | StmtKind::AssignStructDestructure { expr, .. }
             | StmtKind::LetListDestructure { expr, .. }
             | StmtKind::LetStructDestructure { expr, .. } => collect_expr_reads(expr, reads),
+            StmtKind::Assign {
+                name,
+                expr,
+                coalescing,
+                ..
+            } => {
+                collect_expr_reads(expr, reads);
+                if *coalescing {
+                    reads.insert(name.clone());
+                }
+            }
             StmtKind::LetDestructure {
                 bindings,
                 expr,

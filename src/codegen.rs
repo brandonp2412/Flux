@@ -15587,6 +15587,7 @@ fn async_release_prototype(function: &Function) -> String {
 #[derive(Clone)]
 struct AsyncContinuationPlan {
     locals: Vec<(String, Type)>,
+    resume_locals: Vec<(String, Type)>,
     mutable: HashSet<String>,
     branch_await: Option<AsyncBranchAwaitPlan>,
     while_await: Option<AsyncWhileAwaitPlan>,
@@ -16030,30 +16031,6 @@ fn async_continuation_state_type(signatures: &Signatures, ty: &Type) -> bool {
     signatures.is_copy_type(ty) && signatures.is_send_type(ty)
 }
 
-fn async_block_assigns_name(block: &[Stmt], name: &str) -> bool {
-    block.iter().any(|stmt| match &stmt.kind {
-        StmtKind::Assign { name: target, .. } => target == name,
-        StmtKind::AssignMultiDestructure { bindings, .. }
-        | StmtKind::AssignListDestructure { bindings, .. } => {
-            bindings.iter().any(|binding| binding.name == name)
-        }
-        StmtKind::AssignStructDestructure { .. } => true,
-        StmtKind::If {
-            body, else_body, ..
-        } => async_block_assigns_name(body, name) || async_block_assigns_name(else_body, name),
-        StmtKind::ForRange { body, .. }
-        | StmtKind::ForEach { body, .. }
-        | StmtKind::While { body, .. } => async_block_assigns_name(body, name),
-        StmtKind::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| async_block_assigns_name(&arm.body, name)),
-        StmtKind::ListMatch { arms, .. } => arms
-            .iter()
-            .any(|arm| async_block_assigns_name(&arm.body, name)),
-        _ => false,
-    })
-}
-
 fn async_local_crosses_straight_line_suspend(
     function: &Function,
     declaration_index: usize,
@@ -16063,11 +16040,30 @@ fn async_local_crosses_straight_line_suspend(
         if !stmt_contains_await(&function.body[await_index]) {
             continue;
         }
-        let trailing = &function.body[await_index + 1..];
-        let mut reads = HashSet::new();
-        typecheck::collect_block_reads(trailing, &mut reads);
-        if reads.contains(name) || async_block_assigns_name(trailing, name) {
-            return true;
+        for stmt in &function.body[await_index + 1..] {
+            if let StmtKind::Assign {
+                name: target,
+                expr,
+                coalescing,
+                ..
+            } = &stmt.kind
+                && target == name
+            {
+                if *coalescing {
+                    return true;
+                }
+                let mut reads = HashSet::new();
+                typecheck::collect_expr_reads(expr, &mut reads);
+                if reads.contains(name) {
+                    return true;
+                }
+                break;
+            }
+            let mut reads = HashSet::new();
+            typecheck::collect_block_reads(std::slice::from_ref(stmt), &mut reads);
+            if reads.contains(name) {
+                return true;
+            }
         }
     }
     false
@@ -16263,6 +16259,7 @@ fn async_continuation_plan(
         .collect::<HashMap<_, _>>();
     env.insert("flux__async_context".to_string(), Type::Bool);
     let mut locals = BTreeMap::<String, Type>::new();
+    let mut resume_locals = BTreeMap::<String, Type>::new();
     let mut mutable = HashSet::new();
     let branch_await = async_branch_await_plan(function);
     let while_await = branch_await
@@ -16476,6 +16473,8 @@ fn async_continuation_plan(
                 if save {
                     locals.insert(name.clone(), ty);
                     mutable.insert(name.clone());
+                } else {
+                    resume_locals.insert(name.clone(), ty);
                 }
             }
             StmtKind::LetDestructure {
@@ -16556,6 +16555,7 @@ fn async_continuation_plan(
 
     Some(AsyncContinuationPlan {
         locals: locals.into_iter().collect(),
+        resume_locals: resume_locals.into_iter().collect(),
         mutable,
         branch_await,
         while_await,
@@ -21876,6 +21876,17 @@ fn emit_async_continuation_function(
                 c_type(&param.ty, signatures),
                 local_c_name(&param.name)
             ));
+        }
+        if state > 0 {
+            for (name, ty) in &plan.resume_locals {
+                if env.contains_key(name) {
+                    out.push_str(&format!(
+                        "{pad}{} {};\n",
+                        c_type(ty, signatures),
+                        local_c_name(name)
+                    ));
+                }
+            }
         }
         for (name, ty) in &plan.locals {
             if env.contains_key(name) {
