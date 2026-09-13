@@ -1664,6 +1664,14 @@ fn add_qualified_namespace_completions(
                 "fn file.setPermissions(path: str, permissions: i64) -> error",
             ),
             (
+                "setModified",
+                "fn file.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setAccessed",
+                "fn file.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
+            (
                 "copy",
                 "fn file.copy(source: str, destination: str) -> error",
             ),
@@ -1710,6 +1718,14 @@ fn add_qualified_namespace_completions(
             (
                 "setPermissions",
                 "fn directory.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
+                "setModified",
+                "fn directory.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setAccessed",
+                "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
             ),
             ("remove", "fn directory.remove(path: str) -> error"),
             ("removeAll", "fn directory.removeAll(path: str) -> error"),
@@ -3639,6 +3655,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "setModified" | "setAccessed" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("file.{member}"),
+                        &["path: str", "unixMillis: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "copy" | "rename" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
@@ -3697,6 +3721,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "directory.setPermissions",
                         &["path: str", "permissions: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "setModified" | "setAccessed" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("directory.{member}"),
+                        &["path: str", "unixMillis: i64"],
                         "error",
                         active_parameter,
                     ));
@@ -7306,6 +7338,8 @@ mod tests {
         assert!(
             file_items.contains("fn file.setPermissions(path: str, permissions: i64) -> error")
         );
+        assert!(file_items.contains("fn file.setModified(path: str, unixMillis: i64) -> error"));
+        assert!(file_items.contains("fn file.setAccessed(path: str, unixMillis: i64) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
@@ -7342,6 +7376,14 @@ mod tests {
         assert!(
             directory_items
                 .contains("fn directory.setPermissions(path: str, permissions: i64) -> error")
+        );
+        assert!(
+            directory_items
+                .contains("fn directory.setModified(path: str, unixMillis: i64) -> error")
+        );
+        assert!(
+            directory_items
+                .contains("fn directory.setAccessed(path: str, unixMillis: i64) -> error")
         );
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
         assert!(directory_items.contains("fn directory.removeAll(path: str) -> error"));
@@ -9191,8 +9233,12 @@ mod tests {
         let source = r#"fn main() -> i64 {
     print(file.truncate("a", 1))
     print(file.setPermissions("a", 384))
+    print(file.setModified("a", 1))
+    print(file.setAccessed("a", 2))
     print(directory.rename("a", "b"))
     print(directory.setPermissions("a", 448))
+    print(directory.setModified("a", 3))
+    print(directory.setAccessed("a", 4))
     return 0
 }
 "#;
@@ -9207,12 +9253,28 @@ mod tests {
                 "fn file.setPermissions(path: str, permissions: i64) -> error",
             ),
             (
+                "file.setModified(",
+                "fn file.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "file.setAccessed(",
+                "fn file.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
+            (
                 "directory.rename(",
                 "fn directory.rename(source: str, destination: str) -> error",
             ),
             (
                 "directory.setPermissions(",
                 "fn directory.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
+                "directory.setModified(",
+                "fn directory.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "directory.setAccessed(",
+                "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
             ),
         ] {
             let line_index = source

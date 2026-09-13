@@ -9325,6 +9325,22 @@ fn main() -> i64 {{
     let (directoryPermissions, directoryPermissionsError) = directory.permissions("{}")
     print(directoryPermissions)
     print(directoryPermissionsError)
+    print(file.setModified("{}", 1234567890123))
+    let (fileModified, fileModifiedError) = file.modifiedUnixMillis("{}")
+    print(fileModified)
+    print(fileModifiedError)
+    print(file.setAccessed("{}", 1234567890456))
+    let (fileAccessed, fileAccessedError) = file.accessed("{}")
+    print(fileAccessed)
+    print(fileAccessedError)
+    print(directory.setModified("{}", 1234567890789))
+    let (directoryModified, directoryModifiedError) = directory.modifiedUnixMillis("{}")
+    print(directoryModified)
+    print(directoryModifiedError)
+    print(directory.setAccessed("{}", 1234567890999))
+    let (directoryAccessed, directoryAccessedError) = directory.accessed("{}")
+    print(directoryAccessed)
+    print(directoryAccessedError)
     print(directory.rename("{}", "{}"))
     print(directory.exists("{}"))
     print(directory.exists("{}"))
@@ -9335,6 +9351,14 @@ fn main() -> i64 {{
         path(&source_file),
         path(&source_file),
         path(&source_file),
+        path(&source_directory),
+        path(&source_directory),
+        path(&source_file),
+        path(&source_file),
+        path(&source_file),
+        path(&source_file),
+        path(&source_directory),
+        path(&source_directory),
         path(&source_directory),
         path(&source_directory),
         path(&source_directory),
@@ -9349,6 +9373,10 @@ fn main() -> i64 {{
         "flux__fs_file_truncate",
         "flux__fs_file_set_permissions",
         "flux__fs_directory_set_permissions",
+        "flux__fs_file_set_modified_unix_millis",
+        "flux__fs_file_set_accessed_unix_millis",
+        "flux__fs_directory_set_modified_unix_millis",
+        "flux__fs_directory_set_accessed_unix_millis",
         "flux__fs_directory_rename",
     ] {
         assert!(
@@ -9378,7 +9406,7 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "nil\n416\nnil\nnil\n3\nnil\nnil\n488\nnil\nnil\nfalse\ntrue\n"
+        "nil\n416\nnil\nnil\n3\nnil\nnil\n488\nnil\nnil\n1234567890123\nnil\nnil\n1234567890456\nnil\nnil\n1234567890789\nnil\nnil\n1234567890999\nnil\nnil\nfalse\ntrue\n"
     );
     assert_eq!(
         fs::read_to_string(&target_file).expect("renamed truncated file should remain readable"),
@@ -9390,6 +9418,10 @@ fn hidden() -> void {
     print(file.truncate("/tmp/unused-flux-file", 0))
     print(file.setPermissions("/tmp/unused-flux-file", 384))
     print(directory.setPermissions("/tmp/unused-flux-directory", 448))
+    print(file.setModified("/tmp/unused-flux-file", 0))
+    print(file.setAccessed("/tmp/unused-flux-file", 0))
+    print(directory.setModified("/tmp/unused-flux-directory", 0))
+    print(directory.setAccessed("/tmp/unused-flux-directory", 0))
     print(directory.rename("/tmp/unused-flux-directory", "/tmp/unused-flux-renamed"))
 }
 fn main() -> i64 {
@@ -9402,6 +9434,10 @@ fn main() -> i64 {
         "flux__fs_file_truncate",
         "flux__fs_file_set_permissions",
         "flux__fs_directory_set_permissions",
+        "flux__fs_file_set_modified_unix_millis",
+        "flux__fs_file_set_accessed_unix_millis",
+        "flux__fs_directory_set_modified_unix_millis",
+        "flux__fs_directory_set_accessed_unix_millis",
         "flux__fs_directory_rename",
     ] {
         assert!(
@@ -9418,6 +9454,10 @@ fn main() -> i64 {
     file.setPermissions(false, 384)
     directory.setPermissions("x", -1)
     directory.setPermissions("x", true)
+    file.setModified(false, 0)
+    file.setAccessed("x", false)
+    directory.setModified(1, 0)
+    directory.setAccessed("x", true)
     directory.rename("x", 1)
     return 0
 }
@@ -9431,6 +9471,10 @@ fn main() -> i64 {
         "file.setPermissions path: expected str",
         "directory.setPermissions permissions must be in 0..=4095",
         "directory.setPermissions permissions: expected i64",
+        "file.setModified path: expected str",
+        "file.setAccessed unixMillis: expected i64",
+        "directory.setModified path: expected str",
+        "directory.setAccessed unixMillis: expected i64",
         "directory.rename destination: expected str",
     ] {
         assert!(

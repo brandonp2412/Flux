@@ -9909,7 +9909,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "truncate" | "setPermissions" => {
+            "truncate" | "setPermissions" | "setModified" | "setAccessed" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -9928,10 +9928,12 @@ fn check_qualified_call(
                     args[1].span,
                     &Type::I64,
                     &value_type,
-                    if name == "truncate" {
-                        "file.truncate size"
-                    } else {
-                        "file.setPermissions permissions"
+                    match name.as_str() {
+                        "truncate" => "file.truncate size",
+                        "setPermissions" => "file.setPermissions permissions",
+                        "setModified" => "file.setModified unixMillis",
+                        "setAccessed" => "file.setAccessed unixMillis",
+                        _ => unreachable!(),
                     },
                 )?;
                 if let Some(ConstantValue::I64(value)) =
@@ -10034,14 +10036,11 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
-            "setPermissions" => {
+            "setPermissions" | "setModified" | "setAccessed" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!(
-                            "directory.setPermissions expects 2 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("directory.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let path_type = type_of_expr(&args[0], env, signatures)?;
@@ -10049,19 +10048,27 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::Str,
                     &path_type,
-                    "directory.setPermissions path",
+                    &format!("directory.{name} path"),
                 )?;
-                let permissions_type = type_of_expr(&args[1], env, signatures)?;
+                let value_type = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
-                    &permissions_type,
-                    "directory.setPermissions permissions",
+                    &value_type,
+                    if name == "setPermissions" {
+                        "directory.setPermissions permissions"
+                    } else if name == "setModified" {
+                        "directory.setModified unixMillis"
+                    } else {
+                        "directory.setAccessed unixMillis"
+                    },
                 )?;
-                if matches!(
-                    constant_primitive_value(&args[1], signatures),
-                    Some(ConstantValue::I64(value)) if !(0..=0o7777).contains(&value)
-                ) {
+                if name == "setPermissions"
+                    && matches!(
+                        constant_primitive_value(&args[1], signatures),
+                        Some(ConstantValue::I64(value)) if !(0..=0o7777).contains(&value)
+                    )
+                {
                     return Err(diag(
                         args[1].span,
                         "directory.setPermissions permissions must be in 0..=4095",

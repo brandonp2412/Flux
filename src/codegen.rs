@@ -1668,6 +1668,10 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_file_truncate(")
+        || runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__net_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
@@ -1726,6 +1730,10 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_file_changed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_changed_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
     {
         out.push_str("#include <time.h>\n");
     }
@@ -1756,12 +1764,25 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__url_") {
         out.push_str("#include <strings.h>\n");
     }
+    if runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+    {
+        out.push_str("#include <fcntl.h>\n");
+    }
     if runtime_usage.contains("flux__net_") {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
         }
-        out.push_str("#include <fcntl.h>\n");
+        if !runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
+            && !runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
+            && !runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
+            && !runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+        {
+            out.push_str("#include <fcntl.h>\n");
+        }
         out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
         if runtime_usage.contains("flux__net_send_text_parts(")
@@ -6035,6 +6056,25 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__fs_directory_set_permissions(") {
         out.push_str("static inline const char *flux__fs_directory_set_permissions(const char *path, int64_t permissions) { return flux__fs_set_permissions(path, true, permissions); }\n");
     }
+    if runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+    {
+        out.push_str("static inline const char *flux__fs_set_time_unix_millis(const char *path, bool expect_directory, int64_t unix_millis, bool modified) { struct stat info; if (stat(path, &info) != 0) return \"failed to inspect timestamp target\"; if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return expect_directory ? \"path is not a directory\" : \"path is not a file\"; int64_t seconds = unix_millis / INT64_C(1000); int64_t remainder = unix_millis % INT64_C(1000); if (remainder < 0) { seconds -= 1; remainder += 1000; } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) return \"timestamp exceeds platform range\"; struct timespec times[2] = {{ .tv_sec = 0, .tv_nsec = UTIME_OMIT }, { .tv_sec = 0, .tv_nsec = UTIME_OMIT }}; size_t index = modified ? 1u : 0u; times[index].tv_sec = native_seconds; times[index].tv_nsec = (long)(remainder * INT64_C(1000000)); return utimensat(AT_FDCWD, path, times, 0) == 0 ? NULL : \"failed to set timestamp\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_modified_unix_millis(") {
+        out.push_str("static inline const char *flux__fs_file_set_modified_unix_millis(const char *path, int64_t unix_millis) { return flux__fs_set_time_unix_millis(path, false, unix_millis, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(") {
+        out.push_str("static inline const char *flux__fs_file_set_accessed_unix_millis(const char *path, int64_t unix_millis) { return flux__fs_set_time_unix_millis(path, false, unix_millis, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(") {
+        out.push_str("static inline const char *flux__fs_directory_set_modified_unix_millis(const char *path, int64_t unix_millis) { return flux__fs_set_time_unix_millis(path, true, unix_millis, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(") {
+        out.push_str("static inline const char *flux__fs_directory_set_accessed_unix_millis(const char *path, int64_t unix_millis) { return flux__fs_set_time_unix_millis(path, true, unix_millis, false); }\n");
+    }
     if runtime_usage.contains("flux__fs_copy_file(") {
         out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
     }
@@ -6078,7 +6118,7 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__fs_file_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
     {
-        out.push_str("static inline struct flux__fs_i64_error flux__fs_accessed_unix_millis(const char *path, bool expect_directory) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect access time\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); int64_t seconds = (int64_t)info.st_atime; if ((time_t)seconds != info.st_atime) return flux__fs_i64_result(-1, \"access time exceeds i64\"); int64_t millis; if (__builtin_mul_overflow(seconds, INT64_C(1000), &millis)) return flux__fs_i64_result(-1, \"access time exceeds i64\"); return flux__fs_i64_result(millis, NULL); }\n");
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_accessed_unix_millis(const char *path, bool expect_directory) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect access time\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); int64_t seconds = (int64_t)info.st_atim.tv_sec; if ((time_t)seconds != info.st_atim.tv_sec) return flux__fs_i64_result(-1, \"access time exceeds i64\"); int64_t millis; if (__builtin_mul_overflow(seconds, INT64_C(1000), &millis) || __builtin_add_overflow(millis, (int64_t)(info.st_atim.tv_nsec / 1000000L), &millis)) return flux__fs_i64_result(-1, \"access time exceeds i64\"); return flux__fs_i64_result(millis, NULL); }\n");
     }
     if runtime_usage.contains("flux__fs_file_accessed_unix_millis(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_file_accessed_unix_millis(const char *path) { return flux__fs_accessed_unix_millis(path, false); }\n");
@@ -31297,16 +31337,18 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "truncate" | "setPermissions" => {
+            "truncate" | "setPermissions" | "setModified" | "setAccessed" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
                 let path = emit_expr(&args[0], env, signatures)?;
                 let value = emit_expr(&args[1], env, signatures)?;
-                let helper = if name == "truncate" {
-                    "flux__fs_file_truncate"
-                } else {
-                    "flux__fs_file_set_permissions"
+                let helper = match name {
+                    "truncate" => "flux__fs_file_truncate",
+                    "setPermissions" => "flux__fs_file_set_permissions",
+                    "setModified" => "flux__fs_file_set_modified_unix_millis",
+                    "setAccessed" => "flux__fs_file_set_accessed_unix_millis",
+                    _ => unreachable!(),
                 };
                 return Ok((
                     format!("{helper}({}, {})", path.code, value.code),
@@ -31321,16 +31363,21 @@ fn emit_qualified_call(
         if !named_args.is_empty() {
             return Err(diag(span, "invalid directory call reached code generation"));
         }
-        if matches!(name, "rename" | "setPermissions") {
+        if matches!(
+            name,
+            "rename" | "setPermissions" | "setModified" | "setAccessed"
+        ) {
             if args.len() != 2 {
                 return Err(diag(span, "invalid directory call reached code generation"));
             }
             let first = emit_expr(&args[0], env, signatures)?;
             let second = emit_expr(&args[1], env, signatures)?;
-            let helper = if name == "rename" {
-                "flux__fs_directory_rename"
-            } else {
-                "flux__fs_directory_set_permissions"
+            let helper = match name {
+                "rename" => "flux__fs_directory_rename",
+                "setPermissions" => "flux__fs_directory_set_permissions",
+                "setModified" => "flux__fs_directory_set_modified_unix_millis",
+                "setAccessed" => "flux__fs_directory_set_accessed_unix_millis",
+                _ => unreachable!(),
             };
             return Ok((
                 format!("{helper}({}, {})", first.code, second.code),
