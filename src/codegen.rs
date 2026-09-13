@@ -15798,7 +15798,10 @@ fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
     Some((name, args, named_args))
 }
 
-fn block_branch_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
+fn block_branch_await_indices(
+    block: &[Stmt],
+    allow_trailing_coalescing: bool,
+) -> Option<Vec<usize>> {
     let mut await_indices = Vec::new();
     for (index, stmt) in block.iter().enumerate() {
         if !stmt_contains_await(stmt) {
@@ -15811,7 +15814,7 @@ fn block_branch_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
         }
         let await_expr = coalescing_assignment_await_expr(stmt)?;
         direct_await_call(await_expr)?;
-        if !await_indices.is_empty() || index + 1 != block.len() {
+        if !await_indices.is_empty() || (!allow_trailing_coalescing && index + 1 != block.len()) {
             return None;
         }
         await_indices.push(index);
@@ -15842,8 +15845,8 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     if expr_contains_await(cond) {
         return None;
     }
-    let then_await_indices = block_branch_await_indices(body)?;
-    let else_await_indices = block_branch_await_indices(else_body)?;
+    let then_await_indices = block_branch_await_indices(body, true)?;
+    let else_await_indices = block_branch_await_indices(else_body, true)?;
     if then_await_indices.is_empty() && else_await_indices.is_empty() {
         None
     } else {
@@ -15872,7 +15875,7 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     if expr_contains_await(cond) {
         return None;
     }
-    let body_await_indices = block_branch_await_indices(body)?;
+    let body_await_indices = block_branch_await_indices(body, false)?;
     if body_await_indices.is_empty() {
         None
     } else {
@@ -15903,7 +15906,7 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     if expr_contains_await(start) || expr_contains_await(end) {
         return None;
     }
-    let body_await_indices = block_branch_await_indices(body)?;
+    let body_await_indices = block_branch_await_indices(body, false)?;
     if body_await_indices.is_empty() {
         None
     } else {
@@ -15953,7 +15956,7 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
         if arm.guard.as_ref().is_some_and(expr_contains_await) {
             return None;
         }
-        let await_indices = block_branch_await_indices(&arm.body)?;
+        let await_indices = block_branch_await_indices(&arm.body, true)?;
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -20215,7 +20218,7 @@ fn emit_async_branch_continuation_function(
         )?;
         let awaited_stmt = &body[first_await];
         emit_source_line(out, awaited_stmt.span, context.source_paths);
-        emit_async_branch_suspend(
+        let conditional_suspend = emit_async_branch_suspend(
             out,
             "                ",
             awaited_stmt,
@@ -20226,6 +20229,20 @@ fn emit_async_branch_continuation_function(
             &then_mutable,
             signatures,
         )?;
+        if conditional_suspend {
+            let mut present_env = then_env.clone();
+            let mut present_mutable = then_mutable.clone();
+            emit_block(
+                out,
+                &body[first_await + 1..],
+                4,
+                &mut present_env,
+                &mut present_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+        }
     } else {
         emit_block(
             out,
@@ -20264,7 +20281,7 @@ fn emit_async_branch_continuation_function(
             )?;
             let awaited_stmt = &else_body[first_await];
             emit_source_line(out, awaited_stmt.span, context.source_paths);
-            emit_async_branch_suspend(
+            let conditional_suspend = emit_async_branch_suspend(
                 out,
                 "                ",
                 awaited_stmt,
@@ -20275,6 +20292,20 @@ fn emit_async_branch_continuation_function(
                 &else_mutable,
                 signatures,
             )?;
+            if conditional_suspend {
+                let mut present_env = else_env.clone();
+                let mut present_mutable = else_mutable.clone();
+                emit_block(
+                    out,
+                    &else_body[first_await + 1..],
+                    4,
+                    &mut present_env,
+                    &mut present_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+            }
         } else {
             emit_block(
                 out,
@@ -21377,6 +21408,18 @@ fn emit_async_match_continuation_function(
                     signatures,
                 )?;
                 if conditional_suspend {
+                    let mut present_env = arm_env.clone();
+                    let mut present_mutable = arm_mutable.clone();
+                    emit_block(
+                        out,
+                        &arm.body[first_await + 1..],
+                        body_depth,
+                        &mut present_env,
+                        &mut present_mutable,
+                        signatures,
+                        temp_counter,
+                        state_context,
+                    )?;
                     emit_async_match_tail(
                         out,
                         function,

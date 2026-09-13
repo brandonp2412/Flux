@@ -37564,6 +37564,10 @@ async fn branch(flag: bool, initial: i64?) -> i64 {
     var value: i64? = initial
     if flag:
         value ??= await fallback(9)
+        value = (value ?? 0) + 1
+    else:
+        value ??= await fallback(7)
+        value = (value ?? 0) + 2
     return value ?? -1
 }
 
@@ -37573,6 +37577,7 @@ async fn choose(choice: Choice) -> i64 {
         Choice.Value(initial):
             value = initial
             value ??= await fallback(5)
+            value = (value ?? 0) + 3
         Choice.Keep(initial):
             value = initial
     return value ?? -1
@@ -37634,8 +37639,8 @@ async fn main() -> i64 {
     let output = Command::new(&binary)
         .output()
         .expect("nested async coalescing binary should run");
-    assert_eq!(output.status.code(), Some(23));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n5\n");
+    assert_eq!(output.status.code(), Some(41));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n7\n5\n");
     let _ = fs::remove_dir_all(&root);
 }
 
