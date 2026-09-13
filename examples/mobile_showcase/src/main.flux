@@ -114,7 +114,7 @@ view HorseTinder {
 
     Button like at 6,4
         text: "♥︎"
-        size: 44
+        size: 42
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
         minWidth: 72
@@ -122,7 +122,7 @@ view HorseTinder {
         minHeight: 72
         alignX: "center"
         alignY: "center"
-        translateX: 83
+        translateX: 72
         focusable: true
         padding: 0
         radius: 36
@@ -134,6 +134,34 @@ view HorseTinder {
         shadowOffsetY: 5
         transitionMs: motionFast
         onPress: liked => !liked
+
+    Text passLabel at 7,2
+        text: "PASS"
+        visible: !liked && !passed
+        color: "#7F8996"
+        size: 10
+        bold: true
+        wrap: false
+        letterSpacing: 1
+        textAlign: "center"
+        alignX: "center"
+        alignY: "center"
+        translateX: 83
+        layoutTransitionMs: motionNormal
+
+    Text likeLabel at 7,4
+        text: "LIKE"
+        visible: !liked && !passed
+        color: "#FF6B80"
+        size: 10
+        bold: true
+        wrap: false
+        letterSpacing: 1
+        textAlign: "center"
+        alignX: "center"
+        alignY: "center"
+        translateX: 72
+        layoutTransitionMs: motionNormal
 
     Text result at 7,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
