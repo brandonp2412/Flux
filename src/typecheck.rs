@@ -191,6 +191,15 @@ impl Signatures {
                 .unwrap_or_else(|| ty.clone()),
             Type::List(element) => Type::List(Box::new(self.canonical_type(element))),
             Type::Optional(inner) => Type::Optional(Box::new(self.canonical_type(inner))),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        name: field.name.clone(),
+                        ty: self.canonical_type(&field.ty),
+                    })
+                    .collect(),
+            ),
             Type::Function { params, returns } => Type::Function {
                 params: params.iter().map(|ty| self.canonical_type(ty)).collect(),
                 returns: returns.iter().map(|ty| self.canonical_type(ty)).collect(),
@@ -203,11 +212,28 @@ impl Signatures {
         self.is_copy_type_inner(ty, &mut HashSet::new())
     }
 
+    fn is_bootstrap_record_field_type(&self, ty: &Type) -> bool {
+        match self.canonical_type(ty) {
+            Type::I64 | Type::Bool | Type::Str | Type::Error => true,
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| self.is_bootstrap_record_field_type(&field.ty)),
+            Type::Void
+            | Type::Named(_)
+            | Type::List(_)
+            | Type::Optional(_)
+            | Type::Function { .. } => false,
+        }
+    }
+
     fn is_copy_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
             Type::Void | Type::List(_) => false,
             Type::Optional(inner) => self.is_copy_type_inner(&inner, visiting),
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| self.is_copy_type_inner(&field.ty, visiting)),
             Type::Function { .. } => true,
             Type::Named(name) => {
                 if self.interface(&name).is_some() {
@@ -3638,6 +3664,11 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(&arg.value, reads);
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_expr_reads(&field.value, reads);
+            }
+        }
         ExprKind::StructLiteral { base, fields, .. } => {
             if let Some(base) = base {
                 collect_expr_reads(base, reads);
@@ -6206,6 +6237,31 @@ pub fn type_of_expr(
                 )),
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            let mut record_fields = Vec::with_capacity(fields.len());
+            let mut saw_named = false;
+            for field in fields {
+                saw_named |= field.name.is_some();
+                if saw_named && field.name.is_none() {
+                    return Err(diag(
+                        field.value.span,
+                        "positional record fields cannot follow named fields",
+                    ));
+                }
+                let ty = type_of_expr(&field.value, env, signatures)?;
+                if !signatures.is_bootstrap_record_field_type(&ty) {
+                    return Err(diag(
+                        field.value.span,
+                        "record fields currently require primitive or nested-record Copy values until aggregate layout and owned move semantics are complete",
+                    ));
+                }
+                record_fields.push(RecordTypeField {
+                    name: field.name.clone(),
+                    ty,
+                });
+            }
+            Ok(Type::Record(record_fields))
+        }
         ExprKind::StructLiteral {
             name,
             name_span,
@@ -6542,12 +6598,41 @@ pub fn type_of_expr(
                         ));
                     }
                 }
+            } else if let Type::Record(fields) = &base_ty {
+                if let Ok(index) = name.parse::<usize>() {
+                    fields
+                        .get(index)
+                        .map(|field| field.ty.clone())
+                        .ok_or_else(|| {
+                            diag(
+                                *name_span,
+                                &format!(
+                                    "record type '{}' has no positional field '.{name}'",
+                                    base_ty.name()
+                                ),
+                            )
+                        })?
+                } else {
+                    fields
+                        .iter()
+                        .find(|field| field.name.as_deref() == Some(name.as_str()))
+                        .map(|field| field.ty.clone())
+                        .ok_or_else(|| {
+                            diag(
+                                *name_span,
+                                &format!(
+                                    "record type '{}' has no named field '{name}'",
+                                    base_ty.name()
+                                ),
+                            )
+                        })?
+                }
             } else {
                 let Type::Named(struct_name) = base_ty else {
                     return Err(diag(
                         *name_span,
                         &format!(
-                            "field access requires a struct or list value, got {}",
+                            "field access requires a struct, record, or list value, got {}",
                             base_ty.name()
                         ),
                     ));
@@ -6632,6 +6717,14 @@ pub fn type_of_expr(
                         return Err(diag(
                             expr.span,
                             "whole-struct equality is not defined yet; compare fields explicitly",
+                        ));
+                    }
+                    if matches!(left_canonical, Type::Record(_))
+                        || matches!(right_canonical, Type::Record(_))
+                    {
+                        return Err(diag(
+                            expr.span,
+                            "whole-record equality is not defined yet; compare fields explicitly",
                         ));
                     }
                     require_type(expr.span, &left_ty, &right_ty, "equality operand")?;
@@ -10044,6 +10137,7 @@ fn evaluate_default_expr(
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
+        | ExprKind::RecordLiteral { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. }
@@ -10237,6 +10331,7 @@ fn evaluate_constant_expr(
         | ExprKind::Slice { .. }
         | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
+        | ExprKind::RecordLiteral { .. }
         | ExprKind::StructLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. }
@@ -10868,6 +10963,11 @@ fn require_known_type(
     if let Type::List(element) | Type::Optional(element) = ty {
         require_known_type(span, element, signatures)?;
     }
+    if let Type::Record(fields) = ty {
+        for field in fields {
+            require_known_type(span, &field.ty, signatures)?;
+        }
+    }
     match signatures.canonical_type(ty) {
         Type::Named(name)
             if signatures.struct_type(&name).is_none()
@@ -10877,6 +10977,31 @@ fn require_known_type(
             Err(diag(span, &format!("unknown type '{name}'")))
         }
         Type::List(element) => require_known_type(span, &element, signatures),
+        Type::Record(fields) => {
+            let mut names = HashSet::new();
+            let mut saw_named = false;
+            for field in fields {
+                require_known_type(span, &field.ty, signatures)?;
+                if !signatures.is_bootstrap_record_field_type(&field.ty) {
+                    return Err(diag(
+                        span,
+                        "record fields currently require primitive or nested-record Copy values until aggregate layout and owned move semantics are complete",
+                    ));
+                }
+                if let Some(name) = field.name {
+                    saw_named = true;
+                    if !names.insert(name.clone()) {
+                        return Err(diag(span, &format!("duplicate record field '{name}'")));
+                    }
+                } else if saw_named {
+                    return Err(diag(
+                        span,
+                        "positional record fields cannot follow named fields",
+                    ));
+                }
+            }
+            Ok(())
+        }
         Type::Optional(inner) => {
             require_known_type(span, &inner, signatures)?;
             let actual = signatures.canonical_type(&inner);

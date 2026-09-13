@@ -4,10 +4,10 @@ use crate::ast::{
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
     InterpolatedStringPart, ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern,
     MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp,
-    Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode, Stmt,
-    StmtKind,
-    StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
-    UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
+    Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode,
+    Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern, StructPatternField,
+    Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState,
+    ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -821,6 +821,14 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(condition, source_id);
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                if let Some(name_span) = &mut field.name_span {
+                    *name_span = name_span.with_source(source_id);
+                }
+                attach_expr_source(&mut field.value, source_id);
+            }
+        }
         ExprKind::StructLiteral {
             name_span,
             base,
@@ -1139,6 +1147,14 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             shift_expr_columns(iterable, offset);
             if let Some(condition) = condition {
                 shift_expr_columns(condition, offset);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                if let Some(name_span) = &mut field.name_span {
+                    name_span.column += offset;
+                }
+                shift_expr_columns(&mut field.value, offset);
             }
         }
         ExprKind::StructLiteral {
@@ -5854,12 +5870,16 @@ impl ExprParser<'_> {
             let Some(field) = self.tokens.get(self.index).cloned() else {
                 return Err(diag(self.line, "expected field name after '.'"));
             };
-            let TokenKind::Ident(name) = field.kind else {
-                return Err(Diagnostic::new(
-                    DiagnosticStage::Parse,
-                    field.span,
-                    "expected field name after '.'",
-                ));
+            let name = match field.kind {
+                TokenKind::Ident(name) => name,
+                TokenKind::Int(index) if index >= 0 => index.to_string(),
+                _ => {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        field.span,
+                        "expected field name or positional record index after '.'",
+                    ));
+                }
             };
             self.index += 1;
             if matches!(
@@ -6568,25 +6588,132 @@ impl ExprParser<'_> {
                 })
             }
             TokenKind::LParen => {
-                let mut expr = self.parse_conditional()?;
-                let Some(close) = self.tokens.get(self.index) else {
-                    return Err(diag(self.line, "expected ')'"));
-                };
-                if !matches!(close.kind, TokenKind::RParen) {
-                    return Err(Diagnostic::new(
-                        DiagnosticStage::Parse,
-                        close.span,
-                        "expected ')'",
-                    ));
+                let first_named = matches!(
+                    (self.tokens.get(self.index), self.tokens.get(self.index + 1)),
+                    (
+                        Some(Token {
+                            kind: TokenKind::Ident(_),
+                            ..
+                        }),
+                        Some(Token {
+                            kind: TokenKind::Colon,
+                            ..
+                        })
+                    )
+                );
+                let mut fields = Vec::new();
+                let mut saw_named = false;
+
+                if first_named {
+                    saw_named = true;
+                } else {
+                    let mut first_expr = self.parse_conditional()?;
+                    if !matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::Comma)
+                    ) {
+                        let Some(close) = self.tokens.get(self.index) else {
+                            return Err(diag(self.line, "expected ')'"));
+                        };
+                        if !matches!(close.kind, TokenKind::RParen) {
+                            return Err(Diagnostic::new(
+                                DiagnosticStage::Parse,
+                                close.span,
+                                "expected ')'",
+                            ));
+                        }
+                        let close_span = close.span;
+                        self.index += 1;
+                        first_expr.span = SourceSpan::new(
+                            self.line,
+                            token_span.column,
+                            close_span.column + close_span.length - token_span.column,
+                        );
+                        return Ok(first_expr);
+                    }
+                    fields.push(RecordLiteralField {
+                        name: None,
+                        name_span: None,
+                        value: first_expr,
+                    });
+                    self.index += 1;
                 }
+
+                loop {
+                    if matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::RParen)
+                    ) {
+                        break;
+                    }
+                    let named = match (
+                        self.tokens.get(self.index),
+                        self.tokens.get(self.index + 1).map(|token| &token.kind),
+                    ) {
+                        (Some(token), Some(TokenKind::Colon)) => match &token.kind {
+                            TokenKind::Ident(name) => Some((name.clone(), token.span)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some((name, name_span)) = named {
+                        saw_named = true;
+                        self.index += 2;
+                        if fields
+                            .iter()
+                            .any(|field| field.name.as_deref() == Some(name.as_str()))
+                        {
+                            return Err(Diagnostic::new(
+                                DiagnosticStage::Parse,
+                                name_span,
+                                format!("duplicate record field '{name}'"),
+                            ));
+                        }
+                        fields.push(RecordLiteralField {
+                            name: Some(name),
+                            name_span: Some(name_span),
+                            value: self.parse_conditional()?,
+                        });
+                    } else {
+                        if saw_named {
+                            let span = self
+                                .tokens
+                                .get(self.index)
+                                .map(|token| token.span)
+                                .unwrap_or(token_span);
+                            return Err(Diagnostic::new(
+                                DiagnosticStage::Parse,
+                                span,
+                                "positional record fields cannot follow named fields",
+                            ));
+                        }
+                        fields.push(RecordLiteralField {
+                            name: None,
+                            name_span: None,
+                            value: self.parse_conditional()?,
+                        });
+                    }
+                    match self.tokens.get(self.index).map(|token| &token.kind) {
+                        Some(TokenKind::Comma) => self.index += 1,
+                        Some(TokenKind::RParen) => break,
+                        _ => return Err(diag(self.line, "expected ',' or ')' in record literal")),
+                    }
+                }
+
+                let Some(close) = self.tokens.get(self.index) else {
+                    return Err(diag(self.line, "expected ')' after record literal"));
+                };
                 let close_span = close.span;
                 self.index += 1;
-                expr.span = SourceSpan::new(
-                    self.line,
-                    token_span.column,
-                    close_span.column + close_span.length - token_span.column,
-                );
-                Ok(expr)
+                Ok(Expr {
+                    line: self.line,
+                    span: SourceSpan::new(
+                        self.line,
+                        token_span.column,
+                        close_span.column + close_span.length - token_span.column,
+                    ),
+                    kind: ExprKind::RecordLiteral { fields },
+                })
             }
             _ => Err(Diagnostic::new(
                 DiagnosticStage::Parse,
