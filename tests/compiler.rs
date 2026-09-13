@@ -6492,8 +6492,8 @@ fn main() -> i64 {
         return 4
     if readyA + readyB + readyC != 6:
         return 5
-    worker.cancelChildren()
-    let joinError: error = worker.joinChildren()
+    worker.cancelAll()
+    let joinError: error = worker.joinAll()
     if joinError != nil:
         return 6
     let (doneA, doneErrorA) = channel.receive(channelHandle)
@@ -6510,8 +6510,8 @@ fn main() -> i64 {
 }
 "#;
 
-    check_source(source).expect("worker.cancelChildren should typecheck");
-    let generated = compile_to_c(source).expect("worker.cancelChildren should lower natively");
+    check_source(source).expect("worker.cancelAll should typecheck");
+    let generated = compile_to_c(source).expect("worker.cancelAll should lower natively");
     assert!(generated.contains("static void flux__worker_cancel_children(void)"));
     assert!(
         generated.contains("if (state->parent_id == parent_id) state->cancel_requested = true")
@@ -6551,27 +6551,27 @@ fn main() -> i64 {
 
     let invalid = r#"
 fn main() -> i64 {
-    worker.cancelChildren(1)
+    worker.cancelAll(1)
     return 0
 }
 "#;
-    let error = check_source(invalid).expect_err("worker.cancelChildren arguments must fail");
+    let error = check_source(invalid).expect_err("worker.cancelAll arguments must fail");
     assert!(
         error
             .message
-            .contains("worker.cancelChildren expects 0 arguments, got 1")
+            .contains("worker.cancelAll expects 0 arguments, got 1")
     );
 
     let dead = r#"
 fn hidden() -> void {
-    worker.cancelChildren()
+    worker.cancelAll()
 }
 fn main() -> i64 {
     return 0
 }
 "#;
     let dead_generated =
-        compile_to_c(dead).expect("dead worker.cancelChildren helper should tree-shake");
+        compile_to_c(dead).expect("dead worker.cancelAll helper should tree-shake");
     assert!(!dead_generated.contains("flux__worker_cancel_children("));
     assert!(!dead_generated.contains("#include <pthread.h>"));
 

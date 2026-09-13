@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 538
+- Completed baseline units: 539
 - Reported overall progress: **73%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -317,7 +317,7 @@ Adapt the convenience of Dart's async language features while preserving Flux's 
 - [ ] Streams/sequences as explicit types/capabilities.
 - [ ] Generator functions.
 - [ ] `yield` / `yield from` equivalent if it fits ownership rules.
-- [ ] Cancellation as an explicit capability/value.
+- [x] Cancellation as an explicit capability/value: structured native workers expose explicit `worker.cancel(handle)`, `worker.cancelAll()`, and cooperative `worker.cancelled()` state; cancellation propagates recursively through worker scopes, unfinished children are cancelled before automatic join, and blocking channel, timer, socket-readiness, and HTTP/network waits cooperate with cancellation rather than requiring unsafe thread termination. The compiler-owned helpers remain tree-shaken when unreachable.
 
 ## Dart features intentionally not copied
 

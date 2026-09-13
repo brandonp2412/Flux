@@ -869,7 +869,11 @@ fn main() -> i64 {
 }
 ```
 
-`worker.start` accepts exactly `fn() -> void` and returns an opaque `i64` handle plus an explicit Flux `error`. `worker.join` waits for that handle once and returns an explicit `error`; unknown, invalid, or already-joined handles fail rather than becoming unchecked native thread operations. The compiler-owned native registry and pthread support are emitted only when reachable. Because ordinary stored closures still cannot capture outer locals, this bootstrap cannot smuggle borrowed local storage across a thread boundary. Task results, argument transfer, channels, cancellation, structured concurrency, and the `async`/`await` task model remain separate concurrency work.
+`worker.start` accepts exactly `fn() -> void`; `worker.startWith` accepts `fn(i64) -> void` plus one scalar argument. Both return an opaque `i64` handle plus an explicit Flux `error`. `worker.join` waits for one direct child once, while `worker.joinAll()` joins the current scope. Unknown, invalid, already-joined, or out-of-scope handles fail rather than becoming unchecked native thread operations.
+
+Cancellation is explicit and cooperative. `worker.cancel(handle)` requests cancellation of one child subtree, `worker.cancelAll()` requests cancellation of every unfinished child in the current scope, and `worker.cancelled()` exposes the current worker's cancellation state as a `bool`. Cancellation propagates to descendants, and leaving a worker scope cancels unfinished children before joining them. Blocking channel operations, worker sleeps/timers, socket readiness, and compiler-owned HTTP/network waits observe cancellation so workers do not require unsafe native thread termination. The compiler-owned registry, pthread support, cancellation helpers, and dependent runtime pieces are emitted only when reachable.
+
+Because ordinary stored closures still cannot capture outer locals, this bootstrap cannot smuggle borrowed local storage across a thread boundary. General owned argument/result transfer, ownership-safe stored closures, and the remaining `async`/`await` suspension shapes remain separate concurrency work.
 
 ## Performance and safety contract
 
