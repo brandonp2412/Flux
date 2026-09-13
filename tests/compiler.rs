@@ -23152,6 +23152,85 @@ fn flux_test_propagates_native_nonzero_exit_status() {
 }
 
 #[test]
+fn flux_test_runs_native_ui_tests_and_accessibility_audits() {
+    if Command::new("xvfb-run").arg("--help").output().is_err() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("flux-ui-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UI test fixture directory should exist");
+    let passing = root.join("passing.flux");
+    fs::write(
+        &passing,
+        r#"fn started() -> void {
+    process.exit(0)
+}
+
+view TestScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Button done at 1,1
+        text: "Done"
+}
+
+app TestScreen(onStart: started)
+"#,
+    )
+    .expect("passing UI test should be writable");
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&passing)
+        .output()
+        .expect("headless-only test invocation should run");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("pass '--ui'"));
+
+    let passed = Command::new("xvfb-run")
+        .arg("-a")
+        .arg(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&passing)
+        .arg("--accessibility")
+        .output()
+        .expect("native UI test should run under Xvfb");
+    assert!(
+        passed.status.success(),
+        "native UI test failed: {}{}",
+        String::from_utf8_lossy(&passed.stdout),
+        String::from_utf8_lossy(&passed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&passed.stdout).contains("1 passed; 0 failed"));
+
+    let failing = root.join("failing.flux");
+    fs::write(
+        &failing,
+        r#"view TestScreen {
+    grid columns: 1fr
+    grid rows: auto
+    Image hero at 1,1
+        source: "missing.png"
+        alt: ""
+}
+
+app TestScreen
+"#,
+    )
+    .expect("failing accessibility test should be writable");
+    let audited = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&failing)
+        .arg("--accessibility")
+        .output()
+        .expect("accessibility audit should run");
+    let _ = fs::remove_dir_all(&root);
+    assert!(!audited.status.success());
+    let stderr = String::from_utf8_lossy(&audited.stderr);
+    assert!(stderr.contains("accessibility audit failed"));
+    assert!(stderr.contains("element 'hero' (Image) has no accessible name"));
+}
+
+#[test]
 fn flux_test_runs_package_unit_tests_with_deterministic_time() {
     let root = std::env::temp_dir().join(format!("flux-package-unit-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

@@ -166,6 +166,8 @@ struct TestOptions {
     mode: BuildMode,
     coverage: bool,
     deterministic_time: bool,
+    ui: bool,
+    accessibility: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1597,11 +1599,15 @@ fn run_tests_inner(
                 return Err(CliError::Reported);
             }
         };
-        if analysis.program.application.is_some() {
+        let is_ui_test = analysis.program.application.is_some();
+        if is_ui_test && !options.ui {
             return Err(CliError::Message(format!(
-                "test '{}' declares an app; bootstrap flux test runs headless fn main() integration programs",
+                "test '{}' declares an app; pass '--ui' to run native UI tests",
                 test.display()
             )));
+        }
+        if is_ui_test && options.accessibility {
+            audit_test_accessibility(test, &analysis.program)?;
         }
         let mut generated = match analysis.emit_c() {
             Ok(generated) => generated,
@@ -1632,12 +1638,30 @@ fn run_tests_inner(
         if let Some(raw_profile) = &raw_profile {
             command.env("LLVM_PROFILE_FILE", raw_profile);
         }
-        let status = command.status().map_err(|error| {
-            format!(
-                "failed to launch test binary '{}': {error}",
-                binary.display()
-            )
-        })?;
+        let status = if is_ui_test {
+            let output = output_with_timeout(&mut command, Duration::from_secs(30))
+                .map_err(|error| format!("failed to launch UI test binary '{}': {error}", binary.display()))?
+                .ok_or_else(|| {
+                    CliError::Message(format!(
+                        "UI test '{}' timed out after 30 seconds; UI tests must terminate explicitly when their assertions finish",
+                        test.display()
+                    ))
+                })?;
+            if !output.stdout.is_empty() {
+                print!("{}", String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            output.status
+        } else {
+            command.status().map_err(|error| {
+                format!(
+                    "failed to launch test binary '{}': {error}",
+                    binary.display()
+                )
+            })?
+        };
         if !status.success() {
             eprintln!("test {} ... FAILED", test.display());
             return Err(CliError::Message(format!(
@@ -1675,6 +1699,78 @@ fn run_tests_inner(
         }
     );
     Ok(())
+}
+
+fn audit_test_accessibility(test: &Path, program: &fluxc::ast::Program) -> Result<(), CliError> {
+    let mut failures = Vec::new();
+    for view in &program.views {
+        for element in &view.elements {
+            let hidden = element.properties.iter().any(|property| {
+                property.name == "accessibilityHidden"
+                    && matches!(property.value.kind, fluxc::ast::ExprKind::Bool(true))
+            });
+            if hidden {
+                continue;
+            }
+            let has_text = |name: &str| {
+                element
+                    .properties
+                    .iter()
+                    .find(|property| property.name == name)
+                    .is_some_and(|property| match &property.value.kind {
+                        fluxc::ast::ExprKind::Str(value) => !value.trim().is_empty(),
+                        _ => true,
+                    })
+            };
+            let has_accessible_name = has_text("accessibilityLabel")
+                || match element.kind.as_str() {
+                    "Image" => has_text("alt"),
+                    "Button" | "Text" | "Header" => has_text("text"),
+                    "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => has_text("label"),
+                    "Card" => has_text("title"),
+                    _ => false,
+                };
+            let interactive = element.properties.iter().any(|property| {
+                matches!(
+                    property.name.as_str(),
+                    "onTap"
+                        | "onLongPress"
+                        | "onContextMenu"
+                        | "onContextMenuSelect"
+                        | "onContextMenuItemSelect"
+                        | "onAccessibilityAction"
+                        | "onPress"
+                        | "onChange"
+                        | "onSubmit"
+                        | "onSelect"
+                )
+            });
+            let requires_name = interactive
+                || matches!(
+                    element.kind.as_str(),
+                    "Image" | "Button" | "TextInput" | "Toggle" | "Radio"
+                );
+            if requires_name && !has_accessible_name {
+                failures.push(format!(
+                    "{}:{}: view '{}' element '{}' ({}) has no accessible name; add accessibilityLabel{}",
+                    test.display(),
+                    element.line,
+                    view.name,
+                    element.name,
+                    element.kind,
+                    if element.kind == "Image" { " or alt" } else { "" }
+                ));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "accessibility audit failed:\n{}",
+            failures.join("\n")
+        )))
+    }
 }
 
 fn coverage_data_dir() -> PathBuf {
@@ -3931,6 +4027,9 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
     let mut mode_seen = false;
     let mut coverage = false;
     let mut deterministic_time = false;
+    let mut ui = false;
+    let mut ui_seen = false;
+    let mut accessibility = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3959,9 +4058,25 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
                 deterministic_time = true;
                 index += 1;
             }
+            "--ui" => {
+                if ui_seen {
+                    return Err("'--ui' may only be specified once".to_string());
+                }
+                ui = true;
+                ui_seen = true;
+                index += 1;
+            }
+            "--accessibility" => {
+                if accessibility {
+                    return Err("'--accessibility' may only be specified once".to_string());
+                }
+                accessibility = true;
+                ui = true;
+                index += 1;
+            }
             flag => {
                 return Err(format!(
-                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>', '--coverage', or '--deterministic-time'"
+                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>', '--coverage', '--deterministic-time', '--ui', or '--accessibility'"
                 ));
             }
         }
@@ -3970,6 +4085,8 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
         mode,
         coverage,
         deterministic_time,
+        ui,
+        accessibility,
     })
 }
 
@@ -7279,6 +7396,10 @@ fn usage() -> String {
         "[--alloc|--leaks|--sample]",
         "[--alloc|--leaks|--sample|--timeline|--inspect-ui|--overlay]",
     )
+    .replace(
+        "[--coverage] [--deterministic-time]",
+        "[--coverage] [--deterministic-time] [--ui] [--accessibility]",
+    )
 }
 
 #[cfg(test)]
@@ -7310,9 +7431,22 @@ mod tests {
         assert!(options.coverage);
         assert_eq!(options.mode, BuildMode::Profile);
         assert!(!options.deterministic_time);
+        assert!(!options.ui);
+        assert!(!options.accessibility);
         let deterministic = test_options(&["--deterministic-time".to_string()])
             .expect("deterministic test time should parse");
         assert!(deterministic.deterministic_time);
+        let ui = test_options(&["--ui".to_string()]).expect("UI test mode should parse");
+        assert!(ui.ui);
+        assert!(!ui.accessibility);
+        let accessibility = test_options(&["--accessibility".to_string()])
+            .expect("accessibility test mode should parse");
+        assert!(accessibility.ui);
+        assert!(accessibility.accessibility);
+        assert!(
+            test_options(&["--accessibility".to_string(), "--ui".to_string()]).is_ok(),
+            "explicit UI after implied UI should remain valid"
+        );
         assert!(test_options(&["-o".to_string(), "test-bin".to_string()]).is_err());
         assert!(test_options(&["--coverage".to_string(), "--coverage".to_string()]).is_err());
         assert!(
@@ -7321,6 +7455,10 @@ mod tests {
                 "--deterministic-time".to_string(),
             ])
             .is_err()
+        );
+        assert!(test_options(&["--ui".to_string(), "--ui".to_string()]).is_err());
+        assert!(
+            test_options(&["--accessibility".to_string(), "--accessibility".to_string(),]).is_err()
         );
     }
 

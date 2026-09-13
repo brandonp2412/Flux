@@ -1,6 +1,14 @@
 # Testing Flux programs
 
-Flux testing uses the same compiler, type system, native backend, and error model as ordinary programs. `flux test` executes headless `.flux` programs and treats a zero process exit as success. Package tests are discovered from `tests/*.flux` and are analyzed in the package's real manifest/module context. A package test can import code under test with `import "pkg:self/src/module.flux"`; the reserved `self` package name is resolved inside that package root and cannot escape it. Unit tests therefore stay ordinary Flux programs rather than introducing test-only declaration syntax or a parallel runtime. UI/golden test APIs remain roadmap work.
+Flux testing uses the same compiler, type system, native backend, and error model as ordinary programs. `flux test` executes headless `.flux` programs and treats a zero process exit as success. Package tests are discovered from `tests/*.flux` and are analyzed in the package's real manifest/module context. A package test can import code under test with `import "pkg:self/src/module.flux"`; the reserved `self` package name is resolved inside that package root and cannot escape it. Unit tests therefore stay ordinary Flux programs rather than introducing test-only declaration syntax or a parallel runtime.
+
+## Native UI and accessibility tests
+
+Pass `--ui` to allow a test source to declare an `app`. The test is compiled through the ordinary native application backend, launched as a real native process, and passes only if it exits successfully. UI tests must terminate explicitly when their assertions finish; the runner fails a UI test after 30 seconds instead of leaving a stuck native event loop behind. This keeps UI tests in ordinary Flux code: lifecycle callbacks and application functions perform the test work, and no widget-test object hierarchy or alternate renderer is introduced.
+
+Pass `--accessibility` to run the native UI test with an additional compiler-owned accessibility audit before launch. The audit requires an accessible name for interactive controls and for Image, Button, TextInput, Toggle, and Radio elements unless an element is explicitly `accessibilityHidden: true`. Existing visible `text`, `label`, `title`, or Image `alt` properties satisfy the name where appropriate, while `accessibilityLabel` is the explicit universal override. Audit failures identify the view, element, and source line. `--accessibility` implies `--ui`.
+
+Golden/screenshot baselines and cross-platform UI-test execution remain roadmap work.
 
 ## Deterministic time
 
