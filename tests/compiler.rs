@@ -38822,6 +38822,96 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_while_condition_suspends_without_blocking_worker() {
+    let source = r#"
+async fn below(value: i64, limit: i64) -> bool {
+    return value < limit
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn conditionOnly(limit: i64) -> i64 {
+    var value: i64 = 0
+    while await below(value, limit):
+        value = value + 1
+    return value
+}
+
+async fn conditionAndBody(limit: i64) -> i64 {
+    var value: i64 = 0
+    while await below(value, limit):
+        value = await addOne(value)
+    return value
+}
+
+async fn withLoopControl(limit: i64) -> i64 {
+    var value: i64 = 0
+    var total: i64 = 0
+    while await below(value, limit):
+        value = await addOne(value)
+        if value == 2:
+            continue
+        total = total + value
+        if value == 4:
+            break
+    return total
+}
+
+async fn main() -> i64 {
+    let conditionOnlyResult: i64 = await conditionOnly(3)
+    let conditionAndBodyResult: i64 = await conditionAndBody(4)
+    let loopControlResult: i64 = await withLoopControl(6)
+    return conditionOnlyResult + conditionAndBodyResult + loopControlResult
+}
+"#;
+
+    check_source(source).expect("awaited while conditions should typecheck");
+    let generated = compile_to_c(source)
+        .expect("awaited while conditions should lower through continuation states");
+    assert!(generated.contains("flux__async_resume_conditionOnly"));
+    assert!(generated.contains("flux__async_resume_conditionAndBody"));
+    assert!(generated.contains("flux__async_resume_withLoopControl"));
+    assert!(!generated.contains("flux__async_body_conditionOnly("));
+    assert!(!generated.contains("flux__async_body_conditionAndBody("));
+    assert!(!generated.contains("flux__async_body_withLoopControl("));
+    assert!(generated.contains(
+        "flux__async_start_cont_below(flux__local_value, flux__local_limit, flux__async_resume_conditionOnly, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_conditionAndBody, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_below(flux__async_start_below"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root =
+        std::env::temp_dir().join(format!("flux-async-while-condition-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("awaited while condition fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-while-condition");
+    fs::write(&source_path, source).expect("awaited while condition source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("awaited while condition fixture should build");
+    assert!(
+        built.status.success(),
+        "awaited while condition build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("awaited while condition fixture should run");
+    assert_eq!(status.code(), Some(15));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_awaited_optional_binding_condition_suspends_without_blocking_worker() {
     let source = r#"
 async fn maybe(value: i64, present: bool) -> i64? {
@@ -39044,9 +39134,13 @@ async fn addOne(value: i64) -> i64 {
     return value + 1
 }
 
+async fn loadChoice(choice: Choice) -> Choice {
+    return choice
+}
+
 async fn choose(choice: Choice) -> i64 {
     var total: i64 = 1
-    match choice:
+    match await loadChoice(choice):
         Choice.Value(value):
             total = await addOne(value)
             total = await addOne(total)
@@ -39067,6 +39161,10 @@ async fn main() -> i64 {
         compile_to_c(source).expect("enum match awaits should lower to continuation states");
     assert!(generated.contains("flux__async_resume_choose"));
     assert!(!generated.contains("flux__async_body_choose("));
+    assert!(generated.contains(
+        "flux__async_start_cont_loadChoice(flux__local_choice, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_loadChoice(flux__async_start_loadChoice"));
     assert!(generated.contains(
         "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_choose, flux__task)"
     ));

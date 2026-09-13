@@ -16085,6 +16085,7 @@ struct AsyncBranchAwaitPlan {
 #[derive(Clone)]
 struct AsyncWhileAwaitPlan {
     statement_index: usize,
+    condition_await: bool,
     body_await_indices: Vec<usize>,
 }
 
@@ -16097,6 +16098,7 @@ struct AsyncForRangeAwaitPlan {
 #[derive(Clone)]
 struct AsyncMatchAwaitPlan {
     statement_index: usize,
+    scrutinee_await: bool,
     arm_await_indices: Vec<Vec<usize>>,
 }
 
@@ -16428,8 +16430,9 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     let StmtKind::While { cond, body } = &function.body[statement_index].kind else {
         return None;
     };
-    if expr_contains_await(cond) {
-        return None;
+    let condition_await = expr_contains_await(cond);
+    if condition_await {
+        direct_await_call(cond)?;
     }
     let body_await_indices = block_branch_await_indices(body, true)?;
     if body_await_indices
@@ -16439,11 +16442,12 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     {
         return None;
     }
-    if body_await_indices.is_empty() {
+    if !condition_await && body_await_indices.is_empty() {
         None
     } else {
         Some(AsyncWhileAwaitPlan {
             statement_index,
+            condition_await,
             body_await_indices,
         })
     }
@@ -16517,11 +16521,15 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     let StmtKind::Match { value, arms } = &function.body[statement_index].kind else {
         return None;
     };
-    if expr_contains_await(value) || arms.is_empty() {
+    if arms.is_empty() {
         return None;
     }
+    let scrutinee_await = expr_contains_await(value);
+    if scrutinee_await {
+        direct_await_call(value)?;
+    }
     let mut arm_await_indices = Vec::with_capacity(arms.len());
-    let mut any_await = false;
+    let mut any_await = scrutinee_await;
     for arm in arms {
         if arm.guard.as_ref().is_some_and(expr_contains_await) {
             return None;
@@ -16532,6 +16540,7 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     }
     any_await.then_some(AsyncMatchAwaitPlan {
         statement_index,
+        scrutinee_await,
         arm_await_indices,
     })
 }
@@ -20982,6 +20991,61 @@ fn emit_async_completed_optional_await(
     Ok((result, inner))
 }
 
+fn emit_async_completed_single_await(
+    out: &mut String,
+    pad: &str,
+    await_expr: &Expr,
+    current_function: &Function,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(String, Type), Diagnostic> {
+    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation lowering requires a direct async function call",
+        )
+    })?;
+    let signature = signatures.get(callee).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            &format!("unknown async function '{callee}' during continuation lowering"),
+        )
+    })?;
+    let [result_ty] = signature.returns.as_slice() else {
+        return Err(diag(
+            await_expr.span,
+            "async continuation expression changed return arity after type checking",
+        ));
+    };
+    let result_ty = signatures.canonical_type(result_ty);
+    let child = format!("flux__completed_task_{}", *temp_counter);
+    *temp_counter += 1;
+    let result = format!("flux__async_result_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct {} *{child} = (struct {} *)flux__completed_child;\n",
+        async_task_c_name(callee),
+        async_task_c_name(callee)
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child} == NULL) {{ fputs(\"Flux runtime error: missing completed async child\\n\", stderr); abort(); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child}->scope_error != NULL) {{ flux__task->scope_error = {child}->scope_error; {}({child}); {}(flux__task); return; }}\n",
+        async_release_c_name(callee),
+        async_finish_c_name(&current_function.name)
+    ));
+    out.push_str(&format!(
+        "{pad}{} {result} = {child}->result;\n",
+        c_type(&result_ty, signatures)
+    ));
+    out.push_str(&format!(
+        "{pad}{}({child});\n",
+        async_release_c_name(callee)
+    ));
+    Ok((result, result_ty))
+}
+
 fn emit_async_completed_bool_await(
     out: &mut String,
     pad: &str,
@@ -21005,13 +21069,13 @@ fn emit_async_completed_bool_await(
     let [result_ty] = signature.returns.as_slice() else {
         return Err(diag(
             await_expr.span,
-            "async if condition changed return arity after type checking",
+            "async condition changed return arity after type checking",
         ));
     };
     if signatures.canonical_type(result_ty) != Type::Bool {
         return Err(diag(
             await_expr.span,
-            "async if condition changed type after type checking",
+            "async condition changed type after type checking",
         ));
     }
     let child = format!("flux__completed_task_{}", *temp_counter);
@@ -21629,52 +21693,29 @@ fn emit_async_while_tail(
     Ok(())
 }
 
-fn emit_async_while_iteration(
+fn emit_async_while_condition_body(
     out: &mut String,
     function: &Function,
     signatures: &Signatures,
     plan: &AsyncContinuationPlan,
     while_plan: &AsyncWhileAwaitPlan,
-    cond: &Expr,
+    condition: &str,
     body: &[Stmt],
+    first_body_state: usize,
+    continue_state: usize,
     outer_env: &HashMap<String, Type>,
     outer_mutable: &HashSet<String>,
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(HashMap<String, Type>, HashSet<String>), Diagnostic> {
-    let first_await = while_plan.body_await_indices[0];
     let pad = "            ";
-    let condition = emit_expr(cond, outer_env, signatures)?;
-    out.push_str(&format!("{pad}if {} {{\n", c_condition(&condition.code)));
+    out.push_str(&format!("{pad}if ({condition}) {{\n"));
     let mut body_env = outer_env.clone();
     let mut body_mutable = outer_mutable.clone();
-    emit_block(
-        out,
-        &body[..first_await],
-        4,
-        &mut body_env,
-        &mut body_mutable,
-        signatures,
-        temp_counter,
-        context,
-    )?;
-    let awaited_stmt = &body[first_await];
-    emit_source_line(out, awaited_stmt.span, context.source_paths);
-    let conditional_suspend = emit_async_branch_suspend(
-        out,
-        "                ",
-        awaited_stmt,
-        1,
-        function,
-        plan,
-        &body_env,
-        &body_mutable,
-        signatures,
-    )?;
-    if conditional_suspend {
+    if let Some(first_await) = while_plan.body_await_indices.first().copied() {
         emit_block(
             out,
-            &body[first_await + 1..],
+            &body[..first_await],
             4,
             &mut body_env,
             &mut body_mutable,
@@ -21682,14 +21723,60 @@ fn emit_async_while_iteration(
             temp_counter,
             context,
         )?;
-        let continue_state = while_plan.body_await_indices.len() + 1;
+        let awaited_stmt = &body[first_await];
+        emit_source_line(out, awaited_stmt.span, context.source_paths);
+        let conditional_suspend = emit_async_branch_suspend(
+            out,
+            "                ",
+            awaited_stmt,
+            first_body_state,
+            function,
+            plan,
+            &body_env,
+            &body_mutable,
+            signatures,
+        )?;
+        if conditional_suspend {
+            emit_block(
+                out,
+                &body[first_await + 1..],
+                4,
+                &mut body_env,
+                &mut body_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
+            emit_async_save_locals(
+                out,
+                "                ",
+                &plan.locals,
+                &body_env,
+                signatures,
+                awaited_stmt.span,
+            )?;
+            out.push_str(&format!(
+                "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+            ));
+        }
+    } else {
+        emit_block(
+            out,
+            body,
+            4,
+            &mut body_env,
+            &mut body_mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
         emit_async_save_locals(
             out,
             "                ",
             &plan.locals,
             &body_env,
             signatures,
-            awaited_stmt.span,
+            function.body[while_plan.statement_index].span,
         )?;
         out.push_str(&format!(
             "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
@@ -21708,6 +21795,54 @@ fn emit_async_while_iteration(
         context,
     )?;
     Ok((body_env, body_mutable))
+}
+
+fn emit_async_while_iteration(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    while_plan: &AsyncWhileAwaitPlan,
+    cond: &Expr,
+    body: &[Stmt],
+    outer_env: &HashMap<String, Type>,
+    outer_mutable: &HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(HashMap<String, Type>, HashSet<String>), Diagnostic> {
+    if while_plan.condition_await {
+        emit_source_line(out, cond.span, context.source_paths);
+        emit_async_suspend_expr(
+            out,
+            "            ",
+            cond,
+            cond.span,
+            1,
+            function,
+            plan,
+            outer_env,
+            signatures,
+        )?;
+        return Ok((outer_env.clone(), outer_mutable.clone()));
+    }
+    let condition = emit_expr(cond, outer_env, signatures)?;
+    let first_body_state = 1;
+    let continue_state = first_body_state + while_plan.body_await_indices.len();
+    emit_async_while_condition_body(
+        out,
+        function,
+        signatures,
+        plan,
+        while_plan,
+        &c_condition(&condition.code),
+        body,
+        first_body_state,
+        continue_state,
+        outer_env,
+        outer_mutable,
+        temp_counter,
+        context,
+    )
 }
 
 fn emit_async_while_resume_states(
@@ -21729,11 +21864,14 @@ fn emit_async_while_resume_states(
     let mut state_context = context;
     state_context.async_state_machine = true;
     let await_indices = &while_plan.body_await_indices;
-    let mut previous_await = await_indices[0];
+    let Some(mut previous_await) = await_indices.first().copied() else {
+        return Ok(());
+    };
     let mut segment_start = previous_await + 1;
+    let first_state = if while_plan.condition_await { 2 } else { 1 };
 
     for offset in 0..await_indices.len() {
-        let state = offset + 1;
+        let state = first_state + offset;
         out.push_str(&format!("        case {state}: {{\n"));
         for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
@@ -21826,7 +21964,8 @@ fn emit_async_while_continuation_function(
         ));
     };
     let task_name = async_task_c_name(&function.name);
-    let continue_state = while_plan.body_await_indices.len() + 1;
+    let first_body_state = if while_plan.condition_await { 2 } else { 1 };
+    let continue_state = first_body_state + while_plan.body_await_indices.len();
     let break_state = continue_state + 1;
     let mut state_context = context;
     state_context.async_state_machine = true;
@@ -21871,7 +22010,7 @@ fn emit_async_while_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let (body_env, body_mutable) = emit_async_while_iteration(
+    let initial_body_state = emit_async_while_iteration(
         out,
         function,
         signatures,
@@ -21885,6 +22024,39 @@ fn emit_async_while_continuation_function(
         loop_context,
     )?;
     out.push_str("        }\n");
+
+    let (body_env, body_mutable) = if while_plan.condition_await {
+        out.push_str("        case 1: {\n");
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, cond.span)?;
+        let completed_condition =
+            emit_async_completed_bool_await(out, pad, cond, function, signatures, temp_counter)?;
+        let body_state = emit_async_while_condition_body(
+            out,
+            function,
+            signatures,
+            plan,
+            while_plan,
+            &completed_condition,
+            body,
+            first_body_state,
+            continue_state,
+            &outer_env,
+            &outer_mutable,
+            temp_counter,
+            loop_context,
+        )?;
+        out.push_str("        }\n");
+        body_state
+    } else {
+        initial_body_state
+    };
 
     emit_async_while_resume_states(
         out,
@@ -22553,7 +22725,27 @@ fn emit_async_match_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let emitted_value = emit_expr(value, &outer_env, signatures)?;
+    let emitted_value = if match_plan.scrutinee_await {
+        emit_source_line(out, value.span, context.source_paths);
+        emit_async_suspend_expr(
+            out, pad, value, value.span, 1, function, plan, &outer_env, signatures,
+        )?;
+        out.push_str("        }\n");
+        out.push_str("        case 1: {\n");
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, value.span)?;
+        let (code, ty) =
+            emit_async_completed_single_await(out, pad, value, function, signatures, temp_counter)?;
+        EmittedExpr { code, ty }
+    } else {
+        emit_expr(value, &outer_env, signatures)?
+    };
     let Type::Named(enum_name) = &emitted_value.ty else {
         return Err(diag(
             value.span,
@@ -22575,7 +22767,7 @@ fn emit_async_match_continuation_function(
     ));
     out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
 
-    let mut next_state = 1usize;
+    let mut next_state = if match_plan.scrutinee_await { 2 } else { 1 };
     let mut resume_envs = Vec::with_capacity(arms.len());
     for variant in &definition.variants {
         let variant_arms = arms
