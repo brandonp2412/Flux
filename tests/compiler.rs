@@ -23129,7 +23129,15 @@ fn web_cli_builds_native_dom_bundle() {
     let source = root.join("main.flux");
     fs::write(
         &source,
-        r#"view WebDemo {
+        r#"view UnusedWebView {
+    grid columns: 1fr
+    grid rows: auto
+
+    Text unused at 1,1
+        text: "TREE_SHAKE_UNUSED_WEB_VIEW"
+}
+
+view WebDemo {
     grid columns: 1fr
     grid rows: auto auto
     state active: bool = false
@@ -23169,6 +23177,15 @@ app WebDemo(title: "Flux Web")
     assert!(html.contains("setAttribute('aria-label'"));
     assert!(html.contains("addEventListener('click'"));
     assert!(!html.contains("canvas"));
+    assert!(!html.contains("TREE_SHAKE_UNUSED_WEB_VIEW"));
+    assert!(!html.contains("/__flux_version"));
+    assert_eq!(
+        fs::read_dir(&output_dir)
+            .expect("web output directory should be readable")
+            .count(),
+        1,
+        "production web build should be a self-contained single-file bundle"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

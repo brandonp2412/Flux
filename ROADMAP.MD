@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 553
+- Completed baseline units: 556
 - Reported overall progress: **75%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -887,9 +887,9 @@ Web is a supported target, not the implementation substrate for native apps.
 - [ ] Browser storage.
 - [x] Browser accessibility/semantics for the current web backend: semantic native controls are preserved and Flux `accessibilityLabel`, `accessibilityDescription`, `accessibilityHidden`, and `accessibilityRole` lower to browser `aria-*`/role state on the real DOM nodes. Role spellings are normalized to valid web roles while ordinary native button/input/image semantics remain authoritative instead of creating a parallel accessibility tree.
 - [x] Responsive web layout for the current web backend: Flux grid tracks lower directly to CSS Grid (`px`/`fr`/`auto`) with typed gap/padding/scroll behavior, while `windowWidth`, `windowHeight`, orientation, compact/medium/expanded breakpoints, and `displayScale` read browser viewport/device state and re-run in-place UI refresh on native resize events. The generated viewport metadata and full-width root therefore preserve the same portable responsive-expression contract without a browser framework runtime.
-- [ ] Development server.
-- [ ] Automatic save-triggered refresh/hot apply.
-- [ ] Production bundling/tree shaking.
+- [x] Development server for the bootstrap web target: `flux run web <file.flux|package-dir|flux.toml> [--host address] [--port number]` serves the compiler-emitted DOM bundle directly over a small compiler-owned HTTP server, defaults to loopback-only `127.0.0.1:4173`, supports explicit host/port overrides, and keeps browser development transport separate from production artifacts.
+- [x] Automatic save-triggered refresh for the bootstrap web target: the development server fingerprints package `flux.toml`/`.flux` sources, recompiles after a source-tree change is observed, and exposes a compiler-owned version endpoint polled by the served page so successful saves reload the browser automatically. Invalid intermediate saves report diagnostics while preserving the last successful page until the next source change; production `flux build web` output contains no reload endpoint/runtime.
+- [x] Production bundling/tree shaking for the current declarative web backend: `flux build web` emits one self-contained `index.html` containing only the selected application/root view, that view's state/derived expressions and direct DOM event logic, omitting unused sibling views and all development-server reload code. Regression coverage verifies both the single-file production bundle and that unused view content is absent; finer state/expression pruning can extend the same direct emitter as broader application-code lowering lands.
 
 # Milestone 19 — Platform interoperability and plugin ecosystem
 

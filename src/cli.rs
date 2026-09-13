@@ -2,7 +2,9 @@ use crate as fluxc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
@@ -13,6 +15,7 @@ use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 const FLUX_GDB_SUPPORT: &str = include_str!("../tools/flux-gdb.py");
 const COVERAGE_COMPILATION_DIR: &str = "/__flux_coverage__";
 
+#[derive(Debug)]
 enum CliError {
     Message(String),
     Reported,
@@ -509,6 +512,9 @@ fn run() -> Result<(), CliError> {
             ))
         }
         "run" => {
+            if args.get(1).is_some_and(|value| value == "web") {
+                return run_web_command(&args[2..]);
+            }
             if args.get(1).is_some_and(|value| value == "android") {
                 let built = build_android_command(&args[2..], BuildMode::Debug, true, true)?;
                 return run_android_apk(&built);
@@ -626,6 +632,24 @@ fn validate_android_binding_availability(generated_c: &str, min_sdk: u32) -> Res
     Ok(())
 }
 
+fn compile_web_html(target: &Path) -> Result<String, CliError> {
+    let sources = validate_project(target)?;
+    let analysis = match fluxc::project::analyze(target) {
+        Ok(analysis) => analysis,
+        Err(diagnostics) => {
+            report_diagnostics(target, &diagnostics, &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    match fluxc::web::emit_html(&analysis.program) {
+        Ok(generated) => Ok(generated),
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            Err(CliError::Reported)
+        }
+    }
+}
+
 fn build_web_command(args: &[String]) -> Result<(), CliError> {
     let Some(target) = args.first() else {
         return Err(CliError::Message(
@@ -644,21 +668,7 @@ fn build_web_command(args: &[String]) -> Result<(), CliError> {
                 .join("build/web")
         }
     });
-    let sources = validate_project(target)?;
-    let analysis = match fluxc::project::analyze(target) {
-        Ok(analysis) => analysis,
-        Err(diagnostics) => {
-            report_diagnostics(target, &diagnostics, &sources);
-            return Err(CliError::Reported);
-        }
-    };
-    let generated = match fluxc::web::emit_html(&analysis.program) {
-        Ok(generated) => generated,
-        Err(diagnostic) => {
-            report_diagnostics(target, &[diagnostic], &sources);
-            return Err(CliError::Reported);
-        }
-    };
+    let generated = compile_web_html(target)?;
     if output.exists() && !output.is_dir() {
         return Err(CliError::Message(format!(
             "web output '{}' exists and is not a directory",
@@ -671,6 +681,233 @@ fn build_web_command(args: &[String]) -> Result<(), CliError> {
     fs::write(&index, generated)
         .map_err(|error| format!("failed to write '{}': {error}", index.display()))?;
     println!("built (web): {}", index.display());
+    Ok(())
+}
+
+#[derive(Debug)]
+struct WebDevState {
+    html: String,
+    checked_stamp: u64,
+    version: u64,
+}
+
+fn run_web_command(args: &[String]) -> Result<(), CliError> {
+    let Some(target) = args.first() else {
+        return Err(CliError::Message(
+            "web run syntax is 'run web <file.flux|package-dir|flux.toml> [--host address] [--port number]'"
+                .to_string(),
+        ));
+    };
+    let target = PathBuf::from(target);
+    let (host, port) = web_dev_options(&args[1..])?;
+    let html = compile_web_html(&target)?;
+    let checked_stamp = web_source_stamp(&target)?;
+    let mut state = WebDevState {
+        html,
+        checked_stamp,
+        version: 1,
+    };
+    let listener = TcpListener::bind((host.as_str(), port)).map_err(|error| {
+        CliError::Message(format!(
+            "failed to bind web development server on {host}:{port}: {error}"
+        ))
+    })?;
+    let address = listener.local_addr().map_err(|error| {
+        CliError::Message(format!(
+            "failed to inspect web development server address: {error}"
+        ))
+    })?;
+    println!("serving (web): http://{address}");
+    for connection in listener.incoming() {
+        let mut stream = connection.map_err(|error| {
+            CliError::Message(format!("web development server accept failed: {error}"))
+        })?;
+        serve_web_dev_connection(&mut stream, &target, &mut state)?;
+    }
+    Ok(())
+}
+
+fn web_dev_options(args: &[String]) -> Result<(String, u16), CliError> {
+    let mut host = "127.0.0.1".to_string();
+    let mut port = 4173u16;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--host" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliError::Message("--host requires an address".to_string()));
+                };
+                if value.trim().is_empty() {
+                    return Err(CliError::Message(
+                        "--host address must not be empty".to_string(),
+                    ));
+                }
+                host = value.clone();
+                index += 2;
+            }
+            "--port" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliError::Message("--port requires a number".to_string()));
+                };
+                port = value.parse::<u16>().map_err(|_| {
+                    CliError::Message(format!("invalid web development server port '{value}'"))
+                })?;
+                index += 2;
+            }
+            other => {
+                return Err(CliError::Message(format!(
+                    "unknown web run option '{other}'; expected --host or --port"
+                )));
+            }
+        }
+    }
+    Ok((host, port))
+}
+
+fn web_source_stamp(target: &Path) -> Result<u64, CliError> {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let mut files = Vec::new();
+    collect_web_source_files(root, &mut files).map_err(|error| {
+        CliError::Message(format!(
+            "failed to inspect web source tree '{}': {error}",
+            root.display()
+        ))
+    })?;
+    if target.is_file() && !files.iter().any(|path| path == target) {
+        files.push(target.to_path_buf());
+    }
+    files.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in files {
+        path.hash(&mut hasher);
+        let metadata = fs::metadata(&path).map_err(|error| {
+            CliError::Message(format!(
+                "failed to inspect web source '{}': {error}",
+                path.display()
+            ))
+        })?;
+        metadata.len().hash(&mut hasher);
+        let modified = metadata.modified().map_err(|error| {
+            CliError::Message(format!(
+                "failed to inspect web source timestamp '{}': {error}",
+                path.display()
+            ))
+        })?;
+        modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .hash(&mut hasher);
+    }
+    Ok(hasher.finish())
+}
+
+fn collect_web_source_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if matches!(name, ".git" | "build" | "target") {
+                continue;
+            }
+            collect_web_source_files(&path, files)?;
+            continue;
+        }
+        let is_flux = path.extension().and_then(|extension| extension.to_str()) == Some("flux");
+        let is_manifest = path.file_name().and_then(|name| name.to_str()) == Some("flux.toml");
+        if is_flux || is_manifest {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn refresh_web_dev_state(target: &Path, state: &mut WebDevState) -> Result<(), CliError> {
+    let stamp = web_source_stamp(target)?;
+    if stamp == state.checked_stamp {
+        return Ok(());
+    }
+    state.checked_stamp = stamp;
+    match compile_web_html(target) {
+        Ok(html) => {
+            state.html = html;
+            state.version = state.version.wrapping_add(1).max(1);
+            println!("rebuilt (web): version {}", state.version);
+        }
+        Err(CliError::Reported) => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+fn web_dev_document(html: &str, version: u64) -> String {
+    let script = format!(
+        "<script>const fluxDevVersion={version};setInterval(async()=>{{try{{const response=await fetch('/__flux_version',{{cache:'no-store'}});if(!response.ok)return;const next=Number(await response.text());if(next!==fluxDevVersion)location.reload();}}catch(_error){{}}}},350);</script>"
+    );
+    html.replacen("</body>", &format!("{script}</body>"), 1)
+}
+
+fn web_dev_response(
+    target: &Path,
+    state: &mut WebDevState,
+    request_path: &str,
+) -> Result<(u16, &'static str, String), CliError> {
+    refresh_web_dev_state(target, state)?;
+    let path = request_path.split('?').next().unwrap_or(request_path);
+    match path {
+        "/" | "/index.html" => Ok((
+            200,
+            "text/html; charset=utf-8",
+            web_dev_document(&state.html, state.version),
+        )),
+        "/__flux_version" => Ok((200, "text/plain; charset=utf-8", state.version.to_string())),
+        _ => Ok((404, "text/plain; charset=utf-8", "not found\n".to_string())),
+    }
+}
+
+fn serve_web_dev_connection(
+    stream: &mut TcpStream,
+    target: &Path,
+    state: &mut WebDevState,
+) -> Result<(), CliError> {
+    let mut request = [0u8; 8192];
+    let read = stream.read(&mut request).map_err(|error| {
+        CliError::Message(format!("web development server read failed: {error}"))
+    })?;
+    let request = String::from_utf8_lossy(&request[..read]);
+    let mut parts = request.lines().next().unwrap_or("").split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("/");
+    let (status, content_type, body) = if method == "GET" {
+        web_dev_response(target, state, path)?
+    } else {
+        (
+            405,
+            "text/plain; charset=utf-8",
+            "method not allowed\n".to_string(),
+        )
+    };
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Error",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).map_err(|error| {
+        CliError::Message(format!("web development server write failed: {error}"))
+    })?;
     Ok(())
 }
 
@@ -8023,7 +8260,13 @@ fn usage() -> String {
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),
         &format!(
-            " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] | {command} build android <package-dir|flux.toml>"
+        " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] | {command} build android <package-dir|flux.toml>"
+        ),
+    )
+    .replace(
+        &format!(" | {command} run android <package-dir|flux.toml>"),
+        &format!(
+            " | {command} run web <file.flux|package-dir|flux.toml> [--host address] [--port number] | {command} run android <package-dir|flux.toml>"
         ),
     )
     .replace(
@@ -8044,21 +8287,89 @@ fn usage() -> String {
 mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode, CliError,
-        NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
+        NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind, WebDevState,
         android_abi_from_runtime, android_activity_java_source,
         android_background_runner_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, build_native_configured,
-        build_native_instrumented, build_options, debug_options, demangle_profile_symbols,
-        display_flux_symbol, find_android_compile_jar, json_string,
+        build_native_instrumented, build_options, compile_web_html, debug_options,
+        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar, json_string,
         native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
-        waydroid_status_is_running, write_native_cache_metadata,
+        waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
+        write_native_cache_metadata,
     };
+
+    #[test]
+    fn web_dev_options_are_local_by_default_and_validate_overrides() {
+        assert_eq!(
+            web_dev_options(&[]).expect("default web dev options should parse"),
+            ("127.0.0.1".to_string(), 4173)
+        );
+        assert_eq!(
+            web_dev_options(&[
+                "--host".to_string(),
+                "0.0.0.0".to_string(),
+                "--port".to_string(),
+                "8080".to_string(),
+            ])
+            .expect("web dev overrides should parse"),
+            ("0.0.0.0".to_string(), 8080)
+        );
+        assert!(web_dev_options(&["--port".to_string(), "nope".to_string()]).is_err());
+        assert!(web_dev_options(&["--unknown".to_string()]).is_err());
+    }
+
+    #[test]
+    fn web_dev_response_rebuilds_after_source_changes_and_keeps_reload_out_of_production() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-web-dev-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("web dev fixture directory should be writable");
+        let source = root.join("main.flux");
+        std::fs::write(
+            &source,
+            "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"Before\"\n}\n\napp Demo(title: \"Dev\")\n",
+        )
+        .expect("initial web dev source should be writable");
+
+        let html = compile_web_html(&source).expect("initial web dev source should compile");
+        assert!(!html.contains("/__flux_version"));
+        let stamp = web_source_stamp(&source).expect("initial web source stamp should be readable");
+        let mut state = WebDevState {
+            html,
+            checked_stamp: stamp,
+            version: 1,
+        };
+        let (status, content_type, body) =
+            web_dev_response(&source, &mut state, "/").expect("web root should render");
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/html; charset=utf-8");
+        assert!(body.contains("fluxDevVersion=1"));
+        assert!(body.contains("/__flux_version"));
+        assert!(body.contains("Before"));
+
+        std::fs::write(
+            &source,
+            "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"After source save\"\n}\n\napp Demo(title: \"Dev\")\n",
+        )
+        .expect("updated web dev source should be writable");
+        let (_, _, version) = web_dev_response(&source, &mut state, "/__flux_version")
+            .expect("version endpoint should observe source changes");
+        assert_eq!(version, "2");
+        let (_, _, rebuilt) = web_dev_response(&source, &mut state, "/index.html")
+            .expect("rebuilt page should render");
+        assert!(rebuilt.contains("After source save"));
+        assert!(rebuilt.contains("fluxDevVersion=2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn test_options_accept_coverage_without_confusing_build_output() {
