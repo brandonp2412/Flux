@@ -26341,6 +26341,152 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     assert!(first.contains("source = \"registry:~3.4.0\""));
     assert!(first.contains("source = \"git:https://example.test/source.git#abc123\""));
 
+    let tree = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("tree")
+        .arg(&app)
+        .output()
+        .expect("flux tree should run");
+    assert!(
+        tree.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tree.stderr)
+    );
+    let tree = String::from_utf8_lossy(&tree.stdout);
+    for expected in [
+        "app",
+        "math 1.4.3 [path:../math]",
+        "util 2.0.0 [path:../util]",
+        "remote [registry:~3.4.0]",
+        "source [git:https://example.test/source.git#abc123]",
+    ] {
+        assert!(
+            tree.contains(expected),
+            "expected '{expected}' in dependency tree: {tree}"
+        );
+    }
+
+    let why = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("why")
+        .arg(&app)
+        .arg("util")
+        .output()
+        .expect("flux why should run");
+    assert!(
+        why.status.success(),
+        "{}",
+        String::from_utf8_lossy(&why.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&why.stdout).trim(),
+        "app -> math -> util"
+    );
+
+    let missing_why = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("why")
+        .arg(&app)
+        .arg("missing")
+        .output()
+        .expect("flux why missing dependency should run");
+    assert!(!missing_why.status.success());
+    assert!(String::from_utf8_lossy(&missing_why.stderr).contains("is not present"));
+
+    fs::remove_file(&lock_path).expect("lockfile should be removable for locked build coverage");
+    let locked_output = root.join("locked-build");
+    let locked_build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&app)
+        .arg("-o")
+        .arg(&locked_output)
+        .arg("--mode")
+        .arg("debug")
+        .arg("--locked")
+        .output()
+        .expect("locked build should run");
+    assert!(!locked_build.status.success());
+    assert!(
+        !lock_path.exists(),
+        "--locked must not create a missing lockfile"
+    );
+    assert!(String::from_utf8_lossy(&locked_build.stderr).contains("require a current flux.lock"));
+
+    let refreshed_output = root.join("refreshed-build");
+    let refreshed_build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&app)
+        .arg("-o")
+        .arg(&refreshed_output)
+        .arg("--mode")
+        .arg("debug")
+        .output()
+        .expect("ordinary build should refresh the lockfile");
+    assert!(
+        refreshed_build.status.success(),
+        "ordinary build failed: {}",
+        String::from_utf8_lossy(&refreshed_build.stderr)
+    );
+    assert!(
+        lock_path.exists(),
+        "ordinary build should recreate the lockfile"
+    );
+    let _ = fs::remove_file(&refreshed_output);
+
+    fs::remove_file(&lock_path).expect("lockfile should be removable for locked check coverage");
+    let locked_check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .arg("--locked")
+        .output()
+        .expect("locked check should run");
+    assert!(!locked_check.status.success());
+    assert!(
+        !lock_path.exists(),
+        "locked check must not create a missing lockfile"
+    );
+
+    let locked_package = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("package")
+        .arg(&app)
+        .arg("--locked")
+        .output()
+        .expect("locked package should run");
+    assert!(!locked_package.status.success());
+    assert!(
+        !lock_path.exists(),
+        "locked package must not create a missing lockfile"
+    );
+
+    for command in ["analyze", "run", "test"] {
+        let locked_command = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .arg(command)
+            .arg(&app)
+            .arg("--locked")
+            .output()
+            .unwrap_or_else(|error| panic!("locked {command} should run: {error}"));
+        assert!(
+            !locked_command.status.success(),
+            "locked {command} unexpectedly succeeded"
+        );
+        assert!(
+            !lock_path.exists(),
+            "locked {command} must not create a missing lockfile"
+        );
+    }
+
+    let refreshed_check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .output()
+        .expect("ordinary check should refresh the lockfile");
+    assert!(
+        refreshed_check.status.success(),
+        "ordinary check failed: {}",
+        String::from_utf8_lossy(&refreshed_check.stderr)
+    );
+    assert!(
+        lock_path.exists(),
+        "ordinary check should recreate the lockfile"
+    );
+
     fluxc::project::write_lockfile(&app).expect("lockfile regeneration should succeed");
     assert_eq!(
         fs::read_to_string(&lock_path).expect("regenerated lockfile should be readable"),
@@ -26444,6 +26590,34 @@ fn dependency_resolution_reports_conflicting_and_cyclic_paths() {
 
     fs::write(
         left.join("flux.toml"),
+        "[package]\nname = \"left\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = \"^1.2.0\"\n",
+    )
+    .expect("left registry requirement should be writable");
+    fs::write(
+        right.join("flux.toml"),
+        "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = \"~1.4.0\"\n",
+    )
+    .expect("compatible registry requirement should be writable");
+    fluxc::project::write_lockfile(&app)
+        .expect("overlapping registry requirements should remain resolvable");
+
+    fs::write(
+        right.join("flux.toml"),
+        "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = \"^2.0.0\"\n",
+    )
+    .expect("conflicting registry requirement should be writable");
+    let registry_conflict = fluxc::project::write_lockfile(&app)
+        .expect_err("disjoint registry requirements must fail before metadata fetch");
+    let registry_conflict = &registry_conflict[0].message;
+    for expected in ["left/shared", "right/shared", "^1.2.0", "^2.0.0"] {
+        assert!(
+            registry_conflict.contains(expected),
+            "expected '{expected}' in registry conflict diagnostic: {registry_conflict}"
+        );
+    }
+
+    fs::write(
+        left.join("flux.toml"),
         "[package]\nname = \"left\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nright = { path = \"../right\" }\n",
     )
     .expect("left cycle manifest should be writable");
@@ -26502,6 +26676,27 @@ fn semantic_version_resolution_selects_highest_compatible_release() {
         fluxc::project::resolve_semver_requirement("^1.2.3", ["1.2"])
             .expect_err("invalid registry candidate must fail deterministically")
             .contains("invalid SemVer candidate")
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirements(
+            ["^1.2.0", "~1.4.0"],
+            ["1.3.9", "1.4.0", "1.4.8", "1.5.0", "2.0.0"],
+        )
+        .expect("combined registry requirements should resolve"),
+        Some("1.4.8".to_string())
+    );
+    assert_eq!(
+        fluxc::project::resolve_semver_requirements(
+            ["^1.2.0", "^2.0.0"],
+            ["1.9.9", "2.0.0", "2.4.0"],
+        )
+        .expect("valid disjoint requirements should produce no candidate"),
+        None
+    );
+    assert!(
+        fluxc::project::resolve_semver_requirements(["^1.2.0", ">=1.4.0"], ["1.4.0"])
+            .expect_err("unsupported combined requirement must fail deterministically")
+            .contains("invalid SemVer requirement")
     );
 }
 

@@ -103,6 +103,7 @@ struct BuildOptions {
     output: Option<PathBuf>,
     mode: BuildMode,
     native_target: NativeTargetOptions,
+    locked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,7 @@ struct PackageOptions {
     mode: BuildMode,
     format: PackageFormat,
     native_target: NativeTargetOptions,
+    locked: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -180,12 +182,19 @@ struct ObfuscateSymbolsOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnalysisOptions {
+    json: bool,
+    locked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TestOptions {
     mode: BuildMode,
     coverage: bool,
     deterministic_time: bool,
     ui: bool,
     accessibility: bool,
+    locked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,15 +341,61 @@ fn run() -> Result<(), CliError> {
                 )),
             }
         }
+        "tree" => {
+            let path = require_target(&args)?;
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "tree syntax is 'tree <package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            match fluxc::project::dependency_tree(path) {
+                Ok(tree) => {
+                    println!("{tree}");
+                    Ok(())
+                }
+                Err(diagnostics) => Err(CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+            }
+        }
+        "why" => {
+            let path = require_target(&args)?;
+            if args.len() != 3 {
+                return Err(CliError::Message(
+                    "why syntax is 'why <package-dir|flux.toml> <dependency>'".to_string(),
+                ));
+            }
+            match fluxc::project::dependency_why(path, &args[2]) {
+                Ok(paths) => {
+                    println!("{paths}");
+                    Ok(())
+                }
+                Err(diagnostics) => Err(CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+            }
+        }
         "check" | "analyze" => {
             let path = require_target(&args)?;
-            let json = analysis_json_mode(&args[0], &args[2..])?;
+            let options = analysis_options(&args[0], &args[2..])?;
             let resolved =
                 fluxc::project::resolve_entry(path).unwrap_or_else(|_| path.to_path_buf());
             let source_id = fluxc::SourceId::from_name(resolved.to_string_lossy().as_ref());
-            let (diagnostics, sources) = fluxc::project::check_with_sources(path);
+            let (diagnostics, sources) = match fluxc::project::ensure_lockfile(path, options.locked)
+            {
+                Ok(_) => fluxc::project::check_with_sources(path),
+                Err(diagnostics) => (diagnostics, Vec::new()),
+            };
             if diagnostics.is_empty() {
-                if json {
+                if options.json {
                     println!(
                         "{}",
                         fluxc::diagnostics_envelope_to_json(true, source_id, &[])
@@ -350,7 +405,7 @@ fn run() -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            if json {
+            if options.json {
                 println!(
                     "{}",
                     fluxc::diagnostics_envelope_to_json(false, source_id, &diagnostics)
@@ -479,6 +534,13 @@ fn run() -> Result<(), CliError> {
             }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Release)?;
+            fluxc::project::ensure_lockfile(path, options.locked).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
             let native_package = native_package_config_for_target(path)?;
             let sources = validate_project(path)?;
             let codegen_target = options.native_target.codegen_target();
@@ -558,11 +620,25 @@ fn run() -> Result<(), CliError> {
                         .to_string(),
                 ));
             }
+            fluxc::project::ensure_lockfile(path, options.locked).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
             run_development(path, options.mode)
         }
         "test" => {
             let path = require_target(&args)?;
             let options = test_options(&args[2..])?;
+            fluxc::project::ensure_lockfile(path, options.locked).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
             run_tests(path, options)
         }
         "debug" => {
@@ -1456,6 +1532,13 @@ fn run_android_apk_waydroid(build: &AndroidBuildResult) -> Result<(), CliError> 
 }
 
 fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError> {
+    fluxc::project::ensure_lockfile(target, options.locked).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
     let manifest_path = if target.is_dir() {
         target.join("flux.toml")
     } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
@@ -3885,14 +3968,23 @@ fn terminal_color_enabled() -> bool {
     io::stderr().is_terminal()
 }
 
-fn analysis_json_mode(command: &str, args: &[String]) -> Result<bool, String> {
-    match args {
-        [] => Ok(false),
-        [flag] if flag == "--json" => Ok(true),
-        _ => Err(format!(
-            "{command} syntax is '{command} <file.flux|package-dir|flux.toml> [--json]'"
-        )),
+fn analysis_options(command: &str, args: &[String]) -> Result<AnalysisOptions, String> {
+    let mut json = false;
+    let mut locked = false;
+    for flag in args {
+        match flag.as_str() {
+            "--json" if !json => json = true,
+            "--locked" if !locked => locked = true,
+            "--json" => return Err("'--json' may only be specified once".to_string()),
+            "--locked" => return Err("'--locked' may only be specified once".to_string()),
+            _ => {
+                return Err(format!(
+                    "{command} syntax is '{command} <file.flux|package-dir|flux.toml> [--json] [--locked]'"
+                ));
+            }
+        }
     }
+    Ok(AnalysisOptions { json, locked })
 }
 
 fn waydroid_running() -> Result<bool, String> {
@@ -4517,6 +4609,7 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
     let mut ui = false;
     let mut ui_seen = false;
     let mut accessibility = false;
+    let mut locked = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -4561,9 +4654,16 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
                 ui = true;
                 index += 1;
             }
+            "--locked" => {
+                if locked {
+                    return Err("'--locked' may only be specified once".to_string());
+                }
+                locked = true;
+                index += 1;
+            }
             flag => {
                 return Err(format!(
-                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>', '--coverage', '--deterministic-time', '--ui', or '--accessibility'"
+                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>', '--coverage', '--deterministic-time', '--ui', '--accessibility', or '--locked'"
                 ));
             }
         }
@@ -4574,6 +4674,7 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
         deterministic_time,
         ui,
         accessibility,
+        locked,
     })
 }
 
@@ -4584,6 +4685,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
     let mut format = PackageFormat::Directory;
     let mut format_seen = false;
     let mut native_target = NativeTargetOptions::default();
+    let mut locked = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -4642,9 +4744,16 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                 native_target.sysroot = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--locked" => {
+                if locked {
+                    return Err("'--locked' may only be specified once".to_string());
+                }
+                locked = true;
+                index += 1;
+            }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static>', '--target <triple>', or '--sysroot <directory>'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static>', '--target <triple>', '--sysroot <directory>', or '--locked'"
                 ));
             }
         }
@@ -4654,6 +4763,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
         mode,
         format,
         native_target,
+        locked,
     })
 }
 
@@ -4676,6 +4786,7 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
     let mut mode = default_mode;
     let mut mode_seen = false;
     let mut native_target = NativeTargetOptions::default();
+    let mut locked = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -4720,9 +4831,16 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
                 native_target.sysroot = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--locked" => {
+                if locked {
+                    return Err("'--locked' may only be specified once".to_string());
+                }
+                locked = true;
+                index += 1;
+            }
             flag => {
                 return Err(format!(
-                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', or '--sysroot <directory>'"
+                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', '--sysroot <directory>', or '--locked'"
                 ));
             }
         }
@@ -4731,6 +4849,7 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
         output,
         mode,
         native_target,
+        locked,
     })
 }
 
@@ -8481,7 +8600,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),
@@ -8524,9 +8643,9 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode, CliError,
-        NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind, WebDevState,
-        android_abi_from_runtime, android_activity_java_source,
+        AdbDevice, AnalysisOptions, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
+        CliError, NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
+        WebDevState, analysis_options, android_abi_from_runtime, android_activity_java_source,
         android_background_runner_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
@@ -8610,6 +8729,24 @@ mod tests {
     }
 
     #[test]
+    fn analysis_options_accept_json_and_locked_in_any_order() {
+        let options = analysis_options("check", &["--locked".to_string(), "--json".to_string()])
+            .expect("analysis options should parse");
+        assert!(options.json);
+        assert!(options.locked);
+        assert_eq!(
+            analysis_options("analyze", &[]).expect("analysis defaults should parse"),
+            AnalysisOptions {
+                json: false,
+                locked: false,
+            }
+        );
+        assert!(
+            analysis_options("check", &["--locked".to_string(), "--locked".to_string()]).is_err()
+        );
+    }
+
+    #[test]
     fn test_options_accept_coverage_without_confusing_build_output() {
         let options = test_options(&[
             "--coverage".to_string(),
@@ -8622,6 +8759,10 @@ mod tests {
         assert!(!options.deterministic_time);
         assert!(!options.ui);
         assert!(!options.accessibility);
+        assert!(!options.locked);
+        let locked = test_options(&["--locked".to_string()]).expect("locked tests should parse");
+        assert!(locked.locked);
+        assert!(test_options(&["--locked".to_string(), "--locked".to_string()]).is_err());
         let deterministic = test_options(&["--deterministic-time".to_string()])
             .expect("deterministic test time should parse");
         assert!(deterministic.deterministic_time);
@@ -8850,6 +8991,11 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(defaults.format, PackageFormat::Directory);
         assert!(defaults.output.is_none());
         assert_eq!(defaults.native_target, NativeTargetOptions::default());
+        assert!(!defaults.locked);
+        let locked = package_options(&["--locked".to_string()])
+            .expect("locked package options should parse");
+        assert!(locked.locked);
+        assert!(package_options(&["--locked".to_string(), "--locked".to_string()]).is_err());
 
         let archive = package_options(&[
             "--format".to_string(),
@@ -9218,11 +9364,24 @@ app OverlayDemo(title: "Overlay")
             options.native_target.sysroot.as_deref(),
             Some(std::path::Path::new("/sdk/sysroot"))
         );
+        assert!(!options.locked);
+
+        let locked = build_options(&["--locked".to_string()], BuildMode::Release)
+            .expect("locked mode should parse");
+        assert!(locked.locked);
+        assert!(
+            build_options(
+                &["--locked".to_string(), "--locked".to_string()],
+                BuildMode::Release
+            )
+            .is_err()
+        );
 
         let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
         assert_eq!(default.native_target, NativeTargetOptions::default());
+        assert!(!default.locked);
         assert_eq!(
             default.native_target.codegen_target(),
             crate::codegen::NativeTarget::Linux

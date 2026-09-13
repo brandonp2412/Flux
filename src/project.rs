@@ -1533,7 +1533,19 @@ struct ResolvedDependency {
     via: String,
 }
 
-pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DependencyGraphNode {
+    alias: String,
+    package: String,
+    version: Option<String>,
+    source: String,
+    children: Vec<DependencyGraphNode>,
+}
+
+fn read_package_manifest_target(
+    target: &Path,
+    operation: &str,
+) -> Result<PackageManifest, Vec<Diagnostic>> {
     let manifest_path = if target.is_dir() {
         target.join("flux.toml")
     } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
@@ -1541,10 +1553,14 @@ pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
     } else {
         return Err(vec![Diagnostic::global(
             DiagnosticStage::Parse,
-            "lock requires a package directory or flux.toml target",
+            format!("{operation} requires a package directory or flux.toml target"),
         )]);
     };
-    let manifest = read_manifest(&manifest_path)?;
+    read_manifest(&manifest_path)
+}
+
+pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "lock")?;
     let rendered = render_lockfile(&manifest)?;
     let root = manifest
         .path
@@ -1561,6 +1577,180 @@ pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
         )]
     })?;
     Ok(lock_path)
+}
+
+pub fn ensure_lockfile(target: &Path, locked: bool) -> Result<Option<PathBuf>, Vec<Diagnostic>> {
+    if !target.is_dir() && target.file_name().and_then(|name| name.to_str()) != Some("flux.toml") {
+        return Ok(None);
+    }
+    let manifest = read_package_manifest_target(target, "dependency resolution")?;
+    if manifest.dependencies.is_empty() {
+        return Ok(None);
+    }
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    let lock_path = root.join("flux.lock");
+    match validate_lockfile(&manifest) {
+        Ok(()) => Ok(Some(lock_path)),
+        Err(diagnostics) if locked => Err(diagnostics),
+        Err(_) => write_lockfile(target).map(Some),
+    }
+}
+
+pub fn dependency_tree(target: &Path) -> Result<String, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "tree")?;
+    validate_lockfile(&manifest)?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let mut active = HashSet::from([root]);
+    let nodes = collect_dependency_graph(&manifest, &mut active)?;
+    let mut lines = vec![dependency_display(
+        &manifest.name,
+        manifest.version.as_deref(),
+    )];
+    for node in &nodes {
+        render_dependency_tree_node(node, 1, &mut lines);
+    }
+    Ok(lines.join("\n"))
+}
+
+pub fn dependency_why(target: &Path, dependency: &str) -> Result<String, Vec<Diagnostic>> {
+    if !valid_dependency_name(dependency) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("invalid dependency name '{dependency}'"),
+        )]);
+    }
+    let manifest = read_package_manifest_target(target, "why")?;
+    validate_lockfile(&manifest)?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let mut active = HashSet::from([root]);
+    let nodes = collect_dependency_graph(&manifest, &mut active)?;
+    let mut paths = Vec::new();
+    let mut prefix = vec![manifest.name.clone()];
+    collect_dependency_paths(&nodes, dependency, &mut prefix, &mut paths);
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "dependency '{dependency}' is not present in package '{}'",
+                manifest.name
+            ),
+        )]);
+    }
+    Ok(paths.join("\n"))
+}
+
+fn collect_dependency_graph(
+    manifest: &PackageManifest,
+    active: &mut HashSet<PathBuf>,
+) -> Result<Vec<DependencyGraphNode>, Vec<Diagnostic>> {
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    let mut nodes = Vec::new();
+    for (alias, dependency) in &manifest.dependencies {
+        let node = match dependency {
+            PackageDependency::Registry { requirement } => DependencyGraphNode {
+                alias: alias.clone(),
+                package: alias.clone(),
+                version: None,
+                source: format!("registry:{requirement}"),
+                children: Vec::new(),
+            },
+            PackageDependency::Git { url, rev } => DependencyGraphNode {
+                alias: alias.clone(),
+                package: alias.clone(),
+                version: None,
+                source: format!("git:{url}#{rev}"),
+                children: Vec::new(),
+            },
+            PackageDependency::Path { path, .. } => {
+                let dependency_manifest = read_manifest(&root.join(path).join("flux.toml"))?;
+                let dependency_root = dependency_manifest
+                    .path
+                    .parent()
+                    .expect("canonical manifest path has a parent")
+                    .to_path_buf();
+                if !active.insert(dependency_root.clone()) {
+                    return Err(vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!(
+                            "cyclic path dependency encountered while inspecting '{}'",
+                            dependency_manifest.name
+                        ),
+                    )]);
+                }
+                let children = collect_dependency_graph(&dependency_manifest, active)?;
+                active.remove(&dependency_root);
+                DependencyGraphNode {
+                    alias: alias.clone(),
+                    package: dependency_manifest.name,
+                    version: dependency_manifest.version,
+                    source: format!("path:{}", lock_path(path)),
+                    children,
+                }
+            }
+        };
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
+fn dependency_display(package: &str, version: Option<&str>) -> String {
+    version.map_or_else(
+        || package.to_string(),
+        |version| format!("{package} {version}"),
+    )
+}
+
+fn render_dependency_tree_node(node: &DependencyGraphNode, depth: usize, lines: &mut Vec<String>) {
+    let identity = if node.alias == node.package {
+        dependency_display(&node.package, node.version.as_deref())
+    } else {
+        format!(
+            "{} -> {}",
+            node.alias,
+            dependency_display(&node.package, node.version.as_deref())
+        )
+    };
+    lines.push(format!(
+        "{}{} [{}]",
+        "  ".repeat(depth),
+        identity,
+        node.source
+    ));
+    for child in &node.children {
+        render_dependency_tree_node(child, depth + 1, lines);
+    }
+}
+
+fn collect_dependency_paths(
+    nodes: &[DependencyGraphNode],
+    dependency: &str,
+    prefix: &mut Vec<String>,
+    paths: &mut Vec<String>,
+) {
+    for node in nodes {
+        prefix.push(node.package.clone());
+        if node.package == dependency || node.alias == dependency {
+            paths.push(prefix.join(" -> "));
+        }
+        collect_dependency_paths(&node.children, dependency, prefix, paths);
+        prefix.pop();
+    }
 }
 
 fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> {
@@ -1774,7 +1964,7 @@ fn register_dependency_resolution(
             },
         ) => left_url == right_url && left_rev == right_rev,
         (ResolvedDependencySource::Registry, ResolvedDependencySource::Registry) => {
-            !registry_requirements_definitely_conflict(
+            registry_requirements_compatible(
                 previous.requirement.as_deref().unwrap_or("*"),
                 current.requirement.as_deref().unwrap_or("*"),
             )
@@ -1788,7 +1978,7 @@ fn register_dependency_resolution(
     Err(vec![Diagnostic::global(
         DiagnosticStage::Parse,
         format!(
-            "dependency resolution conflict for package '{package}': path '{}' resolves {}, but path '{}' resolves {}; one package name must resolve to one compatible source/version",
+            "dependency resolution conflict for package '{package}': dependency path '{}' resolves {}, but dependency path '{}' resolves {}; one package name must resolve to one compatible source/version",
             previous.via,
             describe_dependency_resolution(previous),
             current.via,
@@ -1797,11 +1987,37 @@ fn register_dependency_resolution(
     )])
 }
 
-fn registry_requirements_definitely_conflict(left: &str, right: &str) -> bool {
-    let left_exact = !matches!(left.as_bytes().first(), Some(b'^' | b'~' | b'*'));
-    let right_exact = !matches!(right.as_bytes().first(), Some(b'^' | b'~' | b'*'));
-    (left_exact && !semver_requirement_matches(right, left))
-        || (right_exact && !semver_requirement_matches(left, right))
+fn registry_requirements_compatible(left: &str, right: &str) -> bool {
+    if left == "*" && right == "*" {
+        return true;
+    }
+    requirement_candidate_points(left)
+        .into_iter()
+        .chain(requirement_candidate_points(right))
+        .any(|candidate| {
+            semver_requirement_matches(left, &candidate)
+                && semver_requirement_matches(right, &candidate)
+        })
+}
+
+fn requirement_candidate_points(requirement: &str) -> Vec<String> {
+    if requirement == "*" {
+        return Vec::new();
+    }
+    let base = requirement
+        .strip_prefix('^')
+        .or_else(|| requirement.strip_prefix('~'))
+        .unwrap_or(requirement);
+    let mut candidates = vec![base.to_string()];
+    if let Some(version) = SemanticVersion::parse(base) {
+        if !version.prerelease.is_empty() {
+            candidates.push(format!(
+                "{}.{}.{}",
+                version.major, version.minor, version.patch
+            ));
+        }
+    }
+    candidates
 }
 
 fn describe_dependency_resolution(resolution: &ResolvedDependency) -> String {
@@ -2322,14 +2538,27 @@ pub fn resolve_semver_requirement<'a>(
     requirement: &str,
     candidates: impl IntoIterator<Item = &'a str>,
 ) -> Result<Option<String>, String> {
-    if !valid_semver_requirement(requirement) {
-        return Err(format!("invalid SemVer requirement '{requirement}'"));
+    resolve_semver_requirements([requirement], candidates)
+}
+
+pub fn resolve_semver_requirements<'a, 'b>(
+    requirements: impl IntoIterator<Item = &'a str>,
+    candidates: impl IntoIterator<Item = &'b str>,
+) -> Result<Option<String>, String> {
+    let requirements = requirements.into_iter().collect::<Vec<_>>();
+    for requirement in &requirements {
+        if !valid_semver_requirement(requirement) {
+            return Err(format!("invalid SemVer requirement '{requirement}'"));
+        }
     }
     let mut best = None::<(SemanticVersion, String)>;
     for candidate in candidates {
         let parsed = SemanticVersion::parse(candidate)
             .ok_or_else(|| format!("invalid SemVer candidate '{candidate}'"))?;
-        if !semver_requirement_matches(requirement, candidate) {
+        if !requirements
+            .iter()
+            .all(|requirement| semver_requirement_matches(requirement, candidate))
+        {
             continue;
         }
         if best
