@@ -15130,6 +15130,143 @@ fn main() -> i64 {
 }
 
 #[test]
+fn package_v2_c_header_stabilizes_public_copy_interface_layouts() {
+    let root = std::env::temp_dir().join(format!(
+        "flux_package_interface_abi_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary package interface ABI directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"interface_abi\"\nentry = \"main.flux\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("interface ABI package manifest should be writable");
+    fs::write(
+        root.join("main.flux"),
+        r#"pub interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+pub struct Add {
+    amount: i64
+}
+
+pub struct Multiply {
+    amount: i64
+}
+
+fn addApply(receiver: Add, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+fn multiplyApply(receiver: Multiply, value: i64) -> i64 {
+    return receiver.amount * value
+}
+
+impl Tool for Add {
+    apply: addApply
+}
+
+impl Tool for Multiply {
+    apply: multiplyApply
+}
+
+pub fn preserve(tool: Tool?) -> Tool? {
+    return tool
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+    )
+    .expect("interface ABI package source should be writable");
+
+    let header = fluxc::project::compile_to_c_header(&root)
+        .expect("package ABI v2 should expose public Copy interfaces");
+    let generated = fluxc::project::compile_to_c(&root)
+        .expect("package ABI v2 interface fixture should lower to native C");
+    let repeated = fluxc::project::compile_to_c_header(&root)
+        .expect("repeated package ABI header generation should succeed");
+    assert_eq!(
+        header, repeated,
+        "stable package ABI headers must be deterministic"
+    );
+
+    let module_component = "interface_abi::main"
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let interface_type = format!("flux__abi_{module_component}__interface_Tool");
+    let implementation_type = format!("flux__abi_{module_component}__type_Add");
+    let implementation_tag = format!("flux__abi_{module_component}__interface_tag_Tool_Add");
+    let preserve_symbol = format!("flux__abi_{module_component}__fn_preserve");
+    assert!(header.contains("#define FLUX_C_ABI_VERSION 2"));
+    assert!(header.contains(&format!("struct {interface_type} {{")));
+    assert!(header.contains(&format!("{implementation_tag} = 1")));
+    assert!(header.contains(&format!("struct {implementation_type} flux__value_Add;")));
+    assert!(header.contains(&format!("struct {interface_type}__optional")));
+    assert!(header.contains(&format!(
+        "struct {interface_type}__optional {preserve_symbol}(struct {interface_type}__optional flux__local_tool);"
+    )));
+
+    let header_path = root.join("interface_api.h");
+    let generated_path = root.join("interface_api.c");
+    let object_path = root.join("interface_api.o");
+    let consumer_path = root.join("consumer.c");
+    let executable_path = root.join("consumer");
+    fs::write(&header_path, &header).expect("package interface ABI header should be writable");
+    fs::write(&generated_path, generated).expect("package interface ABI C should be writable");
+    fs::write(
+        &consumer_path,
+        format!(
+            "#include \"interface_api.h\"\nint main(void) {{ struct {interface_type} value = {{0}}; value.tag = {implementation_tag}; value.value.flux__value_Add.flux__field_amount = 5; struct {interface_type}__optional maybe = {{ .has_value = true, .value = value }}; struct {interface_type}__optional kept = {preserve_symbol}(maybe); return kept.has_value && kept.value.tag == {implementation_tag} && kept.value.value.flux__value_Add.flux__field_amount == 5 ? 0 : 1; }}\n"
+        ),
+    )
+    .expect("package interface ABI consumer should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-Dmain=flux__embedded_main", "-c"])
+        .arg(&generated_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .expect("clang should compile generated package interface ABI C");
+    assert!(
+        compile.status.success(),
+        "generated package interface ABI C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let link = Command::new("clang")
+        .args(["-std=c11"])
+        .arg(&consumer_path)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .expect("clang should link the package interface ABI consumer");
+    assert!(
+        link.status.success(),
+        "package interface ABI consumer should link: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&executable_path)
+        .output()
+        .expect("package interface ABI consumer should run");
+    assert!(
+        run.status.success(),
+        "package-v2 C -> Flux interface roundtrip should preserve tag, layout, and optional wrapper"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn rejects_c_header_interface_with_private_implementation_layout() {
     let source = r#"
 pub interface Tool {
