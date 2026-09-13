@@ -1,5 +1,6 @@
 pub mod android_bindings;
 pub mod ast;
+pub mod builtin_names;
 pub mod cli;
 pub mod codegen;
 pub mod diagnostic;

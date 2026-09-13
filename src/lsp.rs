@@ -698,9 +698,9 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     push_completion_item(
         &mut items,
         &mut seen,
-        "every",
+        "all",
         3,
-        "fn every(list: bool[]) -> bool",
+        "fn all(list: bool[]) -> bool",
     );
     push_completion_item(
         &mut items,
@@ -726,13 +726,6 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     push_completion_item(
         &mut items,
         &mut seen,
-        "filter",
-        3,
-        "fn filter(list: T[], predicate: fn(T) -> bool) -> T[]",
-    );
-    push_completion_item(
-        &mut items,
-        &mut seen,
         "where",
         3,
         "fn where(list: T[], predicate: fn(T) -> bool) -> T[]",
@@ -740,37 +733,37 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     push_completion_item(
         &mut items,
         &mut seen,
-        "concat",
+        "merge",
         3,
-        "fn concat(left: T[], right: T[]) -> T[]",
+        "fn merge(left: T[], right: T[]) -> T[]",
     );
     push_completion_item(
         &mut items,
         &mut seen,
-        "distinct",
+        "unique",
         3,
-        "fn distinct(list: scalar[]) -> scalar[]",
+        "fn unique(list: scalar[]) -> scalar[]",
     );
     push_completion_item(
         &mut items,
         &mut seen,
-        "flatten",
+        "flat",
         3,
-        "fn flatten(list: T[][]) -> T[]",
+        "fn flat(list: T[][]) -> T[]",
     );
     push_completion_item(
         &mut items,
         &mut seen,
-        "sorted",
+        "sort",
         3,
-        "fn sorted(list: ordered[]) -> same ordered list type",
+        "fn sort(list: ordered[]) -> same ordered list type",
     );
     push_completion_item(
         &mut items,
         &mut seen,
-        "chunked",
+        "chunk",
         3,
-        "fn chunked(list: T[], size: i64) -> T[][]",
+        "fn chunk(list: T[], size: i64) -> T[][]",
     );
 
     let Ok(program) = crate::parser::parse_all(source) else {
@@ -1148,22 +1141,10 @@ fn add_qualified_namespace_completions(
 ) -> bool {
     if namespace == "process" {
         push_completion_item(items, seen, "pid", 3, "fn process.pid() -> i64");
-        push_completion_item(items, seen, "parentPid", 3, "fn process.parentPid() -> i64");
-        push_completion_item(items, seen, "cpuMillis", 3, "fn process.cpuMillis() -> i64");
-        push_completion_item(
-            items,
-            seen,
-            "peakResidentMemoryBytes",
-            3,
-            "fn process.peakResidentMemoryBytes() -> i64",
-        );
-        push_completion_item(
-            items,
-            seen,
-            "terminationRequested",
-            3,
-            "fn process.terminationRequested() -> bool",
-        );
+        push_completion_item(items, seen, "parent", 3, "fn process.parent() -> i64");
+        push_completion_item(items, seen, "cpu", 3, "fn process.cpu() -> i64");
+        push_completion_item(items, seen, "memory", 3, "fn process.memory() -> i64");
+        push_completion_item(items, seen, "stopping", 3, "fn process.stopping() -> bool");
         push_completion_item(items, seen, "exit", 3, "fn process.exit(code: i64) -> void");
         push_completion_item(
             items,
@@ -1185,10 +1166,7 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("open", "fn sqlite.open(path: str) -> (i64, error)"),
             ("close", "fn sqlite.close(database: i64) -> error"),
-            (
-                "execute",
-                "fn sqlite.execute(database: i64, sql: str) -> error",
-            ),
+            ("run", "fn sqlite.run(database: i64, sql: str) -> error"),
             (
                 "query",
                 "fn sqlite.query(database: i64, sql: str, callback: fn(i64, i64, str, str, bool) -> void) -> (i64, error)",
@@ -1204,14 +1182,8 @@ fn add_qualified_namespace_completions(
                 "connect",
                 "fn net.connect(host: str, port: i64) -> (i64, error)",
             ),
-            (
-                "udpConnect",
-                "fn net.udpConnect(host: str, port: i64) -> (i64, error)",
-            ),
-            (
-                "udpBind",
-                "fn net.udpBind(host: str, port: i64) -> (i64, error)",
-            ),
+            ("udp", "fn net.udp(host: str, port: i64) -> (i64, error)"),
+            ("bind", "fn net.bind(host: str, port: i64) -> (i64, error)"),
             (
                 "listen",
                 "fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)",
@@ -1221,92 +1193,86 @@ fn add_qualified_namespace_completions(
                 "acceptMany",
                 "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
-            ("localPort", "fn net.localPort(socket: i64) -> (i64, error)"),
+            ("port", "fn net.port(socket: i64) -> (i64, error)"),
             (
-                "peerAddress",
-                "fn net.peerAddress(socket: i64, callback: fn(str, i64) -> void) -> error",
+                "peer",
+                "fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error",
             ),
             (
-                "localAddress",
-                "fn net.localAddress(socket: i64, callback: fn(str, i64) -> void) -> error",
+                "local",
+                "fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error",
+            ),
+            ("write", "fn net.write(socket: i64, text: str) -> error"),
+            (
+                "writeTimeout",
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
             ),
             (
-                "sendText",
-                "fn net.sendText(socket: i64, text: str) -> error",
+                "writeFrom",
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)",
             ),
             (
-                "sendTextWithTimeout",
-                "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
+                "writeParts",
+                "fn net.writeParts(socket: i64, parts: str[]) -> error",
             ),
             (
-                "sendTextProgress",
-                "fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)",
+                "writeTo",
+                "fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error",
             ),
             (
-                "sendTextParts",
-                "fn net.sendTextParts(socket: i64, parts: str[]) -> error",
+                "writePartsTo",
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error",
             ),
             (
-                "sendTextTo",
-                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error",
+                "read",
+                "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
-                "sendTextToParts",
-                "fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error",
+                "readMany",
+                "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
-                "receiveText",
-                "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+                "readManyFrom",
+                "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
-                "receiveTextMany",
-                "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+                "readFrom",
+                "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
-                "receiveTextFromMany",
-                "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+                "nonblocking",
+                "fn net.nonblocking(socket: i64, enabled: bool) -> error",
             ),
             (
-                "receiveTextFrom",
-                "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+                "noDelay",
+                "fn net.noDelay(socket: i64, enabled: bool) -> error",
             ),
             (
-                "setNonblocking",
-                "fn net.setNonblocking(socket: i64, enabled: bool) -> error",
+                "keepAlive",
+                "fn net.keepAlive(socket: i64, enabled: bool) -> error",
             ),
             (
-                "setNoDelay",
-                "fn net.setNoDelay(socket: i64, enabled: bool) -> error",
+                "readable",
+                "fn net.readable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
-                "setKeepAlive",
-                "fn net.setKeepAlive(socket: i64, enabled: bool) -> error",
+                "writable",
+                "fn net.writable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
-                "waitReadable",
-                "fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)",
+                "readableMany",
+                "fn net.readableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
-                "waitWritable",
-                "fn net.waitWritable(socket: i64, timeoutMillis: i64) -> (bool, error)",
+                "writableMany",
+                "fn net.writableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
-                "waitReadableMany",
-                "fn net.waitReadableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "readyMany",
+                "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
             ),
-            (
-                "waitWritableMany",
-                "fn net.waitWritableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
-            ),
-            (
-                "waitReadyMany",
-                "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
-            ),
-            ("shutdownRead", "fn net.shutdownRead(socket: i64) -> error"),
-            (
-                "shutdownWrite",
-                "fn net.shutdownWrite(socket: i64) -> error",
-            ),
+            ("closeRead", "fn net.closeRead(socket: i64) -> error"),
+            ("closeWrite", "fn net.closeWrite(socket: i64) -> error"),
             ("close", "fn net.close(socket: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -1317,44 +1283,44 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "parseHttp",
+            "parse",
             3,
-            "fn url.parseHttp(url: str, callback: fn(str, str, i64, str) -> void) -> error",
+            "fn url.parse(url: str, callback: fn(str, str, i64, str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "decodeComponent",
+            "decode",
             3,
-            "fn url.decodeComponent(value: str, callback: fn(str) -> void) -> error",
+            "fn url.decode(value: str, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "encodeComponent",
+            "encode",
             3,
-            "fn url.encodeComponent(value: str, callback: fn(str) -> void) -> error",
+            "fn url.encode(value: str, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "decodeFormComponent",
+            "decodeForm",
             3,
-            "fn url.decodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+            "fn url.decodeForm(value: str, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "encodeFormComponent",
+            "encodeForm",
             3,
-            "fn url.encodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+            "fn url.encodeForm(value: str, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "parseFormQuery",
+            "query",
             3,
-            "fn url.parseFormQuery(query: str, callback: fn(str, str) -> void) -> error",
+            "fn url.query(query: str, callback: fn(str, str) -> void) -> error",
         );
         return true;
     }
@@ -1362,23 +1328,23 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "receiveRequestHead",
+            "readRequest",
             3,
-            "fn http.receiveRequestHead(socket: i64, maxBytes: i64, callback: fn(i64, str, str, str) -> void) -> (i64, error)",
+            "fn http.readRequest(socket: i64, maxBytes: i64, callback: fn(i64, str, str, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
             seen,
-            "receiveRequestHeadWithHeaders",
+            "readRequestHeaders",
             3,
-            "fn http.receiveRequestHeadWithHeaders(socket: i64, maxBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            "fn http.readRequestHeaders(socket: i64, maxBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
             seen,
-            "receiveRequestWithTextBody",
+            "readRequestBody",
             3,
-            "fn http.receiveRequestWithTextBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+            "fn http.readRequestBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
@@ -1397,16 +1363,16 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "receiveResponseHeadWithHeaders",
+            "readResponse",
             3,
-            "fn http.receiveResponseHeadWithHeaders(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
             seen,
-            "receiveResponseWithTextBody",
+            "readResponseBody",
             3,
-            "fn http.receiveResponseWithTextBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+            "fn http.readResponseBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
@@ -1418,9 +1384,9 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "requestWithHeaders",
+            "requestHeaders",
             3,
-            "fn http.requestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+            "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
@@ -1432,9 +1398,9 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "respondWithHeaders",
+            "respondHeaders",
             3,
-            "fn http.respondWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+            "fn http.respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
         );
         return true;
     }
@@ -1465,23 +1431,23 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "formatNumber",
+            "number",
             3,
-            "fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error",
+            "fn locale.number(value: i64, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "formatDateTime",
+            "date",
             3,
-            "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error",
+            "fn locale.date(unixMillis: i64, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "formatCurrency",
+            "currency",
             3,
-            "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error",
+            "fn locale.currency(value: i64, callback: fn(str) -> void) -> error",
         );
         return true;
     }
@@ -1507,13 +1473,7 @@ fn add_qualified_namespace_completions(
             3,
             "fn worker.join(handle: i64) -> error",
         );
-        push_completion_item(
-            items,
-            seen,
-            "joinChildren",
-            3,
-            "fn worker.joinChildren() -> error",
-        );
+        push_completion_item(items, seen, "joinAll", 3, "fn worker.joinAll() -> error");
         push_completion_item(
             items,
             seen,
@@ -1521,13 +1481,7 @@ fn add_qualified_namespace_completions(
             3,
             "fn worker.cancel(handle: i64) -> error",
         );
-        push_completion_item(
-            items,
-            seen,
-            "cancelChildren",
-            3,
-            "fn worker.cancelChildren() -> void",
-        );
+        push_completion_item(items, seen, "cancelAll", 3, "fn worker.cancelAll() -> void");
         push_completion_item(items, seen, "cancelled", 3, "fn worker.cancelled() -> bool");
         return true;
     }
@@ -1535,23 +1489,23 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "create",
+            "open",
             3,
-            "fn channel.create(capacity: i64) -> (i64, error)",
+            "fn channel.open(capacity: i64) -> (i64, error)",
         );
         push_completion_item(
             items,
             seen,
-            "send",
+            "write",
             3,
-            "fn channel.send(handle: i64, value: i64) -> error",
+            "fn channel.write(handle: i64, value: i64) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "receive",
+            "read",
             3,
-            "fn channel.receive(handle: i64) -> (i64, error)",
+            "fn channel.read(handle: i64) -> (i64, error)",
         );
         push_completion_item(
             items,
@@ -1563,14 +1517,8 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "time" {
-        push_completion_item(items, seen, "unixMillis", 3, "fn time.unixMillis() -> i64");
-        push_completion_item(
-            items,
-            seen,
-            "monotonicMillis",
-            3,
-            "fn time.monotonicMillis() -> i64",
-        );
+        push_completion_item(items, seen, "now", 3, "fn time.now() -> i64");
+        push_completion_item(items, seen, "monotonic", 3, "fn time.monotonic() -> i64");
         push_completion_item(
             items,
             seen,
@@ -1581,27 +1529,27 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "sleepUntilMonotonic",
+            "sleepUntil",
             3,
-            "fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void",
+            "fn time.sleepUntil(deadlineMillis: i64) -> void",
         );
         push_completion_item(
             items,
             seen,
-            "utcUnixMillis",
+            "utc",
             3,
-            "fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
+            "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
         );
         for member in [
-            "utcYear",
-            "utcMonth",
-            "utcDay",
-            "utcHour",
-            "utcMinute",
-            "utcSecond",
-            "utcMillisecond",
-            "utcWeekday",
-            "utcDayOfYear",
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millis",
+            "weekday",
+            "dayOfYear",
         ] {
             push_completion_item(
                 items,
@@ -1617,10 +1565,7 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
             ("size", "fn file.size(path: str) -> (i64, error)"),
-            (
-                "modifiedUnixMillis",
-                "fn file.modifiedUnixMillis(path: str) -> (i64, error)",
-            ),
+            ("modified", "fn file.modified(path: str) -> (i64, error)"),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1641,8 +1586,8 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn directory.exists(path: str) -> bool"),
             (
-                "modifiedUnixMillis",
-                "fn directory.modifiedUnixMillis(path: str) -> (i64, error)",
+                "modified",
+                "fn directory.modified(path: str) -> (i64, error)",
             ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
@@ -1654,55 +1599,15 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "fs" {
-        for (label, detail) in [
-            ("exists", "fn fs.exists(path: str) -> bool"),
-            ("isFile", "fn fs.isFile(path: str) -> bool"),
-            ("isDirectory", "fn fs.isDirectory(path: str) -> bool"),
-            (
-                "createDirectory",
-                "fn fs.createDirectory(path: str) -> error",
-            ),
-            (
-                "createDirectories",
-                "fn fs.createDirectories(path: str) -> error",
-            ),
-            ("removeFile", "fn fs.removeFile(path: str) -> error"),
-            (
-                "removeDirectory",
-                "fn fs.removeDirectory(path: str) -> error",
-            ),
-            (
-                "removeDirectories",
-                "fn fs.removeDirectories(path: str) -> error",
-            ),
-            (
-                "writeText",
-                "fn fs.writeText(path: str, text: str) -> error",
-            ),
-            (
-                "appendText",
-                "fn fs.appendText(path: str, text: str) -> error",
-            ),
-            (
-                "rename",
-                "fn fs.rename(source: str, destination: str) -> error",
-            ),
-            (
-                "copyFile",
-                "fn fs.copyFile(source: str, destination: str) -> error",
-            ),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
         return true;
     }
     if namespace == "frame" {
         push_completion_item(
             items,
             seen,
-            "request",
+            "next",
             3,
-            "fn frame.request(callback: fn() -> void) -> void",
+            "fn frame.next(callback: fn() -> void) -> void",
         );
         push_completion_item(
             items,
@@ -1772,8 +1677,8 @@ fn add_qualified_namespace_completions(
                 "fn fileDialog.save(callback: fn(str) -> void) -> void",
             ),
             (
-                "selectDirectory",
-                "fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void",
+                "folder",
+                "fn fileDialog.folder(callback: fn(str) -> void) -> void",
             ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -1783,14 +1688,14 @@ fn add_qualified_namespace_completions(
     if namespace == "focus" {
         for (label, detail) in [
             ("next", "fn focus.next(wrap: bool = false) -> void"),
-            ("previous", "fn focus.previous(wrap: bool = false) -> void"),
+            ("prior", "fn focus.prior(wrap: bool = false) -> void"),
             (
                 "nextIn",
                 "fn focus.nextIn(scope: i64, wrap: bool = false) -> void",
             ),
             (
-                "previousIn",
-                "fn focus.previousIn(scope: i64, wrap: bool = false) -> void",
+                "priorIn",
+                "fn focus.priorIn(scope: i64, wrap: bool = false) -> void",
             ),
             ("first", "fn focus.first() -> void"),
             ("last", "fn focus.last() -> void"),
@@ -1804,12 +1709,12 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "textInput" {
         for (label, detail) in [
-            ("selectionStart", "fn textInput.selectionStart() -> i64"),
-            ("selectionEnd", "fn textInput.selectionEnd() -> i64"),
-            ("setCaret", "fn textInput.setCaret(position: i64) -> bool"),
+            ("start", "fn textInput.start() -> i64"),
+            ("end", "fn textInput.end() -> i64"),
+            ("caret", "fn textInput.caret(position: i64) -> bool"),
             (
-                "setSelection",
-                "fn textInput.setSelection(start: i64, end: i64) -> bool",
+                "select",
+                "fn textInput.select(start: i64, end: i64) -> bool",
             ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -1818,7 +1723,15 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "android" {
         for binding in crate::android_bindings::ANDROID_BINDINGS {
-            push_completion_item(items, seen, binding.name, 3, &binding.signature());
+            let name = crate::builtin_names::qualified("android", binding.name);
+            let params = binding
+                .params
+                .iter()
+                .map(|param| param.signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!("fn android.{name}({params}) -> {}", binding.return_name());
+            push_completion_item(items, seen, name, 3, &detail);
         }
         return true;
     }
@@ -1957,7 +1870,7 @@ fn list_property_for_position(
     let crate::ast::Type::List(element) = crate::ast::Type::parse(&type_name)? else {
         return None;
     };
-    let ty = match property {
+    let ty = match crate::builtin_names::list_member_impl(property) {
         "length" => crate::ast::Type::I64,
         "isEmpty" | "isNotEmpty" => crate::ast::Type::Bool,
         "first" | "last" | "single" => *element,
@@ -2074,12 +1987,12 @@ fn add_list_property_completions(
         })
         .unwrap_or_else(|| "value".to_string());
     for (name, ty) in [
-        ("length", "i64".to_string()),
-        ("isEmpty", "bool".to_string()),
-        ("isNotEmpty", "bool".to_string()),
+        ("count", "i64".to_string()),
+        ("empty", "bool".to_string()),
+        ("nonempty", "bool".to_string()),
         ("first", element_type.clone()),
         ("last", element_type.clone()),
-        ("single", element_type),
+        ("only", element_type),
     ] {
         push_completion_item(
             items,
@@ -2610,6 +2523,7 @@ fn signature_help_for_document_cached(
         + byte_in_line;
     let prefix = source.get(..absolute.min(source.len()))?;
     let (call_name, active_parameter) = active_call(prefix)?;
+    let implementation_call_name = crate::builtin_names::global_impl(call_name);
     let project_analysis = analyzed_project_document_cached(uri, documents, cache);
     let standalone_database;
     let database = if let Some((database, _)) = project_analysis.as_ref() {
@@ -2634,7 +2548,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "take" || call_name == "skip" {
+    if implementation_call_name == "take" || implementation_call_name == "skip" {
         return Some(signature_help_for_builtin(
             call_name,
             &["list: T[]", "count: i64"],
@@ -2642,7 +2556,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "any" || call_name == "every" {
+    if implementation_call_name == "any" || implementation_call_name == "every" {
         return Some(signature_help_for_builtin(
             call_name,
             &["list: bool[]"],
@@ -2650,7 +2564,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "fold" {
+    if implementation_call_name == "fold" {
         return Some(signature_help_for_builtin(
             "fold",
             &["list: T[]", "initial: A", "reducer: fn(A, T) -> A"],
@@ -2658,7 +2572,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "reduce" {
+    if implementation_call_name == "reduce" {
         return Some(signature_help_for_builtin(
             "reduce",
             &["list: T[]", "reducer: fn(T, T) -> T"],
@@ -2666,7 +2580,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "map" {
+    if implementation_call_name == "map" {
         return Some(signature_help_for_builtin(
             "map",
             &["list: T[]", "callback: fn(T) -> U"],
@@ -2674,7 +2588,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "filter" || call_name == "where" {
+    if implementation_call_name == "filter" || implementation_call_name == "where" {
         return Some(signature_help_for_builtin(
             call_name,
             &["list: T[]", "predicate: fn(T) -> bool"],
@@ -2682,7 +2596,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "concat" {
+    if implementation_call_name == "concat" {
         return Some(signature_help_for_builtin(
             "concat",
             &["left: T[]", "right: T[]"],
@@ -2690,7 +2604,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "distinct" {
+    if implementation_call_name == "distinct" {
         return Some(signature_help_for_builtin(
             "distinct",
             &["list: scalar[]"],
@@ -2698,7 +2612,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "flatten" {
+    if implementation_call_name == "flatten" {
         return Some(signature_help_for_builtin(
             "flatten",
             &["list: T[][]"],
@@ -2706,7 +2620,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "sorted" {
+    if implementation_call_name == "sorted" {
         return Some(signature_help_for_builtin(
             "sorted",
             &["list: ordered[]"],
@@ -2714,7 +2628,7 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    if call_name == "chunked" {
+    if implementation_call_name == "chunked" {
         return Some(signature_help_for_builtin(
             "chunked",
             &["list: T[]", "size: i64"],
@@ -2723,8 +2637,9 @@ fn signature_help_for_document_cached(
         ));
     }
     if let Some((namespace, member)) = call_name.split_once('.') {
+        let implementation_member = crate::builtin_names::qualified_impl(namespace, member);
         if namespace == "sqlite" {
-            match member {
+            match implementation_member {
                 "open" => {
                     return Some(signature_help_for_builtin(
                         "sqlite.open",
@@ -2765,7 +2680,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "net" {
-            match member {
+            match implementation_member {
                 "connect" | "tcpConnect" => {
                     return Some(signature_help_for_builtin(
                         &format!("net.{member}"),
@@ -2985,7 +2900,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "url" {
-            match member {
+            match implementation_member {
                 "parseHttp" => {
                     return Some(signature_help_for_builtin(
                         "url.parseHttp",
@@ -3017,7 +2932,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "http" {
-            match member {
+            match implementation_member {
                 "receiveRequestHead" => {
                     return Some(signature_help_for_builtin(
                         "http.receiveRequestHead",
@@ -3212,7 +3127,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "locale" {
-            match member {
+            match implementation_member {
                 "language" | "region" => {
                     return Some(signature_help_for_builtin(
                         &format!("locale.{member}"),
@@ -3265,7 +3180,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "worker" {
-            match member {
+            match implementation_member {
                 "start" => {
                     return Some(signature_help_for_builtin(
                         "worker.start",
@@ -3326,7 +3241,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "channel" {
-            match member {
+            match implementation_member {
                 "create" => {
                     return Some(signature_help_for_builtin(
                         "channel.create",
@@ -3363,7 +3278,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "time" {
-            match member {
+            match implementation_member {
                 "unixMillis" | "monotonicMillis" => {
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
@@ -3417,7 +3332,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "file" {
-            match member {
+            match implementation_member {
                 "exists" => {
                     return Some(signature_help_for_builtin(
                         "file.exists",
@@ -3462,7 +3377,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "directory" {
-            match member {
+            match implementation_member {
                 "exists" => {
                     return Some(signature_help_for_builtin(
                         "directory.exists",
@@ -3491,7 +3406,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "fs" {
-            match member {
+            match implementation_member {
                 "exists" | "isFile" | "isDirectory" => {
                     return Some(signature_help_for_builtin(
                         &format!("fs.{member}"),
@@ -3529,7 +3444,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "frame" {
-            match member {
+            match implementation_member {
                 "request" => {
                     return Some(signature_help_for_builtin(
                         "frame.request",
@@ -3550,7 +3465,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "clipboard" {
-            match member {
+            match implementation_member {
                 "write" | "setText" => {
                     return Some(signature_help_for_builtin(
                         &format!("clipboard.{member}"),
@@ -3571,7 +3486,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "dialog" {
-            match member {
+            match implementation_member {
                 "alert" => {
                     return Some(signature_help_for_builtin(
                         "dialog.alert",
@@ -3620,7 +3535,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "fileDialog" {
-            match member {
+            match implementation_member {
                 "open" | "openFile" | "save" | "saveFile" | "selectDirectory" => {
                     return Some(signature_help_for_builtin(
                         &format!("fileDialog.{member}"),
@@ -3633,7 +3548,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "focus" {
-            match member {
+            match implementation_member {
                 "next" | "previous" => {
                     return Some(signature_help_for_builtin(
                         &format!("focus.{member}"),
@@ -3670,7 +3585,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "textInput" {
-            match member {
+            match implementation_member {
                 "selectionStart" | "selectionEnd" => {
                     return Some(signature_help_for_builtin(
                         &format!("textInput.{member}"),
@@ -3699,7 +3614,7 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "android" {
-            if let Some(binding) = crate::android_bindings::binding_named(member) {
+            if let Some(binding) = crate::android_bindings::binding_named(implementation_member) {
                 let params = binding
                     .params
                     .iter()
@@ -3790,7 +3705,15 @@ fn signature_help_for_builtin(
     returns: &str,
     active_parameter: usize,
 ) -> JsonValue {
-    signature_help_from_labels(name, labels, returns, active_parameter)
+    let canonical = if let Some((namespace, member)) = name.split_once('.') {
+        format!(
+            "{namespace}.{}",
+            crate::builtin_names::qualified(namespace, member)
+        )
+    } else {
+        crate::builtin_names::global(name).to_string()
+    };
+    signature_help_from_labels(&canonical, labels, returns, active_parameter)
 }
 
 fn signature_help_for_enum_variant(
@@ -4130,13 +4053,34 @@ fn push_completion_item(
     kind: i64,
     detail: &str,
 ) {
-    if !seen.insert(label.to_string()) {
+    let mut canonical_label = label.to_string();
+    let mut canonical_detail = detail.to_string();
+    if kind == 3 && detail.starts_with("fn ") {
+        let signature_name = detail[3..]
+            .split_once('(')
+            .map(|(name, _)| name)
+            .unwrap_or_default();
+        if let Some((namespace, member)) = signature_name.split_once('.') {
+            let canonical = crate::builtin_names::qualified(namespace, member);
+            if canonical != member {
+                if label == member {
+                    canonical_label = canonical.to_string();
+                }
+                canonical_detail = detail.replacen(
+                    &format!("fn {namespace}.{member}"),
+                    &format!("fn {namespace}.{canonical}"),
+                    1,
+                );
+            }
+        }
+    }
+    if !seen.insert(canonical_label.clone()) {
         return;
     }
     items.push(object([
-        ("label", JsonValue::String(label.to_string())),
+        ("label", JsonValue::String(canonical_label)),
         ("kind", JsonValue::Number(kind)),
-        ("detail", JsonValue::String(detail.to_string())),
+        ("detail", JsonValue::String(canonical_detail)),
     ]));
 }
 
@@ -6814,10 +6758,10 @@ mod tests {
         ))
         .to_json();
         assert!(process_items.contains("fn process.pid() -> i64"));
-        assert!(process_items.contains("fn process.parentPid() -> i64"));
-        assert!(process_items.contains("fn process.cpuMillis() -> i64"));
-        assert!(process_items.contains("fn process.peakResidentMemoryBytes() -> i64"));
-        assert!(process_items.contains("fn process.terminationRequested() -> bool"));
+        assert!(process_items.contains("fn process.parent() -> i64"));
+        assert!(process_items.contains("fn process.cpu() -> i64"));
+        assert!(process_items.contains("fn process.memory() -> i64"));
+        assert!(process_items.contains("fn process.stopping() -> bool"));
         assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
@@ -6838,7 +6782,7 @@ mod tests {
         .to_json();
         assert!(sqlite_items.contains("fn sqlite.open(path: str) -> (i64, error)"));
         assert!(sqlite_items.contains("fn sqlite.close(database: i64) -> error"));
-        assert!(sqlite_items.contains("fn sqlite.execute(database: i64, sql: str) -> error"));
+        assert!(sqlite_items.contains("fn sqlite.run(database: i64, sql: str) -> error"));
         assert!(sqlite_items.contains("fn sqlite.query(database: i64, sql: str, callback: fn(i64, i64, str, str, bool) -> void) -> (i64, error)"));
 
         let net_line = source
@@ -6856,8 +6800,8 @@ mod tests {
         ))
         .to_json();
         assert!(net_items.contains("fn net.connect(host: str, port: i64) -> (i64, error)"));
-        assert!(net_items.contains("fn net.udpConnect(host: str, port: i64) -> (i64, error)"));
-        assert!(net_items.contains("fn net.udpBind(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.udp(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.bind(host: str, port: i64) -> (i64, error)"));
         assert!(
             net_items.contains("fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)")
         );
@@ -6865,61 +6809,55 @@ mod tests {
         assert!(net_items.contains(
             "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
-        assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.port(socket: i64) -> (i64, error)"));
         assert!(
-            net_items.contains(
-                "fn net.peerAddress(socket: i64, callback: fn(str, i64) -> void) -> error"
-            )
-        );
-        assert!(
-            net_items.contains(
-                "fn net.localAddress(socket: i64, callback: fn(str, i64) -> void) -> error"
-            )
-        );
-        assert!(net_items.contains("fn net.sendText(socket: i64, text: str) -> error"));
-        assert!(net_items.contains(
-            "fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
-        ));
-        assert!(net_items.contains(
-            "fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
-        ));
-        assert!(net_items.contains("fn net.sendTextParts(socket: i64, parts: str[]) -> error"));
-        assert!(
-            net_items.contains(
-                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error"
-            )
-        );
-        assert!(net_items.contains(
-            "fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error"
-        ));
-        assert!(net_items.contains(
-            "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
-        ));
-        assert!(net_items.contains(
-            "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
-        ));
-        assert!(net_items.contains(
-            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
-        ));
-        assert!(net_items.contains(
-            "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
-        ));
-        assert!(net_items.contains("fn net.setNonblocking(socket: i64, enabled: bool) -> error"));
-        assert!(net_items.contains("fn net.setNoDelay(socket: i64, enabled: bool) -> error"));
-        assert!(net_items.contains("fn net.setKeepAlive(socket: i64, enabled: bool) -> error"));
-        assert!(
-            net_items
-                .contains("fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+            net_items.contains("fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error")
         );
         assert!(
             net_items
-                .contains("fn net.waitWritable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+                .contains("fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error")
+        );
+        assert!(net_items.contains("fn net.write(socket: i64, text: str) -> error"));
+        assert!(net_items.contains(
+            "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains("fn net.writeParts(socket: i64, parts: str[]) -> error"));
+        assert!(
+            net_items
+                .contains("fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error")
         );
         assert!(net_items.contains(
-            "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)"
+            "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error"
         ));
-        assert!(net_items.contains("fn net.shutdownRead(socket: i64) -> error"));
-        assert!(net_items.contains("fn net.shutdownWrite(socket: i64) -> error"));
+        assert!(net_items.contains(
+            "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains("fn net.nonblocking(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.noDelay(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.keepAlive(socket: i64, enabled: bool) -> error"));
+        assert!(
+            net_items.contains("fn net.readable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+        );
+        assert!(
+            net_items.contains("fn net.writable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+        );
+        assert!(net_items.contains(
+            "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains("fn net.closeRead(socket: i64) -> error"));
+        assert!(net_items.contains("fn net.closeWrite(socket: i64) -> error"));
         assert!(net_items.contains("fn net.close(socket: i64) -> error"));
 
         let locale_line = source
@@ -6948,15 +6886,15 @@ mod tests {
         );
         assert!(
             locale_items
-                .contains("fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error")
+                .contains("fn locale.number(value: i64, callback: fn(str) -> void) -> error")
         );
-        assert!(locale_items.contains(
-            "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error"
-        ));
         assert!(
-            locale_items.contains(
-                "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error"
-            )
+            locale_items
+                .contains("fn locale.date(unixMillis: i64, callback: fn(str) -> void) -> error")
+        );
+        assert!(
+            locale_items
+                .contains("fn locale.currency(value: i64, callback: fn(str) -> void) -> error")
         );
 
         let time_line = source
@@ -6973,15 +6911,15 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(time_items.contains("fn time.unixMillis() -> i64"));
-        assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
+        assert!(time_items.contains("fn time.now() -> i64"));
+        assert!(time_items.contains("fn time.monotonic() -> i64"));
         assert!(time_items.contains("fn time.sleep(durationMs: i64) -> void"));
-        assert!(time_items.contains("fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void"));
-        assert!(time_items.contains("fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64"));
-        assert!(time_items.contains("fn time.utcYear(unixMillis: i64) -> i64"));
-        assert!(time_items.contains("fn time.utcMillisecond(unixMillis: i64) -> i64"));
-        assert!(time_items.contains("fn time.utcWeekday(unixMillis: i64) -> i64"));
-        assert!(time_items.contains("fn time.utcDayOfYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.sleepUntil(deadlineMillis: i64) -> void"));
+        assert!(time_items.contains("fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64"));
+        assert!(time_items.contains("fn time.year(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.millis(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.weekday(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
 
         let file_line = source
             .lines()
@@ -7000,7 +6938,7 @@ mod tests {
         assert!(!file_items.contains("\"label\":\"read\""));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
-        assert!(file_items.contains("fn file.modifiedUnixMillis(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
@@ -7022,9 +6960,7 @@ mod tests {
         ))
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
-        assert!(
-            directory_items.contains("fn directory.modifiedUnixMillis(path: str) -> (i64, error)")
-        );
+        assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
@@ -7044,12 +6980,7 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(fs_items.contains("fn fs.exists(path: str) -> bool"));
-        assert!(fs_items.contains("fn fs.createDirectories(path: str) -> error"));
-        assert!(fs_items.contains("fn fs.removeDirectories(path: str) -> error"));
-        assert!(fs_items.contains("fn fs.writeText(path: str, text: str) -> error"));
-        assert!(fs_items.contains("fn fs.rename(source: str, destination: str) -> error"));
-        assert!(fs_items.contains("fn fs.copyFile(source: str, destination: str) -> error"));
+        assert!(!fs_items.contains("fn fs."));
 
         let clipboard_line = source
             .lines()
@@ -7089,8 +7020,7 @@ mod tests {
             file_dialog_items.contains("fn fileDialog.save(callback: fn(str) -> void) -> void")
         );
         assert!(
-            file_dialog_items
-                .contains("fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void")
+            file_dialog_items.contains("fn fileDialog.folder(callback: fn(str) -> void) -> void")
         );
 
         let focus_line = source
@@ -7108,7 +7038,7 @@ mod tests {
         ))
         .to_json();
         assert!(focus_items.contains("fn focus.next(wrap: bool = false) -> void"));
-        assert!(focus_items.contains("fn focus.previous(wrap: bool = false) -> void"));
+        assert!(focus_items.contains("fn focus.prior(wrap: bool = false) -> void"));
         assert!(focus_items.contains("fn focus.first() -> void"));
         assert!(focus_items.contains("fn focus.last() -> void"));
         assert!(focus_items.contains("fn focus.clear() -> void"));
@@ -7127,12 +7057,10 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(text_input_items.contains("fn textInput.selectionStart() -> i64"));
-        assert!(text_input_items.contains("fn textInput.selectionEnd() -> i64"));
-        assert!(text_input_items.contains("fn textInput.setCaret(position: i64) -> bool"));
-        assert!(
-            text_input_items.contains("fn textInput.setSelection(start: i64, end: i64) -> bool")
-        );
+        assert!(text_input_items.contains("fn textInput.start() -> i64"));
+        assert!(text_input_items.contains("fn textInput.end() -> i64"));
+        assert!(text_input_items.contains("fn textInput.caret(position: i64) -> bool"));
+        assert!(text_input_items.contains("fn textInput.select(start: i64, end: i64) -> bool"));
 
         let android_line = source
             .lines()
@@ -7149,63 +7077,47 @@ mod tests {
         ))
         .to_json();
         assert!(android_items.contains("\"label\":\"vibrate\""));
-        assert!(android_items.contains("fn android.sdkInt() -> i64"));
-        assert!(android_items.contains("fn android.hasSystemFeature(feature: str) -> bool"));
+        assert!(android_items.contains("fn android.sdk() -> i64"));
+        assert!(android_items.contains("fn android.feature(feature: str) -> bool"));
         assert!(android_items.contains("fn android.vibrate(durationMs: i64) -> void"));
-        assert!(android_items.contains("fn android.keepScreenOn(enabled: bool) -> void"));
-        assert!(android_items.contains("fn android.finishActivity() -> void"));
-        assert!(
-            android_items
-                .contains("fn android.scheduleBackgroundJob(jobId: i64, delayMs: i64) -> bool")
-        );
-        assert!(android_items.contains("fn android.cancelBackgroundJob(jobId: i64) -> void"));
-        assert!(android_items.contains("\"label\":\"openUrl\""));
-        assert!(android_items.contains("fn android.openUrl(url: str) -> void"));
-        assert!(android_items.contains("\"label\":\"openAppSettings\""));
-        assert!(android_items.contains("fn android.openAppSettings() -> void"));
-        assert!(android_items.contains("\"label\":\"openNotificationSettings\""));
-        assert!(android_items.contains("fn android.openNotificationSettings() -> void"));
+        assert!(android_items.contains("fn android.awake(enabled: bool) -> void"));
+        assert!(android_items.contains("fn android.finish() -> void"));
+        assert!(android_items.contains("fn android.schedule(jobId: i64, delayMs: i64) -> bool"));
+        assert!(android_items.contains("fn android.cancelJob(jobId: i64) -> void"));
+        assert!(android_items.contains("\"label\":\"open\""));
+        assert!(android_items.contains("fn android.open(url: str) -> void"));
+        assert!(android_items.contains("fn android.settings() -> void"));
+        assert!(android_items.contains("fn android.noticeSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
-        assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
-        assert!(android_items.contains("fn android.startMicrophoneRecording(path: str) -> bool"));
-        assert!(android_items.contains("fn android.stopMicrophoneRecording() -> bool"));
-        assert!(android_items.contains("fn android.secureStore(key: str, value: str) -> bool"));
-        assert!(
-            android_items
-                .contains("fn android.secureRead(key: str, callback: fn(str) -> void) -> bool")
-        );
-        assert!(android_items.contains("fn android.secureRemove(key: str) -> bool"));
-        assert!(android_items.contains("fn android.pickFile(callback: fn(str) -> void) -> void"));
-        assert!(android_items.contains("fn android.pickMedia(callback: fn(str) -> void) -> void"));
-        assert!(
-            android_items.contains("fn android.pickDirectory(callback: fn(str) -> void) -> void")
-        );
+        assert!(android_items.contains("fn android.clipboard(text: str) -> void"));
+        assert!(android_items.contains("fn android.file(callback: fn(str) -> void) -> void"));
+        assert!(android_items.contains("fn android.media(callback: fn(str) -> void) -> void"));
+        assert!(android_items.contains("fn android.folder(callback: fn(str) -> void) -> void"));
         assert!(android_items.contains("fn android.showKeyboard() -> void"));
         assert!(android_items.contains("fn android.hideKeyboard() -> void"));
-        assert!(android_items.contains("fn android.focusNext(wrap: bool = false) -> void"));
-        assert!(android_items.contains("fn android.focusPrevious(wrap: bool = false) -> void"));
-        assert!(android_items.contains("fn android.focusFirst() -> void"));
-        assert!(android_items.contains("fn android.focusLast() -> void"));
-        assert!(android_items.contains("fn android.clearFocus() -> void"));
-        assert!(android_items.contains("fn android.selectionStart() -> i64"));
-        assert!(android_items.contains("fn android.selectionEnd() -> i64"));
-        assert!(android_items.contains("fn android.setCaret(position: i64) -> bool"));
-        assert!(android_items.contains("fn android.setSelection(start: i64, end: i64) -> bool"));
-        assert!(android_items.contains("fn android.setImeAction(action: str) -> bool"));
-        assert!(android_items.contains(
-            "fn android.createNotificationChannel(id: str, name: str, description: str) -> void"
-        ));
-        assert!(android_items.contains("fn android.permissionGranted(permission: str) -> bool"));
-        assert!(android_items.contains("fn android.requestPermission(permission: str) -> void"));
-        assert!(android_items.contains("fn android.notificationPermissionGranted() -> bool"));
-        assert!(android_items.contains("fn android.requestNotificationPermission() -> void"));
+        assert!(android_items.contains("fn android.next(wrap: bool = false) -> void"));
+        assert!(android_items.contains("fn android.prior(wrap: bool = false) -> void"));
+        assert!(android_items.contains("fn android.first() -> void"));
+        assert!(android_items.contains("fn android.last() -> void"));
+        assert!(android_items.contains("fn android.blur() -> void"));
+        assert!(android_items.contains("fn android.start() -> i64"));
+        assert!(android_items.contains("fn android.end() -> i64"));
+        assert!(android_items.contains("fn android.caret(position: i64) -> bool"));
+        assert!(android_items.contains("fn android.select(start: i64, end: i64) -> bool"));
+        assert!(android_items.contains("fn android.ime(action: str) -> bool"));
+        assert!(
+            android_items
+                .contains("fn android.channel(id: str, name: str, description: str) -> void")
+        );
+        assert!(android_items.contains("fn android.allowed(permission: str) -> bool"));
+        assert!(android_items.contains("fn android.ask(permission: str) -> void"));
+        assert!(android_items.contains("fn android.noticeAllowed() -> bool"));
+        assert!(android_items.contains("fn android.askNotice() -> void"));
         assert!(android_items.contains(
             "fn android.notify(channelId: str, notificationId: i64, title: str, body: str) -> void"
         ));
-        assert!(android_items.contains("fn android.notifyUrlAction(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void"));
-        assert!(
-            android_items.contains("fn android.cancelNotification(notificationId: i64) -> void")
-        );
+        assert!(android_items.contains("fn android.notifyUrl(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void"));
+        assert!(android_items.contains("fn android.cancelNotice(notificationId: i64) -> void"));
     }
 
     #[test]
@@ -7295,24 +7207,24 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(items.contains("\"label\":\"length\""));
-        assert!(items.contains("property i64[].length: i64"));
-        assert!(items.contains("\"label\":\"isEmpty\""));
-        assert!(items.contains("\"label\":\"isNotEmpty\""));
+        assert!(items.contains("\"label\":\"count\""));
+        assert!(items.contains("property i64[].count: i64"));
+        assert!(items.contains("\"label\":\"empty\""));
+        assert!(items.contains("\"label\":\"nonempty\""));
         assert!(items.contains("\"label\":\"first\""));
         assert!(items.contains("property i64[].first: i64"));
         assert!(items.contains("\"label\":\"last\""));
-        assert!(items.contains("\"label\":\"single\""));
+        assert!(items.contains("\"label\":\"only\""));
 
         let hover_uri = "file:///tmp/list-property-hover.flux";
-        let hover_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.length)\n    return 0\n}\n";
+        let hover_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.count)\n    return 0\n}\n";
         let hover_documents = HashMap::from([(hover_uri.to_string(), hover_source.to_string())]);
         let hover_line = hover_source
             .lines()
-            .position(|line| line.contains("values.length"))
+            .position(|line| line.contains("values.count"))
             .expect("list hover line should exist");
         let hover_text = hover_source.lines().nth(hover_line).unwrap();
-        let character = hover_text.find("length").unwrap() + 2;
+        let character = hover_text.find("count").unwrap() + 2;
         let hover = hover_for_document(
             hover_uri,
             hover_source,
@@ -7323,7 +7235,7 @@ mod tests {
         )
         .expect("list property should have hover")
         .to_json();
-        assert!(hover.contains("property length: i64"));
+        assert!(hover.contains("property count: i64"));
 
         let first_source = "fn main() -> i64 {\n    let values: i64[] = [1, 2, 3]\n    print(values.first)\n    return 0\n}\n";
         let first_documents = HashMap::from([(hover_uri.to_string(), first_source.to_string())]);
@@ -7820,15 +7732,15 @@ mod tests {
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("process.pid(", "fn process.pid() -> i64"),
-            ("process.parentPid(", "fn process.parentPid() -> i64"),
-            ("process.cpuMillis(", "fn process.cpuMillis() -> i64"),
+            ("process.parentPid(", "fn process.parent() -> i64"),
+            ("process.cpuMillis(", "fn process.cpu() -> i64"),
             (
                 "process.peakResidentMemoryBytes(",
-                "fn process.peakResidentMemoryBytes() -> i64",
+                "fn process.memory() -> i64",
             ),
             (
                 "process.terminationRequested(",
-                "fn process.terminationRequested() -> bool",
+                "fn process.stopping() -> bool",
             ),
             ("process.exit(", "fn process.exit(code: i64) -> void"),
             ("process.hasEnv(", "fn process.hasEnv(name: str) -> bool"),
@@ -7866,7 +7778,7 @@ mod tests {
             ("sqlite.open(", "fn sqlite.open(path: str) -> (i64, error)"),
             (
                 "sqlite.execute(",
-                "fn sqlite.execute(database: i64, sql: str) -> error",
+                "fn sqlite.run(database: i64, sql: str) -> error",
             ),
             (
                 "sqlite.query(",
@@ -7916,11 +7828,7 @@ mod tests {
         )
         .expect("peer-address call should have signature help")
         .to_json();
-        assert!(
-            help.contains(
-                "fn net.peerAddress(socket: i64, callback: fn(str, i64) -> void) -> error"
-            )
-        );
+        assert!(help.contains("fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error"));
 
         let needle = "net.localAddress(";
         let line_index = source
@@ -7940,9 +7848,7 @@ mod tests {
         .expect("local-address call should have signature help")
         .to_json();
         assert!(
-            help.contains(
-                "fn net.localAddress(socket: i64, callback: fn(str, i64) -> void) -> error"
-            )
+            help.contains("fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error")
         );
     }
 
@@ -7969,8 +7875,11 @@ mod tests {
         .expect("timed-send call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)")
-                || help.contains("fn net.sendTextWithTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)")
+            help.contains(
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)"
+            ) || help.contains(
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
+            )
         );
     }
 
@@ -7997,8 +7906,11 @@ mod tests {
         .expect("progressive-send call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn net.sendTextProgress(socket: i64, text: str, offset: i64) -&gt; (i64, bool, error)")
-                || help.contains("fn net.sendTextProgress(socket: i64, text: str, offset: i64) -> (i64, bool, error)")
+            help.contains(
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -&gt; (i64, bool, error)"
+            ) || help.contains(
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
+            )
         );
     }
 
@@ -8025,8 +7937,8 @@ mod tests {
         .expect("scatter/gather call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn net.sendTextParts(socket: i64, parts: str[]) -&gt; error")
-                || help.contains("fn net.sendTextParts(socket: i64, parts: str[]) -> error")
+            help.contains("fn net.writeParts(socket: i64, parts: str[]) -&gt; error")
+                || help.contains("fn net.writeParts(socket: i64, parts: str[]) -> error")
         );
     }
 
@@ -8053,8 +7965,11 @@ mod tests {
         .expect("UDP scatter/gather call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -&gt; error")
-                || help.contains("fn net.sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error")
+            help.contains(
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -&gt; error"
+            ) || help.contains(
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error"
+            )
         );
     }
 
@@ -8066,75 +7981,72 @@ mod tests {
         for (needle, expected) in [
             (
                 "net.tcpConnect(",
-                "fn net.tcpConnect(host: str, port: i64) -> (i64, error)",
+                "fn net.connect(host: str, port: i64) -> (i64, error)",
             ),
             (
                 "net.tcpListen(",
-                "fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)",
+                "fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)",
             ),
             (
                 "net.tcpAccept(",
-                "fn net.tcpAccept(listener: i64) -> (i64, error)",
+                "fn net.accept(listener: i64) -> (i64, error)",
             ),
             (
                 "net.udpConnect(",
-                "fn net.udpConnect(host: str, port: i64) -> (i64, error)",
+                "fn net.udp(host: str, port: i64) -> (i64, error)",
             ),
             (
                 "net.udpBind(",
-                "fn net.udpBind(host: str, port: i64) -> (i64, error)",
+                "fn net.bind(host: str, port: i64) -> (i64, error)",
             ),
-            (
-                "net.localPort(",
-                "fn net.localPort(socket: i64) -> (i64, error)",
-            ),
+            ("net.localPort(", "fn net.port(socket: i64) -> (i64, error)"),
             (
                 "net.sendText(",
-                "fn net.sendText(socket: i64, text: str) -> error",
+                "fn net.write(socket: i64, text: str) -> error",
             ),
             (
                 "net.sendTextTo(",
-                "fn net.sendTextTo(socket: i64, host: str, port: i64, text: str) -> error",
+                "fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error",
             ),
             (
                 "net.receiveText(",
-                "fn net.receiveText(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+                "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
                 "net.receiveTextFrom(",
-                "fn net.receiveTextFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+                "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
                 "net.setNonblocking(",
-                "fn net.setNonblocking(socket: i64, enabled: bool) -> error",
+                "fn net.nonblocking(socket: i64, enabled: bool) -> error",
             ),
             (
                 "net.waitReadable(",
-                "fn net.waitReadable(socket: i64, timeoutMillis: i64) -> (bool, error)",
+                "fn net.readable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
                 "net.waitWritable(",
-                "fn net.waitWritable(socket: i64, timeoutMillis: i64) -> (bool, error)",
+                "fn net.writable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
                 "net.waitReadableMany(",
-                "fn net.waitReadableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "fn net.readableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
                 "net.waitWritableMany(",
-                "fn net.waitWritableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "fn net.writableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
                 "net.waitReadyMany(",
-                "fn net.waitReadyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
+                "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
             ),
             (
                 "net.shutdownRead(",
-                "fn net.shutdownRead(socket: i64) -> error",
+                "fn net.closeRead(socket: i64) -> error",
             ),
             (
                 "net.shutdownWrite(",
-                "fn net.shutdownWrite(socket: i64) -> error",
+                "fn net.closeWrite(socket: i64) -> error",
             ),
             ("net.close(", "fn net.close(socket: i64) -> error"),
         ] {
@@ -8181,9 +8093,9 @@ mod tests {
         .expect("receiveTextMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.receiveTextMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
     }
 
@@ -8210,9 +8122,9 @@ mod tests {
         .expect("receiveTextFromMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -&gt; void) -&gt; (i64, error)"
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.receiveTextFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
     }
 
@@ -8239,9 +8151,9 @@ mod tests {
         .expect("tcpAcceptMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -&gt; void) -&gt; (i64, error)"
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
     }
 
@@ -8267,7 +8179,7 @@ mod tests {
         )
         .expect("setNoDelay call should have signature help")
         .to_json();
-        assert!(help.contains("fn net.setNoDelay(socket: i64, enabled: bool) -> error"));
+        assert!(help.contains("fn net.noDelay(socket: i64, enabled: bool) -> error"));
     }
 
     #[test]
@@ -8278,31 +8190,31 @@ mod tests {
         for (needle, expected) in [
             (
                 "url.parseHttp(",
-                "fn url.parseHttp(url: str, callback: fn(str, str, i64, str) -> void) -> error",
+                "fn url.parse(url: str, callback: fn(str, str, i64, str) -> void) -> error",
             ),
             (
                 "http.sendTextRequest(",
-                "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
+                "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextRequestWithHeaders(",
-                "fn http.sendTextRequestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+                "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponse(",
-                "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+                "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponseWithHeaders(",
-                "fn http.sendTextResponseWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+                "fn http.respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.receiveResponseHeadWithHeaders(",
-                "fn http.receiveResponseHeadWithHeaders(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+                "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
             ),
             (
                 "http.receiveResponseWithTextBody(",
-                "fn http.receiveResponseWithTextBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+                "fn http.readResponseBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
             ),
         ] {
             let line_index = source
@@ -8333,23 +8245,23 @@ mod tests {
         for (needle, expected) in [
             (
                 "url.decodeComponent(",
-                "fn url.decodeComponent(value: str, callback: fn(str) -> void) -> error",
+                "fn url.decode(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.encodeComponent(",
-                "fn url.encodeComponent(value: str, callback: fn(str) -> void) -> error",
+                "fn url.encode(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.decodeFormComponent(",
-                "fn url.decodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+                "fn url.decodeForm(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.encodeFormComponent(",
-                "fn url.encodeFormComponent(value: str, callback: fn(str) -> void) -> error",
+                "fn url.encodeForm(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.parseFormQuery(",
-                "fn url.parseFormQuery(query: str, callback: fn(str, str) -> void) -> error",
+                "fn url.query(query: str, callback: fn(str, str) -> void) -> error",
             ),
         ] {
             let line_index = source
@@ -8394,15 +8306,15 @@ mod tests {
             ),
             (
                 "locale.formatNumber(",
-                "fn locale.formatNumber(value: i64, callback: fn(str) -> void) -> error",
+                "fn locale.number(value: i64, callback: fn(str) -> void) -> error",
             ),
             (
                 "locale.formatDateTime(",
-                "fn locale.formatDateTime(unixMillis: i64, callback: fn(str) -> void) -> error",
+                "fn locale.date(unixMillis: i64, callback: fn(str) -> void) -> error",
             ),
             (
                 "locale.formatCurrency(",
-                "fn locale.formatCurrency(value: i64, callback: fn(str) -> void) -> error",
+                "fn locale.currency(value: i64, callback: fn(str) -> void) -> error",
             ),
         ] {
             let line_index = source
@@ -8452,9 +8364,9 @@ mod tests {
             )
         );
         assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
-        assert!(completion_items.contains("fn worker.joinChildren() -> error"));
+        assert!(completion_items.contains("fn worker.joinAll() -> error"));
         assert!(completion_items.contains("fn worker.cancel(handle: i64) -> error"));
-        assert!(completion_items.contains("fn worker.cancelChildren() -> void"));
+        assert!(completion_items.contains("fn worker.cancelAll() -> void"));
         assert!(completion_items.contains("fn worker.cancelled() -> bool"));
 
         let uri = "file:///tmp/worker-signatures.flux";
@@ -8470,12 +8382,9 @@ mod tests {
                 "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)",
             ),
             ("worker.cancel(", "fn worker.cancel(handle: i64) -> error"),
-            (
-                "worker.cancelChildren(",
-                "fn worker.cancelChildren() -> void",
-            ),
+            ("worker.cancelChildren(", "fn worker.cancelAll() -> void"),
             ("worker.cancelled(", "fn worker.cancelled() -> bool"),
-            ("worker.joinChildren(", "fn worker.joinChildren() -> error"),
+            ("worker.joinChildren(", "fn worker.joinAll() -> error"),
             ("worker.join(", "fn worker.join(handle: i64) -> error"),
         ] {
             let line_index = source
@@ -8518,9 +8427,9 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(completion_items.contains("fn channel.create(capacity: i64) -> (i64, error)"));
-        assert!(completion_items.contains("fn channel.send(handle: i64, value: i64) -> error"));
-        assert!(completion_items.contains("fn channel.receive(handle: i64) -> (i64, error)"));
+        assert!(completion_items.contains("fn channel.open(capacity: i64) -> (i64, error)"));
+        assert!(completion_items.contains("fn channel.write(handle: i64, value: i64) -> error"));
+        assert!(completion_items.contains("fn channel.read(handle: i64) -> (i64, error)"));
         assert!(completion_items.contains("fn channel.close(handle: i64) -> error"));
 
         let uri = "file:///tmp/channel-signatures.flux";
@@ -8529,15 +8438,15 @@ mod tests {
         for (needle, expected) in [
             (
                 "channel.create(",
-                "fn channel.create(capacity: i64) -> (i64, error)",
+                "fn channel.open(capacity: i64) -> (i64, error)",
             ),
             (
                 "channel.send(",
-                "fn channel.send(handle: i64, value: i64) -> error",
+                "fn channel.write(handle: i64, value: i64) -> error",
             ),
             (
                 "channel.receive(",
-                "fn channel.receive(handle: i64) -> (i64, error)",
+                "fn channel.read(handle: i64) -> (i64, error)",
             ),
             ("channel.close(", "fn channel.close(handle: i64) -> error"),
         ] {
@@ -8567,24 +8476,24 @@ mod tests {
         let source = "fn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    time.sleepUntilMonotonic(time.monotonicMillis())\n    print(time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6))\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            ("time.unixMillis(", "fn time.unixMillis() -> i64"),
-            ("time.monotonicMillis(", "fn time.monotonicMillis() -> i64"),
+            ("time.unixMillis(", "fn time.now() -> i64"),
+            ("time.monotonicMillis(", "fn time.monotonic() -> i64"),
             (
                 "time.sleepMillis(",
-                "fn time.sleepMillis(durationMs: i64) -> void",
+                "fn time.sleep(durationMs: i64) -> void",
             ),
             (
                 "time.sleepUntilMonotonic(",
-                "fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void",
+                "fn time.sleepUntil(deadlineMillis: i64) -> void",
             ),
             (
                 "time.utcUnixMillis(",
-                "fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
+                "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
             ),
-            ("time.utcYear(", "fn time.utcYear(unixMillis: i64) -> i64"),
+            ("time.utcYear(", "fn time.year(unixMillis: i64) -> i64"),
             (
                 "time.utcWeekday(",
-                "fn time.utcWeekday(unixMillis: i64) -> i64",
+                "fn time.weekday(unixMillis: i64) -> i64",
             ),
         ] {
             let line_index = source
@@ -8749,11 +8658,11 @@ mod tests {
         for (needle, expected) in [
             (
                 "file.modifiedUnixMillis(",
-                "fn file.modifiedUnixMillis(path: str) -> (i64, error)",
+                "fn file.modified(path: str) -> (i64, error)",
             ),
             (
                 "directory.modifiedUnixMillis(",
-                "fn directory.modifiedUnixMillis(path: str) -> (i64, error)",
+                "fn directory.modified(path: str) -> (i64, error)",
             ),
         ] {
             let line_index = source
@@ -8795,7 +8704,7 @@ mod tests {
         )
         .expect("keepScreenOn should have signature help")
         .to_json();
-        assert!(help.contains("fn android.keepScreenOn(enabled: bool) -> void"));
+        assert!(help.contains("fn android.awake(enabled: bool) -> void"));
     }
 
     #[test]
@@ -8817,7 +8726,7 @@ mod tests {
         )
         .expect("finishActivity should have signature help")
         .to_json();
-        assert!(help.contains("fn android.finishActivity() -> void"));
+        assert!(help.contains("fn android.finish() -> void"));
     }
 
     #[test]
@@ -8828,11 +8737,11 @@ mod tests {
         for (needle, expected) in [
             (
                 "android.scheduleBackgroundJob(",
-                "fn android.scheduleBackgroundJob(jobId: i64, delayMs: i64) -> bool",
+                "fn android.schedule(jobId: i64, delayMs: i64) -> bool",
             ),
             (
                 "android.cancelBackgroundJob(",
-                "fn android.cancelBackgroundJob(jobId: i64) -> void",
+                "fn android.cancelJob(jobId: i64) -> void",
             ),
         ] {
             let line_index = source
@@ -8877,7 +8786,7 @@ mod tests {
         )
         .expect("Android feature call should have signature help")
         .to_json();
-        assert!(help.contains("fn android.hasSystemFeature(feature: str) -> bool"));
+        assert!(help.contains("fn android.feature(feature: str) -> bool"));
     }
 
     #[test]
@@ -8886,48 +8795,45 @@ mod tests {
         let source = "fn picked(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    print(android.sdkInt())\n    android.vibrate(25)\n    android.openUrl(\"https://example.com\")\n    android.openAppSettings()\n    android.share(\"hello\")\n    android.pickFile(picked)\n    android.pickMedia(picked)\n    android.pickDirectory(picked)\n    print(android.permissionGranted(\"android.permission.CAMERA\"))\n    android.requestPermission(\"android.permission.CAMERA\")\n    android.createNotificationChannel(\"updates\", \"Updates\", \"Flux updates\")\n    print(android.notificationPermissionGranted())\n    android.requestNotificationPermission()\n    android.notify(\"updates\", 1, \"Hello\", \"from Flux\")\n    android.notifyUrlAction(\"updates\", 2, \"Hello\", \"Open site\", \"Open\", \"https://example.com\")\n    android.cancelNotification(1)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            ("android.sdkInt(", "fn android.sdkInt() -> i64"),
+            ("android.sdkInt(", "fn android.sdk() -> i64"),
             (
                 "android.vibrate(",
                 "fn android.vibrate(durationMs: i64) -> void",
             ),
-            ("android.openUrl(", "fn android.openUrl(url: str) -> void"),
-            (
-                "android.openAppSettings(",
-                "fn android.openAppSettings() -> void",
-            ),
+            ("android.openUrl(", "fn android.open(url: str) -> void"),
+            ("android.openAppSettings(", "fn android.settings() -> void"),
             ("android.share(", "fn android.share(text: str) -> void"),
             (
                 "android.pickFile(",
-                "fn android.pickFile(callback: fn(str) -> void) -> void",
+                "fn android.file(callback: fn(str) -> void) -> void",
             ),
             (
                 "android.pickMedia(",
-                "fn android.pickMedia(callback: fn(str) -> void) -> void",
+                "fn android.media(callback: fn(str) -> void) -> void",
             ),
             (
                 "android.pickDirectory(",
-                "fn android.pickDirectory(callback: fn(str) -> void) -> void",
+                "fn android.folder(callback: fn(str) -> void) -> void",
             ),
             (
                 "android.permissionGranted(",
-                "fn android.permissionGranted(permission: str) -> bool",
+                "fn android.allowed(permission: str) -> bool",
             ),
             (
                 "android.requestPermission(",
-                "fn android.requestPermission(permission: str) -> void",
+                "fn android.ask(permission: str) -> void",
             ),
             (
                 "android.createNotificationChannel(",
-                "fn android.createNotificationChannel(id: str, name: str, description: str) -> void",
+                "fn android.channel(id: str, name: str, description: str) -> void",
             ),
             (
                 "android.notificationPermissionGranted(",
-                "fn android.notificationPermissionGranted() -> bool",
+                "fn android.noticeAllowed() -> bool",
             ),
             (
                 "android.requestNotificationPermission(",
-                "fn android.requestNotificationPermission() -> void",
+                "fn android.askNotice() -> void",
             ),
             (
                 "android.notify(",
@@ -8935,11 +8841,11 @@ mod tests {
             ),
             (
                 "android.notifyUrlAction(",
-                "fn android.notifyUrlAction(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void",
+                "fn android.notifyUrl(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void",
             ),
             (
                 "android.cancelNotification(",
-                "fn android.cancelNotification(notificationId: i64) -> void",
+                "fn android.cancelNotice(notificationId: i64) -> void",
             ),
         ] {
             let line_index = source
@@ -8988,7 +8894,7 @@ mod tests {
         )
         .expect("notification settings call should have signature help")
         .to_json();
-        assert!(help.contains("fn android.openNotificationSettings() -> void"));
+        assert!(help.contains("fn android.noticeSettings() -> void"));
     }
 
     #[test]
@@ -9113,15 +9019,15 @@ mod tests {
         for (needle, expected) in [
             (
                 "fileDialog.openFile(",
-                "fn fileDialog.openFile(callback: fn(str) -> void) -> void",
+                "fn fileDialog.open(callback: fn(str) -> void) -> void",
             ),
             (
                 "fileDialog.saveFile(",
-                "fn fileDialog.saveFile(callback: fn(str) -> void) -> void",
+                "fn fileDialog.save(callback: fn(str) -> void) -> void",
             ),
             (
                 "fileDialog.selectDirectory(",
-                "fn fileDialog.selectDirectory(callback: fn(str) -> void) -> void",
+                "fn fileDialog.folder(callback: fn(str) -> void) -> void",
             ),
         ] {
             let line_index = source
@@ -9160,7 +9066,7 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(items.contains("fn frame.request(callback: fn() -> void) -> void"));
+        assert!(items.contains("fn frame.next(callback: fn() -> void) -> void"));
         assert!(
             items.contains("fn frame.timeline(durationMs: i64, callback: fn(i64) -> void) -> void")
         );
@@ -9184,7 +9090,7 @@ mod tests {
         )
         .expect("frame request should have signature help")
         .to_json();
-        assert!(help.contains("fn frame.request(callback: fn() -> void) -> void"));
+        assert!(help.contains("fn frame.next(callback: fn() -> void) -> void"));
 
         let timeline_needle = "frame.timeline(";
         let timeline_line_index = signature_source
@@ -9231,7 +9137,7 @@ mod tests {
         )
         .expect("portable clipboard call should have signature help")
         .to_json();
-        assert!(portable_help.contains("fn clipboard.setText(text: str) -> void"));
+        assert!(portable_help.contains("fn clipboard.write(text: str) -> void"));
         let read_needle = "clipboard.readText(";
         let read_line_index = source
             .lines()
@@ -9249,7 +9155,7 @@ mod tests {
         )
         .expect("portable clipboard read should have signature help")
         .to_json();
-        assert!(read_help.contains("fn clipboard.readText(callback: fn(str) -> void) -> void"));
+        assert!(read_help.contains("fn clipboard.read(callback: fn(str) -> void) -> void"));
         let needle = "android.setClipboardText(";
         let line_index = source
             .lines()
@@ -9267,7 +9173,7 @@ mod tests {
         )
         .expect("clipboard call should have signature help")
         .to_json();
-        assert!(help.contains("fn android.setClipboardText(text: str) -> void"));
+        assert!(help.contains("fn android.clipboard(text: str) -> void"));
     }
 
     #[test]
@@ -9276,21 +9182,15 @@ mod tests {
         let source = "fn main() -> i64 {\n    print(textInput.selectionStart())\n    print(textInput.selectionEnd())\n    print(textInput.setCaret(1))\n    print(textInput.setSelection(0, 1))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            (
-                "textInput.selectionStart(",
-                "fn textInput.selectionStart() -> i64",
-            ),
-            (
-                "textInput.selectionEnd(",
-                "fn textInput.selectionEnd() -> i64",
-            ),
+            ("textInput.selectionStart(", "fn textInput.start() -> i64"),
+            ("textInput.selectionEnd(", "fn textInput.end() -> i64"),
             (
                 "textInput.setCaret(",
-                "fn textInput.setCaret(position: i64) -> bool",
+                "fn textInput.caret(position: i64) -> bool",
             ),
             (
                 "textInput.setSelection(",
-                "fn textInput.setSelection(start: i64, end: i64) -> bool",
+                "fn textInput.select(start: i64, end: i64) -> bool",
             ),
         ] {
             let line_index = source
@@ -9322,7 +9222,7 @@ mod tests {
             ("focus.next(", "fn focus.next(wrap: bool = false) -> void"),
             (
                 "focus.previous(",
-                "fn focus.previous(wrap: bool = false) -> void",
+                "fn focus.prior(wrap: bool = false) -> void",
             ),
             (
                 "focus.nextIn(",
@@ -9330,7 +9230,7 @@ mod tests {
             ),
             (
                 "focus.previousIn(",
-                "fn focus.previousIn(scope: i64, wrap: bool = false) -> void",
+                "fn focus.priorIn(scope: i64, wrap: bool = false) -> void",
             ),
             ("focus.first(", "fn focus.first() -> void"),
             ("focus.last(", "fn focus.last() -> void"),
@@ -9366,31 +9266,28 @@ mod tests {
         for (needle, expected) in [
             (
                 "android.focusNext(",
-                "fn android.focusNext(wrap: bool = false) -> void",
+                "fn android.next(wrap: bool = false) -> void",
             ),
             (
                 "android.focusPrevious(",
-                "fn android.focusPrevious(wrap: bool = false) -> void",
+                "fn android.prior(wrap: bool = false) -> void",
             ),
-            ("android.focusFirst(", "fn android.focusFirst() -> void"),
-            ("android.focusLast(", "fn android.focusLast() -> void"),
-            ("android.clearFocus(", "fn android.clearFocus() -> void"),
-            (
-                "android.selectionStart(",
-                "fn android.selectionStart() -> i64",
-            ),
-            ("android.selectionEnd(", "fn android.selectionEnd() -> i64"),
+            ("android.focusFirst(", "fn android.first() -> void"),
+            ("android.focusLast(", "fn android.last() -> void"),
+            ("android.clearFocus(", "fn android.blur() -> void"),
+            ("android.selectionStart(", "fn android.start() -> i64"),
+            ("android.selectionEnd(", "fn android.end() -> i64"),
             (
                 "android.setCaret(",
-                "fn android.setCaret(position: i64) -> bool",
+                "fn android.caret(position: i64) -> bool",
             ),
             (
                 "android.setSelection(",
-                "fn android.setSelection(start: i64, end: i64) -> bool",
+                "fn android.select(start: i64, end: i64) -> bool",
             ),
             (
                 "android.setImeAction(",
-                "fn android.setImeAction(action: str) -> bool",
+                "fn android.ime(action: str) -> bool",
             ),
         ] {
             let line_index = source
@@ -9440,19 +9337,19 @@ mod tests {
         let map_help = help_for("map(values, ");
         assert!(map_help.contains("fn map(list: T[], callback: fn(T) -> U) -> U[]"));
         let filter_help = help_for("filter(values, ");
-        assert!(filter_help.contains("fn filter(list: T[], predicate: fn(T) -> bool) -> T[]"));
+        assert!(filter_help.contains("fn where(list: T[], predicate: fn(T) -> bool) -> T[]"));
         let where_help = help_for("where(values, ");
         assert!(where_help.contains("fn where(list: T[], predicate: fn(T) -> bool) -> T[]"));
         let concat_help = help_for("concat(values, ");
-        assert!(concat_help.contains("fn concat(left: T[], right: T[]) -> T[]"));
+        assert!(concat_help.contains("fn merge(left: T[], right: T[]) -> T[]"));
         let distinct_help = help_for("distinct(");
-        assert!(distinct_help.contains("fn distinct(list: scalar[]) -> same scalar list type"));
+        assert!(distinct_help.contains("fn unique(list: scalar[]) -> same scalar list type"));
         let flatten_help = help_for("flatten(");
-        assert!(flatten_help.contains("fn flatten(list: T[][]) -> T[]"));
+        assert!(flatten_help.contains("fn flat(list: T[][]) -> T[]"));
         let sorted_help = help_for("sorted(");
-        assert!(sorted_help.contains("fn sorted(list: ordered[]) -> same ordered list type"));
+        assert!(sorted_help.contains("fn sort(list: ordered[]) -> same ordered list type"));
         let chunked_help = help_for("chunked(values, ");
-        assert!(chunked_help.contains("fn chunked(list: T[], size: i64) -> T[][]"));
+        assert!(chunked_help.contains("fn chunk(list: T[], size: i64) -> T[][]"));
     }
 
     #[test]
@@ -9820,26 +9717,25 @@ mod tests {
         assert!(!json.contains("\"label\":\"lastOrDefault\""));
         assert!(json.contains("\"label\":\"any\""));
         assert!(json.contains("fn any(list: bool[]) -> bool"));
-        assert!(json.contains("\"label\":\"every\""));
+        assert!(json.contains("\"label\":\"all\""));
         assert!(json.contains("\"label\":\"fold\""));
         assert!(json.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
         assert!(json.contains("\"label\":\"reduce\""));
         assert!(json.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
         assert!(json.contains("\"label\":\"map\""));
         assert!(json.contains("fn map(list: T[], callback: fn(T) -> U) -> U[]"));
-        assert!(json.contains("\"label\":\"filter\""));
-        assert!(json.contains("fn filter(list: T[], predicate: fn(T) -> bool) -> T[]"));
         assert!(json.contains("\"label\":\"where\""));
-        assert!(json.contains("\"label\":\"concat\""));
-        assert!(json.contains("fn concat(left: T[], right: T[]) -> T[]"));
-        assert!(json.contains("\"label\":\"distinct\""));
-        assert!(json.contains("fn distinct(list: scalar[]) -> scalar[]"));
-        assert!(json.contains("\"label\":\"flatten\""));
-        assert!(json.contains("fn flatten(list: T[][]) -> T[]"));
-        assert!(json.contains("\"label\":\"sorted\""));
-        assert!(json.contains("fn sorted(list: ordered[]) -> same ordered list type"));
-        assert!(json.contains("\"label\":\"chunked\""));
-        assert!(json.contains("fn chunked(list: T[], size: i64) -> T[][]"));
+        assert!(json.contains("fn where(list: T[], predicate: fn(T) -> bool) -> T[]"));
+        assert!(json.contains("\"label\":\"merge\""));
+        assert!(json.contains("fn merge(left: T[], right: T[]) -> T[]"));
+        assert!(json.contains("\"label\":\"unique\""));
+        assert!(json.contains("fn unique(list: scalar[]) -> scalar[]"));
+        assert!(json.contains("\"label\":\"flat\""));
+        assert!(json.contains("fn flat(list: T[][]) -> T[]"));
+        assert!(json.contains("\"label\":\"sort\""));
+        assert!(json.contains("fn sort(list: ordered[]) -> same ordered list type"));
+        assert!(json.contains("\"label\":\"chunk\""));
+        assert!(json.contains("fn chunk(list: T[], size: i64) -> T[][]"));
     }
 
     #[test]

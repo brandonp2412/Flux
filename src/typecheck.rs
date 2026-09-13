@@ -5447,6 +5447,16 @@ pub fn type_of_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Type, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return type_of_expr(&normalized, env, signatures);
+        }
+    }
     match &expr.kind {
         ExprKind::Int(_) => Ok(Type::I64),
         ExprKind::Bool(_) => Ok(Type::Bool),
@@ -6587,7 +6597,7 @@ pub fn type_of_expr(
                 (base_ty, false)
             };
             let field_ty = if let Type::List(element) = &base_ty {
-                match name.as_str() {
+                match crate::builtin_names::list_member_impl(name) {
                     "length" => Type::I64,
                     "isEmpty" | "isNotEmpty" => Type::Bool,
                     "first" | "last" | "single" => (**element).clone(),
@@ -6784,6 +6794,16 @@ pub(crate) fn value_types_of_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return value_types_of_expr(&normalized, env, signatures);
+        }
+    }
     match &expr.kind {
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
@@ -6833,16 +6853,22 @@ pub(crate) fn value_types_of_expr(
                         | "skip"
                         | "any"
                         | "every"
+                        | "all"
                         | "fold"
                         | "reduce"
                         | "map"
                         | "filter"
                         | "where"
                         | "concat"
+                        | "join"
                         | "distinct"
+                        | "unique"
                         | "flatten"
+                        | "flat"
                         | "sorted"
+                        | "sort"
                         | "chunked"
+                        | "chunk"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])
@@ -6876,6 +6902,14 @@ fn check_qualified_call(
         return Err(diag(expr.span, "expected a qualified call"));
     };
     let span = expr.span;
+    let implementation_name = crate::builtin_names::qualified_impl(namespace, name.as_str());
+    if implementation_name != name {
+        let mut normalized = expr.clone();
+        if let ExprKind::QualifiedCall { name, .. } = &mut normalized.kind {
+            *name = implementation_name.to_string();
+        }
+        return check_qualified_call(&normalized, env, signatures);
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(
