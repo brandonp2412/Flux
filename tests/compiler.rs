@@ -11131,6 +11131,35 @@ fn main() -> i64 {
         graph.borrowed_definition_span("tail", "source").is_some(),
         "normalized ownership IR should expose the zero-copy borrow source"
     );
+    let tail_read = graph
+        .nodes()
+        .iter()
+        .find(|node| node.ownership.reads.iter().any(|read| read == "tail"))
+        .expect("the live tail read should be represented in the CFG");
+    let tail_borrows = graph
+        .borrow_state_before(tail_read.id)
+        .expect("every CFG node should expose a borrow-state slot");
+    assert!(
+        tail_borrows.contains("tail", "source"),
+        "the zero-copy tail lifetime should remain active through its final read"
+    );
+    let destination_read = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.ownership
+                .reads
+                .iter()
+                .any(|read| read == "destination")
+        })
+        .expect("the moved destination should have a later read");
+    let destination_borrows = graph
+        .borrow_state_before(destination_read.id)
+        .expect("every CFG node should expose a borrow-state slot");
+    assert!(
+        !destination_borrows.contains("tail", "source"),
+        "the tail borrow lifetime should end after its final reachable use"
+    );
 
     let chained_view = r#"
 fn main() -> i64 {
@@ -11411,6 +11440,34 @@ fn main() -> i64 {
         "a borrowed view chain in one branch must not poison unrelated same-named bindings in a sibling branch",
     );
     compile_to_c(source).expect("branch-local borrow provenance should lower natively");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1209))
+        .expect("branch-local borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let projected_states = graph
+        .nodes()
+        .iter()
+        .filter(|node| node.ownership.reads.iter().any(|read| read == "projected"))
+        .map(|node| {
+            graph
+                .borrow_state_before(node.id)
+                .expect("every CFG node should expose a borrow-state slot")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(projected_states.len(), 2);
+    assert!(
+        projected_states
+            .iter()
+            .any(|state| state.contains("projected", "source")),
+        "the borrowed branch should retain projected -> source lifetime provenance"
+    );
+    assert!(
+        projected_states
+            .iter()
+            .any(|state| !state.contains("projected", "source")),
+        "the sibling owned branch must not inherit the borrowed branch lifetime"
+    );
 }
 
 #[test]

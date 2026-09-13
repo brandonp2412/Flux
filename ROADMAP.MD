@@ -441,7 +441,7 @@ Performance acceptance for this milestone is semantic as well as benchmarked: ab
 - [ ] Ownership facts represented in IR.
   - [x] Bootstrap CFG action/evaluation nodes carry deterministic binding-read sets plus explicit source/destination/span facts for direct non-copy local moves.
   - [x] Direct-local move path-state and reachability are computed to a fixed point on CFG edges and exposed per node; bootstrap use-after-move checking consumes these IR facts.
-  - [ ] Add borrow regions, partial moves, drops, lifetimes, and consuming-call ownership facts to normalized CFG/IR analysis.
+  - [ ] Add borrow regions, partial moves, drops, lifetimes, and consuming-call ownership facts to normalized CFG/IR analysis. Bootstrap immutable borrow regions/lifetimes are now explicit as path- and liveness-aware per-node borrow states derived from reaching definitions, and live-borrow move validation consumes those normalized IR facts directly instead of re-walking borrow provenance at each move. Partial moves, explicit drops, and consuming-call ownership facts remain pending.
 - [ ] Explicit control-flow graph.
   - [x] The semantic database exposes deterministic per-function structural CFGs for sequential statements, `if`, loops/back-edges, `break`, `continue`, `return`, match-arm dispatch, and `else return` success/error exits.
   - [x] Bootstrap statement-level expression evaluation is explicit in CFG nodes for initializers, assignments, destructuring, return values, shell/redirection values, conditions, range bounds, iterables, match scrutinees, and match guards; `while`/`continue` edges re-enter condition evaluation correctly, while compile-time primitive conditions and statically empty integer ranges omit impossible branch/body edges.

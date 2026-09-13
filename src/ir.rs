@@ -341,6 +341,30 @@ impl ControlFlowLiveState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipBorrowedBinding {
+    pub borrower: String,
+    pub source: String,
+    pub origin: SourceSpan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControlFlowBorrowState {
+    borrows: Vec<OwnershipBorrowedBinding>,
+}
+
+impl ControlFlowBorrowState {
+    pub fn borrows(&self) -> &[OwnershipBorrowedBinding] {
+        &self.borrows
+    }
+
+    pub fn contains(&self, borrower: &str, source: &str) -> bool {
+        self.borrows
+            .iter()
+            .any(|borrow| borrow.borrower == borrower && borrow.source == source)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowNode {
     pub id: ControlFlowNodeId,
     pub kind: ControlFlowNodeKind,
@@ -394,6 +418,7 @@ pub struct ControlFlowGraph {
     move_states_before: Vec<ControlFlowMoveState>,
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
+    borrow_states_before: Vec<ControlFlowBorrowState>,
 }
 
 impl ControlFlowGraph {
@@ -554,6 +579,10 @@ impl ControlFlowGraph {
 
     pub fn live_after(&self, id: ControlFlowNodeId) -> Option<&ControlFlowLiveState> {
         self.live_after.get(id.0)
+    }
+
+    pub fn borrow_state_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowBorrowState> {
+        self.borrow_states_before.get(id.0)
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -959,7 +988,7 @@ impl<'a> ControlFlowBuilder<'a> {
             &reachable_values,
             self.signatures,
         );
-        ControlFlowGraph {
+        let mut graph = ControlFlowGraph {
             function: self.function,
             parameters: self.parameters,
             returns: self.returns,
@@ -979,7 +1008,10 @@ impl<'a> ControlFlowBuilder<'a> {
             move_states_before,
             live_before,
             live_after,
-        }
+            borrow_states_before: Vec::new(),
+        };
+        graph.borrow_states_before = compute_borrow_states(&graph);
+        graph
     }
 
     fn node(&mut self, kind: ControlFlowNodeKind, span: SourceSpan) -> ControlFlowNodeId {
@@ -4007,6 +4039,97 @@ fn compute_liveness(
         before.into_iter().map(into_state).collect(),
         after.into_iter().map(into_state).collect(),
     )
+}
+
+fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState> {
+    let mut source_names = graph
+        .parameters
+        .iter()
+        .filter(|parameter| matches!(parameter.ty, Type::List(_)))
+        .map(|parameter| parameter.name.clone())
+        .collect::<BTreeSet<_>>();
+    for node in &graph.nodes {
+        source_names.extend(
+            node.definitions
+                .iter()
+                .filter(|definition| matches!(definition.ty, Type::List(_)))
+                .map(|definition| definition.name.clone()),
+        );
+    }
+
+    let mut sources_by_definition = BTreeMap::<ControlFlowDefinitionId, Vec<String>>::new();
+    for node in &graph.nodes {
+        for (index, definition) in node.definitions.iter().enumerate() {
+            if !matches!(definition.ty, Type::List(_)) {
+                continue;
+            }
+            let id = ControlFlowDefinitionId::Node {
+                node: node.id,
+                index,
+            };
+            let mut sources = Vec::new();
+            for source in &source_names {
+                if source == &definition.name {
+                    continue;
+                }
+                let mut visiting = HashSet::new();
+                if graph.definition_id_borrows_from(id, source, &mut visiting) {
+                    sources.push(source.clone());
+                }
+            }
+            if !sources.is_empty() {
+                sources_by_definition.insert(id, sources);
+            }
+        }
+    }
+
+    graph
+        .nodes
+        .iter()
+        .map(|node| {
+            if !graph.is_reachable(node.id) {
+                return ControlFlowBorrowState::default();
+            }
+            let Some(live) = graph.live_before.get(node.id.0) else {
+                return ControlFlowBorrowState::default();
+            };
+            let Some(reaching) = graph
+                .reaching_definitions_before
+                .get(node.id.0)
+                .and_then(Option::as_ref)
+            else {
+                return ControlFlowBorrowState::default();
+            };
+
+            let mut borrows = Vec::new();
+            for borrower in live.live() {
+                let Some(definitions) = reaching.get(borrower) else {
+                    continue;
+                };
+                for definition in definitions {
+                    let Some(origin) = graph.definition_span(*definition) else {
+                        continue;
+                    };
+                    let Some(sources) = sources_by_definition.get(definition) else {
+                        continue;
+                    };
+                    borrows.extend(sources.iter().map(|source| OwnershipBorrowedBinding {
+                        borrower: borrower.clone(),
+                        source: source.clone(),
+                        origin,
+                    }));
+                }
+            }
+            borrows.sort_by(|left, right| {
+                left.borrower
+                    .cmp(&right.borrower)
+                    .then_with(|| left.source.cmp(&right.source))
+                    .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
+            });
+            borrows.dedup();
+            ControlFlowBorrowState { borrows }
+        })
+        .collect()
 }
 
 fn compute_move_states(
