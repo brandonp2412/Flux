@@ -4057,6 +4057,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
 import android.graphics.DashPathEffect;
+import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
@@ -4077,6 +4078,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewOutlineProvider;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -4766,6 +4768,7 @@ __FLUX_PICKER_METHODS__
             preparePaint(color, Paint.Style.STROKE);
             paint.setStrokeWidth(width);
             paint.setStrokeCap(Paint.Cap.BUTT);
+            paint.setStrokeJoin(Paint.Join.ROUND);
             if ("dashed".equals(borderStyle)) {
                 paint.setPathEffect(new DashPathEffect(new float[] {
                     Math.max(width * 3.0f, 1.0f), Math.max(width * 2.0f, 1.0f)
@@ -4778,61 +4781,149 @@ __FLUX_PICKER_METHODS__
             }
         }
 
-        private void drawHorizontalBorder(Canvas canvas, RectF rect, boolean top, int color, int width) {
-            if (width <= 0 || "none".equals(borderStyle)) return;
-            if ("double".equals(borderStyle) && width >= 3) {
-                float line = Math.max(1.0f, width / 3.0f);
-                prepareBorderPaint(color, line);
-                float first = top ? rect.top + line / 2.0f : rect.bottom - line / 2.0f;
-                float second = top ? rect.top + width - line / 2.0f : rect.bottom - width + line / 2.0f;
-                canvas.drawLine(rect.left, first, rect.right, first, paint);
-                canvas.drawLine(rect.left, second, rect.right, second, paint);
-                return;
+        private Path roundedPath(RectF rect, float inset) {
+            RectF pathRect = new RectF(rect);
+            if (inset > 0.0f) pathRect.inset(inset, inset);
+            Path path = new Path();
+            if (pathRect.isEmpty()) return path;
+            float[] pathRadii = new float[8];
+            for (int index = 0; index < radii.length; index++) {
+                pathRadii[index] = Math.max(0.0f, radii[index] - inset);
             }
-            prepareBorderPaint(color, width);
-            float y = top ? rect.top + width / 2.0f : rect.bottom - width / 2.0f;
-            canvas.drawLine(rect.left, y, rect.right, y, paint);
+            path.addRoundRect(pathRect, pathRadii, Path.Direction.CW);
+            return path;
         }
 
-        private void drawVerticalBorder(Canvas canvas, RectF rect, boolean start, int color, int width) {
+        private float safeInset(RectF rect, float inset) {
+            float limit = Math.max(0.0f, Math.min(rect.width(), rect.height()) / 2.0f - 0.5f);
+            return Math.max(0.0f, Math.min(inset, limit));
+        }
+
+        private boolean hasUniformBorder() {
+            if (borderTop == null || borderEnd == null || borderBottom == null || borderStart == null) return false;
+            return borderTop.equals(borderEnd)
+                    && borderTop.equals(borderBottom)
+                    && borderTop.equals(borderStart)
+                    && borderTopWidth == borderEndWidth
+                    && borderTopWidth == borderBottomWidth
+                    && borderTopWidth == borderStartWidth;
+        }
+
+        private void drawRoundedStroke(Canvas canvas, RectF rect, int color, float width, float centerInset) {
+            if (width <= 0.0f || "none".equals(borderStyle)) return;
+            float inset = safeInset(rect, centerInset);
+            Path strokePath = roundedPath(rect, inset);
+            if (strokePath.isEmpty()) return;
+            prepareBorderPaint(color, width);
+            canvas.drawPath(strokePath, paint);
+        }
+
+        private Path sideClip(RectF rect, int side) {
+            float innerLeft = Math.min(rect.right, rect.left + Math.max(0, borderStartWidth));
+            float innerTop = Math.min(rect.bottom, rect.top + Math.max(0, borderTopWidth));
+            float innerRight = Math.max(rect.left, rect.right - Math.max(0, borderEndWidth));
+            float innerBottom = Math.max(rect.top, rect.bottom - Math.max(0, borderBottomWidth));
+            Path clip = new Path();
+            if (side == 0) {
+                clip.moveTo(rect.left, rect.top);
+                clip.lineTo(rect.right, rect.top);
+                clip.lineTo(innerRight, innerTop);
+                clip.lineTo(innerLeft, innerTop);
+            } else if (side == 1) {
+                clip.moveTo(rect.right, rect.top);
+                clip.lineTo(rect.right, rect.bottom);
+                clip.lineTo(innerRight, innerBottom);
+                clip.lineTo(innerRight, innerTop);
+            } else if (side == 2) {
+                clip.moveTo(rect.right, rect.bottom);
+                clip.lineTo(rect.left, rect.bottom);
+                clip.lineTo(innerLeft, innerBottom);
+                clip.lineTo(innerRight, innerBottom);
+            } else {
+                clip.moveTo(rect.left, rect.bottom);
+                clip.lineTo(rect.left, rect.top);
+                clip.lineTo(innerLeft, innerTop);
+                clip.lineTo(innerLeft, innerBottom);
+            }
+            clip.close();
+            return clip;
+        }
+
+        private void drawBorderSide(Canvas canvas, RectF rect, int side, int color, int width) {
             if (width <= 0 || "none".equals(borderStyle)) return;
+            int save = canvas.save();
+            canvas.clipPath(sideClip(rect, side));
             if ("double".equals(borderStyle) && width >= 3) {
                 float line = Math.max(1.0f, width / 3.0f);
-                prepareBorderPaint(color, line);
-                float first = start ? rect.left + line / 2.0f : rect.right - line / 2.0f;
-                float second = start ? rect.left + width - line / 2.0f : rect.right - width + line / 2.0f;
-                canvas.drawLine(first, rect.top, first, rect.bottom, paint);
-                canvas.drawLine(second, rect.top, second, rect.bottom, paint);
+                drawRoundedStroke(canvas, rect, color, line, line / 2.0f);
+                drawRoundedStroke(canvas, rect, color, line, width - line / 2.0f);
+            } else {
+                drawRoundedStroke(canvas, rect, color, width, width / 2.0f);
+            }
+            canvas.restoreToCount(save);
+        }
+
+        private void drawBorder(Canvas canvas, RectF rect) {
+            if ("none".equals(borderStyle)) return;
+            if (hasUniformBorder()) {
+                int width = borderTopWidth;
+                if (width <= 0) return;
+                if ("double".equals(borderStyle) && width >= 3) {
+                    float line = Math.max(1.0f, width / 3.0f);
+                    drawRoundedStroke(canvas, rect, borderTop, line, line / 2.0f);
+                    drawRoundedStroke(canvas, rect, borderTop, line, width - line / 2.0f);
+                } else {
+                    drawRoundedStroke(canvas, rect, borderTop, width, width / 2.0f);
+                }
                 return;
             }
-            prepareBorderPaint(color, width);
-            float x = start ? rect.left + width / 2.0f : rect.right - width / 2.0f;
-            canvas.drawLine(x, rect.top, x, rect.bottom, paint);
+            if (borderTop != null) drawBorderSide(canvas, rect, 0, borderTop, borderTopWidth);
+            if (borderEnd != null) drawBorderSide(canvas, rect, 1, borderEnd, borderEndWidth);
+            if (borderBottom != null) drawBorderSide(canvas, rect, 2, borderBottom, borderBottomWidth);
+            if (borderStart != null) drawBorderSide(canvas, rect, 3, borderStart, borderStartWidth);
+        }
+
+        boolean hasShadow() {
+            return shadowColor != null
+                    && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f);
+        }
+
+        float shadowElevation() {
+            float offset = (float)Math.hypot(shadowOffsetX, shadowOffsetY);
+            return hasShadow() ? Math.max(1.0f, shadowBlur * 0.65f + offset * 0.35f) : 0.0f;
+        }
+
+        void populateOutline(Outline outline) {
+            RectF rect = new RectF(getBounds());
+            if (rect.isEmpty()) {
+                outline.setEmpty();
+                return;
+            }
+            boolean uniformRadius = Float.compare(radii[0], radii[2]) == 0
+                    && Float.compare(radii[0], radii[4]) == 0
+                    && Float.compare(radii[0], radii[6]) == 0;
+            if (uniformRadius) {
+                float radius = Math.min(radii[0], Math.min(rect.width(), rect.height()) / 2.0f);
+                outline.setRoundRect(getBounds(), Math.max(0.0f, radius));
+            } else {
+                Path path = roundedPath(rect, 0.0f);
+                if (Build.VERSION.SDK_INT >= 30) outline.setPath(path);
+                else outline.setConvexPath(path);
+            }
+            float outlineAlpha = background == null ? 1.0f : Color.alpha(background) / 255.0f;
+            outline.setAlpha(Math.max(0.01f, outlineAlpha));
         }
 
         @Override
         public void draw(Canvas canvas) {
             RectF rect = new RectF(getBounds());
             if (rect.isEmpty()) return;
-            Path shape = new Path();
-            shape.addRoundRect(rect, radii, Path.Direction.CW);
-            if (shadowColor != null && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f)) {
-                preparePaint(background == null ? Color.argb(1, 0, 0, 0) : background, Paint.Style.FILL);
-                paint.setShadowLayer(shadowBlur, shadowOffsetX, shadowOffsetY, shadowColor);
-                canvas.drawPath(shape, paint);
-                paint.clearShadowLayer();
-            }
+            Path shape = roundedPath(rect, 0.0f);
             if (background != null) {
                 preparePaint(background, Paint.Style.FILL);
                 canvas.drawPath(shape, paint);
             }
-            int save = canvas.save();
-            canvas.clipPath(shape);
-            if (borderTop != null) drawHorizontalBorder(canvas, rect, true, borderTop, borderTopWidth);
-            if (borderEnd != null) drawVerticalBorder(canvas, rect, false, borderEnd, borderEndWidth);
-            if (borderBottom != null) drawHorizontalBorder(canvas, rect, false, borderBottom, borderBottomWidth);
-            if (borderStart != null) drawVerticalBorder(canvas, rect, true, borderStart, borderStartWidth);
-            canvas.restoreToCount(save);
+            drawBorder(canvas, rect);
         }
 
         void setBackground(String background) {
@@ -4895,6 +4986,41 @@ __FLUX_PICKER_METHODS__
         }
     }
 
+    private final ViewOutlineProvider fluxShapeOutlineProvider = new ViewOutlineProvider() {
+        @Override
+        public void getOutline(View view, Outline outline) {
+            Drawable drawable = view.getBackground();
+            if (drawable instanceof FluxStyleDrawable) {
+                ((FluxStyleDrawable)drawable).populateOutline(outline);
+            } else {
+                outline.setRect(0, 0, view.getWidth(), view.getHeight());
+            }
+        }
+    };
+
+    private void syncFluxOutline(View view) {
+        view.setOutlineProvider(fluxShapeOutlineProvider);
+        view.invalidateOutline();
+    }
+
+    private void applyFluxShadow(View view, FluxStyleDrawable drawable) {
+        syncFluxOutline(view);
+        if (!drawable.hasShadow()) {
+            view.setElevation(0.0f);
+            return;
+        }
+        view.setElevation(drawable.shadowElevation());
+        if (Build.VERSION.SDK_INT >= 28 && drawable.shadowColor != null) {
+            view.setOutlineAmbientShadowColor(drawable.shadowColor);
+            view.setOutlineSpotShadowColor(drawable.shadowColor);
+        }
+    }
+
+    public void styleViewClip(View view, boolean clip) {
+        syncFluxOutline(view);
+        view.setClipToOutline(clip);
+    }
+
     public void styleView(
             View view,
             String background,
@@ -4924,17 +5050,16 @@ __FLUX_PICKER_METHODS__
                 borderTopWidth, borderEndWidth, borderBottomWidth, borderStartWidth,
                 topLeft, topRight, bottomRight, bottomLeft, borderStyle,
                 shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY);
-        if (shadowColor != null && (shadowBlur > 0.0f || shadowOffsetX != 0.0f || shadowOffsetY != 0.0f)) {
-            view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        }
         view.setBackgroundTintList(null);
         view.setBackground(drawable);
+        applyFluxShadow(view, drawable);
     }
 
     public void styleViewBackground(View view, String background) {
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setBackground(background);
+            syncFluxOutline(view);
             return;
         }
         styleView(view, background, null, null, null, null, 0, 0, 0, 0,
@@ -4966,18 +5091,16 @@ __FLUX_PICKER_METHODS__
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
             ((FluxStyleDrawable)drawable).setRadii(topLeft, topRight, bottomRight, bottomLeft);
+            syncFluxOutline(view);
         }
     }
 
     public void styleViewShadow(View view, String color, float blur, float offsetX, float offsetY) {
         Drawable drawable = view.getBackground();
         if (drawable instanceof FluxStyleDrawable) {
-            ((FluxStyleDrawable)drawable).setShadow(color, blur, offsetX, offsetY);
-            if (color != null && (blur > 0.0f || offsetX != 0.0f || offsetY != 0.0f)) {
-                view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            } else {
-                view.setLayerType(View.LAYER_TYPE_NONE, null);
-            }
+            FluxStyleDrawable fluxDrawable = (FluxStyleDrawable)drawable;
+            fluxDrawable.setShadow(color, blur, offsetX, offsetY);
+            applyFluxShadow(view, fluxDrawable);
         }
     }
 
@@ -7817,8 +7940,15 @@ mod tests {
         assert!(activity.contains("setComposingRegion"));
         assert!(activity.contains("private final class FluxStyleDrawable extends Drawable"));
         assert!(activity.contains("new DashPathEffect"));
-        assert!(activity.contains("drawHorizontalBorder"));
-        assert!(activity.contains("drawVerticalBorder"));
+        assert!(activity.contains("private Path roundedPath(RectF rect, float inset)"));
+        assert!(activity.contains("drawRoundedStroke"));
+        assert!(activity.contains("drawBorderSide"));
+        assert!(activity.contains("void populateOutline(Outline outline)"));
+        assert!(activity.contains("outline.setPath(path)"));
+        assert!(activity.contains("outline.setConvexPath(path)"));
+        assert!(activity.contains("private final ViewOutlineProvider fluxShapeOutlineProvider"));
+        assert!(activity.contains("public void styleViewClip(View view, boolean clip)"));
+        assert!(activity.contains("view.setClipToOutline(clip);"));
         assert!(activity.contains("public void styleView("));
         assert!(activity.contains("public void refreshButtonPrimary(Button view, boolean primary, boolean explicitBackground)"));
         assert!(activity.contains("if (drawable instanceof FluxStyleDrawable)"));
@@ -7838,8 +7968,11 @@ mod tests {
         assert!(activity.contains(
             "public void styleViewShadow(View view, String color, float blur, float offsetX, float offsetY)"
         ));
-        assert!(activity.contains("view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);"));
-        assert!(activity.contains("view.setLayerType(View.LAYER_TYPE_NONE, null);"));
+        assert!(activity.contains("view.setElevation(drawable.shadowElevation());"));
+        assert!(activity.contains("view.setOutlineAmbientShadowColor(drawable.shadowColor);"));
+        assert!(activity.contains("view.setOutlineSpotShadowColor(drawable.shadowColor);"));
+        assert!(!activity.contains("paint.setShadowLayer"));
+        assert!(!activity.contains("view.setLayerType(View.LAYER_TYPE_SOFTWARE, null);"));
         assert!(activity.contains("view.setBackgroundTintList(null);"));
         assert!(activity.contains("public void styleRoot(View view)"));
         assert!(activity.contains("public void stylePresentationState(View view, String status)"));

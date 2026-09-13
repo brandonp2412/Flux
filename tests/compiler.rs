@@ -28563,10 +28563,11 @@ app Screen
     assert!(!generated.contains(&format!("find_view, (jint){toggle_id}")));
     assert!(generated.contains(&format!("find_view, (jint){action_id}")));
     assert!(generated.contains("set_stable_id"));
-    assert!(generated.contains("android/view/ViewOutlineProvider"));
-    assert!(generated.contains("setOutlineProvider"));
-    assert!(generated.matches("setClipToOutline").count() >= 2);
+    assert!(generated.contains("styleViewClip"));
+    assert!(generated.contains("(Landroid/view/View;Z)V"));
+    assert!(generated.contains("style_clip, child"));
     assert!(generated.contains("refresh_clip"));
+    assert!(!generated.contains("android/view/ViewOutlineProvider"));
     assert!(generated.contains("android/widget/GridLayout"));
     assert!(generated.contains("android/widget/TextView"));
     assert!(generated.contains("android/widget/Button"));

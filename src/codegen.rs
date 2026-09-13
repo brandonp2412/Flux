@@ -6196,22 +6196,16 @@ fn emit_android_native_application(
         }
         if let Some(property) = view_property(element, "clip") {
             let value = ui_expr_c(&property.value, view, signatures)?;
-            out.push_str("    jclass outline_provider_class = (*env)->FindClass(env, \"android/view/ViewOutlineProvider\");\n");
-            out.push_str("    if (outline_provider_class == NULL) return;\n");
-            out.push_str("    jfieldID outline_bounds_field = (*env)->GetStaticFieldID(env, outline_provider_class, \"BOUNDS\", \"Landroid/view/ViewOutlineProvider;\");\n");
-            out.push_str("    if (outline_bounds_field == NULL) return;\n");
-            out.push_str("    jobject outline_bounds = (*env)->GetStaticObjectField(env, outline_provider_class, outline_bounds_field);\n");
-            out.push_str("    jmethodID set_outline_provider = (*env)->GetMethodID(env, child_class, \"setOutlineProvider\", \"(Landroid/view/ViewOutlineProvider;)V\");\n");
-            out.push_str("    jmethodID set_clip_to_outline = (*env)->GetMethodID(env, child_class, \"setClipToOutline\", \"(Z)V\");\n");
-            out.push_str("    if (outline_bounds == NULL || set_outline_provider == NULL || set_clip_to_outline == NULL) return;\n");
             out.push_str(
-                "    (*env)->CallVoidMethod(env, child, set_outline_provider, outline_bounds);\n",
+                "    jclass clip_activity_class = (*env)->GetObjectClass(env, activity);\n",
             );
+            out.push_str("    if (clip_activity_class == NULL) return;\n");
+            out.push_str("    jmethodID style_clip = (*env)->GetMethodID(env, clip_activity_class, \"styleViewClip\", \"(Landroid/view/View;Z)V\");\n");
+            out.push_str("    if (style_clip == NULL) return;\n");
             out.push_str(&format!(
-                "    (*env)->CallVoidMethod(env, child, set_clip_to_outline, (jboolean)({value}));\n"
+                "    (*env)->CallVoidMethod(env, activity, style_clip, child, (jboolean)({value}));\n"
             ));
-            out.push_str("    (*env)->DeleteLocalRef(env, outline_bounds);\n");
-            out.push_str("    (*env)->DeleteLocalRef(env, outline_provider_class);\n");
+            out.push_str("    (*env)->DeleteLocalRef(env, clip_activity_class);\n");
         }
         if let Some(property) = view_property(element, "min_width") {
             out.push_str("    jmethodID set_min_width = (*env)->GetMethodID(env, child_class, \"setMinimumWidth\", \"(I)V\");\n");
@@ -11513,9 +11507,9 @@ fn emit_android_ui_refresh(
             && let Some(property) = view_property(element, "clip")
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
-            out.push_str("                jmethodID refresh_clip = (*env)->GetMethodID(env, child_class, \"setClipToOutline\", \"(Z)V\");\n");
+            out.push_str("                jmethodID refresh_clip = (*env)->GetMethodID(env, activity_class, \"styleViewClip\", \"(Landroid/view/View;Z)V\");\n");
             out.push_str(&format!(
-                "                if (refresh_clip != NULL) (*env)->CallVoidMethod(env, child, refresh_clip, (jboolean)({value}));\n"
+                "                if (refresh_clip != NULL) (*env)->CallVoidMethod(env, activity, refresh_clip, child, (jboolean)({value}));\n"
             ));
         }
         for (property_name, maximum_name, local_name, method_name, source_name) in [
