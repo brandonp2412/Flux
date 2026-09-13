@@ -23495,6 +23495,40 @@ app WebDemo(title: "Flux Web")
         1,
         "production web build should be a self-contained single-file bundle"
     );
+
+    let deployment_dir = root.join("deployment");
+    let packaged = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["package", "web"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&deployment_dir)
+        .output()
+        .expect("web package should run");
+    assert!(
+        packaged.status.success(),
+        "web package failed: {}",
+        String::from_utf8_lossy(&packaged.stderr)
+    );
+    let deployed = fs::read_to_string(deployment_dir.join("index.html"))
+        .expect("web package should emit a deployable index.html");
+    assert_eq!(deployed, html);
+    assert!(!deployed.contains("/__flux_version"));
+    assert_eq!(
+        fs::read_dir(&deployment_dir)
+            .expect("web deployment directory should be readable")
+            .count(),
+        1,
+        "web deployment should remain a self-contained static root"
+    );
+    let overwrite = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["package", "web"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&deployment_dir)
+        .output()
+        .expect("web package overwrite guard should run");
+    assert!(!overwrite.status.success());
+    assert!(String::from_utf8_lossy(&overwrite.stderr).contains("already exists"));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -23852,6 +23886,41 @@ fn native_symbol_tools_split_and_resolve_flux_source_locations() {
     let separate_stdout = String::from_utf8_lossy(&separate_symbols.stdout);
     assert!(separate_stdout.contains("crashPoint"));
     assert!(separate_stdout.contains("main.flux:"));
+
+    let obfuscated = root.join("symbol-app.obfuscated");
+    let obfuscate = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["symbols", "obfuscate"])
+        .arg(&binary)
+        .arg("-o")
+        .arg(&obfuscated)
+        .output()
+        .expect("Flux symbol obfuscation should run");
+    assert!(
+        obfuscate.status.success(),
+        "Flux symbol obfuscation failed: {}",
+        String::from_utf8_lossy(&obfuscate.stderr)
+    );
+    assert_eq!(
+        fs::read(&binary).expect("original binary should remain readable"),
+        original,
+        "symbol obfuscation must not mutate the diagnostic-capable input binary"
+    );
+    assert!(obfuscated.is_file());
+    assert!(
+        fs::metadata(&obfuscated).unwrap().len() < fs::metadata(&binary).unwrap().len(),
+        "obfuscated executable should remove nonessential symbol/debug data"
+    );
+    let obfuscated_nm = Command::new("nm")
+        .arg(&obfuscated)
+        .output()
+        .expect("nm should inspect the obfuscated binary");
+    let obfuscated_symbols = String::from_utf8_lossy(&obfuscated_nm.stdout);
+    assert!(!obfuscated_symbols.contains("flux__fn_crashPoint"));
+    let run = Command::new(&obfuscated)
+        .output()
+        .expect("obfuscated Flux binary should remain runnable");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n42\n");
 
     let _ = fs::remove_dir_all(&root);
 }

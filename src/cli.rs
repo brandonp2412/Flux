@@ -164,6 +164,12 @@ struct SplitSymbolsOptions {
     output_directory: Option<PathBuf>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ObfuscateSymbolsOptions {
+    binary: PathBuf,
+    output: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TestOptions {
     mode: BuildMode,
@@ -498,6 +504,9 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         "package" => {
+            if args.get(1).is_some_and(|value| value == "web") {
+                return package_web_command(&args[2..]);
+            }
             let path = require_target(&args)?;
             let options = package_options(&args[2..])?;
             package_target(path, options)
@@ -560,15 +569,20 @@ fn run() -> Result<(), CliError> {
             let options = symbolize_options(&args[1..])?;
             symbolize_binary(&options)
         }
-        "symbols" => {
-            if !args.get(1).is_some_and(|value| value == "split") {
-                return Err(CliError::Message(
-                    "symbols syntax is 'symbols split <native-binary> [-o directory]'".to_string(),
-                ));
+        "symbols" => match args.get(1).map(String::as_str) {
+            Some("split") => {
+                let options = split_symbols_options(&args[2..])?;
+                split_debug_symbols(&options)
             }
-            let options = split_symbols_options(&args[2..])?;
-            split_debug_symbols(&options)
-        }
+            Some("obfuscate") => {
+                let options = obfuscate_symbols_options(&args[2..])?;
+                obfuscate_native_symbols(&options)
+            }
+            _ => Err(CliError::Message(
+                "symbols syntax is 'symbols split <native-binary> [-o directory]' or 'symbols obfuscate <native-binary> [-o binary]'"
+                    .to_string(),
+            )),
+        },
         "devices" => {
             if args.len() != 1 {
                 return Err(CliError::Message("devices syntax is 'devices'".to_string()));
@@ -648,6 +662,72 @@ fn compile_web_html(target: &Path) -> Result<String, CliError> {
             Err(CliError::Reported)
         }
     }
+}
+
+fn package_web_command(args: &[String]) -> Result<(), CliError> {
+    let Some(target_value) = args.first() else {
+        return Err(CliError::Message(
+            "web package syntax is 'package web <file.flux|package-dir|flux.toml> [-o directory]'"
+                .to_string(),
+        ));
+    };
+    let target = Path::new(target_value);
+    let output_override = output_path(&args[1..])?;
+    let output = if let Some(output) = output_override {
+        output
+    } else if target.is_dir()
+        || target.file_name().and_then(|name| name.to_str()) == Some("flux.toml")
+    {
+        let manifest_path = if target.is_dir() {
+            target.join("flux.toml")
+        } else {
+            target.to_path_buf()
+        };
+        let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        let root = manifest
+            .path
+            .parent()
+            .expect("canonical manifest has a parent");
+        let version = manifest.version.as_deref().unwrap_or("unversioned");
+        root.join("dist")
+            .join(format!("{}-{version}-web", manifest.name))
+    } else {
+        let stem = target
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("flux-app");
+        target
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("dist")
+            .join(format!("{stem}-web"))
+    };
+    if output.exists() {
+        return Err(CliError::Message(format!(
+            "web package output '{}' already exists; remove it or choose another path with -o",
+            output.display()
+        )));
+    }
+    let generated = compile_web_html(target)?;
+    fs::create_dir_all(&output)
+        .map_err(|error| format!("failed to create '{}': {error}", output.display()))?;
+    let index = output.join("index.html");
+    if let Err(error) = fs::write(&index, generated) {
+        let _ = fs::remove_dir_all(&output);
+        return Err(CliError::Message(format!(
+            "failed to write '{}': {error}",
+            index.display()
+        )));
+    }
+    println!("packaged (web): {}", output.display());
+    Ok(())
 }
 
 fn build_web_command(args: &[String]) -> Result<(), CliError> {
@@ -2526,6 +2606,109 @@ fn split_symbols_options(args: &[String]) -> Result<SplitSymbolsOptions, String>
         binary: PathBuf::from(binary),
         output_directory,
     })
+}
+
+fn obfuscate_symbols_options(args: &[String]) -> Result<ObfuscateSymbolsOptions, String> {
+    let Some(binary) = args.first() else {
+        return Err(
+            "symbols obfuscate syntax is 'symbols obfuscate <native-binary> [-o binary]'"
+                .to_string(),
+        );
+    };
+    if binary.starts_with('-') {
+        return Err("symbols obfuscate requires a native binary before options".to_string());
+    }
+    let mut output = None;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("obfuscated output may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'-o' requires an output binary".to_string());
+                };
+                if value.is_empty() || value.starts_with('-') {
+                    return Err("'-o' requires an output binary".to_string());
+                }
+                output = Some(PathBuf::from(value));
+                index += 2;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown symbols obfuscate option '{flag}'; expected '-o <binary>'"
+                ));
+            }
+        }
+    }
+    Ok(ObfuscateSymbolsOptions {
+        binary: PathBuf::from(binary),
+        output,
+    })
+}
+
+fn obfuscate_native_symbols(options: &ObfuscateSymbolsOptions) -> Result<(), CliError> {
+    if !cfg!(target_os = "linux") {
+        return Err(CliError::Message(
+            "bootstrap symbol obfuscation currently supports Linux ELF binaries".to_string(),
+        ));
+    }
+    if !options.binary.is_file() {
+        return Err(CliError::Message(format!(
+            "obfuscation input '{}' is not a native binary file",
+            options.binary.display()
+        )));
+    }
+    command_first_line("objcopy", &["--version"]).map_err(|message| {
+        CliError::Message(format!(
+            "Flux symbol obfuscation requires objcopy: {message}"
+        ))
+    })?;
+    let file_name = options
+        .binary
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            CliError::Message("native binary must have a filesystem name".to_string())
+        })?;
+    let output = options.output.clone().unwrap_or_else(|| {
+        options
+            .binary
+            .with_file_name(format!("{file_name}.obfuscated"))
+    });
+    if output == options.binary {
+        return Err(CliError::Message(
+            "obfuscated output must differ from the input binary so diagnostic symbols are not destroyed"
+                .to_string(),
+        ));
+    }
+    if output.exists() {
+        return Err(CliError::Message(format!(
+            "obfuscated output '{}' already exists; remove it or choose another path with -o",
+            output.display()
+        )));
+    }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::Message(format!(
+                "failed to create obfuscated output directory '{}': {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    run_checked(
+        Command::new("objcopy")
+            .arg("--strip-unneeded")
+            .arg(&options.binary)
+            .arg(&output),
+        "native symbol obfuscation",
+    )?;
+    println!("obfuscated: {}", output.display());
+    Ok(())
 }
 
 fn split_debug_symbols(options: &SplitSymbolsOptions) -> Result<(), CliError> {
@@ -8280,6 +8463,18 @@ fn usage() -> String {
     .replace(
         "[--coverage] [--deterministic-time]",
         "[--coverage] [--deterministic-time] [--ui] [--accessibility]",
+    )
+    .replace(
+        &format!(" | {command} publish android <package-dir|flux.toml>"),
+        &format!(
+            " | {command} package web <file.flux|package-dir|flux.toml> [-o directory] | {command} publish android <package-dir|flux.toml>"
+        ),
+    )
+    .replace(
+        &format!(" | {command} devices"),
+        &format!(
+            " | {command} symbols obfuscate <native-binary> [-o binary] | {command} devices"
+        ),
     )
 }
 

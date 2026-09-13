@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 558
+- Completed baseline units: 560
 - Reported overall progress: **76%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -1097,10 +1097,10 @@ The first Flux package ecosystem must require **no Flux-operated hosting bill or
 - [ ] macOS signing/notarization/store workflow.
 - [x] Linux packaging guidance for the current GTK4 backend is documented in `docs/linux-packaging.md`, covering release bundles, runtime dependencies, conventional filesystem/desktop integration, icons, archives/distro packages, reproducibility expectations, and the boundary between current compiler automation and downstream packaging.
   - [x] Bootstrap host bundle from `flux package` provides the first runnable Linux distribution shape without claiming dependency-free/self-contained GTK packaging.
-- [ ] Web production deployment.
+- [x] Web production deployment for the current direct-DOM backend: `flux package web <file.flux|package-dir|flux.toml> [-o directory]` emits an immutable static deployment root containing the same self-contained production `index.html` as `flux build web`, with no development reload endpoint/runtime. Manifest-backed packages default to a versioned `dist/<name>-<version>-web` artifact, explicit outputs refuse overwrite, and the resulting directory can be uploaded as-is to ordinary static hosting/CDN infrastructure without a Flux-operated deployment service.
 - [x] Debug symbol separation/upload for current native Linux artifacts: `flux symbols split <binary> [-o directory]` leaves the input untouched and emits a stripped executable plus detached GNU `.debug` file with a debug link, providing an upload/retention-ready artifact for external crash services. The workflow is covered by a real Flux debug-binary E2E rather than only command construction.
 - [x] Crash symbolization for current native Linux artifacts: `flux symbolize <binary-or-debug-file> <address>...` resolves native instruction addresses through preserved debug metadata back to demangled Flux function names and original `.flux` source locations, and is E2E-verified against both a live debug binary and its detached symbol file.
-- [ ] Optional obfuscation where compatible with diagnostics/debugging.
+- [x] Optional Linux native symbol obfuscation compatible with diagnostics/debugging: `flux symbols obfuscate <native-binary> [-o binary]` writes a separate ELF with nonessential symbol/debug data stripped through the native toolchain while leaving the original diagnostic-capable binary untouched. The obfuscated artifact remains runnable and removes private Flux function names; detached/source-level diagnostics remain available by retaining the unobfuscated or separately split symbol artifact, and the workflow is explicitly a symbol-hiding distribution option rather than a cryptographic secrecy boundary.
 - [x] Version/build-number management for current distribution targets: `[package].version` is validated package metadata, is preserved in Linux bundles, becomes Android `versionName`, and `[android].version_code` is validated against Play's accepted integer range and becomes Android `versionCode`; future platform-specific mappings belong to their target packaging milestones.
 
 # Milestone 28 — Server/headless application target

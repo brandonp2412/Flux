@@ -74,4 +74,6 @@ flux symbols split ./app -o ./symbols/app-1.2.3
 
 The output directory contains a stripped executable named like the input and a sibling `<name>.debug` file. The stripped executable carries a GNU debug link to that symbol file. The `.debug` file is suitable for retaining or uploading to an external crash-reporting service, and it can be passed directly to `flux symbolize` with captured native addresses. Use a `debug` or `profile` build when source-level symbols are required; ordinary `release` builds deliberately omit debug information today.
 
+For an additional distribution-only symbol-hiding pass on Linux, `flux symbols obfuscate <native-binary> [-o binary]` writes a separate ELF using the platform `objcopy --strip-unneeded` path. It never mutates the input binary, so keep the original or the detached `.debug` artifact when source-level crash diagnostics are required. This removes nonessential private symbol names such as compiler-generated Flux function symbols while retaining what the executable needs to run; it is not encryption or a guarantee that application behavior or embedded data cannot be reverse engineered.
+
 `flux doctor` reports whether GDB, `addr2line`, and `objcopy` are available on the development host.
