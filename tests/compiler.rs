@@ -26662,6 +26662,69 @@ fn registry_lock_and_package_import_use_exact_verified_release() {
         "ordinary analysis should materialize the exact verified release in the package cache"
     );
 
+    fs::remove_dir_all(cache.join("packages/sources").join(&hash))
+        .expect("materialized package source should be removable");
+    fs::remove_dir_all(&registry)
+        .expect("registry provider should be removable after lock creation");
+
+    let replay = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .env_remove("FLUX_REGISTRY_DIR")
+        .env_remove("FLUX_REGISTRY_URL")
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("provider-independent locked package check should run");
+    assert!(
+        replay.status.success(),
+        "provider-independent lock replay failed: {}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert!(
+        cache
+            .join("packages/sources")
+            .join(&hash)
+            .join("flux.toml")
+            .is_file(),
+        "lock replay should rematerialize the exact cached release without registry metadata"
+    );
+
+    fs::remove_dir_all(cache.join("packages/sources").join(&hash))
+        .expect("replayed package source should be removable");
+    let offline_fetch = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("fetch")
+        .arg(&app)
+        .arg("--offline")
+        .env_remove("FLUX_REGISTRY_DIR")
+        .env_remove("FLUX_REGISTRY_URL")
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("locked offline fetch should run");
+    assert!(
+        offline_fetch.status.success(),
+        "locked offline fetch failed: {}",
+        String::from_utf8_lossy(&offline_fetch.stderr)
+    );
+    assert!(String::from_utf8_lossy(&offline_fetch.stdout).contains("remote 1.2.3"));
+
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nremote = \"^2.0.0\"\n",
+    )
+    .expect("stale requirement manifest should be writable");
+    let stale = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .env_remove("FLUX_REGISTRY_DIR")
+        .env_remove("FLUX_REGISTRY_URL")
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("stale locked check should run");
+    assert!(!stale.status.success());
+    let stale_stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(stale_stderr.contains("locks version '1.2.3'"));
+    assert!(stale_stderr.contains("^2.0.0"));
+
     let _ = fs::remove_dir_all(&root);
 }
 

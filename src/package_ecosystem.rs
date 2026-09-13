@@ -654,6 +654,50 @@ pub fn materialize_package_registry_dependencies(
     Ok((graph, roots))
 }
 
+pub fn materialize_locked_registry_dependencies(
+    target: &Path,
+    offline: bool,
+) -> io::Result<(BTreeMap<String, RegistryRelease>, BTreeMap<String, PathBuf>)> {
+    let releases = crate::project::locked_registry_releases(target).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    let mut roots = BTreeMap::new();
+    for release in releases.values() {
+        roots.insert(
+            release.package.clone(),
+            materialize_cached_registry_release(release, offline)?,
+        );
+    }
+    Ok((releases, roots))
+}
+
+pub fn fetch_locked_registry_dependencies(
+    target: &Path,
+    offline: bool,
+) -> io::Result<BTreeMap<String, RegistryRelease>> {
+    let releases = crate::project::locked_registry_releases(target).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    for release in releases.values() {
+        fetch_registry_release(release, offline)?;
+    }
+    Ok(releases)
+}
+
 pub fn fetch_package_dependencies(
     target: &Path,
     provider: &dyn RegistryProvider,

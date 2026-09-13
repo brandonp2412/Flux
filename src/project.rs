@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -604,7 +604,16 @@ fn load_report_with_overlays_and_parse_cache(
                 (graph.releases, roots)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                (BTreeMap::new(), BTreeMap::new())
+                crate::package_ecosystem::materialize_locked_registry_dependencies(
+                    &module_root,
+                    false,
+                )
+                .map_err(|error| {
+                    vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!("failed to replay locked registry dependencies: {error}"),
+                    )]
+                })?
             }
             Err(error) => {
                 return Err(vec![Diagnostic::global(
@@ -730,7 +739,16 @@ pub fn analyze_package_test(
                 (graph.releases, roots)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                (BTreeMap::new(), BTreeMap::new())
+                crate::package_ecosystem::materialize_locked_registry_dependencies(
+                    &package_root,
+                    false,
+                )
+                .map_err(|error| {
+                    vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!("failed to replay locked registry dependencies: {error}"),
+                    )]
+                })?
             }
             Err(error) => {
                 return Err(vec![Diagnostic::global(
@@ -1895,6 +1913,13 @@ pub fn ensure_lockfile(target: &Path, locked: bool) -> Result<Option<PathBuf>, V
     match validate_lockfile(&manifest) {
         Ok(()) => Ok(Some(lock_path)),
         Err(diagnostics) if locked => Err(diagnostics),
+        Err(diagnostics)
+            if lockfile_has_exact_registry_entries(&lock_path)
+                && crate::package_ecosystem::configured_registry_provider(false)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Err(diagnostics)
+        }
         Err(_) => write_lockfile(target).map(Some),
     }
 }
@@ -2200,11 +2225,21 @@ fn collect_dependency_paths(
     }
 }
 
+fn lockfile_has_exact_registry_entries(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|source| parse_lockfile(&source).ok())
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| exact_registry_source(entry).is_some())
+        })
+}
+
 fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> {
     if manifest.dependencies.is_empty() {
         return Ok(());
     }
-    let expected = render_lockfile(manifest)?;
     let root = manifest
         .path
         .parent()
@@ -2219,20 +2254,21 @@ fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> 
             ),
         )]
     })?;
-    if actual != expected {
-        return Err(vec![Diagnostic::global(
+    validate_lockfile_source(manifest, &actual).map_err(|message| {
+        vec![Diagnostic::global(
             DiagnosticStage::Parse,
             format!(
-                "package lockfile '{}' is stale; run 'flux lock {}'",
+                "package lockfile '{}' is stale or invalid: {message}; run 'flux lock {}'",
                 lock_path.display(),
                 root.display()
             ),
-        )]);
-    }
-    Ok(())
+        )]
+    })
 }
 
-fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>> {
+fn collect_manifest_lock_entries(
+    manifest: &PackageManifest,
+) -> Result<Vec<LockedDependency>, Vec<Diagnostic>> {
     let mut entries = Vec::new();
     let mut active = HashSet::new();
     let root = manifest
@@ -2251,6 +2287,301 @@ fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>
         },
     )]);
     collect_locked_dependencies(manifest, "", &mut active, &mut resolved, &mut entries)?;
+    Ok(entries)
+}
+
+fn validate_lockfile_source(manifest: &PackageManifest, source: &str) -> Result<(), String> {
+    let actual = parse_lockfile(source)?;
+    let expected = collect_manifest_lock_entries(manifest).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let actual_by_id = actual
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut registry_identity = BTreeMap::<&str, (&str, &str, &str, &str)>::new();
+
+    for entry in &actual {
+        if let Some((repository, version)) = exact_registry_source(entry) {
+            let sha256 = entry.sha256.as_deref().ok_or_else(|| {
+                format!("locked registry package '{}' has no sha256", entry.package)
+            })?;
+            if !valid_lock_sha256(sha256) {
+                return Err(format!(
+                    "locked registry package '{}' has invalid sha256 '{sha256}'",
+                    entry.package
+                ));
+            }
+            let asset = entry.asset.as_deref().ok_or_else(|| {
+                format!(
+                    "locked registry package '{}' has no immutable asset URL",
+                    entry.package
+                )
+            })?;
+            if !asset.starts_with("https://") && !asset.starts_with("file://") {
+                return Err(format!(
+                    "locked registry package '{}' has invalid asset URL '{asset}'",
+                    entry.package
+                ));
+            }
+            let identity = (version, repository, sha256, asset);
+            if let Some(previous) = registry_identity.insert(&entry.package, identity) {
+                if previous != identity {
+                    return Err(format!(
+                        "locked registry package '{}' resolves to more than one immutable release",
+                        entry.package
+                    ));
+                }
+            }
+        }
+    }
+
+    for expected_entry in &expected {
+        let actual_entry = actual_by_id
+            .get(expected_entry.id.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "dependency '{}' is missing from the lockfile",
+                    expected_entry.id
+                )
+            })?;
+        if let Some(requirement) = expected_entry.source.strip_prefix("registry:") {
+            if actual_entry.package != expected_entry.package {
+                return Err(format!(
+                    "dependency '{}' changed package identity from '{}' to '{}'",
+                    expected_entry.id, expected_entry.package, actual_entry.package
+                ));
+            }
+            if *actual_entry == expected_entry {
+                continue;
+            }
+            let (_, version) = exact_registry_source(actual_entry).ok_or_else(|| {
+                format!(
+                    "registry dependency '{}' is not pinned to an immutable release",
+                    expected_entry.id
+                )
+            })?;
+            if !semver_requirement_matches(requirement, version) {
+                return Err(format!(
+                    "registry dependency '{}' locks version '{version}', which no longer satisfies '{requirement}'",
+                    expected_entry.id
+                ));
+            }
+        } else if *actual_entry != expected_entry {
+            return Err(format!(
+                "dependency '{}' no longer matches the package manifest graph",
+                expected_entry.id
+            ));
+        }
+    }
+
+    for actual_entry in &actual {
+        if expected.iter().any(|entry| entry.id == actual_entry.id) {
+            continue;
+        }
+        if exact_registry_source(actual_entry).is_none() {
+            return Err(format!(
+                "lockfile contains undeclared dependency '{}'",
+                actual_entry.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct LockEntryBuilder {
+    id: Option<String>,
+    package: Option<String>,
+    version: Option<String>,
+    source: Option<String>,
+    sha256: Option<String>,
+    asset: Option<String>,
+}
+
+fn parse_lockfile(source: &str) -> Result<Vec<LockedDependency>, String> {
+    let mut format_version = None;
+    let mut resolver_version = None;
+    let mut current: Option<LockEntryBuilder> = None;
+    let mut entries = Vec::new();
+    let mut ids = BTreeSet::new();
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "[[dependency]]" {
+            if let Some(builder) = current.take() {
+                push_lock_entry(builder, &mut entries, &mut ids)?;
+            }
+            current = Some(LockEntryBuilder::default());
+            continue;
+        }
+        let (key, raw_value) = line
+            .split_once('=')
+            .map(|(key, value)| (key.trim(), value.trim()))
+            .ok_or_else(|| format!("invalid lockfile line '{line}'"))?;
+        if let Some(builder) = current.as_mut() {
+            let value = parse_lock_string(raw_value)?;
+            let slot = match key {
+                "id" => &mut builder.id,
+                "package" => &mut builder.package,
+                "version" => &mut builder.version,
+                "source" => &mut builder.source,
+                "sha256" => &mut builder.sha256,
+                "asset" => &mut builder.asset,
+                _ => return Err(format!("unknown lockfile dependency field '{key}'")),
+            };
+            if slot.replace(value).is_some() {
+                return Err(format!("duplicate lockfile dependency field '{key}'"));
+            }
+        } else {
+            let value = raw_value
+                .parse::<u32>()
+                .map_err(|_| format!("lockfile field '{key}' must be an integer"))?;
+            match key {
+                "version" if format_version.replace(value).is_none() => {}
+                "resolver" if resolver_version.replace(value).is_none() => {}
+                "version" | "resolver" => return Err(format!("duplicate lockfile field '{key}'")),
+                _ => return Err(format!("unknown lockfile field '{key}'")),
+            }
+        }
+    }
+    if let Some(builder) = current.take() {
+        push_lock_entry(builder, &mut entries, &mut ids)?;
+    }
+    if format_version != Some(PACKAGE_LOCK_FORMAT_VERSION) {
+        return Err(format!(
+            "unsupported lockfile format {:?}; expected {}",
+            format_version, PACKAGE_LOCK_FORMAT_VERSION
+        ));
+    }
+    if resolver_version != Some(PACKAGE_RESOLVER_VERSION) {
+        return Err(format!(
+            "unsupported lockfile resolver {:?}; expected {}",
+            resolver_version, PACKAGE_RESOLVER_VERSION
+        ));
+    }
+    Ok(entries)
+}
+
+fn push_lock_entry(
+    builder: LockEntryBuilder,
+    entries: &mut Vec<LockedDependency>,
+    ids: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let id = builder.id.ok_or("lockfile dependency requires id")?;
+    if !ids.insert(id.clone()) {
+        return Err(format!("duplicate lockfile dependency id '{id}'"));
+    }
+    entries.push(LockedDependency {
+        id,
+        package: builder
+            .package
+            .ok_or("lockfile dependency requires package")?,
+        version: builder.version,
+        source: builder
+            .source
+            .ok_or("lockfile dependency requires source")?,
+        sha256: builder.sha256,
+        asset: builder.asset,
+    });
+    Ok(())
+}
+
+fn parse_lock_string(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 || bytes.first() != Some(&b'"') || bytes.last() != Some(&b'"') {
+        return Err("lockfile string values must be quoted".to_string());
+    }
+    let mut output = String::new();
+    let mut chars = value[1..value.len() - 1].chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            output.push(ch);
+            continue;
+        }
+        let escaped = chars.next().ok_or("unterminated lockfile string escape")?;
+        output.push(match escaped {
+            '\\' => '\\',
+            '"' => '"',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            _ => return Err(format!("unsupported lockfile string escape '\\{escaped}'")),
+        });
+    }
+    Ok(output)
+}
+
+fn exact_registry_source(entry: &LockedDependency) -> Option<(&str, &str)> {
+    let source = entry.source.strip_prefix("registry:")?;
+    let (repository, version) = source.rsplit_once('#')?;
+    if !repository.starts_with("https://")
+        || version.is_empty()
+        || entry.version.as_deref() != Some(version)
+    {
+        return None;
+    }
+    Some((repository, version))
+}
+
+fn valid_lock_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub fn locked_registry_releases(
+    target: &Path,
+) -> Result<BTreeMap<String, crate::package_ecosystem::RegistryRelease>, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "locked dependency replay")?;
+    validate_lockfile(&manifest)?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    let source = fs::read_to_string(root.join("flux.lock")).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("failed to read package lockfile: {error}"),
+        )]
+    })?;
+    let entries = parse_lockfile(&source)
+        .map_err(|message| vec![Diagnostic::global(DiagnosticStage::Parse, message)])?;
+    let mut releases = BTreeMap::new();
+    for entry in entries {
+        let Some((repository, version)) = exact_registry_source(&entry) else {
+            continue;
+        };
+        let release = crate::package_ecosystem::RegistryRelease {
+            package: entry.package.clone(),
+            owner: String::new(),
+            repository: repository.to_string(),
+            version: version.to_string(),
+            flux: "*".to_string(),
+            asset: entry
+                .asset
+                .expect("validated registry lock entry has asset"),
+            sha256: entry
+                .sha256
+                .expect("validated registry lock entry has sha256"),
+            dependencies: BTreeMap::new(),
+            yanked: false,
+        };
+        releases.entry(entry.package).or_insert(release);
+    }
+    Ok(releases)
+}
+
+fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>> {
+    let mut entries = collect_manifest_lock_entries(manifest)?;
 
     if entries
         .iter()

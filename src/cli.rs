@@ -408,18 +408,23 @@ fn run() -> Result<(), CliError> {
             }
             let target = Path::new(&args[1]);
             let offline = args.get(2).is_some_and(|value| value == "--offline");
-            let provider = fluxc::package_ecosystem::configured_registry_provider(offline)
-                .map_err(|error| CliError::Message(error.to_string()))?;
-            let graph = fluxc::package_ecosystem::fetch_package_dependencies(
-                target,
-                &provider,
-                offline,
-            )
+            let releases = match fluxc::package_ecosystem::configured_registry_provider(offline) {
+                Ok(provider) => fluxc::package_ecosystem::fetch_package_dependencies(
+                    target,
+                    &provider,
+                    offline,
+                )
+                .map(|graph| graph.releases),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fluxc::package_ecosystem::fetch_locked_registry_dependencies(target, offline)
+                }
+                Err(error) => Err(error),
+            }
             .map_err(|error| CliError::Message(error.to_string()))?;
-            if graph.releases.is_empty() {
+            if releases.is_empty() {
                 println!("fetched: no registry dependencies");
             } else {
-                for release in graph.releases.values() {
+                for release in releases.values() {
                     println!(
                         "fetched: {} {} sha256:{}",
                         release.package, release.version, release.sha256
