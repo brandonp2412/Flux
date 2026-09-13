@@ -26078,6 +26078,7 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     assert!(String::from_utf8_lossy(&lock.stdout).contains("locked:"));
     let first = fs::read_to_string(&lock_path).expect("lockfile should be readable");
     assert!(first.contains("version = 1"));
+    assert!(first.contains("resolver = 1"));
     assert!(first.contains("id = \"math\""));
     assert!(first.contains("package = \"math\""));
     assert!(first.contains("version = \"1.4.3\""));
@@ -26109,6 +26110,104 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     );
     fluxc::project::write_lockfile(&app).expect("stale lockfile should refresh deterministically");
     fluxc::project::check(&app).expect("refreshed lockfile should restore the build");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn dependency_resolution_reports_conflicting_and_cyclic_paths() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-resolution-conflicts-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let left = root.join("left");
+    let right = root.join("right");
+    let shared_v1 = root.join("shared-v1");
+    let shared_v2 = root.join("shared-v2");
+    for package in [&app, &left, &right, &shared_v1, &shared_v2] {
+        fs::create_dir_all(package).expect("package directory should be writable");
+    }
+    fs::write(app.join("main.flux"), "fn main() -> void {}\n")
+        .expect("app entry should be writable");
+    for package in [&left, &right, &shared_v1, &shared_v2] {
+        fs::write(package.join("lib.flux"), "pub fn value() -> i64 { 1 }\n")
+            .expect("dependency entry should be writable");
+    }
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"main.flux\"\n\n[dependencies]\nleft = { path = \"../left\" }\nright = { path = \"../right\" }\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        left.join("flux.toml"),
+        "[package]\nname = \"left\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = { path = \"../shared-v1\", version = \"^1.0.0\" }\n",
+    )
+    .expect("left manifest should be writable");
+    fs::write(
+        right.join("flux.toml"),
+        "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = { path = \"../shared-v2\", version = \"^2.0.0\" }\n",
+    )
+    .expect("right manifest should be writable");
+    fs::write(
+        shared_v1.join("flux.toml"),
+        "[package]\nname = \"shared\"\nversion = \"1.4.0\"\nentry = \"lib.flux\"\n",
+    )
+    .expect("shared v1 manifest should be writable");
+    fs::write(
+        shared_v2.join("flux.toml"),
+        "[package]\nname = \"shared\"\nversion = \"2.1.0\"\nentry = \"lib.flux\"\n",
+    )
+    .expect("shared v2 manifest should be writable");
+
+    let conflict = fluxc::project::write_lockfile(&app)
+        .expect_err("one package name resolving to two path versions must fail");
+    let conflict = conflict
+        .first()
+        .expect("resolution conflict should report one diagnostic")
+        .message
+        .as_str();
+    for expected in [
+        "dependency resolution conflict for package 'shared'",
+        "left/shared",
+        "right/shared",
+        "1.4.0",
+        "2.1.0",
+    ] {
+        assert!(
+            conflict.contains(expected),
+            "expected '{expected}' in resolution diagnostic: {conflict}"
+        );
+    }
+
+    fs::write(
+        right.join("flux.toml"),
+        "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = { path = \"../shared-v1\", version = \"~1.4.0\" }\n",
+    )
+    .expect("compatible diamond manifest should be writable");
+    fluxc::project::write_lockfile(&app)
+        .expect("compatible diamond paths resolving one package version should lock");
+
+    fs::write(
+        left.join("flux.toml"),
+        "[package]\nname = \"left\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nright = { path = \"../right\" }\n",
+    )
+    .expect("left cycle manifest should be writable");
+    fs::write(
+        right.join("flux.toml"),
+        "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nleft = { path = \"../left\" }\n",
+    )
+    .expect("right cycle manifest should be writable");
+    let cycle = fluxc::project::write_lockfile(&app)
+        .expect_err("path dependency cycle must fail before writing a lockfile");
+    let cycle = cycle
+        .first()
+        .expect("cycle should report one diagnostic")
+        .message
+        .as_str();
+    assert!(cycle.contains("cyclic path dependency"), "{cycle}");
+    assert!(cycle.contains("left/right/left"), "{cycle}");
 
     let _ = fs::remove_dir_all(&root);
 }
