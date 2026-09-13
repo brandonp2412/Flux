@@ -73,7 +73,7 @@ view HorseTinder {
 
     Text profileMeta at 4,1 span columns 3
         text: "Chestnut  ·  Mare  ·  16.1 hands"
-        color: "#B8C0CC"
+        color: "#C4CBD5"
         size: 12
         wrap: false
         alignY: "center"
@@ -86,15 +86,15 @@ view HorseTinder {
         maxLines: 2
         lineHeightPercent: 135
         padding: 12
-        backgroundColor: "#11161D"
-        borderColor: "#29313B"
+        backgroundColor: "#10151C"
+        borderColor: "#303946"
         borderWidth: 1
-        radius: 18
+        radius: 20
 
     Button pass at 6,2
         text: "✕"
         visible: !liked && !passed
-        size: 36
+        size: 34
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
         minWidth: 80
@@ -119,7 +119,7 @@ view HorseTinder {
     Button like at 6,4
         visible: !liked && !passed
         text: "♥︎"
-        size: 38
+        size: 40
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
         minWidth: 80
