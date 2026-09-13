@@ -91,6 +91,7 @@ view HorseTinder {
 
     Button pass at 6,2
         text: "✕"
+        visible: !liked && !passed
         size: 40
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
@@ -110,9 +111,11 @@ view HorseTinder {
         shadowBlur: 10
         shadowOffsetY: 5
         transitionMs: motionFast
+        layoutTransitionMs: motionNormal
         onPress: passed => !passed
 
     Button like at 6,4
+        visible: !liked && !passed
         text: "♥︎"
         size: 42
         tooltip: "Like"
@@ -133,6 +136,7 @@ view HorseTinder {
         shadowBlur: 12
         shadowOffsetY: 5
         transitionMs: motionFast
+        layoutTransitionMs: motionNormal
         onPress: liked => !liked
 
     Text passLabel at 7,2
@@ -163,7 +167,7 @@ view HorseTinder {
         translateX: 72
         layoutTransitionMs: motionNormal
 
-    Text result at 7,1 span columns 5
+    Text result at 6,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
         color: "#FFE1E5"
@@ -171,27 +175,33 @@ view HorseTinder {
         bold: true
         textAlign: "center"
         alignX: "center"
-        margin: 10
-        padding: 14
+        alignY: "center"
+        margin: 8
+        padding: 10
+        minHeight: 54
+        maxHeight: 54
         backgroundColor: "#35141AF2"
         borderColor: "#8B3040"
         borderWidth: 1
-        radius: 20
+        radius: 27
         layoutTransitionMs: motionNormal
 
-    Text passedNote at 7,1 span columns 5
+    Text passedNote at 6,1 span columns 5
         text: "Passed. The photobomber is taking it personally."
         visible: passed
         color: "#E5E7EB"
         size: 13
         textAlign: "center"
         alignX: "center"
-        margin: 10
-        padding: 14
+        alignY: "center"
+        margin: 8
+        padding: 10
+        minHeight: 54
+        maxHeight: 54
         backgroundColor: "#11151BF2"
         borderColor: "#343C47"
         borderWidth: 1
-        radius: 20
+        radius: 27
         layoutTransitionMs: motionNormal
 }
 
