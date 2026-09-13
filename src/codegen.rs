@@ -16995,9 +16995,7 @@ fn async_coalescing_await_plan(function: &Function) -> Option<AsyncCoalescingAwa
         && function.body[first + 1..last].iter().any(|stmt| {
             matches!(
                 &stmt.kind,
-                StmtKind::Let { .. }
-                    | StmtKind::Var { .. }
-                    | StmtKind::LetDestructure { .. }
+                StmtKind::LetDestructure { .. }
                     | StmtKind::LetMultiDestructure { .. }
                     | StmtKind::LetListDestructure { .. }
                     | StmtKind::LetStructDestructure { .. }
@@ -24582,6 +24580,30 @@ fn emit_async_coalescing_continuation_function(
         }
         let mut state_env = resume_env.clone();
         let mut state_mutable = resume_mutable.clone();
+        for prior_stmt in &function.body[..statement_index] {
+            match &prior_stmt.kind {
+                StmtKind::Let { name, .. } => {
+                    if let Some((_, ty)) = plan
+                        .locals
+                        .iter()
+                        .find(|(local_name, _)| local_name == name)
+                    {
+                        state_env.insert(name.clone(), ty.clone());
+                    }
+                }
+                StmtKind::Var { name, .. } => {
+                    if let Some((_, ty)) = plan
+                        .locals
+                        .iter()
+                        .find(|(local_name, _)| local_name == name)
+                    {
+                        state_env.insert(name.clone(), ty.clone());
+                        state_mutable.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
         for (local_name, ty) in &plan.locals {
             if state_env.contains_key(local_name) {
                 out.push_str(&format!(
