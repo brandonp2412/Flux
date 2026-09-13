@@ -1,8 +1,10 @@
 view HorseTinder {
     state liked: bool = false
     state passed: bool = false
+    derived actionOffset: i64 = (windowWidth - 320) / 2
+    derived edgeOffset: i64 = windowWidth - 320
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 46 447 54 34 68 80 auto
+    grid rows: 46 1fr 54 34 68 80 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -32,7 +34,7 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 437
+        minHeight: 300
         maxHeight: 447
         backgroundColor: "#11151B"
         borderColor: "#252C36"
@@ -60,7 +62,7 @@ view HorseTinder {
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        translateX: 156
+        translateX: edgeOffset
         padding: 4
         minHeight: 26
         maxHeight: 26
@@ -100,8 +102,8 @@ view HorseTinder {
         minHeight: 80
         alignX: "center"
         alignY: "center"
-        translateX: 83
-        focusable: true
+        translateX: actionOffset
+        focusable: !windowIsCompact
         padding: 0
         radius: 40
         backgroundColor: "#151B23"
@@ -125,8 +127,8 @@ view HorseTinder {
         minHeight: 80
         alignX: "center"
         alignY: "center"
-        translateX: 72
-        focusable: true
+        translateX: actionOffset
+        focusable: !windowIsCompact
         padding: 0
         radius: 40
         backgroundColor: "#FF4D67"
@@ -150,7 +152,7 @@ view HorseTinder {
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        translateX: 83
+        translateX: actionOffset
         layoutTransitionMs: motionNormal
 
     Text likeLabel at 7,4
@@ -164,22 +166,23 @@ view HorseTinder {
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        translateX: 72
+        translateX: actionOffset
         layoutTransitionMs: motionNormal
 
     Text result at 6,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
         visible: liked
         color: "#FFE1E5"
-        size: 14
+        size: 13
         bold: true
-        wrap: false
-        maxLines: 1
+        wrap: true
+        maxLines: 2
+        lineHeightPercent: 125
         textAlign: "center"
         alignX: "center"
         alignY: "center"
         margin: 8
-        padding: 24
+        padding: 16
         minHeight: 80
         maxHeight: 80
         backgroundColor: "#35141AF2"
@@ -192,15 +195,16 @@ view HorseTinder {
         text: "PASSED  ·  The photobomber is taking it personally."
         visible: passed
         color: "#D7DCE4"
-        size: 13
+        size: 12
         bold: true
-        wrap: false
-        maxLines: 1
+        wrap: true
+        maxLines: 2
+        lineHeightPercent: 125
         textAlign: "center"
         alignX: "center"
         alignY: "center"
         margin: 8
-        padding: 24
+        padding: 16
         minHeight: 80
         maxHeight: 80
         backgroundColor: "#10151CF2"
