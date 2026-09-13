@@ -192,6 +192,15 @@ fn emit_runtime(out: &mut String, view: &ViewDef) -> Result<(), Diagnostic> {
     out.push_str("function fluxSetVisible(el,value){el.hidden=!value;}\n");
     out.push_str("function fluxSetText(el,value){el.textContent=String(value);}\n");
     out.push_str("function fluxRole(value){switch(String(value)){case'textBox':return'textbox';case'checkbox':return'checkbox';case'radio':return'radio';case'image':return'img';case'switch':return'switch';case'heading':return'heading';case'button':return'button';default:return null;}}\n");
+    out.push_str(
+        "function fluxBrowserPush(path){history.pushState(null,'',String(path));fluxRefresh();}\n",
+    );
+    out.push_str("function fluxBrowserReplace(path){history.replaceState(null,'',String(path));fluxRefresh();}\n");
+    out.push_str("function fluxBrowserStore(key,value){try{localStorage.setItem(String(key),String(value));}catch(_){}}\n");
+    out.push_str("function fluxBrowserLoad(key,fallback){try{const value=localStorage.getItem(String(key));return value===null?String(fallback):value;}catch(_){return String(fallback);}}\n");
+    out.push_str(
+        "function fluxBrowserErase(key){try{localStorage.removeItem(String(key));}catch(_){}}\n",
+    );
     out.push_str("function fluxRefresh(){\n");
     for element in &view.elements {
         emit_refresh(out, element, &state_names, &derived_names)?;
@@ -201,7 +210,7 @@ fn emit_runtime(out: &mut String, view: &ViewDef) -> Result<(), Diagnostic> {
     for element in &view.elements {
         emit_events(out, element, &state_names, &derived_names)?;
     }
-    out.push_str("window.addEventListener('resize',fluxRefresh,{passive:true});\nfluxRefresh();\n");
+    out.push_str("window.addEventListener('resize',fluxRefresh,{passive:true});\nwindow.addEventListener('popstate',fluxRefresh,{passive:true});\nfluxRefresh();\n");
     Ok(())
 }
 
@@ -358,9 +367,6 @@ fn emit_events(
 ) -> Result<(), Diagnostic> {
     let id = element_id(element);
     for property in &element.properties {
-        let Some(transition) = property.transition.as_ref() else {
-            continue;
-        };
         let property_name = crate::typecheck::source_name_to_internal(&property.name);
         let event = match property_name.as_str() {
             "on_press" | "on_select" => "click",
@@ -382,21 +388,34 @@ fn emit_events(
         if property_name == "on_submit" {
             out.push_str("if(event.key!=='Enter')return;");
         }
-        if let Some(event_value) = transition.event_value.as_deref() {
-            out.push_str("const ");
-            out.push_str(&js_ident(event_value));
-            out.push_str("=");
-            if element.kind == "Toggle" || element.kind == "Radio" {
-                out.push_str("event.currentTarget.checked;");
-            } else {
-                out.push_str("event.currentTarget.value;");
+        if let Some(transition) = property.transition.as_ref() {
+            if let Some(event_value) = transition.event_value.as_deref() {
+                out.push_str("const ");
+                out.push_str(&js_ident(event_value));
+                out.push_str("=");
+                if element.kind == "Toggle" || element.kind == "Radio" {
+                    out.push_str("event.currentTarget.checked;");
+                } else {
+                    out.push_str("event.currentTarget.value;");
+                }
             }
+            out.push_str("state[");
+            out.push_str(&js_string(&transition.state));
+            out.push_str("]=");
+            out.push_str(&expr_js(&property.value, states, derived)?);
+            out.push_str(";fluxRefresh();});\n");
+            continue;
         }
-        out.push_str("state[");
-        out.push_str(&js_string(&transition.state));
-        out.push_str("]=");
-        out.push_str(&expr_js(&property.value, states, derived)?);
-        out.push_str(";fluxRefresh();});\n");
+        let handler = expr_js(&property.value, states, derived)?;
+        out.push('(');
+        out.push_str(&handler);
+        out.push_str(")(");
+        if element.kind == "TextInput"
+            && matches!(property_name.as_str(), "on_change" | "on_submit")
+        {
+            out.push_str("event.currentTarget.value");
+        }
+        out.push_str(");fluxRefresh();});\n");
     }
     Ok(())
 }
@@ -431,6 +450,48 @@ fn expr_js(
             rendered
         }
         ExprKind::Var(name) => var_js(name, states, derived),
+        ExprKind::AnonymousFunction { params, body, .. } => {
+            let params = params
+                .iter()
+                .map(|param| js_ident(&param.name))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("({params})=>{}", expr_js(body, states, derived)?)
+        }
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
+            args,
+            named_args,
+            ..
+        } if namespace == "browser" && named_args.is_empty() => {
+            let rendered = args
+                .iter()
+                .map(|arg| expr_js(arg, states, derived))
+                .collect::<Result<Vec<_>, _>>()?;
+            match name.as_str() {
+                "path" if rendered.is_empty() => "window.location.pathname".to_string(),
+                "push" if rendered.len() == 1 => format!("fluxBrowserPush({})", rendered[0]),
+                "replace" if rendered.len() == 1 => {
+                    format!("fluxBrowserReplace({})", rendered[0])
+                }
+                "back" if rendered.is_empty() => "history.back()".to_string(),
+                "forward" if rendered.is_empty() => "history.forward()".to_string(),
+                "store" if rendered.len() == 2 => {
+                    format!("fluxBrowserStore({},{})", rendered[0], rendered[1])
+                }
+                "load" if rendered.len() == 2 => {
+                    format!("fluxBrowserLoad({},{})", rendered[0], rendered[1])
+                }
+                "erase" if rendered.len() == 1 => format!("fluxBrowserErase({})", rendered[0]),
+                _ => {
+                    return Err(Diagnostic::global(
+                        DiagnosticStage::Codegen,
+                        format!("unsupported browser operation 'browser.{name}' in web UI"),
+                    ));
+                }
+            }
+        }
         ExprKind::Unary { op, expr } => {
             let operator = match op {
                 UnaryOp::Neg => "-",
@@ -473,7 +534,7 @@ fn expr_js(
         _ => {
             return Err(Diagnostic::global(
                 DiagnosticStage::Codegen,
-                "web UI expressions currently support primitive/state/derived values, interpolation, arithmetic, comparisons, boolean operators, and responsive environment bindings",
+                "web UI expressions currently support primitive/state/derived values, browser primitives, anonymous event callbacks, interpolation, arithmetic, comparisons, boolean operators, and responsive environment bindings",
             ));
         }
     })
@@ -629,5 +690,62 @@ app Demo
         assert!(output.contains("state[\"active\"]="));
         assert!(output.contains("fluxRefresh();"));
         assert!(!output.contains("methodChannel"));
+    }
+
+    #[test]
+    fn lowers_browser_history_and_storage_without_user_bridge() {
+        let output = html(
+            r#"
+view Demo {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto auto auto
+
+    Text location at 1,1
+        text: browser.path()
+
+    Text saved at 2,1
+        text: browser.load("theme", "system")
+
+    Button navigate at 3,1
+        text: "Settings"
+        onPress: fn() { browser.push("/settings") }
+
+    Button replace at 4,1
+        text: "Account"
+        onPress: fn() { browser.replace("/account") }
+
+    Button back at 5,1
+        text: "Back"
+        onPress: fn() { browser.back() }
+
+    Button forward at 6,1
+        text: "Forward"
+        onPress: fn() { browser.forward() }
+
+    Button remember at 7,1
+        text: "Remember"
+        onPress: fn() { browser.store("theme", "dark") }
+
+    Button forget at 8,1
+        text: "Forget"
+        onPress: fn() { browser.erase("theme") }
+}
+
+app Demo
+"#,
+        );
+        assert!(output.contains("window.location.pathname"));
+        assert!(output.contains("history.pushState"));
+        assert!(output.contains("window.addEventListener('popstate',fluxRefresh"));
+        assert!(output.contains("localStorage.getItem"));
+        assert!(output.contains("localStorage.setItem"));
+        assert!(output.contains("fluxBrowserPush(\"/settings\")"));
+        assert!(output.contains("fluxBrowserReplace(\"/account\")"));
+        assert!(output.contains("history.back()"));
+        assert!(output.contains("history.forward()"));
+        assert!(output.contains("fluxBrowserStore(\"theme\",\"dark\")"));
+        assert!(output.contains("fluxBrowserErase(\"theme\")"));
+        assert!(!output.contains("MethodChannel"));
+        assert!(!output.contains("PluginRegistry"));
     }
 }

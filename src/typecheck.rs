@@ -9254,6 +9254,83 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "browser" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("browser.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "path" | "back" | "forward" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("browser.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(if name == "path" {
+                    vec![Type::Str]
+                } else {
+                    Vec::new()
+                });
+            }
+            "push" | "replace" | "erase" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("browser.{name} expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    if name == "erase" {
+                        "browser.erase key"
+                    } else {
+                        "browser navigation path"
+                    },
+                )?;
+                return Ok(Vec::new());
+            }
+            "store" | "load" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("browser.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    let actual = type_of_expr(argument, env, signatures)?;
+                    require_type(
+                        argument.span,
+                        &Type::Str,
+                        &actual,
+                        if index == 0 {
+                            "browser storage key"
+                        } else if name == "load" {
+                            "browser.load fallback"
+                        } else {
+                            "browser.store value"
+                        },
+                    )?;
+                }
+                return Ok(if name == "load" {
+                    vec![Type::Str]
+                } else {
+                    Vec::new()
+                });
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("browser module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "locale" {
         if !named_args.is_empty() {
             return Err(diag(

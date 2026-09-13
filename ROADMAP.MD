@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 556
-- Reported overall progress: **75%**
+- Completed baseline units: 558
+- Reported overall progress: **76%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -885,8 +885,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Bootstrap browser target: `flux build web <file.flux|package-dir|flux.toml> [-o directory]` type-checks an ordinary Flux `app`/root view and emits a directly loadable self-contained `index.html` without a VM, browser framework, canvas widget-emulation layer, or user-authored JavaScript bridge. The current bootstrap backend covers declarative application UI, view state/derived expressions, and direct state-transition events; broader general application-code lowering remains explicitly tracked by the separate WASM/application-code item rather than hiding a second source/runtime model.
 - [ ] WASM application-code backend where appropriate.
 - [x] DOM/browser-native integration for the current declarative UI surface: Flux built-in elements lower to native semantic DOM controls/containers (`button`, `input`, `img`, `label`+checkbox/radio, `nav`, `figure`, `article`, `header`, `section`, and text nodes) positioned by the compiler-owned grid. Typed view-state transitions attach direct DOM event listeners and refresh the existing nodes in place, with no method-channel/plugin registry/serialized bridge or framework virtual-widget tree.
-- [ ] Browser routing/history.
-- [ ] Browser storage.
+- [x] Browser routing/history for the current declarative web backend: typed `browser.path()`, `browser.push(path)`, `browser.replace(path)`, `browser.back()`, and `browser.forward()` lower directly to the browser Location/History APIs. Push/replace and native `popstate` traversal refresh the existing Flux DOM in place, while ordinary UI event callbacks can invoke these operations without a framework router, serialized channel, or user-authored JavaScript bridge.
+- [x] Browser storage for the current declarative web backend: typed `browser.store(key, value)`, `browser.load(key, fallback)`, and `browser.erase(key)` lower directly to `localStorage`; reads provide an explicit fallback for missing/unavailable storage, and UI event callbacks call the browser primitive directly without exposing storage objects, a plugin registry, or application-authored JavaScript glue.
 - [x] Browser accessibility/semantics for the current web backend: semantic native controls are preserved and Flux `accessibilityLabel`, `accessibilityDescription`, `accessibilityHidden`, and `accessibilityRole` lower to browser `aria-*`/role state on the real DOM nodes. Role spellings are normalized to valid web roles while ordinary native button/input/image semantics remain authoritative instead of creating a parallel accessibility tree.
 - [x] Responsive web layout for the current web backend: Flux grid tracks lower directly to CSS Grid (`px`/`fr`/`auto`) with typed gap/padding/scroll behavior, while `windowWidth`, `windowHeight`, orientation, compact/medium/expanded breakpoints, and `displayScale` read browser viewport/device state and re-run in-place UI refresh on native resize events. The generated viewport metadata and full-width root therefore preserve the same portable responsive-expression contract without a browser framework runtime.
 - [x] Development server for the bootstrap web target: `flux run web <file.flux|package-dir|flux.toml> [--host address] [--port number]` serves the compiler-emitted DOM bundle directly over a small compiler-owned HTTP server, defaults to loopback-only `127.0.0.1:4173`, supports explicit host/port overrides, and keeps browser development transport separate from production artifacts.

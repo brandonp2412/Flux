@@ -1451,6 +1451,21 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "browser" {
+        for (label, detail) in [
+            ("path", "fn browser.path() -> str"),
+            ("push", "fn browser.push(path: str) -> void"),
+            ("replace", "fn browser.replace(path: str) -> void"),
+            ("back", "fn browser.back() -> void"),
+            ("forward", "fn browser.forward() -> void"),
+            ("store", "fn browser.store(key: str, value: str) -> void"),
+            ("load", "fn browser.load(key: str, fallback: str) -> str"),
+            ("erase", "fn browser.erase(key: str) -> void"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "locale" {
         push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
         push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
