@@ -4171,11 +4171,29 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n");
         out.push_str("static inline struct flux__net_i64_bool_error flux__net_progress_result(int64_t offset, bool complete, const char *error) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = complete, .v2 = error }; return result; }\n");
     }
+    let uses_net_wait = runtime_usage.contains("flux__net_wait_readable(")
+        || runtime_usage.contains("flux__net_wait_writable(")
+        || runtime_usage.contains("flux__net_wait_readable_many(")
+        || runtime_usage.contains("flux__net_wait_writable_many(")
+        || runtime_usage.contains("flux__net_wait_ready_many(");
+    let uses_cancellable_net = uses_net_wait
+        || runtime_usage.contains("flux__net_tcp_accept_many(")
+        || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_receive_text_many(")
+        || runtime_usage.contains("flux__net_receive_text_from_many(");
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
     {
         out.push_str("struct flux__net_bool_error { bool v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
+    if uses_cancellable_net {
+        if runtime_usage.contains("flux__worker_") {
+            out.push_str("static bool flux__worker_cancelled(void);\n");
+        } else {
+            out.push_str("#define flux__worker_cancelled() false\n");
+        }
+        out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int64_t remaining = timeout_millis; for (;;) { if (flux__worker_cancelled()) return -2; int wait_millis = remaining < 0 ? 50 : (remaining > 50 ? 50 : (int)remaining); int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); if (result != 0) return result; if (remaining == 0) return 0; if (remaining > 0) { remaining -= wait_millis; if (remaining <= 0) return 0; } } }\n");
     }
     if runtime_usage.contains("flux__net_tcp_connect(")
         || runtime_usage.contains("flux__net_tcp_listen(")
@@ -4203,7 +4221,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept(int64_t listener) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); return fd < 0 ? flux__net_result(-1, \"failed to accept TCP connection\") : flux__net_result((int64_t)fd, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_tcp_accept_many(") {
-        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"tcpAcceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"tcpAcceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"tcpAcceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"tcpAcceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"tcpAcceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"tcpAcceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"tcpAcceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"tcpAcceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { if (flux__worker_cancelled()) return flux__net_result(accepted, \"tcpAcceptMany cancelled by worker scope\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_local_port(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_local_port(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); struct sockaddr_storage address; socklen_t length = sizeof(address); if (getsockname((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return flux__net_result(-1, \"failed to read socket address\"); if (address.ss_family == AF_INET) return flux__net_result((int64_t)ntohs(((struct sockaddr_in *)&address)->sin_port), NULL); if (address.ss_family == AF_INET6) return flux__net_result((int64_t)ntohs(((struct sockaddr_in6 *)&address)->sin6_port), NULL); return flux__net_result(-1, \"socket address has unsupported family\"); }\n");
@@ -4266,8 +4284,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             wait_millis = remaining_millis > INT_MAX ? INT_MAX : (int)remaining_millis;
         }
         struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
-        int ready;
-        do { ready = poll(&descriptor, 1, wait_millis); } while (ready < 0 && errno == EINTR);
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return flux__net_result((int64_t)offset, "sendTextWithTimeout cancelled by worker scope");
         if (ready == 0) return flux__net_result((int64_t)offset, "sendTextWithTimeout timed out");
         if (ready < 0) return flux__net_result((int64_t)offset, "failed to wait for socket writability");
         if ((descriptor.revents & POLLNVAL) != 0) return flux__net_result((int64_t)offset, "invalid socket handle");
@@ -4966,6 +4984,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     char buffer[65537];
     int64_t total = 0;
     for (int64_t count = 0; count < max_count; ++count) {
+        if (flux__worker_cancelled()) return flux__net_result(total, "receiveTextMany cancelled by worker scope");
         ssize_t received;
         do { received = recv((int)socket_handle, buffer, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR);
         if (received < 0) {
@@ -5001,6 +5020,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     char buffer[65537];
     int64_t total = 0;
     for (int64_t count = 0; count < max_count; ++count) {
+        if (flux__worker_cancelled()) return flux__net_result(total, "receiveTextFromMany cancelled by worker scope");
         struct sockaddr_storage peer;
         socklen_t peer_length = sizeof(peer);
         ssize_t received;
@@ -5056,19 +5076,6 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         if runtime_usage.contains("flux__net_shutdown_write(") {
             out.push_str("static inline const char *flux__net_shutdown_write(int64_t socket_handle) { return flux__net_shutdown(socket_handle, SHUT_WR); }\n");
         }
-    }
-    let uses_net_wait = runtime_usage.contains("flux__net_wait_readable(")
-        || runtime_usage.contains("flux__net_wait_writable(")
-        || runtime_usage.contains("flux__net_wait_readable_many(")
-        || runtime_usage.contains("flux__net_wait_writable_many(")
-        || runtime_usage.contains("flux__net_wait_ready_many(");
-    if uses_net_wait {
-        if runtime_usage.contains("flux__worker_") {
-            out.push_str("static bool flux__worker_cancelled(void);\n");
-        } else {
-            out.push_str("#define flux__worker_cancelled() false\n");
-        }
-        out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int64_t remaining = timeout_millis; for (;;) { if (flux__worker_cancelled()) return -2; int wait_millis = remaining < 0 ? 50 : (remaining > 50 ? 50 : (int)remaining); int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); if (result != 0) return result; if (remaining == 0) return 0; if (remaining > 0) { remaining -= wait_millis; if (remaining <= 0) return 0; } } }\n");
     }
     if runtime_usage.contains("flux__net_wait_readable(") {
         out.push_str("static inline struct flux__net_bool_error flux__net_wait_readable(int64_t socket_handle, int64_t timeout_millis) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_bool_result(false, \"invalid socket handle\"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_bool_result(false, \"waitReadable timeoutMillis must be -1 or between 0 and 2147483647\"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLIN, .revents = 0 }; int result = flux__net_poll_cancellable(&descriptor, 1, timeout_millis); if (result == -2) return flux__net_bool_result(false, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_bool_result(false, \"failed to wait for socket readability\"); if (result == 0) return flux__net_bool_result(false, NULL); if ((descriptor.revents & POLLNVAL) != 0) return flux__net_bool_result(false, \"invalid socket handle\"); if ((descriptor.revents & POLLERR) != 0) return flux__net_bool_result(false, \"socket readiness failed\"); return flux__net_bool_result((descriptor.revents & (POLLIN | POLLHUP)) != 0, NULL); }\n");
@@ -5230,7 +5237,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             out.push_str("#define flux__async_scope_enter(scope_id) ((void)(scope_id))\n");
             out.push_str("#define flux__async_scope_finish() ((const char *)NULL)\n");
         }
-        if runtime_usage.contains("flux__channel_") && !uses_net_wait {
+        if runtime_usage.contains("flux__channel_") && !uses_cancellable_net {
             out.push_str("#define flux__worker_cancelled() false\n");
         }
     }

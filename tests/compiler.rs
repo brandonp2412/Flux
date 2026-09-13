@@ -1984,6 +1984,7 @@ fn main() -> i64 {
     assert!(generated.contains("O_NONBLOCK"));
     assert!(generated.contains("EAGAIN"));
     assert!(generated.contains("SO_ACCEPTCONN"));
+    assert!(generated.contains("tcpAcceptMany cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-net-accept-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -4049,6 +4050,7 @@ fn main() -> i64 {{
     assert!(generated.contains("receiveTextMany requires a nonblocking TCP socket"));
     assert!(generated.contains("EAGAIN"));
     assert!(generated.contains("SO_ACCEPTCONN"));
+    assert!(generated.contains("receiveTextMany cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-net-receive-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -4204,7 +4206,7 @@ fn socket_timed_text_send_applies_nonblocking_backpressure_and_tree_shakes() {
     assert!(generated.contains("#include <time.h>"));
     assert!(generated.contains("flux__net_send_text_with_timeout("));
     assert!(generated.contains("clock_gettime(CLOCK_MONOTONIC"));
-    assert!(generated.contains("poll(&descriptor, 1, wait_millis)"));
+    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("sendTextWithTimeout requires a nonblocking TCP socket"));
 
     let root = std::env::temp_dir().join(format!("flux-net-timed-send-{}", std::process::id()));
@@ -4684,6 +4686,7 @@ fn main() -> i64 {{
     assert!(generated.contains("receiveTextFromMany requires a nonblocking UDP socket"));
     assert!(generated.contains("recvfrom("));
     assert!(generated.contains("EAGAIN"));
+    assert!(generated.contains("receiveTextFromMany cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-udp-receive-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -6536,6 +6539,96 @@ fn main() -> i64 {
         .collect::<Vec<_>>();
     values.sort_unstable();
     assert_eq!(values, vec![1, 2]);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn structured_worker_cancellation_interrupts_timed_socket_send() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("timed cancellation listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (_stream, _) = listener
+            .accept()
+            .expect("cancellation sender should connect");
+        let _ = release_rx.recv_timeout(Duration::from_secs(2));
+    });
+    let payload = "x".repeat(65536);
+    let source = format!(
+        r#"fn blockedSender() -> void {{
+    let (socket, openError) = net.tcpConnect("127.0.0.1", {port})
+    if openError != nil:
+        return
+    let configError: error = net.setNonblocking(socket, true)
+    if configError != nil:
+        return
+    while true:
+        let (_sent, sendError) = net.sendTextWithTimeout(socket, "{payload}", -1)
+        if sendError != nil:
+            if worker.cancelled():
+                print(3)
+            return
+}}
+fn main() -> i64 {{
+    let (_handle, startError) = worker.start(blockedSender)
+    if startError != nil:
+        return 11
+    time.sleepMillis(100)
+    return 0
+}}
+"#
+    );
+
+    check_source(&source).expect("cancellation-aware timed send should typecheck");
+    let generated = compile_to_c(&source).expect("cancellation-aware timed send should lower");
+    assert!(generated.contains("static inline int flux__net_poll_cancellable"));
+    assert!(generated.contains("sendTextWithTimeout cancelled by worker scope"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-structured-send-cancel-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("structured send cancellation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source)
+        .expect("structured send cancellation source should be writable");
+    let binary = root.join("structured-send-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("structured send cancellation binary should build");
+    assert!(
+        built.status.success(),
+        "structured send cancellation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let started = Instant::now();
+    let run = Command::new(&binary)
+        .output()
+        .expect("structured send cancellation binary should run");
+    let elapsed = started.elapsed();
+    let _ = release_tx.send(());
+    server
+        .join()
+        .expect("timed cancellation server should finish");
+    assert!(
+        run.status.success(),
+        "structured send cancellation binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "structured cancellation should interrupt an infinite timed send, took {elapsed:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "3\n");
 
     let _ = fs::remove_dir_all(&root);
 }
