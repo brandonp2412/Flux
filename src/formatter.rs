@@ -1192,6 +1192,21 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             );
             format!("{namespace}.{name}({})", rendered.join(", "))
         }
+        ExprKind::RecordLiteral { fields } => {
+            let rendered = fields
+                .iter()
+                .map(|field| match &field.name {
+                    Some(name) => format!("{name}: {}", format_expr(&field.value, 0)),
+                    None => format_expr(&field.value, 0),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if fields.len() == 1 && fields[0].name.is_none() {
+                format!("({rendered},)")
+            } else {
+                format!("({rendered})")
+            }
+        }
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {

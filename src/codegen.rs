@@ -540,9 +540,13 @@ fn ffi_header_type_supported_inner(
             Type::Named(_) => {
                 ffi_header_type_supported_inner(&inner, signatures, visiting, allow_function)
             }
-            Type::Void | Type::List(_) | Type::Optional(_) | Type::Function { .. } => false,
+            Type::Void
+            | Type::List(_)
+            | Type::Optional(_)
+            | Type::Record(_)
+            | Type::Function { .. } => false,
         },
-        Type::Void | Type::List(_) | Type::Function { .. } => false,
+        Type::Void | Type::List(_) | Type::Record(_) | Type::Function { .. } => false,
     }
 }
 
@@ -568,6 +572,11 @@ fn c_header_optional_types(
             Type::Function { params, returns } => {
                 for ty in params.iter().chain(&returns) {
                     collect(ty, signatures, optionals);
+                }
+            }
+            Type::Record(fields) => {
+                for field in fields {
+                    collect(&field.ty, signatures, optionals);
                 }
             }
             Type::I64
@@ -715,6 +724,11 @@ fn emit_c_header_function_type_typedefs(
             }
             Type::Optional(inner) => {
                 collect_nested_function_types(&inner, signatures, types, visiting)
+            }
+            Type::Record(fields) => {
+                for field in fields {
+                    collect_nested_function_types(&field.ty, signatures, types, visiting);
+                }
             }
             Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) => {}
         }
@@ -1387,6 +1401,7 @@ pub fn emit_c_for_target_with_source_metadata(
     if !reachable_value_types.is_empty() || !reachable_interfaces.is_empty() {
         out.push('\n');
     }
+    emit_record_type_definitions(&mut out, program, signatures, &function_ir);
     emit_function_type_typedefs(
         &mut out,
         program,
@@ -14670,6 +14685,9 @@ fn expr_contains_await(expr: &Expr) -> bool {
                 || expr_contains_await(iterable)
                 || condition.as_deref().is_some_and(expr_contains_await)
         }
+        ExprKind::RecordLiteral { fields } => {
+            fields.iter().any(|field| expr_contains_await(&field.value))
+        }
         ExprKind::StructLiteral { base, fields, .. } => {
             base.as_deref().is_some_and(expr_contains_await)
                 || fields.iter().any(|field| expr_contains_await(&field.value))
@@ -15916,6 +15934,11 @@ fn collect_interface_names_from_type(
         Type::List(element) | Type::Optional(element) => {
             collect_interface_names_from_type(&element, signatures, reachable, pending);
         }
+        Type::Record(fields) => {
+            for field in fields {
+                collect_interface_names_from_type(&field.ty, signatures, reachable, pending);
+            }
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(&returns) {
                 collect_interface_names_from_type(ty, signatures, reachable, pending);
@@ -16024,6 +16047,11 @@ fn collect_interface_names_from_expr(
             collect_interface_names_from_expr(iterable, signatures, reachable, pending);
             if let Some(condition) = condition {
                 collect_interface_names_from_expr(condition, signatures, reachable, pending);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_interface_names_from_expr(&field.value, signatures, reachable, pending);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
@@ -16230,6 +16258,11 @@ fn collect_enum_variant_refs_from_expr(
             collect_enum_variant_refs_from_expr(iterable, signatures, variants);
             if let Some(condition) = condition {
                 collect_enum_variant_refs_from_expr(condition, signatures, variants);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_enum_variant_refs_from_expr(&field.value, signatures, variants);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
@@ -16552,6 +16585,13 @@ fn collect_value_type_names_from_type(
         Type::List(element) | Type::Optional(element) => {
             collect_value_type_names_from_type(&element, signatures, known, reachable, pending)
         }
+        Type::Record(fields) => {
+            for field in fields {
+                collect_value_type_names_from_type(
+                    &field.ty, signatures, known, reachable, pending,
+                );
+            }
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(&returns) {
                 collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
@@ -16692,6 +16732,17 @@ fn collect_value_type_names_from_expr(
             if let Some(condition) = condition {
                 collect_value_type_names_from_expr(
                     condition, signatures, known, reachable, pending,
+                );
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_value_type_names_from_expr(
+                    &field.value,
+                    signatures,
+                    known,
+                    reachable,
+                    pending,
                 );
             }
         }
@@ -16889,6 +16940,11 @@ impl InterfacePackFacts {
             Type::List(element) | Type::Optional(element) => {
                 self.mark_open_type(&element, signatures)
             }
+            Type::Record(fields) => {
+                for field in fields {
+                    self.mark_open_type(&field.ty, signatures);
+                }
+            }
             Type::Function { params, returns } => {
                 for ty in params.iter().chain(&returns) {
                     self.mark_open_type(ty, signatures);
@@ -17029,6 +17085,11 @@ fn collect_interface_pack_facts_from_expr(
             collect_interface_pack_facts_from_expr(value, &item_env, signatures, facts);
             if let Some(condition) = condition {
                 collect_interface_pack_facts_from_expr(condition, &item_env, signatures, facts);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_interface_pack_facts_from_expr(&field.value, env, signatures, facts);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
@@ -17539,6 +17600,17 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_interface_dispatch_refs_from_expr(
+                    &field.value,
+                    env,
+                    signatures,
+                    direct_functions,
+                    dynamic_capabilities,
+                );
+            }
+        }
         ExprKind::StructLiteral { base, fields, .. } => {
             if let Some(base) = base {
                 collect_interface_dispatch_refs_from_expr(
@@ -17832,6 +17904,11 @@ fn collect_named_function_refs_from_expr(
             collect_named_function_refs_from_expr(iterable, known, references);
             if let Some(condition) = condition {
                 collect_named_function_refs_from_expr(condition, known, references);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_named_function_refs_from_expr(&field.value, known, references);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
@@ -18132,6 +18209,11 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
             collect_function_helpers_from_expr(iterable, functions);
             if let Some(condition) = condition {
                 collect_function_helpers_from_expr(condition, functions);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_function_helpers_from_expr(&field.value, functions);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
@@ -24950,6 +25032,24 @@ fn emit_expr(
                 ty: result_ty,
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            let ty = type_of_expr(expr, env, signatures)?;
+            let Type::Record(record_fields) = &ty else {
+                unreachable!("record literal must type as a record");
+            };
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (index, (field, signature)) in fields.iter().zip(record_fields).enumerate() {
+                let value = emit_expr_for_expected(&field.value, &signature.ty, env, signatures)?;
+                rendered.push(format!(
+                    ".{} = {value}",
+                    record_field_c_name(signature.name.as_deref(), index)
+                ));
+            }
+            EmittedExpr {
+                code: format!("({}){{ {} }}", c_type(&ty, signatures), rendered.join(", ")),
+                ty,
+            }
+        }
         ExprKind::ListSpread { .. } => {
             return Err(diag(
                 expr.span,
@@ -25141,6 +25241,7 @@ fn emit_expr(
                     ));
                 }
                 Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
+                Type::Record(_) => return Err(diag(expr.span, "cannot print a record directly")),
                 Type::Optional(_) => {
                     return Err(diag(
                         expr.span,
@@ -25467,6 +25568,20 @@ fn emit_expr(
                         ));
                     }
                 }
+            } else if let Type::Record(fields) = signatures.canonical_type(&emitted_base.ty) {
+                let index = if let Ok(index) = name.parse::<usize>() {
+                    index
+                } else {
+                    fields
+                        .iter()
+                        .position(|field| field.name.as_deref() == Some(name.as_str()))
+                        .expect("type checking guarantees record field exists")
+                };
+                format!(
+                    "({}).{}",
+                    emitted_base.code,
+                    record_field_c_name(fields[index].name.as_deref(), index)
+                )
             } else {
                 format!("({}).{}", emitted_base.code, field_c_name(name))
             };
@@ -27841,6 +27956,130 @@ fn interface_multi_return_struct_name(interface_name: &str, member_name: &str) -
     format!("flux__iface_ret_{interface_name}_{member_name}")
 }
 
+fn record_c_name(ty: &Type, signatures: &Signatures) -> String {
+    format!("flux__{}", type_mangle(ty, signatures))
+}
+
+fn record_field_c_name(name: Option<&str>, index: usize) -> String {
+    name.map(field_c_name)
+        .unwrap_or_else(|| format!("v{index}"))
+}
+
+fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet<Type>) {
+    match signatures.canonical_type(ty) {
+        Type::Record(fields) => {
+            for field in &fields {
+                collect_record_type(&field.ty, signatures, records);
+            }
+            records.insert(Type::Record(fields));
+        }
+        Type::List(inner) | Type::Optional(inner) => {
+            collect_record_type(&inner, signatures, records);
+        }
+        Type::Function { params, returns } => {
+            for ty in params.iter().chain(&returns) {
+                collect_record_type(ty, signatures, records);
+            }
+        }
+        Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::Named(_) => {}
+    }
+}
+
+fn record_type_depth(ty: &Type, signatures: &Signatures) -> usize {
+    let Type::Record(fields) = signatures.canonical_type(ty) else {
+        return 0;
+    };
+    1 + fields
+        .iter()
+        .map(|field| record_type_depth(&field.ty, signatures))
+        .max()
+        .unwrap_or(0)
+}
+
+fn emit_record_type_definitions(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+) {
+    let mut records = HashSet::new();
+    for alias in &program.aliases {
+        collect_record_type(&alias.target, signatures, &mut records);
+    }
+    for definition in &program.structs {
+        for field in &definition.fields {
+            collect_record_type(&field.ty, signatures, &mut records);
+        }
+    }
+    for definition in &program.enums {
+        for variant in &definition.variants {
+            for payload in &variant.payloads {
+                collect_record_type(&payload.ty, signatures, &mut records);
+            }
+        }
+    }
+    for definition in &program.interfaces {
+        for function in &definition.functions {
+            for param in &function.params {
+                collect_record_type(&param.ty, signatures, &mut records);
+            }
+            for ty in &function.returns {
+                collect_record_type(ty, signatures, &mut records);
+            }
+        }
+    }
+    for function in &program.functions {
+        for param in &function.params {
+            collect_record_type(&param.ty, signatures, &mut records);
+        }
+        for ty in &function.returns {
+            collect_record_type(ty, signatures, &mut records);
+        }
+        if let Some(cfg) = function_ir.get(&function.name) {
+            for value in cfg.values() {
+                collect_record_type(&value.ty, signatures, &mut records);
+            }
+        }
+    }
+    for view in &program.views {
+        for param in &view.params {
+            collect_record_type(&param.ty, signatures, &mut records);
+        }
+        for state in &view.states {
+            collect_record_type(&state.ty, signatures, &mut records);
+        }
+        for derived in &view.derived {
+            collect_record_type(&derived.ty, signatures, &mut records);
+        }
+    }
+
+    let mut records = records.into_iter().collect::<Vec<_>>();
+    records.sort_by_key(|ty| (record_type_depth(ty, signatures), ty.name()));
+    for record in &records {
+        let Type::Record(fields) = record else {
+            unreachable!();
+        };
+        out.push_str(&format!(
+            "struct {} {{\n",
+            record_c_name(record, signatures)
+        ));
+        for (index, field) in fields.iter().enumerate() {
+            out.push_str(&format!(
+                "    {} {};\n",
+                c_type(&field.ty, signatures),
+                record_field_c_name(field.name.as_deref(), index)
+            ));
+        }
+        out.push_str("};\n");
+    }
+    for record in &records {
+        emit_optional_value_definition(out, record, signatures);
+    }
+    if !records.is_empty() {
+        out.push('\n');
+    }
+}
+
 fn c_type(ty: &Type, signatures: &Signatures) -> String {
     match signatures.canonical_type(ty) {
         Type::I64 => "int64_t".to_string(),
@@ -27853,6 +28092,10 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
         Type::List(_) => "struct flux__list".to_string(),
+        Type::Record(fields) => {
+            let record = Type::Record(fields);
+            format!("struct {}", record_c_name(&record, signatures))
+        }
         Type::Optional(inner) => {
             format!("struct flux__optional_{}", type_mangle(&inner, signatures))
         }
@@ -27892,6 +28135,22 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
         Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
+        Type::Record(fields) => {
+            let fields = fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let label = field
+                        .name
+                        .as_ref()
+                        .map(|name| format!("n{}_{}", name.len(), name))
+                        .unwrap_or_else(|| format!("p{index}"));
+                    format!("{label}_{}", type_mangle(&field.ty, signatures))
+                })
+                .collect::<Vec<_>>()
+                .join("__");
+            format!("record__{fields}")
+        }
         Type::Function { params, returns } => {
             let name = function_type_name(&params, &returns, signatures);
             name.trim_start_matches("flux__fn_").to_string()
@@ -28279,6 +28538,11 @@ fn collect_update_helpers_from_expr(
     match &expr.kind {
         ExprKind::AnonymousFunction { body, .. } => {
             collect_update_helpers_from_expr(body, signatures, emitted, helpers);
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_update_helpers_from_expr(&field.value, signatures, emitted, helpers);
+            }
         }
         ExprKind::StructLiteral {
             name, base, fields, ..

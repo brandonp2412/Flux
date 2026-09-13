@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
     BinOp, ConstantDef, Expr, ExprKind, Function, InterpolatedStringPart, ListMatchPattern,
-    MatchPattern, NamedArg, Program, Stmt, StmtKind, StructPatternField, Type, UnaryOp,
+    MatchPattern, NamedArg, Program, RecordTypeField, Stmt, StmtKind, StructPatternField, Type,
+    UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::ir::ControlFlowGraph;

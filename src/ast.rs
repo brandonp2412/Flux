@@ -10,10 +10,17 @@ pub enum Type {
     Named(String),
     List(Box<Type>),
     Optional(Box<Type>),
+    Record(Vec<RecordTypeField>),
     Function {
         params: Vec<Type>,
         returns: Vec<Type>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecordTypeField {
+    pub name: Option<String>,
+    pub ty: Type,
 }
 
 impl Type {
@@ -61,6 +68,46 @@ impl Type {
         if let Some(inner) = input.strip_suffix("[]") {
             return Some(Self::List(Box::new(Self::parse(inner)?)));
         }
+        if let Some(inner) = input
+            .strip_prefix('(')
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            let trailing_comma = inner.trim_end().ends_with(',');
+            let mut parts = split_type_commas(inner);
+            if trailing_comma && parts.last() == Some(&"") {
+                parts.pop();
+            }
+            if trailing_comma
+                || parts.len() >= 2
+                || parts.first().is_some_and(|part| part.contains(':'))
+            {
+                let mut fields = Vec::with_capacity(parts.len());
+                let mut saw_named = false;
+                for part in parts {
+                    let part = part.trim();
+                    if let Some((name, ty)) = part.split_once(':') {
+                        let name = name.trim();
+                        if !is_type_identifier(name) {
+                            return None;
+                        }
+                        saw_named = true;
+                        fields.push(RecordTypeField {
+                            name: Some(name.to_string()),
+                            ty: Self::parse(ty.trim())?,
+                        });
+                    } else {
+                        if saw_named {
+                            return None;
+                        }
+                        fields.push(RecordTypeField {
+                            name: None,
+                            ty: Self::parse(part)?,
+                        });
+                    }
+                }
+                return Some(Self::Record(fields));
+            }
+        }
         match input {
             "i64" => Some(Self::I64),
             "bool" => Some(Self::Bool),
@@ -82,6 +129,21 @@ impl Type {
             Self::Named(name) => name.clone(),
             Self::List(element) => format!("{}[]", element.name()),
             Self::Optional(inner) => format!("{}?", inner.name()),
+            Self::Record(fields) => {
+                let rendered = fields
+                    .iter()
+                    .map(|field| match &field.name {
+                        Some(name) => format!("{name}: {}", field.ty.name()),
+                        None => field.ty.name(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if fields.len() == 1 && fields[0].name.is_none() {
+                    format!("({rendered},)")
+                } else {
+                    format!("({rendered})")
+                }
+            }
             Self::Function { params, returns } => {
                 let params = params.iter().map(Type::name).collect::<Vec<_>>().join(", ");
                 let returns = match returns.as_slice() {
@@ -767,6 +829,9 @@ pub enum ExprKind {
         iterable: Box<Expr>,
         condition: Option<Box<Expr>>,
     },
+    RecordLiteral {
+        fields: Vec<RecordLiteralField>,
+    },
     StructLiteral {
         name: String,
         name_span: SourceSpan,
@@ -815,6 +880,13 @@ pub enum ExprKind {
 pub struct NamedArg {
     pub name: String,
     pub name_span: SourceSpan,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordLiteralField {
+    pub name: Option<String>,
+    pub name_span: Option<SourceSpan>,
     pub value: Expr,
 }
 

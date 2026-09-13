@@ -526,6 +526,11 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&arg.value, symbols, signatures);
             }
         }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                collect_expr_pattern_symbols(&field.value, symbols, signatures);
+            }
+        }
         ExprKind::StructLiteral { base, fields, .. } => {
             if let Some(base) = base {
                 collect_expr_pattern_symbols(base, symbols, signatures);

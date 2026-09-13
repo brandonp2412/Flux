@@ -277,9 +277,9 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 
 Flux intentionally keeps function multi-return values narrow today. General records should be added only when they do not blur explicit multi-return/error semantics.
 
-- [ ] Anonymous immutable records for lightweight aggregate data.
-- [ ] Named record fields.
-- [ ] Positional record fields.
+- [x] Anonymous immutable records for lightweight aggregate data, with structural static types, native by-value lowering, formatter/semantic/IR support, and an ownership-safe bootstrap restriction to primitive or nested-record `Copy` fields until aggregate layout and owned move semantics expand.
+- [x] Named record fields with `(name: value, ...)` literals/types and typed dot access.
+- [x] Positional record fields with `(value, ...)` literals/types, `.0`/`.1` access, and single-field `(value,)` syntax that remains distinct from grouping through formatting.
 - [ ] Record destructuring patterns.
 - [x] List patterns with exact/rest/wildcard shapes in local bindings plus exhaustive statement/value `match`, including zero-copy rest views over strided lists.
 - [ ] Map patterns.

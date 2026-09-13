@@ -4,7 +4,8 @@ use crate::ast::{
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
     InterpolatedStringPart, ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern,
     MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp,
-    Program, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode, Stmt, StmtKind,
+    Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode, Stmt,
+    StmtKind,
     StructDef, StructField, StructLiteralField, StructPattern, StructPatternField, Type, TypeAlias,
     UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState, ViewStateTransition,
 };

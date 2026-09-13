@@ -11268,6 +11268,122 @@ fn main() -> i64 {
 }
 
 #[test]
+fn anonymous_records_support_named_positional_nested_and_single_fields_natively() {
+    let source = r#"
+fn main() -> i64 {
+    let person: (name: str, age: i64) = (name: "Ada", age: 42)
+    let pair: (i64, bool) = (7, true)
+    let one: (i64,) = (9,)
+    let nested: (i64, (bool, str)) = (1, (true, "ok"))
+    print(person.name)
+    print(person.age)
+    print(pair.0)
+    print(pair.1)
+    print(one.0)
+    print(nested.1.1)
+    return 0
+}
+"#;
+
+    check_source(source).expect("primitive and nested records should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("records should format");
+    assert!(formatted.contains("let one: (i64,) = (9,)"));
+    assert!(formatted.contains("let person: (name: str, age: i64) = (name: \"Ada\", age: 42)"));
+
+    let generated = compile_to_c(source).expect("records should lower to native value structs");
+    assert!(generated.contains("struct flux__record__"));
+    assert!(generated.contains(".flux__field_name"));
+    assert!(generated.contains(".v0"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-records-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("record temp directory should be writable");
+    let c_path = root.join("records.c");
+    let exe_path = root.join("records");
+    fs::write(&c_path, generated).expect("generated record C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile record C");
+    assert!(
+        compile.status.success(),
+        "record C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("record program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Ada\n42\n7\ntrue\n9\nok\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn anonymous_records_reject_invalid_shapes_and_noncopy_fields() {
+    let duplicate = r#"
+fn main() -> i64 {
+    let value: (left: i64, right: i64) = (left: 1, left: 2)
+    return 0
+}
+"#;
+    let error = check_source(duplicate).expect_err("duplicate record field should fail");
+    assert!(error.message.contains("duplicate record field 'left'"));
+
+    let positional_after_named = r#"
+fn main() -> i64 {
+    let value: (left: i64, right: i64) = (left: 1, 2)
+    return 0
+}
+"#;
+    let error = check_source(positional_after_named)
+        .expect_err("positional record field after named field should fail");
+    assert!(
+        error
+            .message
+            .contains("positional record fields cannot follow named fields")
+    );
+
+    let noncopy = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    let value: (i64[], i64) = (values, 3)
+    return 0
+}
+"#;
+    let error = check_source(noncopy).expect_err("record list field should remain ownership-gated");
+    assert!(
+        error
+            .message
+            .contains("record fields currently require primitive or nested-record Copy values")
+    );
+
+    let equality = r#"
+fn main() -> i64 {
+    let left: (i64, bool) = (1, true)
+    let right: (i64, bool) = (1, true)
+    let same: bool = left == right
+    return 0
+}
+"#;
+    let error = check_source(equality).expect_err("whole-record equality should stay explicit");
+    assert!(
+        error
+            .message
+            .contains("whole-record equality is not defined yet")
+    );
+}
+
+#[test]
 fn accepts_struct_destructuring_with_inferred_field_types_and_single_evaluation() {
     let source = r#"
 struct User {

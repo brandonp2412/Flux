@@ -1840,6 +1840,12 @@ impl<'a> ControlFlowBuilder<'a> {
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
+            ExprKind::RecordLiteral { fields } => {
+                for field in fields {
+                    let _ = self.lower_scalar_expr(producer, &field.value);
+                }
+                ControlFlowValueKind::Opaque
+            }
             ExprKind::StructLiteral {
                 name, base, fields, ..
             } => {
@@ -2695,6 +2701,11 @@ fn record_expr_types(
             record_expr_types(value, &nested, signatures, evaluations);
             if let Some(condition) = condition {
                 record_expr_types(condition, &nested, signatures, evaluations);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                record_expr_types(&field.value, env, signatures, evaluations);
             }
         }
         ExprKind::StructLiteral { base, fields, .. } => {
