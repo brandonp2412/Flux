@@ -1682,7 +1682,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__locale_format_date_time(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
     {
@@ -1726,6 +1728,7 @@ fn emit_runtime_prelude(
         if runtime_usage.contains("flux__net_send_text_parts(")
             || runtime_usage.contains("flux__net_send_text_parts_progress(")
             || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
+            || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
             || runtime_usage.contains("flux__net_send_text_to_parts(")
         {
             out.push_str("#include <sys/uio.h>\n");
@@ -4278,7 +4281,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
     if runtime_usage.contains("flux__net_send_text_progress(")
+        || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_progress(")
+        || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
         || runtime_usage.contains("flux__net_tcp_accept_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_from_with_timeout(")
@@ -4301,7 +4306,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_tcp_accept_many(")
         || runtime_usage.contains("flux__net_tcp_accept_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_many(")
         || runtime_usage.contains("flux__net_receive_text_from_with_timeout(")
@@ -4393,7 +4400,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
     }
     if runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
     {
         out.push_str(r#"static inline int64_t flux__net_monotonic_millis(void) {
     struct timespec now;
@@ -4451,6 +4460,64 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result((int64_t)offset, "socket closed while waiting to send");
     }
     return flux__net_result((int64_t)offset, NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_send_text_progress_with_timeout(") {
+        out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_text_progress_with_timeout(int64_t socket_handle, const char *text, int64_t offset, int64_t timeout_millis) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(offset, false, "invalid socket handle");
+    if (offset < 0) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout offset must be non-negative");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout requires a nonblocking TCP socket");
+    size_t length = strlen(text);
+    if (length > (size_t)INT64_MAX) return flux__net_progress_result(offset, false, "text is too large to send");
+    if ((uint64_t)offset > (uint64_t)length) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout offset exceeds text length");
+    if ((size_t)offset == length) return flux__net_progress_result(offset, true, NULL);
+    size_t cursor = (size_t)offset;
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        int64_t now = flux__net_monotonic_millis();
+        if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_progress_result(offset, false, "failed to start resumable send timeout");
+        deadline = now + timeout_millis;
+    }
+    while (cursor < length) {
+        size_t remaining = length - cursor;
+        size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining;
+        ssize_t sent = send((int)socket_handle, text + cursor, chunk, MSG_NOSIGNAL);
+        if (sent > 0) {
+            cursor += (size_t)sent;
+            continue;
+        }
+        if (sent == 0) return flux__net_progress_result((int64_t)cursor, false, "socket made no send progress");
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return flux__net_progress_result((int64_t)cursor, false, "failed to send text");
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            int64_t now = flux__net_monotonic_millis();
+            if (now < 0) return flux__net_progress_result((int64_t)cursor, false, "failed to query resumable send timeout");
+            if (now >= deadline) return flux__net_progress_result((int64_t)cursor, false, "sendTextProgressWithTimeout timed out");
+            int64_t remaining_millis = deadline - now;
+            wait_millis = remaining_millis > INT_MAX ? INT_MAX : (int)remaining_millis;
+        }
+        struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return flux__net_progress_result((int64_t)cursor, false, "sendTextProgressWithTimeout cancelled by worker scope");
+        if (ready == 0) return flux__net_progress_result((int64_t)cursor, false, "sendTextProgressWithTimeout timed out");
+        if (ready < 0) return flux__net_progress_result((int64_t)cursor, false, "failed to wait for socket writability");
+        if ((descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result((int64_t)cursor, false, "invalid socket handle");
+        if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_progress_result((int64_t)cursor, false, "socket closed while waiting to send");
+    }
+    return flux__net_progress_result((int64_t)cursor, true, NULL);
 }
 "#);
     }
@@ -6013,6 +6080,119 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result(total_sent, "socket closed while waiting to send text parts");
     }
     return flux__net_result(total_sent, NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(") {
+        out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_text_parts_progress_with_timeout(int64_t socket_handle, struct flux__list parts, int64_t offset, int64_t timeout_millis) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(offset, false, "invalid socket handle");
+    if (offset < 0) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout offset must be non-negative");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_progress_result(offset, false, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout requires a nonblocking TCP socket");
+    ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t total_length = 0;
+    for (size_t cursor = 0; cursor < parts.len; ++cursor) {
+        const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
+        size_t length = strlen(text);
+        if ((uint64_t)length > (uint64_t)INT64_MAX - total_length) return flux__net_progress_result(offset, false, "text parts are too large to send");
+        total_length += (uint64_t)length;
+    }
+    if ((uint64_t)offset > total_length) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout offset exceeds text length");
+    if ((uint64_t)offset == total_length) return flux__net_progress_result(offset, true, NULL);
+    uint64_t skipped = 0;
+    size_t index = 0;
+    size_t local_offset = 0;
+    while (index < parts.len) {
+        const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
+        size_t length = strlen(text);
+        if ((uint64_t)offset < skipped + (uint64_t)length) {
+            local_offset = (size_t)((uint64_t)offset - skipped);
+            break;
+        }
+        skipped += (uint64_t)length;
+        index += 1;
+    }
+    int64_t current_offset = offset;
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        int64_t now = flux__net_monotonic_millis();
+        if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_progress_result(offset, false, "failed to start resumable scatter/gather send timeout");
+        deadline = now + timeout_millis;
+    }
+    while (index < parts.len) {
+        struct iovec vectors[64];
+        size_t vector_count = 0;
+        size_t cursor = index;
+        size_t cursor_offset = local_offset;
+        while (cursor < parts.len && vector_count < 64) {
+            const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
+            size_t length = strlen(text);
+            if (cursor_offset < length) {
+                vectors[vector_count].iov_base = (void *)(text + cursor_offset);
+                vectors[vector_count].iov_len = length - cursor_offset;
+                vector_count += 1;
+            }
+            cursor += 1;
+            cursor_offset = 0;
+        }
+        if (vector_count == 0) {
+            index = cursor;
+            local_offset = 0;
+            continue;
+        }
+        struct msghdr message;
+        memset(&message, 0, sizeof(message));
+        message.msg_iov = vectors;
+        message.msg_iovlen = vector_count;
+        ssize_t sent = sendmsg((int)socket_handle, &message, MSG_NOSIGNAL);
+        if (sent > 0) {
+            current_offset += (int64_t)sent;
+            size_t remaining = (size_t)sent;
+            while (index < parts.len) {
+                const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
+                size_t length = strlen(text);
+                size_t available = length - local_offset;
+                if (remaining < available) {
+                    local_offset += remaining;
+                    break;
+                }
+                remaining -= available;
+                index += 1;
+                local_offset = 0;
+                if (remaining == 0) break;
+            }
+            continue;
+        }
+        if (sent == 0) return flux__net_progress_result(current_offset, false, "socket made no scatter/gather send progress");
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return flux__net_progress_result(current_offset, false, "failed to send text parts");
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            int64_t now = flux__net_monotonic_millis();
+            if (now < 0) return flux__net_progress_result(current_offset, false, "failed to query resumable scatter/gather send timeout");
+            if (now >= deadline) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout timed out");
+            int64_t remaining_millis = deadline - now;
+            wait_millis = remaining_millis > INT_MAX ? INT_MAX : (int)remaining_millis;
+        }
+        struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout cancelled by worker scope");
+        if (ready == 0) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout timed out");
+        if (ready < 0) return flux__net_progress_result(current_offset, false, "failed to wait for socket writability");
+        if ((descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result(current_offset, false, "invalid socket handle");
+        if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_progress_result(current_offset, false, "socket closed while waiting to send text parts");
+    }
+    return flux__net_progress_result(current_offset, true, NULL);
 }
 "#);
     }
@@ -27140,6 +27320,23 @@ fn emit_qualified_call(
                     Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
+            "sendTextProgressWithTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let text = emit_expr(&args[1], env, signatures)?;
+                let offset = emit_expr(&args[2], env, signatures)?;
+                let timeout = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_progress_with_timeout({}, {}, {}, {})",
+                        socket_handle.code, text.code, offset.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
+                ));
+            }
             "sendText" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
@@ -27201,6 +27398,23 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "sendTextPartsProgressWithTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let parts = emit_expr(&args[1], env, signatures)?;
+                let offset = emit_expr(&args[2], env, signatures)?;
+                let timeout = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_parts_progress_with_timeout({}, {}, {}, {})",
+                        socket_handle.code, parts.code, offset.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "sendTextTo" | "sendTextToParts" => {

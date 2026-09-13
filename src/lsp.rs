@@ -1216,6 +1216,10 @@ fn add_qualified_namespace_completions(
                 "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)",
             ),
             (
+                "writeFromTimeout",
+                "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
                 "writeParts",
                 "fn net.writeParts(socket: i64, parts: str[]) -> error",
             ),
@@ -1226,6 +1230,10 @@ fn add_qualified_namespace_completions(
             (
                 "writePartsTimeout",
                 "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
+                "writePartsFromTimeout",
+                "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64) -> (i64, bool, error)",
             ),
             (
                 "writeTo",
@@ -2812,8 +2820,21 @@ fn signature_help_for_document_cached(
                 }
                 "sendTextProgress" => {
                     return Some(signature_help_for_builtin(
-                        "net.sendTextProgress",
+                        "net.writeFrom",
                         &["socket: i64", "text: str", "offset: i64"],
+                        "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendTextProgressWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.writeFromTimeout",
+                        &[
+                            "socket: i64",
+                            "text: str",
+                            "offset: i64",
+                            "timeoutMillis: i64",
+                        ],
                         "(i64, bool, error)",
                         active_parameter,
                     ));
@@ -2839,6 +2860,19 @@ fn signature_help_for_document_cached(
                         "net.writePartsTimeout",
                         &["socket: i64", "parts: str[]", "timeoutMillis: i64"],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendTextPartsProgressWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.writePartsFromTimeout",
+                        &[
+                            "socket: i64",
+                            "parts: str[]",
+                            "offset: i64",
+                            "timeoutMillis: i64",
+                        ],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -6926,12 +6960,18 @@ mod tests {
         assert!(net_items.contains(
             "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
         ));
+        assert!(net_items.contains(
+            "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64) -> (i64, bool, error)"
+        ));
         assert!(net_items.contains("fn net.writeParts(socket: i64, parts: str[]) -> error"));
         assert!(net_items.contains(
             "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
         ));
         assert!(net_items.contains(
             "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64) -> (i64, bool, error)"
         ));
         assert!(
             net_items
@@ -8046,6 +8086,42 @@ mod tests {
                 "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
             )
         );
+    }
+
+    #[test]
+    fn signature_help_supports_resumable_timed_writes() {
+        let uri = "file:///tmp/resumable-timed-write-signature.flux";
+        let source = "fn main() -> i64 {\n    let (_textNext, _textDone, _textFailure) = net.writeFromTimeout(1, \"hello\", 0, 1000)\n    let (_partsNext, _partsDone, _partsFailure) = net.writePartsFromTimeout(1, [\"hello\", \"world\"], 0, 1000)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "net.writeFromTimeout(",
+                "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64)",
+            ),
+            (
+                "net.writePartsFromTimeout(",
+                "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64)",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("resumable timed-write call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("resumable timed-write call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+            assert!(help.contains("(i64, bool, error)"));
+        }
     }
 
     #[test]

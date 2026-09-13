@@ -5325,6 +5325,128 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_resumable_timed_writes_preserve_global_offsets() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("resumable timed-write listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn runtimeOffset(value: i64) -> i64 {{
+    return value
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    print(connectError)
+    let (blockedNext, blockedDone, blockedError) = net.writeFromTimeout(socket, "hello", 2, 100)
+    print(blockedNext)
+    print(blockedDone)
+    print(blockedError)
+    print(net.nonblocking(socket, true))
+    let (textNext, textDone, textError) = net.writeFromTimeout(socket, "hello", 2, 1000)
+    print(textNext)
+    print(textDone)
+    print(textError)
+    let (partsNext, partsDone, partsError) = net.writePartsFromTimeout(socket, ["hello", "", " ", "world"], 6, 1000)
+    print(partsNext)
+    print(partsDone)
+    print(partsError)
+    let (badNext, badDone, badError) = net.writePartsFromTimeout(socket, ["a", "b"], runtimeOffset(3), 1000)
+    print(badNext)
+    print(badDone)
+    print(badError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("resumable timed writes should typecheck");
+    let generated = compile_to_c(&source).expect("resumable timed writes should lower");
+    assert!(generated.contains("flux__net_send_text_progress_with_timeout("));
+    assert!(generated.contains("flux__net_send_text_parts_progress_with_timeout("));
+    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
+    assert!(generated.contains("sendTextProgressWithTimeout cancelled by worker scope"));
+    assert!(generated.contains("sendTextPartsProgressWithTimeout cancelled by worker scope"));
+
+    let root =
+        std::env::temp_dir().join(format!("flux-net-resumable-timeout-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("resumable timed-write fixture should be writable");
+    let source_path = root.join("resumable_timeout.flux");
+    fs::write(&source_path, &source).expect("resumable timed-write source should be writable");
+    let binary = root.join("resumable_timeout");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("resumable timed-write binary should build");
+    assert!(
+        built.status.success(),
+        "resumable timed-write build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux resumable timed-write client should connect");
+        let mut request = [0u8; 8];
+        stream
+            .read_exact(&mut request)
+            .expect("resumable timed writes should deliver only unsent suffixes");
+        assert_eq!(&request, b"lloworld");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("resumable timed-write binary should run");
+    server
+        .join()
+        .expect("resumable timed-write server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n2\nfalse\nsendTextProgressWithTimeout requires a nonblocking TCP socket\nnil\n5\ntrue\nnil\n11\ntrue\nnil\n3\nfalse\nsendTextPartsProgressWithTimeout offset exceeds text length\nnil\n"
+    );
+
+    let negative_offset = check_source(
+        "fn main() -> i64 {\n    let (next, done, failure) = net.writeFromTimeout(1, \"hello\", -1, 10)\n    print(next)\n    print(done)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("resumable timed text write should reject negative offsets");
+    assert!(
+        negative_offset
+            .message
+            .contains("offset must be non-negative")
+    );
+    let invalid_timeout = check_source(
+        "fn main() -> i64 {\n    let (next, done, failure) = net.writePartsFromTimeout(1, [\"x\"], 0, -2)\n    print(next)\n    print(done)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("resumable timed scatter/gather write should reject invalid timeout");
+    assert!(invalid_timeout.message.contains("timeoutMillis must be -1"));
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    let (textNext, textDone, textError) = net.writeFromTimeout(socket, "hidden", 0, 10)
+    print(textNext)
+    print(textDone)
+    print(textError)
+    let (partsNext, partsDone, partsError) = net.writePartsFromTimeout(socket, ["hidden", "payload"], 0, 10)
+    print(partsNext)
+    print(partsDone)
+    print(partsError)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead resumable timed writes should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_progress_with_timeout("));
+    assert!(!unused_generated.contains("flux__net_send_text_parts_progress_with_timeout("));
+    assert!(!unused_generated.contains("#include <sys/uio.h>"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let peer = UdpSocket::bind("127.0.0.1:0").expect("UDP scatter/gather peer should bind");
     let peer_port = peer.local_addr().unwrap().port();
