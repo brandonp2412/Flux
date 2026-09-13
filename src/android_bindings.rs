@@ -284,7 +284,7 @@ pub const ANDROID_BINDINGS: &[AndroidBinding] = &[
     binding!("openNotificationSettings", NO_PARAMS, Void),
     binding!("share", TEXT, Void),
     binding!("setClipboardText", TEXT, Void),
-    binding!("camera", NO_PARAMS, Bool),
+    binding!("camera", CALLBACK, Bool),
     binding!("play", MEDIA_SOURCE, Bool),
     binding!("pause", NO_PARAMS, Bool),
     binding!("resume", NO_PARAMS, Bool),

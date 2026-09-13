@@ -5438,20 +5438,32 @@ __FLUX_PICKER_METHODS__
     }
 }
 "#;
-    let picker_declarations =
-        if c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult") {
+    let picker_enabled =
+        c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult");
+    let camera_enabled =
+        c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnCameraResult");
+    let mut picker_declarations = String::new();
+    if picker_enabled {
+        picker_declarations.push_str(
             r#"
     private static final int FLUX_PICK_FILE = 7001;
     private static final int FLUX_PICK_MEDIA = 7002;
     private static final int FLUX_PICK_DIRECTORY = 7003;
-    private native void nativeOnPickerResult(int kind, String uri);"#
-        } else {
-            ""
-        };
-    let picker_methods = if c_source
-        .contains("Java_app_flux_runtime_FluxActivity_nativeOnPickerResult")
-    {
-        r#"
+    private native void nativeOnPickerResult(int kind, String uri);"#,
+        );
+    }
+    if camera_enabled {
+        picker_declarations.push_str(
+            r#"
+    private static final int FLUX_CAPTURE_IMAGE = 7004;
+    private native void nativeOnCameraResult(String uri);
+    private Uri fluxPendingCameraUri;"#,
+        );
+    }
+    let mut picker_methods = String::new();
+    if picker_enabled {
+        picker_methods.push_str(
+            r#"
 
     private void fluxLaunchDocumentPicker(int requestCode, String[] mimeTypes) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -5482,11 +5494,63 @@ __FLUX_PICKER_METHODS__
         } catch (RuntimeException failure) {
             nativeOnPickerResult(3, null);
         }
+    }"#,
+        );
     }
+    if camera_enabled {
+        picker_methods.push_str(
+            r#"
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == FLUX_PICK_FILE || requestCode == FLUX_PICK_MEDIA || requestCode == FLUX_PICK_DIRECTORY) {
+    public boolean fluxCaptureImage() {
+        if (fluxPendingCameraUri != null) return false;
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "flux-" + System.currentTimeMillis() + ".jpg");
+        values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        Uri outputUri = getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        if (outputUri == null) return false;
+        Intent intent = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, outputUri);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        fluxPendingCameraUri = outputUri;
+        try {
+            startActivityForResult(intent, FLUX_CAPTURE_IMAGE);
+            return true;
+        } catch (RuntimeException failure) {
+            fluxPendingCameraUri = null;
+            try {
+                getContentResolver().delete(outputUri, null, null);
+            } catch (RuntimeException ignored) {
+            }
+            return false;
+        }
+    }"#,
+        );
+    }
+    if picker_enabled || camera_enabled {
+        picker_methods.push_str("\n\n    @Override\n    protected void onActivityResult(int requestCode, int resultCode, Intent data) {\n");
+        if camera_enabled {
+            picker_methods.push_str(
+                r#"        if (requestCode == FLUX_CAPTURE_IMAGE) {
+            Uri capturedUri = fluxPendingCameraUri;
+            fluxPendingCameraUri = null;
+            String selectedUri = null;
+            if (resultCode == RESULT_OK && capturedUri != null) {
+                selectedUri = capturedUri.toString();
+            } else if (capturedUri != null) {
+                try {
+                    getContentResolver().delete(capturedUri, null, null);
+                } catch (RuntimeException ignored) {
+                }
+            }
+            nativeOnCameraResult(selectedUri);
+            return;
+        }
+"#,
+            );
+        }
+        if picker_enabled {
+            picker_methods.push_str(
+                r#"        if (requestCode == FLUX_PICK_FILE || requestCode == FLUX_PICK_MEDIA || requestCode == FLUX_PICK_DIRECTORY) {
             String selectedUri = null;
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 Uri uri = data.getData();
@@ -5500,11 +5564,12 @@ __FLUX_PICKER_METHODS__
             nativeOnPickerResult(requestCode - 7000, selectedUri);
             return;
         }
-        super.onActivityResult(requestCode, resultCode, data);
-    }"#
-    } else {
-        ""
-    };
+"#,
+            );
+        }
+        picker_methods
+            .push_str("        super.onActivityResult(requestCode, resultCode, data);\n    }");
+    }
     let dialog_confirm_enabled =
         c_source.contains("Java_app_flux_runtime_FluxActivity_nativeOnDialogConfirm");
     let dialog_choose_enabled =
@@ -5602,8 +5667,8 @@ __FLUX_PICKER_METHODS__
         .replace("__FLUX_DIALOG_METHODS__", dialog_methods.as_str())
         .replace("__FLUX_FRAME_DECLARATIONS__", frame_declarations.as_str())
         .replace("__FLUX_FRAME_METHODS__", frame_methods.as_str())
-        .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations)
-        .replace("__FLUX_PICKER_METHODS__", picker_methods)
+        .replace("__FLUX_PICKER_DECLARATIONS__", picker_declarations.as_str())
+        .replace("__FLUX_PICKER_METHODS__", picker_methods.as_str())
 }
 
 fn compile_android_activity_dex(
@@ -7771,6 +7836,18 @@ mod tests {
         assert!(picker_activity.contains("takePersistableUriPermission"));
         assert!(picker_activity.contains("protected void onActivityResult"));
         assert!(!picker_activity.contains("__FLUX_PICKER_"));
+        let camera_activity = android_activity_java_source(
+            "JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnCameraResult(JNIEnv *env, jobject activity, jstring uri);",
+        );
+        assert!(camera_activity.contains("private native void nativeOnCameraResult(String uri);"));
+        assert!(camera_activity.contains("public boolean fluxCaptureImage()"));
+        assert!(camera_activity.contains("MediaStore.ACTION_IMAGE_CAPTURE"));
+        assert!(camera_activity.contains("MediaStore.EXTRA_OUTPUT"));
+        assert!(camera_activity.contains("fluxPendingCameraUri"));
+        assert!(camera_activity.contains("nativeOnCameraResult(selectedUri);"));
+        assert!(camera_activity.contains("protected void onActivityResult"));
+        assert!(!camera_activity.contains("FLUX_PICK_FILE"));
+        assert!(!camera_activity.contains("fluxPickFile"));
         assert!(activity.contains("extends Activity implements View.OnClickListener, CompoundButton.OnCheckedChangeListener"));
         assert!(
             activity.contains("View.OnHoverListener, View.OnLongClickListener, View.OnKeyListener, View.OnTouchListener, View.OnDragListener")

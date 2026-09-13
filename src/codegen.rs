@@ -2077,13 +2077,15 @@ fn emit_runtime_prelude(
         out.push_str("}\n");
     }
     if uses_android_camera {
-        out.push_str("static bool flux__android_camera(void) {\n");
-        out.push_str("    if (flux__android_activity == NULL) return false;\n");
+        out.push_str("static void (*flux__android_camera_callback)(const char *) = NULL;\n");
+        out.push_str("static bool flux__android_camera(void (*callback)(const char *)) {\n");
+        out.push_str("    if (callback == NULL || flux__android_activity == NULL) return false;\n");
         out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
-        out.push_str("    bool launched = false; jclass intent_class = (*env)->FindClass(env, \"android/content/Intent\"); jclass activity_class = NULL; jobject intent = NULL; jstring action = NULL;\n");
-        out.push_str("    if (intent_class != NULL) { jmethodID ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;)V\"); action = (*env)->NewStringUTF(env, \"android.media.action.IMAGE_CAPTURE\"); if (ctor != NULL && action != NULL) intent = (*env)->NewObject(env, intent_class, ctor, action); }\n");
-        out.push_str("    if (intent != NULL && !(*env)->ExceptionCheck(env)) { activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz); if (activity_class != NULL) { jmethodID start = (*env)->GetMethodID(env, activity_class, \"startActivity\", \"(Landroid/content/Intent;)V\"); if (start != NULL) { (*env)->CallVoidMethod(env, flux__android_activity->clazz, start, intent); launched = !(*env)->ExceptionCheck(env); } } }\n");
-        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); if (intent != NULL) (*env)->DeleteLocalRef(env, intent); if (action != NULL) (*env)->DeleteLocalRef(env, action); if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class); flux__android_release_env(detach); return launched;\n}\n");
+        out.push_str("    bool launched = false; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
+        out.push_str("    if (activity_class != NULL) { jmethodID capture = (*env)->GetMethodID(env, activity_class, \"fluxCaptureImage\", \"()Z\"); if (capture != NULL) launched = (*env)->CallBooleanMethod(env, activity, capture) == JNI_TRUE && !(*env)->ExceptionCheck(env); }\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (launched) flux__android_camera_callback = callback; if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); return launched;\n}\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnCameraResult(JNIEnv *env, jobject activity, jstring uri) {\n");
+        out.push_str("    (void)activity; void (*callback)(const char *) = flux__android_camera_callback; flux__android_camera_callback = NULL; if (callback == NULL || uri == NULL) return; const char *value = (*env)->GetStringUTFChars(env, uri, NULL); if (value == NULL) return; callback(value); (*env)->ReleaseStringUTFChars(env, uri, value);\n}\n");
     }
     if uses_android_media_playback {
         out.push_str("static jobject flux__android_media_player = NULL;\n");

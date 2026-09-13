@@ -29471,8 +29471,11 @@ fn main() -> i64 {
 #[test]
 fn android_camera_launch_and_media_playback_use_direct_framework_calls_and_tree_shake() {
     let source = r#"
+fn captured(uri: str) -> void {
+    print(uri)
+}
 fn started() -> void {
-    print(android.camera())
+    print(android.camera(captured))
     print(android.play("https://example.com/audio.mp3"))
     print(android.pause())
     print(android.resume())
@@ -29495,9 +29498,9 @@ app Screen(onStart: started)
         fluxc::codegen::NativeTarget::Android,
     )
     .expect("Android camera/media calls should lower directly");
-    assert!(generated.contains("static bool flux__android_camera(void)"));
-    assert!(generated.contains("android.media.action.IMAGE_CAPTURE"));
-    assert!(generated.contains("startActivity"));
+    assert!(generated.contains("static bool flux__android_camera(void (*callback)(const char *))"));
+    assert!(generated.contains("fluxCaptureImage"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOnCameraResult"));
     assert!(generated.contains("static bool flux__android_play(const char *source)"));
     assert!(generated.contains("android/media/MediaPlayer"));
     assert!(generated.contains("android/net/Uri"));
@@ -29516,8 +29519,11 @@ app Screen(onStart: started)
     );
 
     let unused = r#"
+fn captured(uri: str) -> void {
+    print(uri)
+}
 fn unused() -> void {
-    android.camera()
+    android.camera(captured)
     android.play("unused.mp3")
     android.pause()
     android.resume()
@@ -29547,6 +29553,7 @@ app Screen
 
     let invalid = r#"
 fn main() -> i64 {
+    android.camera()
     android.camera(1)
     android.play(false)
     android.pause(1)
@@ -29557,11 +29564,15 @@ fn main() -> i64 {
 "#;
     let errors =
         check_source_all(invalid).expect_err("Android camera/media contracts must be typed");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("android.camera expects 0 arguments"))
-    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.camera expects 1 argument, got 0")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.camera callback")
+            && error.message.contains("expected fn(str) -> void")
+    }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.play source") && error.message.contains("expected str")
     }));
