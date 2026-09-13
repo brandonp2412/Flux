@@ -16151,7 +16151,14 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     if expr_contains_await(cond) {
         return None;
     }
-    let body_await_indices = block_branch_await_indices(body, false)?;
+    let body_await_indices = block_branch_await_indices(body, true)?;
+    if body_await_indices
+        .iter()
+        .any(|index| coalescing_assignment_await_expr(&body[*index]).is_some())
+        && body_await_indices.len() != 1
+    {
+        return None;
+    }
     if body_await_indices.is_empty() {
         None
     } else {
@@ -16182,7 +16189,14 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     if expr_contains_await(start) || expr_contains_await(end) {
         return None;
     }
-    let body_await_indices = block_branch_await_indices(body, false)?;
+    let body_await_indices = block_branch_await_indices(body, true)?;
+    if body_await_indices
+        .iter()
+        .any(|index| coalescing_assignment_await_expr(&body[*index]).is_some())
+        && body_await_indices.len() != 1
+    {
+        return None;
+    }
     if body_await_indices.is_empty() {
         None
     } else {
@@ -21300,6 +21314,16 @@ fn emit_async_while_iteration(
         signatures,
     )?;
     if conditional_suspend {
+        emit_block(
+            out,
+            &body[first_await + 1..],
+            4,
+            &mut body_env,
+            &mut body_mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
         let continue_state = while_plan.body_await_indices.len() + 1;
         emit_async_save_locals(
             out,
@@ -21679,6 +21703,16 @@ fn emit_async_for_range_iteration(
         signatures,
     )?;
     if conditional_suspend {
+        emit_block(
+            out,
+            &body[first_await + 1..],
+            4,
+            &mut body_env,
+            &mut body_mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
         let continue_state = for_plan.body_await_indices.len() + 1;
         emit_async_save_locals(
             out,

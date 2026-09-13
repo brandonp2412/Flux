@@ -39382,10 +39382,12 @@ async fn fallback(value: i64) -> i64 {
 async fn fillWhile(limit: i64) -> i64 {
     var index: i64 = 0
     var value: i64? = none
+    var total: i64 = 0
     while index < limit:
         index = index + 1
         value ??= await fallback(7)
-    return (value ?? -1) + index
+        total = total + (value ?? 0)
+    return (value ?? -1) + index + total
 }
 
 async fn fillRange(initial: i64?) -> i64 {
@@ -39394,6 +39396,7 @@ async fn fillRange(initial: i64?) -> i64 {
     for index in 0..3:
         total = total + index
         value ??= await fallback(5)
+        total = total + (value ?? 0)
     return (value ?? -1) + total
 }
 
@@ -39450,7 +39453,7 @@ async fn main() -> i64 {
     let output = Command::new(&binary)
         .output()
         .expect("async loop coalescing binary should run");
-    assert_eq!(output.status.code(), Some(25));
+    assert_eq!(output.status.code(), Some(73));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n5\n");
     let _ = fs::remove_dir_all(&root);
 }

@@ -317,6 +317,7 @@ Verified direct-await destructuring follow-up: explicit typed multi-value declar
 
 - [x] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
 - [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
+  - Current continuation coverage also keeps `optional ??= await asyncCall(...)` non-blocking inside await-free-condition `while` and await-free-bound integer range `for` loops when await-free statements follow the coalescing assignment: present optionals execute the tail immediately without creating a child task, while absent optionals resume into the same tail after child completion. Mixed loop-body suspension shapes remain on the safe blocking fallback.
 - [x] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
 - [ ] Streams/sequences as explicit types/capabilities.
 - [ ] Generator functions.
