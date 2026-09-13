@@ -31466,6 +31466,154 @@ fn main() -> i64 {
 }
 
 #[test]
+fn linux_native_menu_and_status_tray_are_typed_tree_shaken_and_bridge_free() {
+    let source = r#"
+fn menuSelected(index: i64) -> void {
+    print(index)
+}
+fn trayActivated() -> void {
+    print("tray")
+}
+fn started() -> void {
+    menu.show("File", ["Open", "Save", "Quit"], menuSelected)
+    tray.show("Flux", "application-x-executable", trayActivated)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("Linux menu/tray APIs should typecheck");
+    let linux = compile_to_c(source).expect("Linux menu/tray APIs should lower natively");
+    assert!(linux.contains("gtk_popover_menu_bar_new_from_model"));
+    assert!(linux.contains("g_simple_action_new(\"flux-menu-select\", G_VARIANT_TYPE_INT64)"));
+    assert!(linux.contains("g_menu_item_set_action_and_target"));
+    assert!(linux.contains("flux__menu_callback(g_variant_get_int64(parameter))"));
+    assert!(linux.contains("org.kde.StatusNotifierItem"));
+    assert!(linux.contains("RegisterStatusNotifierItem"));
+    assert!(linux.contains("g_dbus_connection_register_object"));
+    assert!(linux.contains("flux__tray_callback()"));
+    assert!(linux.contains(
+        "flux__menu_show(\"File\", (const char *[]){\"Open\", \"Save\", \"Quit\"}, INT64_C(3),"
+    ));
+    assert!(linux.contains("flux__tray_show(\"Flux\", \"application-x-executable\","));
+    assert!(!linux.contains("method channel"));
+    assert!(!linux.contains("plugin registry"));
+
+    let unused = r#"
+fn menuSelected(index: i64) -> void {
+    print(index)
+}
+fn trayActivated() -> void {
+    print("tray")
+}
+fn unused() -> void {
+    menu.show("Unused", ["Hidden"], menuSelected)
+    tray.show("Unused", "application-x-executable", trayActivated)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let tree_shaken = compile_to_c(unused).expect("unreachable menu/tray code should tree-shake");
+    assert!(!tree_shaken.contains("flux__menu_show"));
+    assert!(!tree_shaken.contains("flux__tray_show"));
+    assert!(!tree_shaken.contains("StatusNotifierItem"));
+
+    let headless = r#"
+fn selected(index: i64) -> void {
+    print(index)
+}
+fn main() -> i64 {
+    menu.show("File", ["Quit"], selected)
+    return 0
+}
+"#;
+    check_source(headless).expect("menu typing should remain target-independent");
+    let error = compile_to_c(headless).expect_err("menu/tray APIs require an application target");
+    assert!(
+        error
+            .message
+            .contains("menu.* and tray.* APIs require an application target")
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("menu/tray app should analyze");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("Linux menu/tray APIs should reject Android lowering");
+    assert!(
+        error
+            .message
+            .contains("menu.* and tray.* APIs currently require the Linux desktop target")
+    );
+
+    let invalid = r#"
+fn wrong() -> void {
+    print("wrong")
+}
+fn wrongIndex(index: i64) -> void {
+    print(index)
+}
+fn main() -> i64 {
+    menu.show(42, ["One"], wrongIndex)
+    menu.show("File", [], wrongIndex)
+    menu.show("File", [""], wrongIndex)
+    menu.show("File", ["One"], wrong)
+    tray.show(42, "icon", wrong)
+    tray.show("Flux", false, wrong)
+    tray.show("Flux", "icon", wrongIndex)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("menu/tray arguments must be statically typed");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("menu.show title"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("at least one label"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("labels must not be empty"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("menu.show callback"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("tray.show title"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("tray.show iconName"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("tray.show callback"))
+    );
+}
+
+#[test]
 fn portable_focus_navigation_lowers_to_native_application_backends() {
     let source = r#"
 fn started() -> void {

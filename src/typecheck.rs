@@ -10284,6 +10284,122 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "menu" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("menu.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "show" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("menu.show expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let title = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &title, "menu.show title")?;
+                match &args[1].kind {
+                    ExprKind::List(values) if values.is_empty() => {
+                        return Err(diag(
+                            args[1].span,
+                            "menu.show items must contain at least one label",
+                        ));
+                    }
+                    ExprKind::List(values) => {
+                        for value in values {
+                            match evaluate_default_expr(value, signatures) {
+                                Ok(ConstantValue::Str(label)) if !label.is_empty() => {}
+                                Ok(ConstantValue::Str(_)) => {
+                                    return Err(diag(
+                                        value.span,
+                                        "menu.show item labels must not be empty",
+                                    ));
+                                }
+                                Ok(_) | Err(_) => {
+                                    return Err(diag(
+                                        value.span,
+                                        "menu.show items must be a compile-time list of string values",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(diag(
+                            args[1].span,
+                            "menu.show items must be a compile-time list literal of string values",
+                        ));
+                    }
+                }
+                let items = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::Str)),
+                    &items,
+                    "menu.show items",
+                )?;
+                let callback = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::Function {
+                        params: vec![Type::I64],
+                        returns: Vec::new(),
+                    },
+                    &callback,
+                    "menu.show callback",
+                )?;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("menu module has no function '{name}'"),
+                ));
+            }
+        }
+    }
+    if namespace == "tray" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("tray.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "show" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("tray.show expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let title = type_of_expr(&args[0], env, signatures)?;
+                let icon = type_of_expr(&args[1], env, signatures)?;
+                let callback = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &title, "tray.show title")?;
+                require_type(args[1].span, &Type::Str, &icon, "tray.show iconName")?;
+                require_type(
+                    args[2].span,
+                    &Type::Function {
+                        params: Vec::new(),
+                        returns: Vec::new(),
+                    },
+                    &callback,
+                    "tray.show callback",
+                )?;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("tray module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "dialog" {
         match name.as_str() {
             "alert" | "sheet" => {

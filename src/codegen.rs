@@ -1325,6 +1325,22 @@ pub fn emit_c_for_target_with_source_metadata(
             "clipboard.* APIs require an application target",
         ));
     }
+    if (runtime_usage.contains("flux__menu_") || runtime_usage.contains("flux__tray_"))
+        && program.application.is_none()
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "menu.* and tray.* APIs require an application target",
+        ));
+    }
+    if target == NativeTarget::Android
+        && (runtime_usage.contains("flux__menu_") || runtime_usage.contains("flux__tray_"))
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "menu.* and tray.* APIs currently require the Linux desktop target",
+        ));
+    }
     if runtime_usage.contains("flux__frame_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1798,6 +1814,8 @@ fn emit_runtime_prelude(
     let uses_frame_timeline = runtime_usage.contains("flux__frame_timeline(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
+    let uses_menu_show = runtime_usage.contains("flux__menu_show(");
+    let uses_tray_show = runtime_usage.contains("flux__tray_show(");
     let uses_dialog_alert = runtime_usage.contains("flux__dialog_alert(");
     let uses_dialog_sheet = runtime_usage.contains("flux__dialog_sheet(");
     let uses_dialog_confirm = runtime_usage.contains("flux__dialog_confirm(");
@@ -2925,6 +2943,20 @@ fn emit_runtime_prelude(
         out.push_str("    GdkClipboard *clipboard = gdk_display_get_clipboard(display);\n");
         out.push_str("    if (clipboard != NULL) gdk_clipboard_set_text(clipboard, text);\n");
         out.push_str("}\n");
+    }
+    if uses_menu_show && uses_gtk {
+        out.push_str("static void (*flux__menu_callback)(int64_t) = NULL;\n");
+        out.push_str("static GtkWidget *flux__menu_bar = NULL;\n");
+        out.push_str("static GSimpleAction *flux__menu_action = NULL;\n");
+        out.push_str("static void flux__menu_selected(GSimpleAction *action, GVariant *parameter, gpointer data) { (void)action; (void)data; if (parameter != NULL && flux__menu_callback != NULL) flux__menu_callback(g_variant_get_int64(parameter)); }\n");
+        out.push_str("static void flux__menu_show(const char *title, const char **items, int64_t item_count, void (*callback)(int64_t)) { GApplication *base = g_application_get_default(); if (base == NULL || !GTK_IS_APPLICATION(base) || title == NULL || items == NULL || item_count <= 0 || item_count > INT32_MAX || callback == NULL) return; GtkApplication *application = GTK_APPLICATION(base); GtkWindow *window = gtk_application_get_active_window(application); if (window == NULL) return; flux__menu_callback = callback; if (flux__menu_action == NULL) { flux__menu_action = g_simple_action_new(\"flux-menu-select\", G_VARIANT_TYPE_INT64); g_signal_connect(flux__menu_action, \"activate\", G_CALLBACK(flux__menu_selected), NULL); g_action_map_add_action(G_ACTION_MAP(application), G_ACTION(flux__menu_action)); } GMenu *submenu = g_menu_new(); for (int64_t index = 0; index < item_count; ++index) { GMenuItem *item = g_menu_item_new(items[index] == NULL ? \"\" : items[index], NULL); g_menu_item_set_action_and_target(item, \"app.flux-menu-select\", \"x\", index); g_menu_append_item(submenu, item); g_object_unref(item); } GMenu *root = g_menu_new(); g_menu_append_submenu(root, title, G_MENU_MODEL(submenu)); if (flux__menu_bar == NULL) { GtkWidget *content = gtk_window_get_child(window); if (content == NULL) { g_object_unref(root); g_object_unref(submenu); return; } g_object_ref(content); gtk_window_set_child(window, NULL); GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); flux__menu_bar = gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(root)); gtk_box_append(GTK_BOX(box), flux__menu_bar); gtk_box_append(GTK_BOX(box), content); gtk_window_set_child(window, box); g_object_unref(content); } else { gtk_popover_menu_bar_set_menu_model(GTK_POPOVER_MENU_BAR(flux__menu_bar), G_MENU_MODEL(root)); } g_object_unref(root); g_object_unref(submenu); }\n");
+    }
+    if uses_tray_show && uses_gtk {
+        out.push_str("static void (*flux__tray_callback)(void) = NULL; static GDBusConnection *flux__tray_connection = NULL; static GDBusNodeInfo *flux__tray_node = NULL; static guint flux__tray_registration = 0; static char *flux__tray_title = NULL; static char *flux__tray_icon = NULL;\n");
+        out.push_str("static void flux__tray_method_call(GDBusConnection *connection, const gchar *sender, const gchar *object_path, const gchar *interface_name, const gchar *method_name, GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data) { (void)connection; (void)sender; (void)object_path; (void)interface_name; (void)parameters; (void)user_data; if (strcmp(method_name, \"Activate\") == 0 && flux__tray_callback != NULL) flux__tray_callback(); g_dbus_method_invocation_return_value(invocation, NULL); }\n");
+        out.push_str("static GVariant *flux__tray_get_property(GDBusConnection *connection, const gchar *sender, const gchar *object_path, const gchar *interface_name, const gchar *property_name, GError **error, gpointer user_data) { (void)connection; (void)sender; (void)object_path; (void)interface_name; (void)error; (void)user_data; if (strcmp(property_name, \"Category\") == 0) return g_variant_new_string(\"ApplicationStatus\"); if (strcmp(property_name, \"Id\") == 0) return g_variant_new_string(\"flux\"); if (strcmp(property_name, \"Title\") == 0) return g_variant_new_string(flux__tray_title == NULL ? \"Flux\" : flux__tray_title); if (strcmp(property_name, \"Status\") == 0) return g_variant_new_string(\"Active\"); if (strcmp(property_name, \"IconName\") == 0) return g_variant_new_string(flux__tray_icon == NULL ? \"application-x-executable\" : flux__tray_icon); if (strcmp(property_name, \"Menu\") == 0) return g_variant_new_object_path(\"/\"); if (strcmp(property_name, \"ItemIsMenu\") == 0) return g_variant_new_boolean(FALSE); return NULL; }\n");
+        out.push_str("static const GDBusInterfaceVTable flux__tray_vtable = { flux__tray_method_call, flux__tray_get_property, NULL };\n");
+        out.push_str("static void flux__tray_show(const char *title, const char *icon_name, void (*callback)(void)) { if (title == NULL || icon_name == NULL || callback == NULL) return; flux__tray_callback = callback; g_free(flux__tray_title); g_free(flux__tray_icon); flux__tray_title = g_strdup(title); flux__tray_icon = g_strdup(icon_name); if (flux__tray_registration != 0) return; GError *error = NULL; flux__tray_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error); if (flux__tray_connection == NULL) { if (error != NULL) g_error_free(error); return; } const char *xml = \"<node><interface name='org.kde.StatusNotifierItem'><method name='Activate'><arg type='i' direction='in'/><arg type='i' direction='in'/></method><property name='Category' type='s' access='read'/><property name='Id' type='s' access='read'/><property name='Title' type='s' access='read'/><property name='Status' type='s' access='read'/><property name='IconName' type='s' access='read'/><property name='Menu' type='o' access='read'/><property name='ItemIsMenu' type='b' access='read'/></interface></node>\"; flux__tray_node = g_dbus_node_info_new_for_xml(xml, &error); if (flux__tray_node == NULL) { if (error != NULL) g_error_free(error); return; } flux__tray_registration = g_dbus_connection_register_object(flux__tray_connection, \"/StatusNotifierItem\", flux__tray_node->interfaces[0], &flux__tray_vtable, NULL, NULL, &error); if (flux__tray_registration == 0) { if (error != NULL) g_error_free(error); return; } const char *service = g_dbus_connection_get_unique_name(flux__tray_connection); if (service == NULL) return; g_dbus_connection_call(flux__tray_connection, \"org.kde.StatusNotifierWatcher\", \"/StatusNotifierWatcher\", \"org.kde.StatusNotifierWatcher\", \"RegisterStatusNotifierItem\", g_variant_new(\"(s)\", service), NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL, NULL); }\n");
     }
     if uses_dialog_alert && uses_gtk {
         out.push_str("static void flux__dialog_alert_response(GtkDialog *dialog, gint response, gpointer data) { (void)response; (void)data; gtk_window_destroy(GTK_WINDOW(dialog)); }\n");
@@ -30856,6 +30888,46 @@ fn emit_qualified_call(
             _ => return Err(diag(span, "invalid clipboard call reached code generation")),
         };
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
+    }
+    if namespace == "menu" {
+        if !named_args.is_empty() || name != "show" || args.len() != 3 {
+            return Err(diag(span, "invalid menu call reached code generation"));
+        }
+        let title = emit_expr(&args[0], env, signatures)?;
+        let items = static_string_list(&args[1], signatures, "menu.show items")?;
+        let callback = emit_expr(&args[2], env, signatures)?;
+        let values = items
+            .iter()
+            .map(|value| c_string(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok((
+            format!(
+                "flux__menu_show({}, (const char *[]){{{}}}, INT64_C({}), {})",
+                title.code,
+                values,
+                items.len(),
+                callback.code
+            ),
+            Vec::new(),
+            None,
+        ));
+    }
+    if namespace == "tray" {
+        if !named_args.is_empty() || name != "show" || args.len() != 3 {
+            return Err(diag(span, "invalid tray call reached code generation"));
+        }
+        let title = emit_expr(&args[0], env, signatures)?;
+        let icon = emit_expr(&args[1], env, signatures)?;
+        let callback = emit_expr(&args[2], env, signatures)?;
+        return Ok((
+            format!(
+                "flux__tray_show({}, {}, {})",
+                title.code, icon.code, callback.code
+            ),
+            Vec::new(),
+            None,
+        ));
     }
     if namespace == "dialog" {
         if !matches!(name, "confirm" | "choose") && !named_args.is_empty() {

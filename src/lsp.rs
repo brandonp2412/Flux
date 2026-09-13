@@ -1742,6 +1742,26 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "menu" {
+        push_completion_item(
+            items,
+            seen,
+            "show",
+            3,
+            "fn menu.show(title: str, items: str[], callback: fn(i64) -> void) -> void",
+        );
+        return true;
+    }
+    if namespace == "tray" {
+        push_completion_item(
+            items,
+            seen,
+            "show",
+            3,
+            "fn tray.show(title: str, iconName: str, callback: fn() -> void) -> void",
+        );
+        return true;
+    }
     if namespace == "dialog" {
         push_completion_item(
             items,
@@ -3748,6 +3768,22 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "menu" && implementation_member == "show" {
+            return Some(signature_help_for_builtin(
+                "menu.show",
+                &["title: str", "items: str[]", "callback: fn(i64) -> void"],
+                "void",
+                active_parameter,
+            ));
+        }
+        if namespace == "tray" && implementation_member == "show" {
+            return Some(signature_help_for_builtin(
+                "tray.show",
+                &["title: str", "iconName: str", "callback: fn() -> void"],
+                "void",
+                active_parameter,
+            ));
         }
         if namespace == "dialog" {
             match implementation_member {
@@ -9604,6 +9640,69 @@ mod tests {
         assert!(help.contains("dialog.choose"));
         assert!(help.contains("options: str[]"));
         assert!(help.contains("onChoose: fn(i64) -> void"));
+    }
+
+    #[test]
+    fn linux_menu_and_tray_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/linux-menu-tray-tooling.flux";
+        for (namespace, expected) in [
+            (
+                "menu",
+                "fn menu.show(title: str, items: str[], callback: fn(i64) -> void) -> void",
+            ),
+            (
+                "tray",
+                "fn tray.show(title: str, iconName: str, callback: fn() -> void) -> void",
+            ),
+        ] {
+            let source = format!("fn main() -> i64 {{\n    {namespace}.\n    return 0\n}}\n");
+            let documents = HashMap::from([(uri.to_string(), source.clone())]);
+            let line = source.lines().nth(1).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                &source,
+                &documents,
+                Some(1),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(
+                items.contains(expected),
+                "missing {namespace} completion: {items}"
+            );
+        }
+
+        let source = "fn selected(index: i64) -> void {\n    print(index)\n}\nfn activated() -> void {\n    print(\"tray\")\n}\nfn main() -> i64 {\n    menu.show(\"File\", [\"Open\"], selected)\n    tray.show(\"Flux\", \"application-x-executable\", activated)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "menu.show(",
+                "fn menu.show(title: str, items: str[], callback: fn(i64) -> void) -> void",
+            ),
+            (
+                "tray.show(",
+                "fn tray.show(title: str, iconName: str, callback: fn() -> void) -> void",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap();
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("menu/tray call should have signature help")
+            .to_json();
+            assert!(help.contains(expected), "missing signature help: {help}");
+        }
     }
 
     #[test]
