@@ -302,6 +302,36 @@ fn command_name() -> String {
         .unwrap_or_else(|| "flux".to_string())
 }
 
+fn parse_add_dependency(args: &[String]) -> Result<fluxc::project::PackageDependency, CliError> {
+    if args.len() == 1 && !args[0].starts_with("--") {
+        return Ok(fluxc::project::PackageDependency::Registry {
+            requirement: args[0].clone(),
+        });
+    }
+    if args.len() == 2 && args[0] == "--path" {
+        return Ok(fluxc::project::PackageDependency::Path {
+            path: PathBuf::from(&args[1]),
+            requirement: None,
+        });
+    }
+    if args.len() == 4 && args[0] == "--path" && args[2] == "--version" {
+        return Ok(fluxc::project::PackageDependency::Path {
+            path: PathBuf::from(&args[1]),
+            requirement: Some(args[3].clone()),
+        });
+    }
+    if args.len() == 4 && args[0] == "--git" && args[2] == "--rev" {
+        return Ok(fluxc::project::PackageDependency::Git {
+            url: args[1].clone(),
+            rev: args[3].clone(),
+        });
+    }
+    Err(CliError::Message(
+        "add dependency source must be a SemVer requirement, '--path <relative-path> [--version <requirement>]', or '--git <url> --rev <revision>'"
+            .to_string(),
+    ))
+}
+
 fn run() -> Result<(), CliError> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
@@ -319,6 +349,56 @@ fn run() -> Result<(), CliError> {
             create_project(path)?;
             println!("created: {}", path.display());
             Ok(())
+        }
+        "add" => {
+            if args.len() < 4 {
+                return Err(CliError::Message(
+                    "add syntax is 'add <package-dir|flux.toml> <dependency> <requirement> | --path <relative-path> [--version <requirement>] | --git <url> --rev <revision>'"
+                        .to_string(),
+                ));
+            }
+            let path = Path::new(&args[1]);
+            let name = &args[2];
+            let dependency = parse_add_dependency(&args[3..])?;
+            match fluxc::project::add_dependency(path, name, dependency) {
+                Ok(lock_path) => {
+                    println!("added: {name}");
+                    println!("locked: {}", lock_path.display());
+                    Ok(())
+                }
+                Err(diagnostics) => Err(CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+            }
+        }
+        "remove" => {
+            if args.len() != 3 {
+                return Err(CliError::Message(
+                    "remove syntax is 'remove <package-dir|flux.toml> <dependency>'".to_string(),
+                ));
+            }
+            let path = Path::new(&args[1]);
+            let name = &args[2];
+            match fluxc::project::remove_dependency(path, name) {
+                Ok(lock_path) => {
+                    println!("removed: {name}");
+                    if let Some(lock_path) = lock_path {
+                        println!("locked: {}", lock_path.display());
+                    }
+                    Ok(())
+                }
+                Err(diagnostics) => Err(CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+            }
         }
         "lock" => {
             let path = require_target(&args)?;
@@ -8601,6 +8681,10 @@ fn usage() -> String {
     let command = command_name();
     format!(
         "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+    )
+    .replace(
+        &format!("usage: {command} new <directory> | {command} lock"),
+        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} lock"),
     )
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),

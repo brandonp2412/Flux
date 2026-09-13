@@ -26541,6 +26541,133 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
 }
 
 #[test]
+fn dependency_add_remove_commands_update_manifest_and_lock() {
+    let root = std::env::temp_dir().join(format!("flux-package-add-remove-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dep = root.join("dep");
+    for package in [&app, &dep] {
+        fs::create_dir_all(package.join("src")).expect("package directory should be writable");
+    }
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        dep.join("flux.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.2.3\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("app source should be writable");
+    fs::write(dep.join("src/lib.flux"), "pub fn value() -> i64 { 1 }\n")
+        .expect("dependency source should be writable");
+
+    let incompatible = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("dep")
+        .arg("--path")
+        .arg("../dep")
+        .arg("--version")
+        .arg("^2.0.0")
+        .output()
+        .expect("incompatible flux add should run");
+    assert!(!incompatible.status.success());
+    let rolled_back =
+        fs::read_to_string(app.join("flux.toml")).expect("rolled-back manifest should be readable");
+    assert!(!rolled_back.contains("[dependencies]"));
+    assert!(!app.join("flux.lock").exists());
+
+    let add_path = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("dep")
+        .arg("--path")
+        .arg("../dep")
+        .arg("--version")
+        .arg("^1.2.0")
+        .output()
+        .expect("flux add path should run");
+    assert!(
+        add_path.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add_path.stderr)
+    );
+    let manifest = fs::read_to_string(app.join("flux.toml")).expect("manifest should be readable");
+    assert!(manifest.contains("[dependencies]"));
+    assert!(manifest.contains("dep = { path = \"../dep\", version = \"^1.2.0\" }"));
+    let lock = fs::read_to_string(app.join("flux.lock")).expect("lockfile should be generated");
+    assert!(lock.contains("package = \"dep\""));
+    assert!(lock.contains("version = \"1.2.3\""));
+
+    let duplicate = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("dep")
+        .arg("^1.2.0")
+        .output()
+        .expect("duplicate flux add should run");
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already declared"));
+
+    let add_registry = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("remote")
+        .arg("~3.4.0")
+        .output()
+        .expect("flux add registry should run");
+    assert!(add_registry.status.success());
+    let add_git = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("source")
+        .arg("--git")
+        .arg("https://example.test/source.git")
+        .arg("--rev")
+        .arg("abc123")
+        .output()
+        .expect("flux add git should run");
+    assert!(add_git.status.success());
+    let lock =
+        fs::read_to_string(app.join("flux.lock")).expect("updated lockfile should be readable");
+    assert!(lock.contains("source = \"registry:~3.4.0\""));
+    assert!(lock.contains("source = \"git:https://example.test/source.git#abc123\""));
+
+    for dependency in ["remote", "source", "dep"] {
+        let remove = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .arg("remove")
+            .arg(&app)
+            .arg(dependency)
+            .output()
+            .expect("flux remove should run");
+        assert!(
+            remove.status.success(),
+            "{}",
+            String::from_utf8_lossy(&remove.stderr)
+        );
+    }
+    let manifest = fs::read_to_string(app.join("flux.toml")).expect("manifest should be readable");
+    assert!(!manifest.contains("dep ="));
+    assert!(!manifest.contains("remote ="));
+    assert!(!manifest.contains("source ="));
+    assert!(!app.join("flux.lock").exists());
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("remove")
+        .arg(&app)
+        .arg("missing")
+        .output()
+        .expect("missing flux remove should run");
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("is not declared"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn dependency_resolution_reports_conflicting_and_cyclic_paths() {
     let root = std::env::temp_dir().join(format!(
         "flux-package-resolution-conflicts-{}",

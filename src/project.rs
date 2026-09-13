@@ -1559,6 +1559,222 @@ fn read_package_manifest_target(
     read_manifest(&manifest_path)
 }
 
+pub fn add_dependency(
+    target: &Path,
+    name: &str,
+    dependency: PackageDependency,
+) -> Result<PathBuf, Vec<Diagnostic>> {
+    if !valid_dependency_name(name) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("invalid dependency name '{name}'"),
+        )]);
+    }
+    let manifest = read_package_manifest_target(target, "add")?;
+    let original = fs::read_to_string(&manifest.path).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "failed to read package manifest '{}': {error}",
+                manifest.path.display()
+            ),
+        )]
+    })?;
+    if manifest.dependencies.contains_key(name) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("dependency '{name}' is already declared"),
+        )]);
+    }
+    mutate_manifest_dependency(target, &manifest, name, Some(&dependency))?;
+    match write_lockfile(target) {
+        Ok(lock_path) => Ok(lock_path),
+        Err(diagnostics) => {
+            let _ = fs::write(&manifest.path, original);
+            Err(diagnostics)
+        }
+    }
+}
+
+pub fn remove_dependency(target: &Path, name: &str) -> Result<Option<PathBuf>, Vec<Diagnostic>> {
+    if !valid_dependency_name(name) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("invalid dependency name '{name}'"),
+        )]);
+    }
+    let manifest = read_package_manifest_target(target, "remove")?;
+    let original = fs::read_to_string(&manifest.path).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "failed to read package manifest '{}': {error}",
+                manifest.path.display()
+            ),
+        )]
+    })?;
+    if !manifest.dependencies.contains_key(name) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("dependency '{name}' is not declared"),
+        )]);
+    }
+    mutate_manifest_dependency(target, &manifest, name, None)?;
+    let updated = read_package_manifest_target(target, "remove")?;
+    let root = updated
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    if updated.dependencies.is_empty() {
+        let lock_path = root.join("flux.lock");
+        match fs::remove_file(&lock_path) {
+            Ok(()) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => {
+                let _ = fs::write(&manifest.path, &original);
+                Err(vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "failed to remove package lockfile '{}': {error}",
+                        lock_path.display()
+                    ),
+                )])
+            }
+        }
+    } else {
+        match write_lockfile(target) {
+            Ok(lock_path) => Ok(Some(lock_path)),
+            Err(diagnostics) => {
+                let _ = fs::write(&manifest.path, &original);
+                Err(diagnostics)
+            }
+        }
+    }
+}
+
+fn mutate_manifest_dependency(
+    target: &Path,
+    manifest: &PackageManifest,
+    name: &str,
+    dependency: Option<&PackageDependency>,
+) -> Result<(), Vec<Diagnostic>> {
+    let original = fs::read_to_string(&manifest.path).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "failed to read package manifest '{}': {error}",
+                manifest.path.display()
+            ),
+        )]
+    })?;
+    let rendered = dependency.map(render_package_dependency);
+    if let Some(rendered) = rendered.as_deref() {
+        parse_package_dependency(rendered).map_err(|message| {
+            vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("invalid dependency '{name}': {message}"),
+            )]
+        })?;
+    }
+    let updated = rewrite_manifest_dependency(&original, name, rendered.as_deref());
+    fs::write(&manifest.path, &updated).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "failed to update package manifest '{}': {error}",
+                manifest.path.display()
+            ),
+        )]
+    })?;
+    if let Err(diagnostics) = read_package_manifest_target(target, "dependency update") {
+        let _ = fs::write(&manifest.path, original);
+        return Err(diagnostics);
+    }
+    Ok(())
+}
+
+fn rewrite_manifest_dependency(source: &str, name: &str, rendered: Option<&str>) -> String {
+    let mut output = Vec::new();
+    let mut in_dependencies = false;
+    let mut saw_dependencies = false;
+    let mut inserted = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if in_dependencies && rendered.is_some() && !inserted {
+                output.push(format!(
+                    "{name} = {}",
+                    rendered.expect("rendered dependency")
+                ));
+                inserted = true;
+            }
+            in_dependencies = trimmed == "[dependencies]";
+            saw_dependencies |= in_dependencies;
+            output.push(line.to_string());
+            continue;
+        }
+        if in_dependencies {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if key.trim() == name {
+                    if let Some(rendered) = rendered {
+                        output.push(format!("{name} = {rendered}"));
+                        inserted = true;
+                    }
+                    continue;
+                }
+            }
+        }
+        output.push(line.to_string());
+    }
+    if in_dependencies && rendered.is_some() && !inserted {
+        output.push(format!(
+            "{name} = {}",
+            rendered.expect("rendered dependency")
+        ));
+        inserted = true;
+    }
+    if !saw_dependencies && rendered.is_some() {
+        if !output.last().is_some_and(|line| line.is_empty()) {
+            output.push(String::new());
+        }
+        output.push("[dependencies]".to_string());
+        output.push(format!(
+            "{name} = {}",
+            rendered.expect("rendered dependency")
+        ));
+        inserted = true;
+    }
+    debug_assert!(rendered.is_none() || inserted);
+    let mut updated = output.join("\n");
+    if source.ends_with('\n') || !updated.is_empty() {
+        updated.push('\n');
+    }
+    updated
+}
+
+fn render_package_dependency(dependency: &PackageDependency) -> String {
+    match dependency {
+        PackageDependency::Registry { requirement } => lock_string(requirement),
+        PackageDependency::Path { path, requirement } => {
+            let path = lock_string(&lock_path(path));
+            requirement.as_ref().map_or_else(
+                || format!("{{ path = {path} }}"),
+                |requirement| {
+                    format!(
+                        "{{ path = {path}, version = {} }}",
+                        lock_string(requirement)
+                    )
+                },
+            )
+        }
+        PackageDependency::Git { url, rev } => format!(
+            "{{ git = {}, rev = {} }}",
+            lock_string(url),
+            lock_string(rev)
+        ),
+    }
+}
+
 pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
     let manifest = read_package_manifest_target(target, "lock")?;
     let rendered = render_lockfile(&manifest)?;
