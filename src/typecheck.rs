@@ -194,6 +194,16 @@ impl Signatures {
                 params: params.iter().map(|ty| self.canonical_type(ty)).collect(),
                 returns: returns.iter().map(|ty| self.canonical_type(ty)).collect(),
             },
+            Type::Record { positional, named } => Type::Record {
+                positional: positional
+                    .iter()
+                    .map(|ty| self.canonical_type(ty))
+                    .collect(),
+                named: named
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.canonical_type(ty)))
+                    .collect(),
+            },
             _ => ty.clone(),
         }
     }
@@ -208,6 +218,10 @@ impl Signatures {
             Type::Void | Type::List(_) => false,
             Type::Optional(inner) => self.is_copy_type_inner(&inner, visiting),
             Type::Function { .. } => true,
+            Type::Record { positional, named } => positional
+                .iter()
+                .chain(named.iter().map(|(_, ty)| ty))
+                .all(|ty| self.is_copy_type_inner(ty, visiting)),
             Type::Named(name) => {
                 if self.interface(&name).is_some() {
                     return true;
@@ -3569,6 +3583,14 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(item, reads);
             }
         }
+        ExprKind::RecordLiteral { positional, named } => {
+            for item in positional {
+                collect_expr_reads(item, reads);
+            }
+            for field in named {
+                collect_expr_reads(&field.value, reads);
+            }
+        }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_expr_reads(value, reads)
         }
@@ -5661,6 +5683,41 @@ pub fn type_of_expr(
             }
             Ok(Type::List(Box::new(element_ty)))
         }
+        ExprKind::RecordLiteral { positional, named } => {
+            let mut positional_types = Vec::with_capacity(positional.len());
+            for value in positional {
+                let ty = signatures.canonical_type(&type_of_expr(value, env, signatures)?);
+                if matches!(ty, Type::Void) || !signatures.is_copy_type(&ty) {
+                    return Err(diag(
+                        value.span,
+                        &format!(
+                            "record fields currently require Copy values until aggregate move/borrow semantics exist; got {}",
+                            ty.name()
+                        ),
+                    ));
+                }
+                positional_types.push(ty);
+            }
+            let mut named_types = Vec::with_capacity(named.len());
+            for field in named {
+                let ty = signatures.canonical_type(&type_of_expr(&field.value, env, signatures)?);
+                if matches!(ty, Type::Void) || !signatures.is_copy_type(&ty) {
+                    return Err(diag(
+                        field.value.span,
+                        &format!(
+                            "record fields currently require Copy values until aggregate move/borrow semantics exist; got {}",
+                            ty.name()
+                        ),
+                    ));
+                }
+                named_types.push((field.name.clone(), ty));
+            }
+            named_types.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(Type::Record {
+                positional: positional_types,
+                named: named_types,
+            })
+        }
         ExprKind::ListSpread { .. } => Err(diag(
             expr.span,
             "list spread syntax is only valid inside a list literal",
@@ -6541,12 +6598,38 @@ pub fn type_of_expr(
                         ));
                     }
                 }
+            } else if let Type::Record { positional, named } = &base_ty {
+                if let Ok(index) = name.parse::<usize>() {
+                    positional.get(index).cloned().ok_or_else(|| {
+                        diag(
+                            *name_span,
+                            &format!(
+                                "record type '{}' has no positional field '.{name}'",
+                                base_ty.name()
+                            ),
+                        )
+                    })?
+                } else {
+                    named
+                        .iter()
+                        .find(|(field, _)| field == name)
+                        .map(|(_, ty)| ty.clone())
+                        .ok_or_else(|| {
+                            diag(
+                                *name_span,
+                                &format!(
+                                    "record type '{}' has no named field '{name}'",
+                                    base_ty.name()
+                                ),
+                            )
+                        })?
+                }
             } else {
                 let Type::Named(struct_name) = base_ty else {
                     return Err(diag(
                         *name_span,
                         &format!(
-                            "field access requires a struct or list value, got {}",
+                            "field access requires a struct, record, or list value, got {}",
                             base_ty.name()
                         ),
                     ));
@@ -10044,6 +10127,7 @@ fn evaluate_default_expr(
         | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
+        | ExprKind::RecordLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. }
         | ExprKind::ListMatch { .. } => Err(diag(
@@ -10237,6 +10321,7 @@ fn evaluate_constant_expr(
         | ExprKind::ListComprehension { .. }
         | ExprKind::QualifiedCall { .. }
         | ExprKind::StructLiteral { .. }
+        | ExprKind::RecordLiteral { .. }
         | ExprKind::Field { .. }
         | ExprKind::Match { .. }
         | ExprKind::ListMatch { .. } => Err(diag(
@@ -10554,7 +10639,14 @@ fn require_storable_value_type(
         };
         return Err(diag(span, &message));
     }
-    if let Type::Named(name) = signatures.canonical_type(ty)
+    let canonical = signatures.canonical_type(ty);
+    if matches!(canonical, Type::Record { .. }) {
+        return Err(diag(
+            span,
+            "anonymous records are currently supported as local and function-boundary values, not inside named struct/enum layouts",
+        ));
+    }
+    if let Type::Named(name) = canonical
         && signatures.interface(&name).is_some()
     {
         return Err(diag(
@@ -10846,6 +10938,12 @@ fn require_publicly_nameable_type(
             Ok(())
         }
         Type::List(element) => require_publicly_nameable_type(span, element, signatures),
+        Type::Record { positional, named } => {
+            for ty in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
+                require_publicly_nameable_type(span, ty, signatures)?;
+            }
+            Ok(())
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(returns) {
                 require_publicly_nameable_type(span, ty, signatures)?;
@@ -10909,6 +11007,22 @@ fn require_known_type(
                 require_known_type(span, ty, signatures)?;
                 if matches!(signatures.canonical_type(ty), Type::Void) {
                     return Err(diag(span, "void cannot be a function value parameter type"));
+                }
+            }
+            Ok(())
+        }
+        Type::Record { positional, named } => {
+            for ty in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
+                require_known_type(span, ty, signatures)?;
+                let canonical = signatures.canonical_type(ty);
+                if matches!(canonical, Type::Void) || !signatures.is_copy_type(&canonical) {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "record fields currently require Copy values until aggregate move/borrow semantics exist; got {}",
+                            canonical.name()
+                        ),
+                    ));
                 }
             }
             Ok(())

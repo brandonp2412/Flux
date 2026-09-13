@@ -14,6 +14,10 @@ pub enum Type {
         params: Vec<Type>,
         returns: Vec<Type>,
     },
+    Record {
+        positional: Vec<Type>,
+        named: Vec<(String, Type)>,
+    },
 }
 
 impl Type {
@@ -61,6 +65,36 @@ impl Type {
         if let Some(inner) = input.strip_suffix("[]") {
             return Some(Self::List(Box::new(Self::parse(inner)?)));
         }
+        if let Some(inner) = input
+            .strip_prefix("record(")
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            if inner.trim().is_empty() {
+                return None;
+            }
+            let mut positional = Vec::new();
+            let mut named = Vec::new();
+            let mut saw_named = false;
+            for part in split_type_commas(inner) {
+                if let Some((name, ty)) = part.split_once(':') {
+                    saw_named = true;
+                    let name = name.trim();
+                    if !is_type_identifier(name)
+                        || named.iter().any(|(existing, _)| existing == name)
+                    {
+                        return None;
+                    }
+                    named.push((name.to_string(), Self::parse(ty.trim())?));
+                } else {
+                    if saw_named {
+                        return None;
+                    }
+                    positional.push(Self::parse(part.trim())?);
+                }
+            }
+            named.sort_by(|left, right| left.0.cmp(&right.0));
+            return Some(Self::Record { positional, named });
+        }
         match input {
             "i64" => Some(Self::I64),
             "bool" => Some(Self::Bool),
@@ -97,6 +131,15 @@ impl Type {
                     ),
                 };
                 format!("fn({params}) -> {returns}")
+            }
+            Self::Record { positional, named } => {
+                let mut fields = positional.iter().map(Type::name).collect::<Vec<_>>();
+                fields.extend(
+                    named
+                        .iter()
+                        .map(|(name, ty)| format!("{name}: {}", ty.name())),
+                );
+                format!("record({})", fields.join(", "))
             }
         }
     }
@@ -772,6 +815,10 @@ pub enum ExprKind {
         name_span: SourceSpan,
         base: Option<Box<Expr>>,
         fields: Vec<StructLiteralField>,
+    },
+    RecordLiteral {
+        positional: Vec<Expr>,
+        named: Vec<NamedArg>,
     },
     QualifiedCall {
         namespace: String,

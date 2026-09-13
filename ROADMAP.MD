@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 533
-- Reported overall progress: **72%**
+- Completed baseline units: 536
+- Reported overall progress: **73%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
@@ -277,9 +277,9 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 
 Flux intentionally keeps function multi-return values narrow today. General records should be added only when they do not blur explicit multi-return/error semantics.
 
-- [ ] Anonymous immutable records for lightweight aggregate data.
-- [ ] Named record fields.
-- [ ] Positional record fields.
+- [x] Anonymous immutable records for lightweight aggregate data.
+- [x] Named record fields.
+- [x] Positional record fields.
 - [ ] Record destructuring patterns.
 - [x] List patterns with exact/rest/wildcard shapes in local bindings plus exhaustive statement/value `match`, including zero-copy rest views over strided lists.
 - [ ] Map patterns.

@@ -1206,6 +1206,19 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             );
             format!("{name} {{ {} }}", parts.join(", "))
         }
+        ExprKind::RecordLiteral { positional, named } => {
+            let mut parts = positional
+                .iter()
+                .map(|value| format_expr(value, 0))
+                .collect::<Vec<_>>();
+            parts.extend(
+                named
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name, format_expr(&field.value, 0))),
+            );
+            let trailing = positional.len() == 1 && named.is_empty();
+            format!("({}{})", parts.join(", "), if trailing { "," } else { "" })
+        }
         ExprKind::Match { value, .. } | ExprKind::ListMatch { value, .. } => {
             format!("match {}:", format_expr(value, 0))
         }

@@ -534,6 +534,14 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(&field.value, symbols, signatures);
             }
         }
+        ExprKind::RecordLiteral { positional, named } => {
+            for value in positional {
+                collect_expr_pattern_symbols(value, symbols, signatures);
+            }
+            for field in named {
+                collect_expr_pattern_symbols(&field.value, symbols, signatures);
+            }
+        }
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)

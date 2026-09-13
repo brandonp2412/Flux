@@ -84,6 +84,10 @@ pub enum ControlFlowValueKind {
         base: Option<ControlFlowValueId>,
         fields: Vec<(String, ControlFlowValueId)>,
     },
+    RecordLiteral {
+        positional: Vec<ControlFlowValueId>,
+        named: Vec<(String, ControlFlowValueId)>,
+    },
     QualifiedCall {
         namespace: String,
         name: String,
@@ -1859,6 +1863,20 @@ impl<'a> ControlFlowBuilder<'a> {
                     fields,
                 }
             }
+            ExprKind::RecordLiteral { positional, named } => {
+                let positional = positional
+                    .iter()
+                    .filter_map(|value| self.lower_scalar_expr(producer, value))
+                    .collect();
+                let named = named
+                    .iter()
+                    .filter_map(|field| {
+                        self.lower_scalar_expr(producer, &field.value)
+                            .map(|value| (field.name.clone(), value))
+                    })
+                    .collect();
+                ControlFlowValueKind::RecordLiteral { positional, named }
+            }
             ExprKind::QualifiedCall {
                 namespace,
                 name,
@@ -2619,6 +2637,14 @@ fn record_expr_types(
                 record_expr_types(item, env, signatures, evaluations);
             }
         }
+        ExprKind::RecordLiteral { positional, named } => {
+            for value in positional {
+                record_expr_types(value, env, signatures, evaluations);
+            }
+            for field in named {
+                record_expr_types(&field.value, env, signatures, evaluations);
+            }
+        }
         ExprKind::ListSpread { value, .. } => {
             record_expr_types(value, env, signatures, evaluations);
             if let Ok(ty) = typecheck::type_of_expr(value, env, signatures)
@@ -2974,6 +3000,14 @@ fn collect_value_uses(
             }
             ControlFlowValueKind::List { items } => {
                 for item in items {
+                    push_value_use(&mut uses, value.id, *item, ControlFlowValueUseKind::Eager);
+                }
+            }
+            ControlFlowValueKind::RecordLiteral { positional, named } => {
+                for item in positional
+                    .iter()
+                    .chain(named.iter().map(|(_, value)| value))
+                {
                     push_value_use(&mut uses, value.id, *item, ControlFlowValueUseKind::Eager);
                 }
             }
