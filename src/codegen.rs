@@ -16930,13 +16930,6 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
         direct_await_call(cond)?;
     }
     let body_await_indices = block_branch_await_indices(body, true)?;
-    if body_await_indices
-        .iter()
-        .any(|index| coalescing_assignment_await_expr(&body[*index]).is_some())
-        && body_await_indices.len() != 1
-    {
-        return None;
-    }
     if !condition_await && body_await_indices.is_empty() {
         None
     } else {
@@ -16974,13 +16967,6 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
         direct_await_call(end)?;
     }
     let body_await_indices = block_branch_await_indices(body, true)?;
-    if body_await_indices
-        .iter()
-        .any(|index| coalescing_assignment_await_expr(&body[*index]).is_some())
-        && body_await_indices.len() != 1
-    {
-        return None;
-    }
     if !start_await && !end_await && body_await_indices.is_empty() {
         None
     } else {
@@ -22748,6 +22734,7 @@ fn emit_async_while_resume_states(
     };
     let mut segment_start = previous_await + 1;
     let first_state = if while_plan.condition_await { 2 } else { 1 };
+    let continue_state = first_state + await_indices.len();
 
     for offset in 0..await_indices.len() {
         let state = first_state + offset;
@@ -22795,7 +22782,7 @@ fn emit_async_while_resume_states(
         if let Some(next_await_index) = next_await {
             let next_stmt = &body[next_await_index];
             emit_source_line(out, next_stmt.span, context.source_paths);
-            emit_async_suspend(
+            let conditional_suspend = emit_async_branch_suspend(
                 out,
                 pad,
                 next_stmt,
@@ -22803,8 +22790,34 @@ fn emit_async_while_resume_states(
                 function,
                 plan,
                 &body_env,
+                &body_mutable,
                 signatures,
             )?;
+            if conditional_suspend {
+                let mut present_env = body_env.clone();
+                let mut present_mutable = body_mutable.clone();
+                emit_block(
+                    out,
+                    &body[next_await_index + 1..],
+                    3,
+                    &mut present_env,
+                    &mut present_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                emit_async_save_locals(
+                    out,
+                    pad,
+                    &plan.locals,
+                    &present_env,
+                    signatures,
+                    next_stmt.span,
+                )?;
+                out.push_str(&format!(
+                    "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
+                ));
+            }
             previous_await = next_await_index;
             segment_start = next_await_index + 1;
         } else {
@@ -23198,6 +23211,7 @@ fn emit_async_for_range_resume_states(
     };
     let mut segment_start = previous_await + 1;
     let first_body_state = 1 + usize::from(for_plan.start_await) + usize::from(for_plan.end_await);
+    let continue_state = first_body_state + await_indices.len();
 
     for offset in 0..await_indices.len() {
         let state = first_body_state + offset;
@@ -23245,7 +23259,7 @@ fn emit_async_for_range_resume_states(
         if let Some(next_await_index) = next_await {
             let next_stmt = &body[next_await_index];
             emit_source_line(out, next_stmt.span, context.source_paths);
-            emit_async_suspend(
+            let conditional_suspend = emit_async_branch_suspend(
                 out,
                 pad,
                 next_stmt,
@@ -23253,8 +23267,34 @@ fn emit_async_for_range_resume_states(
                 function,
                 plan,
                 &body_env,
+                &body_mutable,
                 signatures,
             )?;
+            if conditional_suspend {
+                let mut present_env = body_env.clone();
+                let mut present_mutable = body_mutable.clone();
+                emit_block(
+                    out,
+                    &body[next_await_index + 1..],
+                    3,
+                    &mut present_env,
+                    &mut present_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                emit_async_save_locals(
+                    out,
+                    pad,
+                    &plan.locals,
+                    &present_env,
+                    signatures,
+                    next_stmt.span,
+                )?;
+                out.push_str(&format!(
+                    "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
+                ));
+            }
             previous_await = next_await_index;
             segment_start = next_await_index + 1;
         } else {

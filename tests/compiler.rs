@@ -41467,6 +41467,93 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_direct_await_then_coalescing_assignment_inside_loops_stays_nonblocking() {
+    let source = r#"
+async fn step(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn fillWhile(initial: i64?) -> i64 {
+    var index: i64 = 0
+    var value: i64? = initial
+    var total: i64 = 0
+    while index < 2:
+        let current: i64 = await step(index + 1)
+        value ??= await step(8)
+        total = total + current + (value ?? 0)
+        index = index + 1
+    return total
+}
+
+async fn fillRange(initial: i64?) -> i64 {
+    var value: i64? = initial
+    var total: i64 = 0
+    for index in 1..3:
+        let current: i64 = await step(index)
+        value ??= await step(9)
+        total = total + current + (value ?? 0)
+    return total
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let present: i64? = 4
+    let first: i64 = await fillWhile(missing)
+    let second: i64 = await fillWhile(present)
+    let third: i64 = await fillRange(missing)
+    let fourth: i64 = await fillRange(present)
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source).expect("mixed loop suspension should typecheck");
+    let generated =
+        compile_to_c(source).expect("mixed loop suspension should use continuation states");
+    assert!(generated.contains("flux__async_resume_fillWhile"));
+    assert!(generated.contains("flux__async_resume_fillRange"));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(8), flux__async_resume_fillWhile, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(9), flux__async_resume_fillRange, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(8)))"));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(9)))"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-loop-mixed-coalescing-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mixed loop suspension fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-loop-mixed-coalescing");
+    fs::write(&source_path, source).expect("mixed loop suspension source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("mixed loop suspension binary should build");
+    assert!(
+        built.status.success(),
+        "mixed loop suspension build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("mixed loop suspension binary should run");
+    assert_eq!(output.status.code(), Some(62));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1\n8\n2\n1\n2\n1\n9\n2\n1\n2\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_optional_promotion_branches_suspend_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
