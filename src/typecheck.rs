@@ -3855,22 +3855,30 @@ fn check_block_all(
                 }
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
-                let actuals = match value_types_of_expr(expr, env, signatures) {
-                    Ok(actuals) => Some(actuals),
+                let actuals = match positional_destructure_types_of_expr(expr, env, signatures) {
+                    Ok((actuals, record_destructure)) => Some((actuals, record_destructure)),
                     Err(diagnostic) => {
                         diagnostics.push(diagnostic);
                         None
                     }
                 };
-                if let Some(actuals) = actuals {
+                if let Some((actuals, record_destructure)) = actuals {
                     if actuals.len() != bindings.len() {
                         diagnostics.push(diag(
                             stmt.span,
-                            &format!(
-                                "multi-value assignment pattern expects {} values, expression returns {}",
-                                bindings.len(),
-                                actuals.len()
-                            ),
+                            &if record_destructure {
+                                format!(
+                                    "record assignment pattern expects {} fields, record has {}",
+                                    bindings.len(),
+                                    actuals.len()
+                                )
+                            } else {
+                                format!(
+                                    "multi-value assignment pattern expects {} values, expression returns {}",
+                                    bindings.len(),
+                                    actuals.len()
+                                )
+                            },
                         ));
                     }
                     for (binding, actual) in bindings.iter().zip(actuals.iter()) {
@@ -4087,22 +4095,30 @@ fn check_block_all(
                 else_return,
                 mutable: pattern_mutable,
             } => {
-                let actuals = match value_types_of_expr(expr, env, signatures) {
-                    Ok(actuals) => Some(actuals),
+                let actuals = match positional_destructure_types_of_expr(expr, env, signatures) {
+                    Ok((actuals, record_destructure)) => Some((actuals, record_destructure)),
                     Err(diagnostic) => {
                         diagnostics.push(diagnostic);
                         None
                     }
                 };
-                if let Some(actuals) = actuals.as_ref() {
+                if let Some((actuals, record_destructure)) = actuals.as_ref() {
                     if actuals.len() != bindings.len() {
                         diagnostics.push(diag(
                             stmt.span,
-                            &format!(
-                                "multi-value pattern expects {} values, expression returns {}",
-                                bindings.len(),
-                                actuals.len()
-                            ),
+                            &if *record_destructure {
+                                format!(
+                                    "record pattern expects {} fields, record has {}",
+                                    bindings.len(),
+                                    actuals.len()
+                                )
+                            } else {
+                                format!(
+                                    "multi-value pattern expects {} values, expression returns {}",
+                                    bindings.len(),
+                                    actuals.len()
+                                )
+                            },
                         ));
                     }
                     for (binding, actual) in bindings.iter().zip(actuals) {
@@ -4133,31 +4149,38 @@ fn check_block_all(
                         }
                     }
                     if *else_return {
-                        if actuals.last().map(|ty| signatures.canonical_type(ty))
-                            != Some(Type::Error)
-                        {
+                        if *record_destructure {
                             diagnostics.push(diag(
                                 stmt.span,
-                                "'else return' requires the final multi-value pattern position to have type error",
+                                "record destructuring cannot use 'else return'",
                             ));
-                        }
-                        let canonical_actuals = actuals
-                            .iter()
-                            .map(|ty| signatures.canonical_type(ty))
-                            .collect::<Vec<_>>();
-                        let canonical_returns = return_types
-                            .iter()
-                            .map(|ty| signatures.canonical_type(ty))
-                            .collect::<Vec<_>>();
-                        if canonical_actuals != canonical_returns {
-                            diagnostics.push(diag(
-                                stmt.span,
-                                &format!(
-                                    "'else return' can only forward an exact return shape: function returns {}, expression returns {}",
-                                    return_types_name(return_types),
-                                    return_types_name(actuals)
-                                ),
-                            ));
+                        } else {
+                            if actuals.last().map(|ty| signatures.canonical_type(ty))
+                                != Some(Type::Error)
+                            {
+                                diagnostics.push(diag(
+                                    stmt.span,
+                                    "'else return' requires the final multi-value pattern position to have type error",
+                                ));
+                            }
+                            let canonical_actuals = actuals
+                                .iter()
+                                .map(|ty| signatures.canonical_type(ty))
+                                .collect::<Vec<_>>();
+                            let canonical_returns = return_types
+                                .iter()
+                                .map(|ty| signatures.canonical_type(ty))
+                                .collect::<Vec<_>>();
+                            if canonical_actuals != canonical_returns {
+                                diagnostics.push(diag(
+                                    stmt.span,
+                                    &format!(
+                                        "'else return' can only forward an exact return shape: function returns {}, expression returns {}",
+                                        return_types_name(return_types),
+                                        return_types_name(actuals)
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
@@ -6777,6 +6800,26 @@ pub fn type_of_expr(
             }
         }
     }
+}
+
+pub(crate) fn positional_destructure_types_of_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(Vec<Type>, bool), Diagnostic> {
+    let values = value_types_of_expr(expr, env, signatures)?;
+    if values.len() == 1
+        && let Type::Record(fields) = signatures.canonical_type(&values[0])
+    {
+        return Ok((
+            fields
+                .into_iter()
+                .map(|field| signatures.canonical_type(&field.ty))
+                .collect(),
+            true,
+        ));
+    }
+    Ok((values, false))
 }
 
 pub(crate) fn value_types_of_expr(

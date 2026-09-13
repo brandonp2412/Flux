@@ -674,7 +674,10 @@ fn collect_block_symbols(
                     })
                     .filter_map(|symbol| symbol.ty.clone().map(|ty| (symbol.name.clone(), ty)))
                     .collect::<HashMap<_, _>>();
-                let actuals = typecheck::value_types_of_expr(expr, &env, signatures).ok();
+                let actuals =
+                    typecheck::positional_destructure_types_of_expr(expr, &env, signatures)
+                        .ok()
+                        .map(|(types, _)| types);
                 for (index, binding) in bindings.iter().enumerate() {
                     if binding.name == "_" {
                         continue;

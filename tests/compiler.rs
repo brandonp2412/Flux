@@ -11422,6 +11422,122 @@ fn main() -> i64 {
 }
 
 #[test]
+fn anonymous_records_support_positional_destructuring_for_let_var_and_assignment() {
+    let source = r#"
+type PersonRecord = (name: str, age: i64)
+
+fn makePerson() -> PersonRecord {
+    print("make")
+    return (name: "Ada", age: 42)
+}
+
+fn main() -> i64 {
+    let (name, age) = makePerson()
+    var (count, enabled) = (7, true)
+    (count, enabled) = (9, false)
+    let (pair, label) = ((3, true), "ok")
+    let (_, finalLabel) = (pair, label)
+    print(name)
+    print(age)
+    print(count)
+    print(enabled)
+    print(pair.0)
+    print(pair.1)
+    print(finalLabel)
+    return 0
+}
+"#;
+
+    check_source(source).expect("record destructuring should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("record destructuring should format canonically");
+    assert!(formatted.contains("let (name, age) = makePerson()"));
+    assert!(formatted.contains("var (count, enabled) = (7, true)"));
+    assert!(formatted.contains("(count, enabled) = (9, false)"));
+
+    let generated = compile_to_c(source).expect("record destructuring should lower natively");
+    assert!(generated.contains("flux__record_pattern_"));
+    assert!(generated.contains("flux__record_assign_"));
+    assert!(generated.contains(".flux__field_name"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-record-destructure-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("record destructure temp directory should be writable");
+    let c_path = root.join("record_destructure.c");
+    let exe_path = root.join("record_destructure");
+    fs::write(&c_path, generated).expect("generated record destructure C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile record destructuring C");
+    assert!(
+        compile.status.success(),
+        "record destructuring C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("record destructuring program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "make\nAda\n42\n9\nfalse\n3\ntrue\nok\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn anonymous_record_destructuring_rejects_bad_arity_types_and_error_propagation() {
+    let arity = r#"
+fn main() -> i64 {
+    let (first, second) = (1,)
+    return 0
+}
+"#;
+    let error = check_source(arity).expect_err("record pattern arity mismatch should fail");
+    assert!(
+        error
+            .message
+            .contains("record pattern expects 2 fields, record has 1")
+    );
+
+    let assignment_type = r#"
+fn main() -> i64 {
+    var text: str = ""
+    var enabled: bool = false
+    (text, enabled) = (1, true)
+    return 0
+}
+"#;
+    let error =
+        check_source(assignment_type).expect_err("record assignment type mismatch should fail");
+    assert!(error.message.contains("expected str, got i64"));
+
+    let else_return = r#"
+fn main() -> i64 {
+    let (left, right) = (1, true) else return
+    print(left)
+    print(right)
+    return 0
+}
+"#;
+    let error = check_source(else_return)
+        .expect_err("record destructuring must not imply error propagation");
+    assert!(
+        error
+            .message
+            .contains("record destructuring cannot use 'else return'")
+    );
+}
+
+#[test]
 fn anonymous_records_reject_invalid_shapes_and_noncopy_fields() {
     let duplicate = r#"
 fn main() -> i64 {

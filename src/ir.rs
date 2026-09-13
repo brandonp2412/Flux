@@ -1076,7 +1076,7 @@ impl<'a> ControlFlowBuilder<'a> {
                     successor,
                     ControlFlowOwnership::default(),
                 );
-                let types = self.expression_types(expr);
+                let types = self.positional_destructure_expression_types(expr);
                 self.set_definitions(
                     node,
                     bindings
@@ -1169,7 +1169,7 @@ impl<'a> ControlFlowBuilder<'a> {
                     },
                     stmt.span,
                 );
-                let types = self.expression_types(expr);
+                let types = self.positional_destructure_expression_types(expr);
                 self.set_definitions(
                     node,
                     bindings
@@ -2105,6 +2105,19 @@ impl<'a> ControlFlowBuilder<'a> {
             .unwrap_or_default()
     }
 
+    fn positional_destructure_expression_types(&self, expr: &Expr) -> Vec<Type> {
+        let types = self.expression_types(expr);
+        if types.len() == 1
+            && let Type::Record(fields) = self.signatures.canonical_type(&types[0])
+        {
+            return fields
+                .into_iter()
+                .map(|field| self.signatures.canonical_type(&field.ty))
+                .collect();
+        }
+        types
+    }
+
     fn scalar_expression_type(&self, expr: &Expr) -> Option<Type> {
         let types = self.expression_types(expr);
         (types.len() == 1).then(|| types[0].clone())
@@ -2356,7 +2369,9 @@ fn collect_block_evaluation_types(
             }
             StmtKind::LetMultiDestructure { bindings, expr, .. } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
-                if let Ok(types) = typecheck::value_types_of_expr(expr, env, signatures) {
+                if let Ok((types, _)) =
+                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)
+                {
                     for (binding, ty) in bindings.iter().zip(types) {
                         if binding.name != "_" {
                             env.insert(binding.name.clone(), signatures.canonical_type(&ty));

@@ -21830,26 +21830,58 @@ fn emit_block(
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
-                let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
-                let temp = format!("flux__multi_assign_{}", *temp_counter);
-                *temp_counter += 1;
-                out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
-                for (index, binding) in bindings.iter().enumerate() {
-                    if binding.name == "_"
-                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
-                    {
-                        continue;
-                    }
-                    actuals.get(index).ok_or_else(|| {
-                        diag(
+                let (_, record_destructure) =
+                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
+                if record_destructure {
+                    let value = emit_expr(expr, env, signatures)?;
+                    let Type::Record(fields) = signatures.canonical_type(&value.ty) else {
+                        return Err(diag(
                             stmt.span,
-                            "multi-value assignment arity changed after type checking",
-                        )
-                    })?;
+                            "record assignment pattern changed type after type checking",
+                        ));
+                    };
+                    let record_ty = Type::Record(fields.clone());
+                    let temp = format!("flux__record_assign_{}", *temp_counter);
+                    *temp_counter += 1;
                     out.push_str(&format!(
-                        "{pad}{} = {temp}.v{index};\n",
-                        local_c_name(&binding.name)
+                        "{pad}{} {temp} = {};\n",
+                        c_type(&record_ty, signatures),
+                        value.code
                     ));
+                    for (index, (binding, field)) in bindings.iter().zip(&fields).enumerate() {
+                        if binding.name == "_"
+                            || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                        {
+                            continue;
+                        }
+                        out.push_str(&format!(
+                            "{pad}{} = {temp}.{};\n",
+                            local_c_name(&binding.name),
+                            record_field_c_name(field.name.as_deref(), index)
+                        ));
+                    }
+                } else {
+                    let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                    let temp = format!("flux__multi_assign_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                    for (index, binding) in bindings.iter().enumerate() {
+                        if binding.name == "_"
+                            || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                        {
+                            continue;
+                        }
+                        actuals.get(index).ok_or_else(|| {
+                            diag(
+                                stmt.span,
+                                "multi-value assignment arity changed after type checking",
+                            )
+                        })?;
+                        out.push_str(&format!(
+                            "{pad}{} = {temp}.v{index};\n",
+                            local_c_name(&binding.name)
+                        ));
+                    }
                 }
             }
             StmtKind::AssignListDestructure {
@@ -21997,52 +22029,96 @@ fn emit_block(
                 bindings,
                 expr,
                 else_return,
-                ..
+                mutable,
             } => {
-                let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
-                let temp = format!("flux__multi_pattern_{}", *temp_counter);
-                *temp_counter += 1;
-                out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
-                if *else_return {
-                    let error_index = bindings.len() - 1;
-                    let return_tag = multi_return_struct_name(&context.current_function.name);
-                    let return_temp = format!("flux__return_{}", *temp_counter);
-                    *temp_counter += 1;
-                    out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
-                    out.push_str(&format!("{pad}    struct {return_tag} {return_temp};\n"));
-                    for index in 0..bindings.len() {
-                        out.push_str(&format!(
-                            "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
-                        ));
-                    }
-                    if context.async_state_machine {
-                        out.push_str(&format!(
-                            "{pad}    flux__task->result = {return_temp};\n{pad}    {}(flux__task);\n{pad}    return;\n",
-                            async_finish_c_name(&context.current_function.name)
-                        ));
-                    } else {
-                        out.push_str(&format!("{pad}    return {return_temp};\n"));
-                    }
-                    out.push_str(&format!("{pad}}}\n"));
-                }
-                for (index, binding) in bindings.iter().enumerate() {
-                    if binding.name == "_"
-                        || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
-                    {
-                        continue;
-                    }
-                    let ty = actuals.get(index).ok_or_else(|| {
-                        diag(
+                let (_, record_destructure) =
+                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
+                if record_destructure {
+                    let value = emit_expr(expr, env, signatures)?;
+                    let Type::Record(fields) = signatures.canonical_type(&value.ty) else {
+                        return Err(diag(
                             stmt.span,
-                            "multi-value pattern arity changed after type checking",
-                        )
-                    })?;
+                            "record pattern changed type after type checking",
+                        ));
+                    };
+                    let record_ty = Type::Record(fields.clone());
+                    let temp = format!("flux__record_pattern_{}", *temp_counter);
+                    *temp_counter += 1;
                     out.push_str(&format!(
-                        "{pad}{} {} = {temp}.v{index};\n",
-                        c_type(ty, signatures),
-                        local_c_name(&binding.name)
+                        "{pad}{} {temp} = {};\n",
+                        c_type(&record_ty, signatures),
+                        value.code
                     ));
-                    env.insert(binding.name.clone(), signatures.canonical_type(ty));
+                    for (index, (binding, field)) in bindings.iter().zip(&fields).enumerate() {
+                        if binding.name == "_" {
+                            continue;
+                        }
+                        let ty = signatures.canonical_type(&field.ty);
+                        if dead_definitions.is_some_and(|dead| dead.contains(&binding.name)) {
+                            if *mutable {
+                                out.push_str(&format!(
+                                    "{pad}{} {};\n",
+                                    c_type(&ty, signatures),
+                                    local_c_name(&binding.name)
+                                ));
+                                env.insert(binding.name.clone(), ty);
+                            }
+                            continue;
+                        }
+                        out.push_str(&format!(
+                            "{pad}{} {} = {temp}.{};\n",
+                            c_type(&ty, signatures),
+                            local_c_name(&binding.name),
+                            record_field_c_name(field.name.as_deref(), index)
+                        ));
+                        env.insert(binding.name.clone(), ty);
+                    }
+                } else {
+                    let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                    let temp = format!("flux__multi_pattern_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
+                    if *else_return {
+                        let error_index = bindings.len() - 1;
+                        let return_tag = multi_return_struct_name(&context.current_function.name);
+                        let return_temp = format!("flux__return_{}", *temp_counter);
+                        *temp_counter += 1;
+                        out.push_str(&format!("{pad}if ({temp}.v{error_index} != NULL) {{\n"));
+                        out.push_str(&format!("{pad}    struct {return_tag} {return_temp};\n"));
+                        for index in 0..bindings.len() {
+                            out.push_str(&format!(
+                                "{pad}    {return_temp}.v{index} = {temp}.v{index};\n"
+                            ));
+                        }
+                        if context.async_state_machine {
+                            out.push_str(&format!(
+                                "{pad}    flux__task->result = {return_temp};\n{pad}    {}(flux__task);\n{pad}    return;\n",
+                                async_finish_c_name(&context.current_function.name)
+                            ));
+                        } else {
+                            out.push_str(&format!("{pad}    return {return_temp};\n"));
+                        }
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
+                    for (index, binding) in bindings.iter().enumerate() {
+                        if binding.name == "_"
+                            || dead_definitions.is_some_and(|dead| dead.contains(&binding.name))
+                        {
+                            continue;
+                        }
+                        let ty = actuals.get(index).ok_or_else(|| {
+                            diag(
+                                stmt.span,
+                                "multi-value pattern arity changed after type checking",
+                            )
+                        })?;
+                        out.push_str(&format!(
+                            "{pad}{} {} = {temp}.v{index};\n",
+                            c_type(ty, signatures),
+                            local_c_name(&binding.name)
+                        ));
+                        env.insert(binding.name.clone(), signatures.canonical_type(ty));
+                    }
                 }
             }
             StmtKind::LetListDestructure {
