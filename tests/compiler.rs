@@ -9053,6 +9053,155 @@ fn main() -> i64 {
 }
 
 #[test]
+fn canonical_filesystem_mutations_are_typed_native_and_tree_shaken() {
+    let root =
+        std::env::temp_dir().join(format!("flux-filesystem-mutations-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let source_directory = root.join("source");
+    let target_directory = root.join("target");
+    fs::create_dir_all(&source_directory).expect("filesystem mutation fixture should be writable");
+    let source_file = source_directory.join("content.txt");
+    let target_file = target_directory.join("content.txt");
+    fs::write(&source_file, "abcdef").expect("filesystem mutation file should be writable");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(file.setPermissions("{}", 416))
+    let (filePermissions, filePermissionsError) = file.permissions("{}")
+    print(filePermissions)
+    print(filePermissionsError)
+    print(file.truncate("{}", 3))
+    let (size, sizeError) = file.size("{}")
+    print(size)
+    print(sizeError)
+    print(directory.setPermissions("{}", 488))
+    let (directoryPermissions, directoryPermissionsError) = directory.permissions("{}")
+    print(directoryPermissions)
+    print(directoryPermissionsError)
+    print(directory.rename("{}", "{}"))
+    print(directory.exists("{}"))
+    print(directory.exists("{}"))
+    return 0
+}}
+"#,
+        path(&source_file),
+        path(&source_file),
+        path(&source_file),
+        path(&source_file),
+        path(&source_directory),
+        path(&source_directory),
+        path(&source_directory),
+        path(&target_directory),
+        path(&source_directory),
+        path(&target_directory),
+    );
+
+    check_source(&source).expect("filesystem mutation APIs should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem mutation APIs should lower");
+    for helper in [
+        "flux__fs_file_truncate",
+        "flux__fs_file_set_permissions",
+        "flux__fs_directory_set_permissions",
+        "flux__fs_directory_rename",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing generated helper {helper}"
+        );
+    }
+
+    let source_path = root.join("mutations.flux");
+    fs::write(&source_path, &source).expect("filesystem mutation Flux source should be writable");
+    let binary = root.join("mutations");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem mutation binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem mutation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem mutation binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n416\nnil\nnil\n3\nnil\nnil\n488\nnil\nnil\nfalse\ntrue\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&target_file).expect("renamed truncated file should remain readable"),
+        "abc"
+    );
+
+    let unused = r#"
+fn hidden() -> void {
+    print(file.truncate("/tmp/unused-flux-file", 0))
+    print(file.setPermissions("/tmp/unused-flux-file", 384))
+    print(directory.setPermissions("/tmp/unused-flux-directory", 448))
+    print(directory.rename("/tmp/unused-flux-directory", "/tmp/unused-flux-renamed"))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead filesystem mutation calls should lower");
+    for helper in [
+        "flux__fs_file_truncate",
+        "flux__fs_file_set_permissions",
+        "flux__fs_directory_set_permissions",
+        "flux__fs_directory_rename",
+    ] {
+        assert!(
+            !unused_generated.contains(helper),
+            "dead filesystem mutation helper should tree-shake: {helper}"
+        );
+    }
+
+    let invalid = r#"
+fn main() -> i64 {
+    file.truncate("x", -1)
+    file.truncate("x", false)
+    file.setPermissions("x", 4096)
+    file.setPermissions(false, 384)
+    directory.setPermissions("x", -1)
+    directory.setPermissions("x", true)
+    directory.rename("x", 1)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid filesystem mutation calls should fail");
+    for expected in [
+        "file.truncate size must be non-negative",
+        "file.truncate size: expected i64",
+        "file.setPermissions permissions must be in 0..=4095",
+        "file.setPermissions path: expected str",
+        "directory.setPermissions permissions must be in 0..=4095",
+        "directory.setPermissions permissions: expected i64",
+        "directory.rename destination: expected str",
+    ] {
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "missing filesystem mutation diagnostic {expected}: {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_read_callbacks_are_not_exposed() {
     let source = r#"
 fn consume(_text: str) -> void {

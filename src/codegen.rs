@@ -1645,6 +1645,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
         || runtime_usage.contains("flux__fs_remove_directories(")
+        || runtime_usage.contains("flux__fs_file_truncate(")
         || runtime_usage.contains("flux__net_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
@@ -5919,6 +5920,23 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_rename(") {
         out.push_str("static inline const char *flux__fs_rename(const char *source, const char *destination) { return rename(source, destination) == 0 ? NULL : \"failed to rename path\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_rename(") {
+        out.push_str("static inline const char *flux__fs_directory_rename(const char *source, const char *destination) { struct stat info; if (stat(source, &info) != 0 || !S_ISDIR(info.st_mode)) return \"path is not a directory\"; return rename(source, destination) == 0 ? NULL : \"failed to rename directory\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_truncate(") {
+        out.push_str("static inline const char *flux__fs_file_truncate(const char *path, int64_t size) { if (size < 0) return \"file size must be non-negative\"; struct stat info; if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) return \"path is not a file\"; off_t native_size = (off_t)size; if ((int64_t)native_size != size) return \"file size exceeds platform range\"; return truncate(path, native_size) == 0 ? NULL : \"failed to truncate file\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_permissions(")
+        || runtime_usage.contains("flux__fs_directory_set_permissions(")
+    {
+        out.push_str("static inline const char *flux__fs_set_permissions(const char *path, bool expect_directory, int64_t permissions) { if (permissions < 0 || permissions > INT64_C(4095)) return \"permissions must be in 0..=4095\"; struct stat info; if (stat(path, &info) != 0) return \"failed to inspect permissions target\"; if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return expect_directory ? \"path is not a directory\" : \"path is not a file\"; return chmod(path, (mode_t)permissions) == 0 ? NULL : \"failed to set permissions\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_permissions(") {
+        out.push_str("static inline const char *flux__fs_file_set_permissions(const char *path, int64_t permissions) { return flux__fs_set_permissions(path, false, permissions); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_set_permissions(") {
+        out.push_str("static inline const char *flux__fs_directory_set_permissions(const char *path, int64_t permissions) { return flux__fs_set_permissions(path, true, permissions); }\n");
     }
     if runtime_usage.contains("flux__fs_copy_file(") {
         out.push_str("static inline const char *flux__fs_copy_file(const char *source, const char *destination) { FILE *input = fopen(source, \"rb\"); if (input == NULL) return \"failed to open source file\"; FILE *output = fopen(destination, \"wb\"); if (output == NULL) { fclose(input); return \"failed to open destination file\"; } unsigned char buffer[16384]; const char *failure = NULL; for (;;) { size_t read_count = fread(buffer, 1, sizeof(buffer), input); if (read_count > 0 && fwrite(buffer, 1, read_count, output) != read_count) { failure = \"failed to write destination file\"; break; } if (read_count < sizeof(buffer)) { if (ferror(input)) failure = \"failed to read source file\"; break; } } if (fclose(input) != 0 && failure == NULL) failure = \"failed to close source file\"; if (fclose(output) != 0 && failure == NULL) failure = \"failed to close destination file\"; return failure; }\n");
@@ -30638,11 +30656,48 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            "truncate" | "setPermissions" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid file call reached code generation"));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "truncate" {
+                    "flux__fs_file_truncate"
+                } else {
+                    "flux__fs_file_set_permissions"
+                };
+                return Ok((
+                    format!("{helper}({}, {})", path.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             _ => return Err(diag(span, "unknown file call reached code generation")),
         }
     }
     if namespace == "directory" {
-        if !named_args.is_empty() || args.len() != 1 {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid directory call reached code generation"));
+        }
+        if matches!(name, "rename" | "setPermissions") {
+            if args.len() != 2 {
+                return Err(diag(span, "invalid directory call reached code generation"));
+            }
+            let first = emit_expr(&args[0], env, signatures)?;
+            let second = emit_expr(&args[1], env, signatures)?;
+            let helper = if name == "rename" {
+                "flux__fs_directory_rename"
+            } else {
+                "flux__fs_directory_set_permissions"
+            };
+            return Ok((
+                format!("{helper}({}, {})", first.code, second.code),
+                vec![Type::Error],
+                None,
+            ));
+        }
+        if args.len() != 1 {
             return Err(diag(span, "invalid directory call reached code generation"));
         }
         let path = emit_expr(&args[0], env, signatures)?;

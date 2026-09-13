@@ -1651,6 +1651,14 @@ fn add_qualified_namespace_completions(
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
+                "truncate",
+                "fn file.truncate(path: str, size: i64) -> error",
+            ),
+            (
+                "setPermissions",
+                "fn file.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
                 "copy",
                 "fn file.copy(source: str, destination: str) -> error",
             ),
@@ -1682,6 +1690,14 @@ fn add_qualified_namespace_completions(
             ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
+            (
+                "rename",
+                "fn directory.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "setPermissions",
+                "fn directory.setPermissions(path: str, permissions: i64) -> error",
+            ),
             ("remove", "fn directory.remove(path: str) -> error"),
             ("removeAll", "fn directory.removeAll(path: str) -> error"),
         ] {
@@ -3573,6 +3589,22 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "truncate" => {
+                    return Some(signature_help_for_builtin(
+                        "file.truncate",
+                        &["path: str", "size: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "setPermissions" => {
+                    return Some(signature_help_for_builtin(
+                        "file.setPermissions",
+                        &["path: str", "permissions: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "copy" | "rename" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
@@ -3614,6 +3646,22 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "rename" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.rename",
+                        &["source: str", "destination: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "setPermissions" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.setPermissions",
+                        &["path: str", "permissions: i64"],
                         "error",
                         active_parameter,
                     ));
@@ -7198,6 +7246,10 @@ mod tests {
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
+        assert!(file_items.contains("fn file.truncate(path: str, size: i64) -> error"));
+        assert!(
+            file_items.contains("fn file.setPermissions(path: str, permissions: i64) -> error")
+        );
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
@@ -7223,6 +7275,13 @@ mod tests {
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
+        assert!(
+            directory_items.contains("fn directory.rename(source: str, destination: str) -> error")
+        );
+        assert!(
+            directory_items
+                .contains("fn directory.setPermissions(path: str, permissions: i64) -> error")
+        );
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
         assert!(directory_items.contains("fn directory.removeAll(path: str) -> error"));
 
@@ -9060,6 +9119,56 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("filesystem call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_filesystem_mutations() {
+        let uri = "file:///tmp/filesystem-mutation-signatures.flux";
+        let source = r#"fn main() -> i64 {
+    print(file.truncate("a", 1))
+    print(file.setPermissions("a", 384))
+    print(directory.rename("a", "b"))
+    print(directory.setPermissions("a", 448))
+    return 0
+}
+"#;
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "file.truncate(",
+                "fn file.truncate(path: str, size: i64) -> error",
+            ),
+            (
+                "file.setPermissions(",
+                "fn file.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
+                "directory.rename(",
+                "fn directory.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "directory.setPermissions(",
+                "fn directory.setPermissions(path: str, permissions: i64) -> error",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("filesystem mutation call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("filesystem mutation call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

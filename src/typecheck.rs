@@ -9880,6 +9880,49 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
+            "truncate" | "setPermissions" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("file.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    &format!("file.{name} path"),
+                )?;
+                let value_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &value_type,
+                    if name == "truncate" {
+                        "file.truncate size"
+                    } else {
+                        "file.setPermissions permissions"
+                    },
+                )?;
+                if let Some(ConstantValue::I64(value)) =
+                    constant_primitive_value(&args[1], signatures)
+                {
+                    if name == "truncate" && value < 0 {
+                        return Err(diag(
+                            args[1].span,
+                            "file.truncate size must be non-negative",
+                        ));
+                    }
+                    if name == "setPermissions" && !(0..=0o7777).contains(&value) {
+                        return Err(diag(
+                            args[1].span,
+                            "file.setPermissions permissions must be in 0..=4095",
+                        ));
+                    }
+                }
+                return Ok(vec![Type::Error]);
+            }
             "copy" | "rename" => {
                 if args.len() != 2 {
                     return Err(diag(
@@ -9941,6 +9984,59 @@ fn check_qualified_call(
                     }
                     _ => vec![Type::Error],
                 });
+            }
+            "rename" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("directory.rename expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (arg, label) in args.iter().zip(["source", "destination"]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &Type::Str,
+                        &actual,
+                        &format!("directory.rename {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            "setPermissions" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "directory.setPermissions expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &path_type,
+                    "directory.setPermissions path",
+                )?;
+                let permissions_type = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &permissions_type,
+                    "directory.setPermissions permissions",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(0..=0o7777).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "directory.setPermissions permissions must be in 0..=4095",
+                    ));
+                }
+                return Ok(vec![Type::Error]);
             }
             _ => {
                 return Err(diag(
