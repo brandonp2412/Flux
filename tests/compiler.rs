@@ -2125,6 +2125,11 @@ fn consume(_socket: i64, text: str) -> void {
 fn consumeFrom(_socket: i64, text: str, _host: str, _port: i64) -> void {
     print(text)
 }
+fn closeAccepted(socket: i64) -> void {
+    let failure: error = net.close(socket)
+    if failure != nil:
+        print(failure)
+}
 fn main() -> i64 {
     let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
     if listenError != nil:
@@ -2144,6 +2149,24 @@ fn main() -> i64 {
         return 5
     if accepted == false:
         return 6
+    let listenerNonblockingError: error = net.nonblocking(listener, true)
+    if listenerNonblockingError != nil:
+        return 30
+    let (_emptyAcceptedBatch, immediateAcceptBatch, immediateAcceptBatchError) = net.acceptManyTimeout(listener, 8, 0, closeAccepted)
+    if immediateAcceptBatchError != nil:
+        return 31
+    print(immediateAcceptBatch)
+    let (batchClient, batchConnectError) = net.connect("127.0.0.1", port)
+    if batchConnectError != nil:
+        return 32
+    let (acceptedBatch, acceptBatchReady, acceptBatchError) = net.acceptManyTimeout(listener, 8, 1000, closeAccepted)
+    if acceptBatchError != nil:
+        return 33
+    if acceptBatchReady == false:
+        return 34
+    if acceptedBatch != 1:
+        return 35
+    print(acceptedBatch)
     let (_emptyBytes, immediateRead, immediateReadError) = net.readTimeout(server, 64, 0, consume)
     if immediateReadError != nil:
         return 7
@@ -2217,6 +2240,7 @@ fn main() -> i64 {
     print(datagramBatchBytes)
     print(net.close(udpClient))
     print(net.close(udpServer))
+    print(net.close(batchClient))
     print(net.close(server))
     print(net.close(client))
     print(net.close(listener))
@@ -2226,12 +2250,14 @@ fn main() -> i64 {
     check_source(source).expect("timeout I/O fixture should typecheck");
     let generated = compile_to_c(source).expect("timeout I/O should lower natively");
     assert!(generated.contains("flux__net_tcp_accept_with_timeout("));
+    assert!(generated.contains("flux__net_tcp_accept_many_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_many_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_from_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_from_many_with_timeout("));
     assert!(generated.contains("flux__net_poll_cancellable("));
     assert!(generated.contains("acceptTimeout cancelled by worker scope"));
+    assert!(generated.contains("acceptManyTimeout cancelled by worker scope"));
     assert!(generated.contains("readTimeout cancelled by worker scope"));
     assert!(generated.contains("readManyTimeout cancelled by worker scope"));
     assert!(generated.contains("readFromTimeout cancelled by worker scope"));
@@ -2266,7 +2292,7 @@ fn main() -> i64 {
         String::from_utf8_lossy(&run.stderr)
     );
     let output = String::from_utf8_lossy(&run.stdout);
-    assert!(output.contains("false\nfalse\n"));
+    assert!(output.contains("false\nfalse\n1\nfalse\n"));
     assert!(output.contains("ping\n4\nfalse\nbatch\n5\n"));
     assert!(output.contains("pong\n4\nfalse\nbatch\n5\n"));
 
@@ -2275,13 +2301,25 @@ fn main() -> i64 {
     )
     .expect_err("timeouts below -1 must fail statically");
     assert!(invalid_timeout.message.contains("timeoutMillis must be -1"));
+    let invalid_batch_timeout = check_source(
+        "fn accepted(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let (_count, _ready, _failure) = net.acceptManyTimeout(1, 8, -2, accepted)\n    return 0\n}\n",
+    )
+    .expect_err("batched accept timeouts below -1 must fail statically");
+    assert!(
+        invalid_batch_timeout
+            .message
+            .contains("net.acceptManyTimeout timeoutMillis must be -1")
+    );
 
     let dead = r#"
+fn accepted(_socket: i64) -> void {
+}
 fn consume(_socket: i64, _text: str) -> void {
 }
 fn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {
 }
 fn hidden(socket: i64) -> void {
+    let (_accepted, _acceptReady, _acceptFailure) = net.acceptManyTimeout(socket, 8, 10, accepted)
     let (_bytes, _ready, _failure) = net.readTimeout(socket, 64, 10, consume)
     let (_batchBytes, _batchReady, _batchFailure) = net.readManyTimeout(socket, 64, 8, 10, consume)
     let (_datagramBatchBytes, _datagramBatchReady, _datagramBatchFailure) = net.readManyFromTimeout(socket, 64, 8, 10, consumeFrom)
@@ -2291,6 +2329,7 @@ fn main() -> i64 {
 }
 "#;
     let dead_generated = compile_to_c(dead).expect("dead timeout I/O should tree-shake");
+    assert!(!dead_generated.contains("flux__net_tcp_accept_many_with_timeout("));
     assert!(!dead_generated.contains("flux__net_receive_text_with_timeout("));
     assert!(!dead_generated.contains("flux__net_receive_text_many_with_timeout("));
     assert!(!dead_generated.contains("flux__net_receive_text_from_many_with_timeout("));

@@ -1197,6 +1197,10 @@ fn add_qualified_namespace_completions(
                 "acceptMany",
                 "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
+            (
+                "acceptManyTimeout",
+                "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)",
+            ),
             ("port", "fn net.port(socket: i64) -> (i64, error)"),
             (
                 "peer",
@@ -2802,6 +2806,19 @@ fn signature_help_for_document_cached(
                             "callback: fn(i64) -> void",
                         ],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "acceptManyTimeout" | "tcpAcceptManyWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.acceptManyTimeout",
+                        &[
+                            "listener: i64",
+                            "maxCount: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64) -> void",
+                        ],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -6996,6 +7013,9 @@ mod tests {
         assert!(net_items.contains(
             "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
+        assert!(net_items.contains(
+            "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)"
+        ));
         assert!(net_items.contains("fn net.port(socket: i64) -> (i64, error)"));
         assert!(
             net_items.contains("fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error")
@@ -8379,12 +8399,16 @@ mod tests {
     #[test]
     fn signature_help_supports_network_timeout_io() {
         let uri = "file:///tmp/network-timeout-signatures.flux";
-        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_accepted, _acceptReady, _acceptError) = net.acceptTimeout(1, 0)\n    let (_bytes, _readReady, _readError) = net.readTimeout(1, 64, 0, consume)\n    let (_batchBytes, _batchReady, _batchError) = net.readManyTimeout(1, 64, 8, 0, consume)\n    let (_datagramBytes, _datagramReady, _datagramError) = net.readFromTimeout(1, 64, 0, consumeFrom)\n    let (_datagramBatchBytes, _datagramBatchReady, _datagramBatchError) = net.readManyFromTimeout(1, 64, 8, 0, consumeFrom)\n    let (_written, _writeError) = net.writePartsTimeout(1, [\"a\", \"b\"], 0)\n    return 0\n}\n";
+        let source = "fn accepted(_socket: i64) -> void {\n}\nfn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_accepted, _acceptReady, _acceptError) = net.acceptTimeout(1, 0)\n    let (_acceptedBatch, _acceptBatchReady, _acceptBatchError) = net.acceptManyTimeout(1, 8, 0, accepted)\n    let (_bytes, _readReady, _readError) = net.readTimeout(1, 64, 0, consume)\n    let (_batchBytes, _batchReady, _batchError) = net.readManyTimeout(1, 64, 8, 0, consume)\n    let (_datagramBytes, _datagramReady, _datagramError) = net.readFromTimeout(1, 64, 0, consumeFrom)\n    let (_datagramBatchBytes, _datagramBatchReady, _datagramBatchError) = net.readManyFromTimeout(1, 64, 8, 0, consumeFrom)\n    let (_written, _writeError) = net.writePartsTimeout(1, [\"a\", \"b\"], 0)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
                 "net.acceptTimeout(",
                 "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
+                "net.acceptManyTimeout(",
+                "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.readTimeout(",
