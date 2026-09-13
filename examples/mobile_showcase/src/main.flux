@@ -2,7 +2,7 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 50 406 52 34 68 74 auto
+    grid rows: 50 447 54 34 72 82 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -32,12 +32,12 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 396
-        maxHeight: 406
+        minHeight: 437
+        maxHeight: 447
         backgroundColor: "#11151B"
         borderColor: "#252C36"
         borderWidth: 1
-        radius: 28
+        radius: 30
         shadowColor: "#00000099"
         shadowBlur: 12
         shadowOffsetY: 6
@@ -45,7 +45,7 @@ view HorseTinder {
     Text profileName at 3,1 span columns 3
         text: "Buttercup, 7"
         color: "#FFFFFF"
-        size: 34
+        size: 36
         bold: true
         wrap: false
         alignY: "center"
@@ -83,11 +83,11 @@ view HorseTinder {
         wrap: true
         maxLines: 2
         lineHeightPercent: 135
-        padding: 10
+        padding: 12
         backgroundColor: "#11161D"
         borderColor: "#29313B"
         borderWidth: 1
-        radius: radiusLg
+        radius: 18
 
     Button pass at 6,2
         text: "✕"
