@@ -22067,26 +22067,15 @@ fn checked_i64_reduction(
     }
 
     if matches!(op, BinOp::Add) {
-        match (&left.kind, &right.kind) {
-            (
-                ExprKind::Var(left_name),
-                ExprKind::Unary {
-                    op: UnaryOp::Neg,
-                    expr: negated,
-                },
-            ) if matches!(&negated.kind, ExprKind::Var(right_name) if left_name == right_name) => {
-                return Some(CheckedI64Reduction::ZeroAfterRight);
-            }
-            (
-                ExprKind::Unary {
-                    op: UnaryOp::Neg,
-                    expr: negated,
-                },
-                ExprKind::Var(right_name),
-            ) if matches!(&negated.kind, ExprKind::Var(left_name) if left_name == right_name) => {
-                return Some(CheckedI64Reduction::ZeroAfterLeft);
-            }
-            _ => {}
+        if let Some(negated) = checked_negation_operand(right, signatures)
+            && same_pure_i64_expression(left, negated, signatures)
+        {
+            return Some(CheckedI64Reduction::ZeroAfterRight);
+        }
+        if let Some(negated) = checked_negation_operand(left, signatures)
+            && same_pure_i64_expression(negated, right, signatures)
+        {
+            return Some(CheckedI64Reduction::ZeroAfterLeft);
         }
     }
 
@@ -23106,6 +23095,13 @@ fn dead_store_rhs_is_discardable(
             op: UnaryOp::Not,
             expr,
         } => dead_store_rhs_is_discardable(expr, env, signatures),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => {
+            dead_store_rhs_is_discardable(expr, env, signatures)
+                && i64_expr_result_excludes_min(expr, signatures)
+        }
         ExprKind::Binary { left, op, right }
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
@@ -23126,10 +23122,16 @@ fn dead_store_rhs_is_discardable(
                 Some(CheckedI64Reduction::Right | CheckedI64Reduction::ZeroAfterRight) => {
                     dead_store_rhs_is_discardable(right, env, signatures)
                 }
+                Some(CheckedI64Reduction::NegateLeft) => {
+                    dead_store_rhs_is_discardable(left, env, signatures)
+                        && i64_expr_result_excludes_min(left, signatures)
+                }
+                Some(CheckedI64Reduction::NegateRight) => {
+                    dead_store_rhs_is_discardable(right, env, signatures)
+                        && i64_expr_result_excludes_min(right, signatures)
+                }
                 Some(
-                    CheckedI64Reduction::NegateLeft
-                    | CheckedI64Reduction::NegateRight
-                    | CheckedI64Reduction::DoubleAfterLeft
+                    CheckedI64Reduction::DoubleAfterLeft
                     | CheckedI64Reduction::SquareAfterLeft
                     | CheckedI64Reduction::SelfDivide,
                 )

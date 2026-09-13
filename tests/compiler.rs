@@ -18614,6 +18614,99 @@ app Counter
 }
 
 #[test]
+fn eliminates_dead_checked_negations_when_range_and_rhs_are_proven_safe() {
+    let source = r#"
+fn deadUnary(value: i64) -> i64 {
+    let _unused: i64 = -(value / 2)
+    return value
+}
+
+fn deadSubtract(value: i64) -> i64 {
+    let _unused: i64 = 0 - (value / 2)
+    return value
+}
+
+fn deadMultiply(value: i64) -> i64 {
+    let _unused: i64 = -1 * (value / 2)
+    return value
+}
+
+fn deadDivide(value: i64) -> i64 {
+    let _unused: i64 = (value / 2) / -1
+    return value
+}
+
+fn retainMinimumTrap(value: i64) -> i64 {
+    let _unused: i64 = -(value / 1)
+    return value
+}
+
+fn retainInnerOverflow(value: i64) -> i64 {
+    let _unused: i64 = -(value + 1)
+    return value
+}
+
+fn main() -> i64 {
+    print(deadUnary(8))
+    print(deadSubtract(8))
+    print(deadMultiply(8))
+    print(deadDivide(8))
+    print(retainMinimumTrap(8))
+    print(retainInnerOverflow(8))
+    return 0
+}
+"#;
+
+    check_source(source).expect("dead checked-negation range proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("dead checked negations should use proven range and trap facts");
+    assert!(
+        !generated.contains("/ INT64_C(2)"),
+        "dead divide-by-two plus checked-negation expressions should disappear completely",
+    );
+    assert!(
+        generated.contains("flux_neg_i64(flux__local_value)"),
+        "a dead negation of an unrestricted i64 must retain the possible minimum-value trap",
+    );
+    assert!(
+        generated.contains("flux_add_i64(flux__local_value, INT64_C(1))"),
+        "a dead negation whose inner checked addition may overflow must retain that inner trap",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-dead-safe-negations-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary dead-negation directory should be writable");
+    let c_path = root.join("dead-safe-negations.c");
+    let exe_path = root.join("dead-safe-negations");
+    fs::write(&c_path, &generated).expect("generated dead-negation C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile dead-negation C");
+    assert!(
+        compile.status.success(),
+        "dead-negation C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("dead-negation program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "8\n8\n8\n8\n8\n8\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn reuses_equivalent_pure_checked_i64_arithmetic_operands() {
     let source = r#"
 fn addEquivalent(value: i64, offset: i64) -> i64 {
@@ -18844,6 +18937,135 @@ app Counter
             .count(),
         1,
         "UI lowering should evaluate one authoritative checked negation",
+    );
+}
+
+#[test]
+fn cancels_equivalent_pure_checked_additive_inverses_once() {
+    let source = r#"
+fn cancelRight(value: i64) -> i64 {
+    return (value + 0) + -(0 + value)
+}
+
+fn cancelLeft(value: i64) -> i64 {
+    return (0 - (value * 1)) + (value / 1)
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn retainEffects(value: i64) -> i64 {
+    return observe(value) + -observe(value)
+}
+
+fn main() -> i64 {
+    print(cancelRight(7))
+    print(cancelLeft(8))
+    print(retainEffects(9))
+    return 0
+}
+"#;
+
+    check_source(source).expect("equivalent additive inverses should typecheck");
+    let generated = compile_to_c(source)
+        .expect("equivalent pure additive inverses should cancel after one checked negation");
+    assert!(generated.contains("return ((void)(flux_neg_i64(flux__local_value)), INT64_C(0));"));
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful inverse-looking expressions must retain both source evaluations",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-equivalent-additive-inverse-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary equivalent additive-inverse directory should be writable");
+    let c_path = root.join("equivalent-additive-inverse.c");
+    let exe_path = root.join("equivalent-additive-inverse");
+    fs::write(&c_path, &generated).expect("generated additive-inverse C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile equivalent additive inverses");
+    assert!(
+        compile.status.success(),
+        "equivalent additive-inverse C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("equivalent additive-inverse program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n0\n9\n9\n0\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let trap_source = r#"
+fn cancel(value: i64) -> i64 {
+    return (value + 0) + -(0 + value)
+}
+
+fn main() -> i64 {
+    let minimum: i64 = -9223372036854775807 - 1
+    return cancel(minimum)
+}
+"#;
+    let trap_generated =
+        compile_to_c(trap_source).expect("minimum additive inverse should lower natively");
+    let root = std::env::temp_dir().join(format!(
+        "flux-equivalent-additive-inverse-trap-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary inverse-trap directory should be writable");
+    let c_path = root.join("inverse-trap.c");
+    let exe_path = root.join("inverse-trap");
+    fs::write(&c_path, &trap_generated).expect("generated inverse-trap C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile additive-inverse trap case");
+    assert!(compile.status.success());
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("additive-inverse trap program should run");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("integer negation overflow"));
+    let _ = fs::remove_dir_all(&root);
+
+    let ui = r#"
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 2
+    Button action at 1,1
+        text: "Cancel"
+        onPress: count => (count + 0) + -(0 + count)
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI additive inverse should share optimized lowering");
+    assert_eq!(
+        ui_generated
+            .matches("flux_neg_i64(flux__ui_state_count)")
+            .count(),
+        1,
+        "UI lowering should retain only the authoritative checked negation",
     );
 }
 
