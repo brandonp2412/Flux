@@ -2,7 +2,7 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 50 447 54 34 72 82 auto
+    grid rows: 46 447 54 34 68 80 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -92,24 +92,24 @@ view HorseTinder {
     Button pass at 6,2
         text: "✕"
         visible: !liked && !passed
-        size: 40
+        size: 36
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 72
-        maxWidth: 72
-        minHeight: 72
+        minWidth: 80
+        maxWidth: 80
+        minHeight: 80
         alignX: "center"
         alignY: "center"
         translateX: 83
         focusable: true
         padding: 0
-        radius: 36
+        radius: 40
         backgroundColor: "#151B23"
         borderColor: "#465261"
         borderWidth: 2
         shadowColor: "#00000099"
-        shadowBlur: 10
-        shadowOffsetY: 5
+        shadowBlur: 8
+        shadowOffsetY: 4
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
         onPress: passed => !passed
@@ -117,24 +117,24 @@ view HorseTinder {
     Button like at 6,4
         visible: !liked && !passed
         text: "♥︎"
-        size: 42
+        size: 38
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
-        minWidth: 72
-        maxWidth: 72
-        minHeight: 72
+        minWidth: 80
+        maxWidth: 80
+        minHeight: 80
         alignX: "center"
         alignY: "center"
         translateX: 72
         focusable: true
         padding: 0
-        radius: 36
+        radius: 40
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 2
         shadowColor: "#00000099"
-        shadowBlur: 12
-        shadowOffsetY: 5
+        shadowBlur: 10
+        shadowOffsetY: 4
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
         onPress: liked => !liked
@@ -173,17 +173,19 @@ view HorseTinder {
         color: "#FFE1E5"
         size: 14
         bold: true
+        wrap: false
+        maxLines: 1
         textAlign: "center"
         alignX: "center"
         alignY: "center"
         margin: 8
-        padding: 10
-        minHeight: 54
-        maxHeight: 54
+        padding: 24
+        minHeight: 80
+        maxHeight: 80
         backgroundColor: "#35141AF2"
         borderColor: "#8B3040"
         borderWidth: 1
-        radius: 27
+        radius: 40
         layoutTransitionMs: motionNormal
 
     Text passedNote at 6,1 span columns 5
@@ -191,17 +193,19 @@ view HorseTinder {
         visible: passed
         color: "#E5E7EB"
         size: 13
+        wrap: false
+        maxLines: 1
         textAlign: "center"
         alignX: "center"
         alignY: "center"
         margin: 8
-        padding: 10
-        minHeight: 54
-        maxHeight: 54
+        padding: 24
+        minHeight: 80
+        maxHeight: 80
         backgroundColor: "#11151BF2"
         borderColor: "#343C47"
         borderWidth: 1
-        radius: 27
+        radius: 40
         layoutTransitionMs: motionNormal
 }
 
