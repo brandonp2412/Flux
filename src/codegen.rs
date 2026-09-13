@@ -4291,6 +4291,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         .contains("flux__net_http_receive_request_with_text_body_v2(")
         || runtime_usage.contains("flux__net_http_receive_response_with_text_body_v2(")
         || runtime_usage.contains("flux__net_http_serve_once(")
+        || runtime_usage.contains("flux__net_http_serve(")
         || runtime_usage.contains("flux__net_http_serve_concurrent(");
     let uses_cancellable_net = uses_net_wait
         || runtime_usage.contains("flux__net_tcp_accept_many(")
