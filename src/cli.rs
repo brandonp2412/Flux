@@ -6347,26 +6347,372 @@ __FLUX_PICKER_METHODS__
         .replace("__FLUX_PICKER_METHODS__", picker_methods.as_str())
 }
 
+const ANDROID_WORK_MANAGER_VERSION: &str = "2.11.2";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MavenArtifact {
+    group: String,
+    name: String,
+    version: String,
+    packaging: String,
+}
+
 fn android_work_manager_classpath() -> Result<Vec<PathBuf>, CliError> {
-    let value = env::var_os("FLUX_ANDROID_WORKMANAGER_CLASSPATH").ok_or_else(|| {
-        CliError::Message(
-            "Android WorkManager builds require FLUX_ANDROID_WORKMANAGER_CLASSPATH to contain WorkManager 2.11.2 and its transitive runtime jars; automatic AndroidX dependency acquisition is not implemented yet"
-                .to_string(),
-        )
-    })?;
-    let paths = env::split_paths(&value).collect::<Vec<_>>();
-    if paths.is_empty() {
-        return Err(CliError::Message(
-            "FLUX_ANDROID_WORKMANAGER_CLASSPATH must contain at least one jar".to_string(),
+    if let Some(value) = env::var_os("FLUX_ANDROID_WORKMANAGER_CLASSPATH") {
+        let paths = env::split_paths(&value).collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Err(CliError::Message(
+                "FLUX_ANDROID_WORKMANAGER_CLASSPATH must contain at least one jar".to_string(),
+            ));
+        }
+        if let Some(path) = paths.iter().find(|path| !path.is_file()) {
+            return Err(CliError::Message(format!(
+                "FLUX_ANDROID_WORKMANAGER_CLASSPATH entry '{}' is not a file",
+                path.display()
+            )));
+        }
+        return Ok(paths);
+    }
+    provision_android_work_manager_classpath()
+}
+
+fn provision_android_work_manager_classpath() -> Result<Vec<PathBuf>, CliError> {
+    let cache_root =
+        android_dependency_cache_dir().join(format!("workmanager-{ANDROID_WORK_MANAGER_VERSION}"));
+    fs::create_dir_all(&cache_root)
+        .map_err(|error| format!("failed to create Android dependency cache: {error}"))?;
+    let artifacts = resolve_maven_runtime_graph(
+        "androidx.work",
+        "work-runtime",
+        ANDROID_WORK_MANAGER_VERSION,
+        &cache_root,
+    )?;
+    let mut classpath = Vec::new();
+    for artifact in artifacts {
+        if artifact.packaging == "pom" {
+            continue;
+        }
+        let extension = if artifact.packaging == "aar" {
+            "aar"
+        } else {
+            "jar"
+        };
+        let downloaded = cache_root.join(format!(
+            "{}-{}-{}.{}",
+            artifact.group.replace('.', "_"),
+            artifact.name,
+            artifact.version,
+            extension
         ));
+        download_maven_artifact(&artifact, extension, &downloaded)?;
+        if extension == "aar" {
+            let classes = downloaded.with_extension("classes.jar");
+            if !classes.is_file() {
+                let output = Command::new("unzip")
+                    .args(["-p"])
+                    .arg(&downloaded)
+                    .arg("classes.jar")
+                    .output()
+                    .map_err(|error| {
+                        format!(
+                            "failed to launch unzip for Android dependency '{}': {error}",
+                            downloaded.display()
+                        )
+                    })?;
+                if !output.status.success() || output.stdout.is_empty() {
+                    continue;
+                }
+                fs::write(&classes, output.stdout).map_err(|error| {
+                    format!(
+                        "failed to cache Android dependency classes '{}': {error}",
+                        classes.display()
+                    )
+                })?;
+            }
+            classpath.push(classes);
+        } else {
+            classpath.push(downloaded);
+        }
     }
-    if let Some(path) = paths.iter().find(|path| !path.is_file()) {
-        return Err(CliError::Message(format!(
-            "FLUX_ANDROID_WORKMANAGER_CLASSPATH entry '{}' is not a file",
-            path.display()
-        )));
+    classpath.sort();
+    classpath.dedup();
+    Ok(classpath)
+}
+
+fn android_dependency_cache_dir() -> PathBuf {
+    if let Some(path) = env::var_os("FLUX_CACHE_DIR") {
+        return PathBuf::from(path).join("android/dependencies");
     }
-    Ok(paths)
+    if let Some(path) = env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(path).join("flux/android/dependencies");
+    }
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home).join(".cache/flux/android/dependencies");
+    }
+    env::temp_dir().join("flux-cache/android/dependencies")
+}
+
+fn resolve_maven_runtime_graph(
+    root_group: &str,
+    root_name: &str,
+    root_version: &str,
+    cache_root: &Path,
+) -> Result<Vec<MavenArtifact>, CliError> {
+    let mut selected = HashMap::<(String, String), MavenArtifact>::new();
+    let mut queue = vec![(
+        root_group.to_string(),
+        root_name.to_string(),
+        root_version.to_string(),
+    )];
+    let mut processed = HashSet::<(String, String, String)>::new();
+    while let Some((group, name, version)) = queue.pop() {
+        if !processed.insert((group.clone(), name.clone(), version.clone())) {
+            continue;
+        }
+        let pom_path = cache_root.join(format!(
+            "{}-{}-{}.pom",
+            group.replace('.', "_"),
+            name,
+            version
+        ));
+        download_maven_file(&group, &name, &version, "pom", &pom_path)?;
+        let pom = fs::read_to_string(&pom_path).map_err(|error| {
+            format!(
+                "failed to read cached Maven metadata '{}': {error}",
+                pom_path.display()
+            )
+        })?;
+        let packaging = xml_tag_value(&pom, "packaging").unwrap_or_else(|| "jar".to_string());
+        let candidate = MavenArtifact {
+            group: group.clone(),
+            name: name.clone(),
+            version: version.clone(),
+            packaging,
+        };
+        let key = (group.clone(), name.clone());
+        let replace = selected
+            .get(&key)
+            .is_none_or(|existing| maven_version_is_newer(&version, &existing.version));
+        if replace {
+            selected.insert(key, candidate);
+        }
+        for (dep_group, dep_name, dep_version) in parse_maven_dependencies(&pom)? {
+            let dep_key = (dep_group.clone(), dep_name.clone());
+            let should_queue = selected
+                .get(&dep_key)
+                .is_none_or(|existing| maven_version_is_newer(&dep_version, &existing.version));
+            if should_queue {
+                queue.push((dep_group, dep_name, dep_version));
+            }
+        }
+    }
+    let mut artifacts = selected.into_values().collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| {
+        (&left.group, &left.name, &left.version).cmp(&(&right.group, &right.name, &right.version))
+    });
+    Ok(artifacts)
+}
+
+fn parse_maven_dependencies(pom: &str) -> Result<Vec<(String, String, String)>, CliError> {
+    let properties = xml_section(pom, "properties").unwrap_or_default();
+    let project_version = xml_tag_value(pom, "version").unwrap_or_default();
+    let dependency_management = xml_section(pom, "dependencyManagement").unwrap_or_default();
+    let mut managed = HashMap::<(String, String), String>::new();
+    for block in xml_sections(&dependency_management, "dependency") {
+        let Some(group) = xml_tag_value(&block, "groupId") else {
+            continue;
+        };
+        let Some(name) = xml_tag_value(&block, "artifactId") else {
+            continue;
+        };
+        let Some(version) = xml_tag_value(&block, "version") else {
+            continue;
+        };
+        let version = resolve_maven_value(&version, &properties, &project_version);
+        if !version.contains("${") {
+            managed.insert((group, name), normalize_maven_version(&version));
+        }
+    }
+    let ordinary = if dependency_management.is_empty() {
+        pom.to_string()
+    } else {
+        pom.replacen(
+            &format!("<dependencyManagement>{dependency_management}</dependencyManagement>"),
+            "",
+            1,
+        )
+    };
+    let mut dependencies = Vec::new();
+    for block in xml_sections(&ordinary, "dependency") {
+        let scope = xml_tag_value(&block, "scope").unwrap_or_else(|| "compile".to_string());
+        let optional = xml_tag_value(&block, "optional").unwrap_or_default();
+        if matches!(scope.as_str(), "test" | "provided" | "system") || optional == "true" {
+            continue;
+        }
+        let Some(group) = xml_tag_value(&block, "groupId") else {
+            continue;
+        };
+        let Some(name) = xml_tag_value(&block, "artifactId") else {
+            continue;
+        };
+        let version = xml_tag_value(&block, "version")
+            .map(|value| resolve_maven_value(&value, &properties, &project_version))
+            .or_else(|| managed.get(&(group.clone(), name.clone())).cloned())
+            .ok_or_else(|| {
+                CliError::Message(format!(
+                    "Maven metadata for {group}:{name} does not declare a dependency version"
+                ))
+            })?;
+        if version.contains("${") {
+            return Err(CliError::Message(format!(
+                "Maven metadata for {group}:{name} contains unresolved version '{version}'"
+            )));
+        }
+        dependencies.push((group, name, normalize_maven_version(&version)));
+    }
+    Ok(dependencies)
+}
+
+fn xml_section(text: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    let start = text.find(&start_tag)? + start_tag.len();
+    let end = text[start..].find(&end_tag)? + start;
+    Some(text[start..end].to_string())
+}
+
+fn xml_sections(text: &str, tag: &str) -> Vec<String> {
+    let mut remaining = text;
+    let mut sections = Vec::new();
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    while let Some(start_offset) = remaining.find(&start_tag) {
+        let content_start = start_offset + start_tag.len();
+        let Some(end_offset) = remaining[content_start..].find(&end_tag) else {
+            break;
+        };
+        let end = content_start + end_offset;
+        sections.push(remaining[content_start..end].to_string());
+        remaining = &remaining[end + end_tag.len()..];
+    }
+    sections
+}
+
+fn xml_tag_value(text: &str, tag: &str) -> Option<String> {
+    xml_section(text, tag).map(|value| value.trim().to_string())
+}
+
+fn resolve_maven_value(value: &str, properties: &str, project_version: &str) -> String {
+    let mut resolved = value.to_string();
+    for _ in 0..8 {
+        let Some(start) = resolved.find("${") else {
+            break;
+        };
+        let Some(relative_end) = resolved[start + 2..].find('}') else {
+            break;
+        };
+        let end = start + 2 + relative_end;
+        let key = &resolved[start + 2..end];
+        let replacement = match key {
+            "project.version" | "pom.version" => Some(project_version.to_string()),
+            _ => xml_tag_value(properties, key),
+        };
+        let Some(replacement) = replacement else {
+            break;
+        };
+        resolved.replace_range(start..=end, &replacement);
+    }
+    resolved
+}
+
+fn normalize_maven_version(version: &str) -> String {
+    let version = version.trim();
+    if version.starts_with('[') && version.ends_with(']') && !version.contains(',') {
+        return version[1..version.len() - 1].to_string();
+    }
+    if matches!(version.as_bytes().first(), Some(b'[' | b'('))
+        && let Some(comma) = version.find(',')
+    {
+        return version[1..comma].trim().to_string();
+    }
+    version.to_string()
+}
+
+fn maven_version_is_newer(candidate: &str, existing: &str) -> bool {
+    let key = |value: &str| {
+        value
+            .split(|character: char| !character.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let candidate_key = key(candidate);
+    let existing_key = key(existing);
+    candidate_key > existing_key || (candidate_key == existing_key && candidate > existing)
+}
+
+fn download_maven_artifact(
+    artifact: &MavenArtifact,
+    extension: &str,
+    destination: &Path,
+) -> Result<(), CliError> {
+    download_maven_file(
+        &artifact.group,
+        &artifact.name,
+        &artifact.version,
+        extension,
+        destination,
+    )
+}
+
+fn download_maven_file(
+    group: &str,
+    name: &str,
+    version: &str,
+    extension: &str,
+    destination: &Path,
+) -> Result<(), CliError> {
+    if destination.is_file() {
+        return Ok(());
+    }
+    let relative = format!(
+        "{}/{}/{}/{}-{}.{}",
+        group.replace('.', "/"),
+        name,
+        version,
+        name,
+        version,
+        extension
+    );
+    let temporary = destination.with_extension(format!("{extension}.part"));
+    let repositories = [
+        "https://dl.google.com/dl/android/maven2",
+        "https://repo.maven.apache.org/maven2",
+    ];
+    let mut last_error = String::new();
+    for repository in repositories {
+        let url = format!("{repository}/{relative}");
+        let output = Command::new("curl")
+            .args(["-fL", "--retry", "2", "--connect-timeout", "10", "-o"])
+            .arg(&temporary)
+            .arg(&url)
+            .output()
+            .map_err(|error| format!("failed to launch curl for Android dependency: {error}"))?;
+        if output.status.success() && temporary.is_file() {
+            fs::rename(&temporary, destination).map_err(|error| {
+                format!(
+                    "failed to finalize Android dependency '{}': {error}",
+                    destination.display()
+                )
+            })?;
+            return Ok(());
+        }
+        last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = fs::remove_file(&temporary);
+    }
+    Err(CliError::Message(format!(
+        "failed to acquire Android dependency {group}:{name}:{version} ({extension}): {last_error}"
+    )))
 }
 
 fn compile_android_activity_dex(
@@ -8262,6 +8608,44 @@ app OverlayDemo(title: "Overlay")
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn android_work_manager_maven_metadata_resolves_managed_versions_and_ranges() {
+        let pom = r#"<project>
+<version>2.11.2</version>
+<properties><kotlin.version>2.1.20</kotlin.version></properties>
+<dependencyManagement><dependencies>
+<dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>${kotlin.version}</version></dependency>
+</dependencies></dependencyManagement>
+<dependencies>
+<dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId></dependency>
+<dependency><groupId>androidx.tracing</groupId><artifactId>tracing</artifactId><version>[1.2.0]</version></dependency>
+<dependency><groupId>ignored</groupId><artifactId>test-only</artifactId><version>1</version><scope>test</scope></dependency>
+<dependency><groupId>ignored</groupId><artifactId>optional</artifactId><version>1</version><optional>true</optional></dependency>
+</dependencies>
+</project>"#;
+        let dependencies = match super::parse_maven_dependencies(pom) {
+            Ok(dependencies) => dependencies,
+            Err(_) => panic!("WorkManager Maven metadata should resolve deterministically"),
+        };
+        assert_eq!(
+            dependencies,
+            vec![
+                (
+                    "org.jetbrains.kotlin".to_string(),
+                    "kotlin-stdlib".to_string(),
+                    "2.1.20".to_string(),
+                ),
+                (
+                    "androidx.tracing".to_string(),
+                    "tracing".to_string(),
+                    "1.2.0".to_string(),
+                ),
+            ]
+        );
+        assert!(super::maven_version_is_newer("2.1.20", "1.8.22"));
+        assert!(!super::maven_version_is_newer("1.8.22", "2.1.20"));
     }
 
     #[test]
