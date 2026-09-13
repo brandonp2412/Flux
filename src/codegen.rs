@@ -16801,20 +16801,25 @@ fn block_branch_await_indices(
     allow_trailing_coalescing: bool,
 ) -> Option<Vec<usize>> {
     let mut await_indices = Vec::new();
+    let mut saw_coalescing_await = false;
     for (index, stmt) in block.iter().enumerate() {
         if !stmt_contains_await(stmt) {
             continue;
         }
         if let Some(await_expr) = direct_await_expr(stmt) {
+            if saw_coalescing_await {
+                return None;
+            }
             direct_await_call(await_expr)?;
             await_indices.push(index);
             continue;
         }
         let await_expr = coalescing_assignment_await_expr(stmt)?;
         direct_await_call(await_expr)?;
-        if !await_indices.is_empty() || (!allow_trailing_coalescing && index + 1 != block.len()) {
+        if saw_coalescing_await || (!allow_trailing_coalescing && index + 1 != block.len()) {
             return None;
         }
+        saw_coalescing_await = true;
         await_indices.push(index);
     }
     Some(await_indices)
@@ -17032,6 +17037,13 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
             return None;
         }
         let await_indices = block_branch_await_indices(&arm.body, true)?;
+        if await_indices
+            .iter()
+            .any(|index| coalescing_assignment_await_expr(&arm.body[*index]).is_some())
+            && await_indices.len() != 1
+        {
+            return None;
+        }
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -17066,6 +17078,13 @@ fn async_list_match_await_plan(function: &Function) -> Option<AsyncListMatchAwai
             return None;
         }
         let await_indices = block_branch_await_indices(&arm.body, true)?;
+        if await_indices
+            .iter()
+            .any(|index| coalescing_assignment_await_expr(&arm.body[*index]).is_some())
+            && await_indices.len() != 1
+        {
+            return None;
+        }
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -21806,7 +21825,7 @@ fn emit_async_branch_resume_states(
         if let Some(await_index) = next_await {
             let next_stmt = &await_block[await_index];
             emit_source_line(out, next_stmt.span, context.source_paths);
-            emit_async_suspend(
+            let conditional_suspend = emit_async_branch_suspend(
                 out,
                 "                ",
                 next_stmt,
@@ -21814,8 +21833,45 @@ fn emit_async_branch_resume_states(
                 function,
                 plan,
                 &branch_env,
+                &branch_mutable,
                 signatures,
             )?;
+            if conditional_suspend {
+                let mut present_env = branch_env.clone();
+                let mut present_mutable = branch_mutable.clone();
+                emit_block(
+                    out,
+                    &await_block[await_index + 1..],
+                    4,
+                    &mut present_env,
+                    &mut present_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                let mut present_fallthrough_env = outer_env.clone();
+                let mut present_fallthrough_mutable = outer_mutable.clone();
+                emit_block(
+                    out,
+                    &function.body[tail_start..],
+                    3,
+                    &mut present_fallthrough_env,
+                    &mut present_fallthrough_mutable,
+                    signatures,
+                    temp_counter,
+                    state_context,
+                )?;
+                if function.returns.is_empty() {
+                    out.push_str(&format!(
+                        "{pad}{}(flux__task);\n{pad}return;\n",
+                        async_finish_c_name(&function.name)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+                    ));
+                }
+            }
             previous_await = await_index;
             segment_start = await_index + 1;
         }

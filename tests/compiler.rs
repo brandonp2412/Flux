@@ -41210,6 +41210,84 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_direct_await_then_coalescing_assignment_in_branches_stays_nonblocking() {
+    let source = r#"
+async fn step(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn branch(flag: bool, initial: i64?) -> i64 {
+    var value: i64? = initial
+    if flag:
+        let first: i64 = await step(2)
+        value ??= await step(5)
+        return first + (value ?? 0)
+    else:
+        let first: i64 = await step(3)
+        value ??= await step(6)
+        return first + (value ?? 0)
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let present: i64? = 7
+    let first: i64 = await branch(true, missing)
+    let second: i64 = await branch(true, present)
+    let third: i64 = await branch(false, missing)
+    let fourth: i64 = await branch(false, present)
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source)
+        .expect("direct await followed by branch coalescing await should typecheck");
+    let generated = compile_to_c(source)
+        .expect("direct await followed by branch coalescing await should use continuation states");
+    assert!(generated.contains("flux__async_resume_branch"));
+    assert!(generated.contains("if (!flux__local_value.has_value)"));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(5), flux__async_resume_branch, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(6), flux__async_resume_branch, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(5)))"));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(6)))"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-direct-then-coalescing-branch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mixed branch suspension fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-direct-then-coalescing-branch");
+    fs::write(&source_path, source).expect("mixed branch suspension source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("mixed branch suspension binary should build");
+    assert!(
+        built.status.success(),
+        "mixed branch suspension build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("mixed branch suspension binary should run");
+    assert_eq!(output.status.code(), Some(35));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "2\n5\n2\n3\n6\n3\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_coalescing_assignment_inside_loop_shapes_stays_lazy_and_nonblocking() {
     let source = r#"
 async fn fallback(value: i64) -> i64 {
