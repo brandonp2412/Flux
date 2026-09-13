@@ -44,4 +44,16 @@ flux profile benchmarks/perf/compute.flux --sample
 
 This path is intended for production-representative CPU investigation where `gprof` instrumentation would distort the workload. It requires Linux `perf` plus permission to use the kernel performance counters; restrictive `kernel.perf_event_paranoid` or container policies can still block sampling. `flux doctor` reports whether the `perf` command is installed, and failures point at the kernel permission setting rather than silently falling back to an instrumented profiler. Ordinary Flux binaries remain unchanged.
 
-Task/render timelines remain roadmap work. CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.
+## Task and frame timelines
+
+`flux profile <target> --timeline` builds an isolated optimized profile binary with compiler-owned timeline tracing enabled only for that run. The report is emitted as tab-separated monotonic timestamps with `category`, `name`, `phase`, and `value` columns, then the temporary trace and binary are removed.
+
+```sh
+flux profile examples/profiling.flux --timeline
+```
+
+Async task tracing records task start, continuation suspension, and finish events, including the continuation state number at suspension/finish. Application tracing records UI refresh begin/end spans and explicit `frame.request` / `frame.timeline` callback begin/end spans, with animation progress carried in the value column. This makes task stalls and render work comparable on one monotonic clock without exposing a framework object hierarchy.
+
+Timeline tracing is opt-in at native compile time through the dedicated profiler path. Normal debug/profile/release builds preprocess the trace calls to no-ops and do not open trace files, sample clocks, or carry a timeline runtime tax.
+
+CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.

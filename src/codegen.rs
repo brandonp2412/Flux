@@ -1621,6 +1621,7 @@ fn emit_runtime_prelude(
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
         || runtime_usage.contains("flux__net_http_serve_concurrent(");
+    out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n#ifndef _POSIX_C_SOURCE\n#define _POSIX_C_SOURCE 200809L\n#endif\n#endif\n");
     if runtime_usage.contains("flux__locale_format_") {
         out.push_str("#define _XOPEN_SOURCE 700\n");
     }
@@ -1642,6 +1643,7 @@ fn emit_runtime_prelude(
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
+    out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n#include <time.h>\nstatic void flux__profile_timeline_emit(const char *category, const char *name, const char *phase, int64_t value) { const char *path = getenv(\"FLUX_TIMELINE_FILE\"); if (path == NULL || path[0] == '\\0') return; struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return; FILE *file = fopen(path, \"a\"); if (file == NULL) return; int64_t micros = (int64_t)now.tv_sec * INT64_C(1000000) + (int64_t)(now.tv_nsec / 1000); fprintf(file, \"%lld\\t%s\\t%s\\t%s\\t%lld\\n\", (long long)micros, category, name, phase, (long long)value); fclose(file); }\n#else\n#define flux__profile_timeline_emit(category, name, phase, value) ((void)0)\n#endif\n");
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
@@ -2747,21 +2749,21 @@ fn emit_runtime_prelude(
     }
     if uses_frame_request && uses_gtk {
         out.push_str("typedef struct { void (*callback)(void); } FluxFrameRequest;\n");
-        out.push_str("static gboolean flux__frame_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; (void)clock; FluxFrameRequest *request = (FluxFrameRequest *)data; if (request != NULL && request->callback != NULL) request->callback(); return G_SOURCE_REMOVE; }\n");
+        out.push_str("static gboolean flux__frame_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; (void)clock; FluxFrameRequest *request = (FluxFrameRequest *)data; if (request != NULL && request->callback != NULL) { flux__profile_timeline_emit(\"frame\", \"request\", \"begin\", 0); request->callback(); flux__profile_timeline_emit(\"frame\", \"request\", \"end\", 0); } return G_SOURCE_REMOVE; }\n");
         out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL) return; GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return; FluxFrameRequest *request = g_new0(FluxFrameRequest, 1); request->callback = callback; gtk_widget_add_tick_callback(GTK_WIDGET(window), flux__frame_tick, request, g_free); }\n");
     }
     if uses_frame_timeline && uses_gtk {
         out.push_str("typedef struct { void (*callback)(int64_t); int64_t duration_ms; gint64 start_us; } FluxFrameTimeline;\n");
-        out.push_str("static gboolean flux__frame_timeline_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; FluxFrameTimeline *timeline = (FluxFrameTimeline *)data; if (timeline == NULL || timeline->callback == NULL) return G_SOURCE_REMOVE; gint64 now_us = gdk_frame_clock_get_frame_time(clock); if (timeline->start_us < 0) timeline->start_us = now_us; gint64 elapsed_us = now_us - timeline->start_us; long double elapsed_ms = (long double)elapsed_us / 1000.0L; int64_t progress = timeline->duration_ms <= 0 || elapsed_ms >= (long double)timeline->duration_ms ? INT64_C(1000) : (int64_t)(elapsed_ms * 1000.0L / (long double)timeline->duration_ms); if (progress < 0) progress = 0; if (progress > 1000) progress = 1000; timeline->callback(progress); return progress >= 1000 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE; }\n");
+        out.push_str("static gboolean flux__frame_timeline_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) { (void)widget; FluxFrameTimeline *timeline = (FluxFrameTimeline *)data; if (timeline == NULL || timeline->callback == NULL) return G_SOURCE_REMOVE; gint64 now_us = gdk_frame_clock_get_frame_time(clock); if (timeline->start_us < 0) timeline->start_us = now_us; gint64 elapsed_us = now_us - timeline->start_us; long double elapsed_ms = (long double)elapsed_us / 1000.0L; int64_t progress = timeline->duration_ms <= 0 || elapsed_ms >= (long double)timeline->duration_ms ? INT64_C(1000) : (int64_t)(elapsed_ms * 1000.0L / (long double)timeline->duration_ms); if (progress < 0) progress = 0; if (progress > 1000) progress = 1000; flux__profile_timeline_emit(\"frame\", \"timeline\", \"begin\", progress); timeline->callback(progress); flux__profile_timeline_emit(\"frame\", \"timeline\", \"end\", progress); return progress >= 1000 ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE; }\n");
         out.push_str("static void flux__frame_timeline(int64_t duration_ms, void (*callback)(int64_t)) { if (callback == NULL) return; if (duration_ms < 0) { fputs(\"Flux runtime error: frame.timeline durationMs must be non-negative\\n\", stderr); abort(); } GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return; GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(application)); if (window == NULL) return; FluxFrameTimeline *timeline = g_new0(FluxFrameTimeline, 1); timeline->callback = callback; timeline->duration_ms = duration_ms; timeline->start_us = -1; gtk_widget_add_tick_callback(GTK_WIDGET(window), flux__frame_timeline_tick, timeline, g_free); }\n");
     }
     if uses_frame_request && uses_android {
         out.push_str("static void flux__frame_request(void (*callback)(void)) { if (callback == NULL || flux__android_activity == NULL) return; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity); if (activity_class != NULL) { jmethodID request_frame = (*env)->GetMethodID(env, activity_class, \"fluxRequestFrame\", \"(J)V\"); if (request_frame != NULL) (*env)->CallVoidMethod(env, activity, request_frame, (jlong)(intptr_t)callback); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); }\n");
-        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer) { (void)env; (void)activity_class; void (*callback)(void) = (void (*)(void))(intptr_t)callback_pointer; if (callback != NULL) callback(); }\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer) { (void)env; (void)activity_class; void (*callback)(void) = (void (*)(void))(intptr_t)callback_pointer; if (callback != NULL) { flux__profile_timeline_emit(\"frame\", \"request\", \"begin\", 0); callback(); flux__profile_timeline_emit(\"frame\", \"request\", \"end\", 0); } }\n");
     }
     if uses_frame_timeline && uses_android {
         out.push_str("static void flux__frame_timeline(int64_t duration_ms, void (*callback)(int64_t)) { if (callback == NULL || flux__android_activity == NULL) return; if (duration_ms < 0) { fputs(\"Flux runtime error: frame.timeline durationMs must be non-negative\\n\", stderr); abort(); } bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return; jobject activity = flux__android_activity->clazz; jclass activity_class = (*env)->GetObjectClass(env, activity); if (activity_class != NULL) { jmethodID start_timeline = (*env)->GetMethodID(env, activity_class, \"fluxStartTimeline\", \"(JJ)V\"); if (start_timeline != NULL) (*env)->CallVoidMethod(env, activity, start_timeline, (jlong)duration_ms, (jlong)(intptr_t)callback); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); flux__android_release_env(detach); }\n");
-        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer, jlong progress) { (void)env; (void)activity_class; void (*callback)(int64_t) = (void (*)(int64_t))(intptr_t)callback_pointer; if (callback != NULL) callback((int64_t)progress); }\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame(JNIEnv *env, jclass activity_class, jlong callback_pointer, jlong progress) { (void)env; (void)activity_class; void (*callback)(int64_t) = (void (*)(int64_t))(intptr_t)callback_pointer; if (callback != NULL) { flux__profile_timeline_emit(\"frame\", \"timeline\", \"begin\", (int64_t)progress); callback((int64_t)progress); flux__profile_timeline_emit(\"frame\", \"timeline\", \"end\", (int64_t)progress); } }\n");
     }
     if uses_portable_focus && uses_gtk {
         out.push_str("static GtkWindow *flux__focus_active_window(void) { GApplication *application = g_application_get_default(); if (application == NULL || !GTK_IS_APPLICATION(application)) return NULL; return gtk_application_get_active_window(GTK_APPLICATION(application)); }\n");
@@ -11969,7 +11971,7 @@ fn emit_android_ui_refresh(
 ) -> Result<(), Diagnostic> {
     let runtime_names = android_ui_runtime_value_names(view);
     let runtime_dependencies = ui_runtime_dependency_map(view);
-    out.push_str("static void flux__android_ui_refresh(JNIEnv *env, jobject activity, int changed_state) {\n");
+    out.push_str("static void flux__android_ui_refresh(JNIEnv *env, jobject activity, int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n");
     for derived in &view.derived {
         if !runtime_names.contains(&derived.name) {
             continue;
@@ -11985,10 +11987,10 @@ fn emit_android_ui_refresh(
         ));
     }
     out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
-    out.push_str("    if (activity_class == NULL) return;\n");
+    out.push_str("    if (activity_class == NULL) { flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n");
     out.push_str("    jmethodID find_view = (*env)->GetMethodID(env, activity_class, \"findViewById\", \"(I)Landroid/view/View;\");\n");
     out.push_str(
-        "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); return; }\n",
+        "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n",
     );
 
     for element in &view.elements {
@@ -13135,7 +13137,7 @@ fn emit_android_ui_refresh(
         out.push_str("    }\n");
     }
     out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
-    out.push_str("}\n\n");
+    out.push_str("    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeRefreshUi(JNIEnv *env, jobject activity) { flux__android_ui_refresh(env, activity, -1); }\n\n");
     Ok(())
 }
@@ -13743,7 +13745,7 @@ fn emit_ui_refresh(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let runtime_dependencies = ui_runtime_dependency_map(view);
-    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n");
+    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n");
     for derived in &view.derived {
         let value = ui_expr_c(&derived.value, view, signatures)?;
         let dependencies = runtime_dependencies
@@ -14120,7 +14122,7 @@ fn emit_ui_refresh(
         }
         out.push_str("    }\n");
     }
-    out.push_str("}\n\n");
+    out.push_str("    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
     out.push_str("static inline void flux__ui_refresh(void) { flux__ui_refresh_changed(-1); }\n\n");
     Ok(())
 }
@@ -18830,6 +18832,10 @@ fn emit_async_task_runtime(
     out.push_str("    free(flux__task);\n}\n");
 
     out.push_str(&format!("{} {{\n", async_finish_prototype(function)));
+    out.push_str(&format!(
+        "    flux__profile_timeline_emit(\"task\", \"{}\", \"finish\", flux__task->state);\n",
+        function.name.replace('\\', "\\\\").replace('"', "\\\"")
+    ));
     out.push_str("    const char *flux__scope_error = flux__async_scope_finish();\n");
     out.push_str(
         "    if (flux__task->scope_error == NULL) flux__task->scope_error = flux__scope_error;\n",
@@ -18871,6 +18877,10 @@ fn emit_async_task_runtime(
     out.push_str("    if (pthread_mutex_init(&flux__task->mutex, NULL) != 0) { free(flux__task); fputs(\"Flux runtime error: unable to initialize async task mutex\\n\", stderr); abort(); }\n");
     out.push_str("    if (pthread_cond_init(&flux__task->completed, NULL) != 0) { pthread_mutex_destroy(&flux__task->mutex); free(flux__task); fputs(\"Flux runtime error: unable to initialize async task condition\\n\", stderr); abort(); }\n");
     out.push_str("    flux__task->done = false;\n    flux__task->state = 0;\n");
+    out.push_str(&format!(
+        "    flux__profile_timeline_emit(\"task\", \"{}\", \"start\", 0);\n",
+        function.name.replace('\\', "\\\\").replace('"', "\\\"")
+    ));
     out.push_str("    flux__task->continuation = flux__continuation;\n    flux__task->continuation_context = flux__context;\n");
     out.push_str("    flux__task->worker_scope_id = flux__async_scope_create();\n    flux__task->scope_error = NULL;\n");
     out.push_str(&format!(
@@ -19251,6 +19261,10 @@ fn emit_async_suspend(
         }
     }
     out.push_str(&format!("{pad}flux__task->state = {next_state};\n"));
+    out.push_str(&format!(
+        "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
+        function.name.replace('\\', "\\\\").replace('"', "\\\"")
+    ));
     let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
     let mut start_args = rendered;
     start_args.push(async_resume_c_name(&function.name));

@@ -25845,6 +25845,15 @@ app TimelineScreen(onStart: startAnimation)
     assert!(linux.contains("G_SOURCE_CONTINUE"));
     assert!(linux.contains("flux__frame_timeline(INT64_C(200)"));
     assert!(linux.contains("timeline->callback(progress)"));
+    assert!(
+        linux.contains("flux__profile_timeline_emit(\"frame\", \"timeline\", \"begin\", progress)")
+    );
+    assert!(
+        linux.contains("flux__profile_timeline_emit(\"frame\", \"timeline\", \"end\", progress)")
+    );
+    assert!(linux.contains(
+        "flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state)"
+    ));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("animation timeline fixture should analyze");
@@ -35936,6 +35945,49 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn timeline_profiler_reports_async_task_lifecycle() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn main() -> i64 {
+    let value: i64 = await addOne(1)
+    return value - 2
+}
+"#;
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-timeline-profile-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("timeline profile fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("timeline profile source should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("profile")
+        .arg(&source_path)
+        .arg("--timeline")
+        .output()
+        .expect("timeline profiler should run");
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        output.status.success(),
+        "timeline profiler failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("profile: timeline report"));
+    assert!(stdout.contains("\ttask\tmain\tstart\t0"));
+    assert!(stdout.contains("\ttask\tmain\tsuspend\t"));
+    assert!(stdout.contains("\ttask\taddOne\tstart\t0"));
+    assert!(stdout.contains("\ttask\taddOne\tfinish\t"));
+    assert!(stdout.contains("\ttask\tmain\tfinish\t"));
+}
+
+#[test]
 fn async_coalescing_assignment_suspends_only_for_missing_values() {
     let source = r#"
 async fn fallback(value: i64) -> i64 {
@@ -35980,6 +36032,15 @@ async fn main() -> i64 {
     assert!(generated.contains("flux__async_resume_fillMissing"));
     assert!(generated.contains("flux__async_resume_keepPresent"));
     assert!(generated.contains("flux__async_resume_fillOptional"));
+    assert!(
+        generated.contains("flux__profile_timeline_emit(\"task\", \"fillMissing\", \"start\", 0)")
+    );
+    assert!(
+        generated.contains("flux__profile_timeline_emit(\"task\", \"fillMissing\", \"suspend\"")
+    );
+    assert!(
+        generated.contains("flux__profile_timeline_emit(\"task\", \"fillMissing\", \"finish\"")
+    );
     assert!(generated.contains("if (!flux__local_value.has_value)"));
     assert!(generated.contains(
         "flux__async_start_cont_fallback(INT64_C(9), flux__async_resume_fillMissing, flux__task)"

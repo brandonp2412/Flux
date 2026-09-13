@@ -65,6 +65,7 @@ enum NativeInstrumentation {
     Gprof,
     Coverage,
     AddressSanitizer,
+    Timeline,
 }
 
 impl NativeInstrumentation {
@@ -74,6 +75,7 @@ impl NativeInstrumentation {
             Self::Gprof => "gprof",
             Self::Coverage => "coverage-v2",
             Self::AddressSanitizer => "asan-v1",
+            Self::Timeline => "timeline-v1",
         }
     }
 }
@@ -136,6 +138,7 @@ enum ProfileKind {
     Allocation,
     Leaks,
     Sampling,
+    Timeline,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -535,6 +538,7 @@ fn run() -> Result<(), CliError> {
                 ProfileKind::Allocation => profile_allocation_target(&options.target),
                 ProfileKind::Leaks => profile_leak_target(&options.target),
                 ProfileKind::Sampling => profile_sampling_target(&options.target),
+                ProfileKind::Timeline => profile_timeline_target(&options.target),
             }
         }
         "symbolize" => {
@@ -2521,6 +2525,76 @@ fn profile_sampling_target(target: &Path) -> Result<(), CliError> {
     }
 }
 
+fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
+    let sources = validate_project(target)?;
+    let generated = match fluxc::project::compile_to_c(target) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let binary = profile_binary_path();
+    let timeline = profile_timeline_data_path();
+    let _ = fs::remove_file(&timeline);
+    let native_package = native_package_config_for_target(target)?;
+    build_native_instrumented(
+        &generated,
+        &binary,
+        BuildMode::Profile,
+        NativeInstrumentation::Timeline,
+        native_package.as_ref(),
+    )?;
+
+    eprintln!("profile: recording task/frame timeline");
+    let run_status = Command::new(&binary)
+        .env("FLUX_TIMELINE_FILE", &timeline)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| {
+            format!(
+                "failed to launch timeline-profiled binary '{}': {error}",
+                binary.display()
+            )
+        });
+
+    let report = if timeline.is_file() {
+        fs::read_to_string(&timeline).map_err(|error| {
+            format!(
+                "failed to read timeline profile '{}': {error}",
+                timeline.display()
+            )
+        })?
+    } else {
+        String::new()
+    };
+    if report.is_empty() {
+        eprintln!("profile: timeline contained no task/frame events");
+    } else {
+        eprintln!("profile: timeline report (monotonic_us\tcategory\tname\tphase\tvalue)");
+        print!("{report}");
+        io::stdout()
+            .flush()
+            .map_err(|error| format!("failed to flush timeline report: {error}"))?;
+    }
+
+    let _ = fs::remove_file(&binary);
+    let _ = fs::remove_file(&timeline);
+    let run_status = run_status?;
+    if run_status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "profiled program exited with status {}",
+            run_status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string())
+        )))
+    }
+}
+
 fn profile_binary_path() -> PathBuf {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     env::temp_dir().join(format!("flux-profile-{}{suffix}", std::process::id()))
@@ -2528,6 +2602,10 @@ fn profile_binary_path() -> PathBuf {
 
 fn profile_sampling_data_path() -> PathBuf {
     env::temp_dir().join(format!("flux-perf-{}.data", std::process::id()))
+}
+
+fn profile_timeline_data_path() -> PathBuf {
+    env::temp_dir().join(format!("flux-timeline-{}.tsv", std::process::id()))
 }
 
 fn profile_data_dir() -> PathBuf {
@@ -3652,7 +3730,7 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
 fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
     let Some(target) = args.first() else {
         return Err(
-            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample]'"
+            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample|--timeline]'"
                 .to_string(),
         );
     };
@@ -3662,32 +3740,40 @@ fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
 
     let mut kind = ProfileKind::Cpu;
     let mut mode_seen = false;
+    let duplicate = "profile modes '--alloc', '--leaks', '--sample', and '--timeline' are mutually exclusive and may only be supplied once";
     for flag in &args[1..] {
         match flag.as_str() {
             "--alloc" => {
                 if mode_seen {
-                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
+                    return Err(duplicate.to_string());
                 }
                 kind = ProfileKind::Allocation;
                 mode_seen = true;
             }
             "--leaks" => {
                 if mode_seen {
-                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
+                    return Err(duplicate.to_string());
                 }
                 kind = ProfileKind::Leaks;
                 mode_seen = true;
             }
             "--sample" => {
                 if mode_seen {
-                    return Err("profile modes '--alloc', '--leaks', and '--sample' are mutually exclusive and may only be supplied once".to_string());
+                    return Err(duplicate.to_string());
                 }
                 kind = ProfileKind::Sampling;
                 mode_seen = true;
             }
+            "--timeline" => {
+                if mode_seen {
+                    return Err(duplicate.to_string());
+                }
+                kind = ProfileKind::Timeline;
+                mode_seen = true;
+            }
             _ => {
                 return Err(format!(
-                    "unknown profile option '{flag}'; expected '--alloc', '--leaks', or '--sample'"
+                    "unknown profile option '{flag}'; expected '--alloc', '--leaks', '--sample', or '--timeline'"
                 ));
             }
         }
@@ -6829,6 +6915,9 @@ fn build_native_configured(
         NativeInstrumentation::AddressSanitizer => {
             command.arg("-fsanitize=address");
         }
+        NativeInstrumentation::Timeline => {
+            command.arg("-DFLUX_PROFILE_TIMELINE=1");
+        }
     }
     command.args(&native_cflags);
     command.args(["-x", "c", "-"]);
@@ -7044,6 +7133,10 @@ fn usage() -> String {
         "--format directory|tar.gz|container|systemd",
         "--format directory|tar.gz|container|systemd|static",
     )
+    .replace(
+        "[--alloc|--leaks|--sample]",
+        "[--alloc|--leaks|--sample|--timeline]",
+    )
 }
 
 #[cfg(test)]
@@ -7106,6 +7199,10 @@ mod tests {
         let sampling = profile_options(&["app.flux".to_string(), "--sample".to_string()])
             .expect("sampling profile should parse");
         assert_eq!(sampling.kind, ProfileKind::Sampling);
+
+        let timeline = profile_options(&["app.flux".to_string(), "--timeline".to_string()])
+            .expect("timeline profile should parse");
+        assert_eq!(timeline.kind, ProfileKind::Timeline);
         assert!(profile_options(&["--alloc".to_string()]).is_err());
         assert!(
             profile_options(&[
@@ -7131,7 +7228,36 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(
+            profile_options(&[
+                "app.flux".to_string(),
+                "--timeline".to_string(),
+                "--alloc".to_string(),
+            ])
+            .is_err()
+        );
         assert!(profile_options(&["app.flux".to_string(), "--heap".to_string()]).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeline_instrumentation_defines_native_trace_macro() {
+        let binary =
+            std::env::temp_dir().join(format!("flux-timeline-test-{}", std::process::id()));
+        let source = "#ifndef FLUX_PROFILE_TIMELINE\n#error timeline instrumentation macro missing\n#endif\nint main(void) { return 0; }\n";
+        build_native_instrumented(
+            source,
+            &binary,
+            BuildMode::Profile,
+            NativeInstrumentation::Timeline,
+            None,
+        )
+        .expect("timeline profile binary should build");
+        let status = std::process::Command::new(&binary)
+            .status()
+            .expect("timeline profile binary should run");
+        let _ = std::fs::remove_file(&binary);
+        assert!(status.success());
     }
 
     #[cfg(target_os = "linux")]
