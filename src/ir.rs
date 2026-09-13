@@ -352,6 +352,15 @@ pub struct ControlFlowBorrowState {
     borrows: Vec<OwnershipBorrowedBinding>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipBorrowEnd {
+    pub from: ControlFlowNodeId,
+    pub to: ControlFlowNodeId,
+    pub borrower: String,
+    pub source: String,
+    pub origin: SourceSpan,
+}
+
 impl ControlFlowBorrowState {
     pub fn borrows(&self) -> &[OwnershipBorrowedBinding] {
         &self.borrows
@@ -419,6 +428,7 @@ pub struct ControlFlowGraph {
     live_before: Vec<ControlFlowLiveState>,
     live_after: Vec<ControlFlowLiveState>,
     borrow_states_before: Vec<ControlFlowBorrowState>,
+    borrow_ends: Vec<OwnershipBorrowEnd>,
 }
 
 impl ControlFlowGraph {
@@ -583,6 +593,10 @@ impl ControlFlowGraph {
 
     pub fn borrow_state_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowBorrowState> {
         self.borrow_states_before.get(id.0)
+    }
+
+    pub fn borrow_ends(&self) -> &[OwnershipBorrowEnd] {
+        &self.borrow_ends
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -1009,8 +1023,10 @@ impl<'a> ControlFlowBuilder<'a> {
             live_before,
             live_after,
             borrow_states_before: Vec::new(),
+            borrow_ends: Vec::new(),
         };
         graph.borrow_states_before = compute_borrow_states(&graph);
+        graph.borrow_ends = compute_borrow_ends(&graph);
         graph
     }
 
@@ -4039,6 +4055,42 @@ fn compute_liveness(
         before.into_iter().map(into_state).collect(),
         after.into_iter().map(into_state).collect(),
     )
+}
+
+fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
+    let mut ends = Vec::new();
+    for edge in graph.edges() {
+        if !graph.is_reachable(edge.from) || !graph.is_reachable(edge.to) {
+            continue;
+        }
+        let Some(from_state) = graph.borrow_state_before(edge.from) else {
+            continue;
+        };
+        let Some(to_state) = graph.borrow_state_before(edge.to) else {
+            continue;
+        };
+        for borrow in from_state.borrows() {
+            if !to_state.contains(&borrow.borrower, &borrow.source) {
+                ends.push(OwnershipBorrowEnd {
+                    from: edge.from,
+                    to: edge.to,
+                    borrower: borrow.borrower.clone(),
+                    source: borrow.source.clone(),
+                    origin: borrow.origin,
+                });
+            }
+        }
+    }
+    ends.sort_by(|left, right| {
+        left.from
+            .cmp(&right.from)
+            .then_with(|| left.to.cmp(&right.to))
+            .then_with(|| left.borrower.cmp(&right.borrower))
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
+    });
+    ends.dedup();
+    ends
 }
 
 fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState> {

@@ -11160,6 +11160,23 @@ fn main() -> i64 {
         !destination_borrows.contains("tail", "source"),
         "the tail borrow lifetime should end after its final reachable use"
     );
+    let tail_end = graph
+        .borrow_ends()
+        .iter()
+        .find(|end| end.borrower == "tail" && end.source == "source")
+        .expect("normalized ownership IR should expose the edge where the tail borrow ends");
+    assert!(
+        graph
+            .borrow_state_before(tail_end.from)
+            .is_some_and(|state| state.contains("tail", "source")),
+        "the explicit end edge must leave a state where the borrow is still live"
+    );
+    assert!(
+        graph
+            .borrow_state_before(tail_end.to)
+            .is_some_and(|state| !state.contains("tail", "source")),
+        "the explicit end edge must enter a state where the borrow is dead"
+    );
 
     let chained_view = r#"
 fn main() -> i64 {
@@ -11467,6 +11484,17 @@ fn main() -> i64 {
             .iter()
             .any(|state| !state.contains("projected", "source")),
         "the sibling owned branch must not inherit the borrowed branch lifetime"
+    );
+    let branch_end = graph
+        .borrow_ends()
+        .iter()
+        .find(|end| end.borrower == "projected" && end.source == "source")
+        .expect("the borrowed branch should expose an explicit projected -> source end edge");
+    assert!(
+        graph
+            .borrow_state_before(branch_end.to)
+            .is_some_and(|state| !state.contains("projected", "source")),
+        "the branch-local borrow must be dead immediately after its explicit end edge"
     );
 }
 
