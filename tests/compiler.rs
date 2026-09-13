@@ -36474,6 +36474,73 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn ui_profiler_inspector_reports_flat_source_controls() {
+    let source = r#"
+view InspectorDemo {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = false
+
+    Text title at 1,1
+        text: "Inspector"
+        visible: !active
+
+    Button action at 2,1
+        text: "Toggle"
+        onPress: active => !active
+}
+
+app InspectorDemo(title: "Inspector")
+"#;
+    let root =
+        std::env::temp_dir().join(format!("flux-ui-inspector-profile-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UI inspector fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("UI inspector source should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("profile")
+        .arg(&source_path)
+        .arg("--inspect-ui")
+        .output()
+        .expect("UI inspector should run");
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        output.status.success(),
+        "UI inspector failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("profile: UI inspector"));
+    assert!(stdout.contains("view\tInspectorDemo\tstates=1\tderived=0\telements=2"));
+    assert!(stdout.contains("state\tactive\t"));
+    assert!(stdout.contains("element\ttitle\tText\trow=1\tcolumn=1"));
+    assert!(stdout.contains("properties=text,visible"));
+    assert!(stdout.contains("element\taction\tButton\trow=2\tcolumn=1"));
+    assert!(stdout.contains("properties=text,onPress"));
+}
+
+#[test]
+fn performance_overlay_profiler_codegen_is_timeline_only_and_source_level() {
+    let source = r#"
+view OverlayDemo {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Overlay"
+}
+app OverlayDemo(title: "Overlay")
+"#;
+    let generated = compile_to_c(source).expect("overlay app should compile");
+    assert!(generated.contains("FLUX_PERF_OVERLAY"));
+    assert!(generated.contains("flux__profile_overlay_label"));
+    assert!(generated.contains("#ifdef FLUX_PROFILE_TIMELINE"));
+    assert!(generated.contains("Flux refresh %.2f ms | state %d"));
+}
+
+#[test]
 fn timeline_profiler_reports_async_task_lifecycle() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {

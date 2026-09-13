@@ -9906,7 +9906,7 @@ fn emit_linux_gtk_application(
     }
 
     out.push_str(&format!(
-        "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
+        "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n#ifdef FLUX_PROFILE_TIMELINE\nstatic GtkWidget *flux__profile_overlay_label = NULL;\n#endif\n"
     ));
     if view_uses_text_input_validation(view) {
         out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
@@ -11711,6 +11711,10 @@ fn emit_linux_gtk_application(
             element.row_span,
         ));
     }
+    let overlay_columns = view.grid.columns.len().max(1);
+    out.push_str(&format!(
+        "#ifdef FLUX_PROFILE_TIMELINE\n    if (getenv(\"FLUX_PERF_OVERLAY\") != NULL) {{\n        flux__profile_overlay_label = gtk_label_new(\"Flux refresh: waiting\");\n        gtk_widget_add_css_class(flux__profile_overlay_label, \"osd\");\n        gtk_widget_set_halign(flux__profile_overlay_label, GTK_ALIGN_END);\n        gtk_widget_set_valign(flux__profile_overlay_label, GTK_ALIGN_START);\n        gtk_widget_set_margin_top(flux__profile_overlay_label, 8);\n        gtk_widget_set_margin_end(flux__profile_overlay_label, 8);\n        gtk_grid_attach(GTK_GRID(grid), flux__profile_overlay_label, 0, 0, {overlay_columns}, 1);\n    }}\n#endif\n"
+    ));
     let accessibility_order = ordered_accessibility_elements(view, signatures)?;
     for pair in accessibility_order.windows(2) {
         let current = linux_ui_host_c_name(pair[0]);
@@ -14000,7 +14004,7 @@ fn emit_ui_refresh(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let runtime_dependencies = ui_runtime_dependency_map(view);
-    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state);\n");
+    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state);\n#ifdef FLUX_PROFILE_TIMELINE\n    struct timespec flux__profile_refresh_started = {0};\n    bool flux__profile_refresh_timed = flux__profile_overlay_label != NULL && clock_gettime(CLOCK_MONOTONIC, &flux__profile_refresh_started) == 0;\n#endif\n");
     for derived in &view.derived {
         let value = ui_expr_c(&derived.value, view, signatures)?;
         let dependencies = runtime_dependencies
@@ -14377,7 +14381,7 @@ fn emit_ui_refresh(
         }
         out.push_str("    }\n");
     }
-    out.push_str("    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state);\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
+    out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n    if (flux__profile_refresh_timed) {\n        struct timespec flux__profile_refresh_finished = {0};\n        if (clock_gettime(CLOCK_MONOTONIC, &flux__profile_refresh_finished) == 0) {\n            int64_t flux__profile_refresh_us = (int64_t)(flux__profile_refresh_finished.tv_sec - flux__profile_refresh_started.tv_sec) * INT64_C(1000000) + (int64_t)(flux__profile_refresh_finished.tv_nsec - flux__profile_refresh_started.tv_nsec) / INT64_C(1000);\n            char flux__profile_overlay_text[96];\n            snprintf(flux__profile_overlay_text, sizeof(flux__profile_overlay_text), \"Flux refresh %.2f ms | state %d\", (double)flux__profile_refresh_us / 1000.0, changed_state);\n            gtk_label_set_text(GTK_LABEL(flux__profile_overlay_label), flux__profile_overlay_text);\n        }\n    }\n#endif\n    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state);\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
     out.push_str("static inline void flux__ui_refresh(void) { flux__ui_refresh_changed(-1); }\n\n");
     Ok(())
 }

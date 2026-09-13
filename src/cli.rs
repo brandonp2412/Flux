@@ -139,6 +139,8 @@ enum ProfileKind {
     Leaks,
     Sampling,
     Timeline,
+    UiInspector,
+    PerformanceOverlay,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -538,7 +540,9 @@ fn run() -> Result<(), CliError> {
                 ProfileKind::Allocation => profile_allocation_target(&options.target),
                 ProfileKind::Leaks => profile_leak_target(&options.target),
                 ProfileKind::Sampling => profile_sampling_target(&options.target),
-                ProfileKind::Timeline => profile_timeline_target(&options.target),
+                ProfileKind::Timeline => profile_timeline_target(&options.target, false),
+                ProfileKind::UiInspector => profile_ui_inspector_target(&options.target),
+                ProfileKind::PerformanceOverlay => profile_timeline_target(&options.target, true),
             }
         }
         "symbolize" => {
@@ -2525,7 +2529,68 @@ fn profile_sampling_target(target: &Path) -> Result<(), CliError> {
     }
 }
 
-fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
+fn profile_ui_inspector_target(target: &Path) -> Result<(), CliError> {
+    let sources = validate_project(target)?;
+    let analysis = match fluxc::project::analyze(target) {
+        Ok(analysis) => analysis,
+        Err(diagnostics) => {
+            report_diagnostics(target, &diagnostics, &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let Some(application) = analysis.program.application.as_ref() else {
+        return Err(CliError::Message(
+            "UI inspection requires an app target with a root view".to_string(),
+        ));
+    };
+    let view = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+        .ok_or_else(|| {
+            CliError::Message("app root view is unavailable for UI inspection".to_string())
+        })?;
+
+    eprintln!("profile: UI inspector (declarative Flux controls; no native widget objects)");
+    println!(
+        "view\t{}\tstates={}\tderived={}\telements={}",
+        view.name,
+        view.states.len(),
+        view.derived.len(),
+        view.elements.len()
+    );
+    for state in &view.states {
+        println!("state\t{}\tline={}", state.name, state.line);
+    }
+    for derived in &view.derived {
+        println!("derived\t{}\tline={}", derived.name, derived.line);
+    }
+    for element in &view.elements {
+        let properties = element
+            .properties
+            .iter()
+            .map(|property| property.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "element\t{}\t{}\trow={}\tcolumn={}\trowSpan={}\tcolumnSpan={}\tline={}\tproperties={}",
+            element.name,
+            element.kind,
+            element.row,
+            element.column,
+            element.row_span,
+            element.column_span,
+            element.line,
+            properties
+        );
+    }
+    io::stdout()
+        .flush()
+        .map_err(|error| CliError::Message(format!("failed to flush UI inspector report: {error}")))
+}
+
+fn profile_timeline_target(target: &Path, performance_overlay: bool) -> Result<(), CliError> {
     let sources = validate_project(target)?;
     let generated = match fluxc::project::compile_to_c(target) {
         Ok(generated) => generated,
@@ -2546,9 +2611,17 @@ fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
         native_package.as_ref(),
     )?;
 
-    eprintln!("profile: recording task/frame/layout/network timeline");
-    let run_status = Command::new(&binary)
-        .env("FLUX_TIMELINE_FILE", &timeline)
+    if performance_overlay {
+        eprintln!("profile: recording timeline with native performance overlay");
+    } else {
+        eprintln!("profile: recording task/frame/layout/network timeline");
+    }
+    let mut command = Command::new(&binary);
+    command.env("FLUX_TIMELINE_FILE", &timeline);
+    if performance_overlay {
+        command.env("FLUX_PERF_OVERLAY", "1");
+    }
+    let run_status = command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -2575,6 +2648,9 @@ fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
     } else {
         eprintln!("profile: timeline report (monotonic_us\tcategory\tname\tphase\tvalue)");
         print!("{report}");
+        if performance_overlay {
+            print!("{}", performance_overlay_summary(&report));
+        }
         io::stdout()
             .flush()
             .map_err(|error| format!("failed to flush timeline report: {error}"))?;
@@ -2593,6 +2669,58 @@ fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
                 .map_or_else(|| "signal".to_string(), |code| code.to_string())
         )))
     }
+}
+
+fn performance_overlay_summary(report: &str) -> String {
+    let mut active = HashMap::<(String, String), Vec<i64>>::new();
+    let mut durations = HashMap::<String, Vec<i64>>::new();
+    for line in report.lines() {
+        let mut fields = line.split('\t');
+        let Some(timestamp) = fields.next().and_then(|value| value.parse::<i64>().ok()) else {
+            continue;
+        };
+        let (Some(category), Some(name), Some(phase)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if category != "frame" && category != "layout" {
+            continue;
+        }
+        let key = (category.to_string(), name.to_string());
+        match phase {
+            "begin" => active.entry(key).or_default().push(timestamp),
+            "end" => {
+                let Some(start) = active.get_mut(&key).and_then(Vec::pop) else {
+                    continue;
+                };
+                if timestamp >= start {
+                    durations
+                        .entry(category.to_string())
+                        .or_default()
+                        .push(timestamp - start);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut summary = String::from("performance-overlay\n");
+    for category in ["frame", "layout"] {
+        let values = durations.get(category).map(Vec::as_slice).unwrap_or(&[]);
+        let total = values.iter().copied().sum::<i64>();
+        let maximum = values.iter().copied().max().unwrap_or(0);
+        let average = if values.is_empty() {
+            0
+        } else {
+            total / i64::try_from(values.len()).unwrap_or(i64::MAX)
+        };
+        summary.push_str(&format!(
+            "{category}\tcount={}\tavg_us={average}\tmax_us={maximum}\n",
+            values.len()
+        ));
+    }
+    summary
 }
 
 fn profile_binary_path() -> PathBuf {
@@ -3730,7 +3858,7 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
 fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
     let Some(target) = args.first() else {
         return Err(
-            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample|--timeline]'"
+            "profile syntax is 'profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample|--timeline|--inspect-ui|--overlay]'"
                 .to_string(),
         );
     };
@@ -3740,7 +3868,7 @@ fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
 
     let mut kind = ProfileKind::Cpu;
     let mut mode_seen = false;
-    let duplicate = "profile modes '--alloc', '--leaks', '--sample', and '--timeline' are mutually exclusive and may only be supplied once";
+    let duplicate = "profile modes '--alloc', '--leaks', '--sample', '--timeline', '--inspect-ui', and '--overlay' are mutually exclusive and may only be supplied once";
     for flag in &args[1..] {
         match flag.as_str() {
             "--alloc" => {
@@ -3771,9 +3899,23 @@ fn profile_options(args: &[String]) -> Result<ProfileOptions, String> {
                 kind = ProfileKind::Timeline;
                 mode_seen = true;
             }
+            "--inspect-ui" => {
+                if mode_seen {
+                    return Err(duplicate.to_string());
+                }
+                kind = ProfileKind::UiInspector;
+                mode_seen = true;
+            }
+            "--overlay" => {
+                if mode_seen {
+                    return Err(duplicate.to_string());
+                }
+                kind = ProfileKind::PerformanceOverlay;
+                mode_seen = true;
+            }
             _ => {
                 return Err(format!(
-                    "unknown profile option '{flag}'; expected '--alloc', '--leaks', '--sample', or '--timeline'"
+                    "unknown profile option '{flag}'; expected '--alloc', '--leaks', '--sample', '--timeline', '--inspect-ui', or '--overlay'"
                 ));
             }
         }
@@ -7135,7 +7277,7 @@ fn usage() -> String {
     )
     .replace(
         "[--alloc|--leaks|--sample]",
-        "[--alloc|--leaks|--sample|--timeline]",
+        "[--alloc|--leaks|--sample|--timeline|--inspect-ui|--overlay]",
     )
 }
 
@@ -7203,6 +7345,14 @@ mod tests {
         let timeline = profile_options(&["app.flux".to_string(), "--timeline".to_string()])
             .expect("timeline profile should parse");
         assert_eq!(timeline.kind, ProfileKind::Timeline);
+
+        let inspector = profile_options(&["app.flux".to_string(), "--inspect-ui".to_string()])
+            .expect("UI inspector profile should parse");
+        assert_eq!(inspector.kind, ProfileKind::UiInspector);
+
+        let overlay = profile_options(&["app.flux".to_string(), "--overlay".to_string()])
+            .expect("performance overlay profile should parse");
+        assert_eq!(overlay.kind, ProfileKind::PerformanceOverlay);
         assert!(profile_options(&["--alloc".to_string()]).is_err());
         assert!(
             profile_options(&[
@@ -7239,6 +7389,21 @@ mod tests {
         assert!(profile_options(&["app.flux".to_string(), "--heap".to_string()]).is_err());
     }
 
+    #[test]
+    fn performance_overlay_summary_aggregates_frame_and_layout_spans() {
+        let report = concat!(
+            "100\tframe\tui-refresh\tbegin\t0\n",
+            "110\tlayout\tui-refresh\tbegin\t0\n",
+            "160\tlayout\tui-refresh\tend\t0\n",
+            "180\tframe\tui-refresh\tend\t0\n",
+            "200\tframe\trequest\tbegin\t0\n",
+            "240\tframe\trequest\tend\t0\n",
+        );
+        let summary = super::performance_overlay_summary(report);
+        assert!(summary.contains("frame\tcount=2\tavg_us=60\tmax_us=80"));
+        assert!(summary.contains("layout\tcount=1\tavg_us=50\tmax_us=50"));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn timeline_instrumentation_defines_native_trace_macro() {
@@ -7258,6 +7423,33 @@ mod tests {
             .expect("timeline profile binary should run");
         let _ = std::fs::remove_file(&binary);
         assert!(status.success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn performance_overlay_timeline_builds_real_gtk_application() {
+        let binary =
+            std::env::temp_dir().join(format!("flux-overlay-gtk-test-{}", std::process::id()));
+        let source = r#"
+view OverlayDemo {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Overlay"
+}
+app OverlayDemo(title: "Overlay")
+"#;
+        let generated = crate::compile_to_c(source).expect("overlay app should generate native C");
+        build_native_instrumented(
+            &generated,
+            &binary,
+            BuildMode::Profile,
+            NativeInstrumentation::Timeline,
+            None,
+        )
+        .expect("timeline-instrumented GTK overlay app should build");
+        assert!(binary.is_file());
+        let _ = std::fs::remove_file(&binary);
     }
 
     #[cfg(target_os = "linux")]

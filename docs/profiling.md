@@ -58,4 +58,24 @@ Network tracing brackets canonical TCP connect/listen/accept, text send/receive,
 
 Timeline tracing is opt-in at native compile time through the dedicated profiler path. Normal debug/profile/release builds preprocess event emission to no-ops and reduce profiled network-span wrappers to the original native expression, so they do not open trace files, sample clocks, or carry a timeline runtime tax.
 
+## UI inspector
+
+`flux profile <app> --inspect-ui` reports the compiler's source-level root-view model without launching the application or reflecting a GTK/Android widget tree. The report includes the root view, state and derived bindings, and each flat Flux element with its native-control kind, grid placement, source line, and declared properties.
+
+```sh
+flux profile examples/hello_app.flux --inspect-ui
+```
+
+The inspector deliberately stays on compiler-owned Flux view contracts. It does not expose toolkit object identities, pointer handles, listener/controller instances, or a parallel runtime widget hierarchy, so the same source model remains usable even as native backends change.
+
+## Performance overlay
+
+`flux profile <app> --overlay` reuses the opt-in timeline build on the current Linux GTK development target. During the run, the compiler-owned overlay shows the latest UI refresh duration and changed-state identifier directly in the application. After exit, Flux prints the normal timeline followed by aggregate frame and layout span counts, average duration, and maximum duration.
+
+```sh
+flux profile examples/hello_app.flux --overlay
+```
+
+The overlay is enabled only for this profiling command. Its clock reads, label, and update path are guarded by timeline instrumentation, so normal debug/profile/release application binaries keep the existing zero-overhead path and do not carry the overlay runtime work.
+
 CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.
