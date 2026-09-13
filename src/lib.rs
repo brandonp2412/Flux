@@ -12,6 +12,7 @@ pub mod project;
 pub mod semantic;
 pub mod terminal;
 pub mod typecheck;
+pub mod web;
 
 pub use codegen::{C_ABI_VERSION_PACKAGE, NATIVE_ABI_POLICY_VERSION};
 pub use diagnostic::{

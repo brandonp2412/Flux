@@ -880,13 +880,13 @@ Android is the first application-platform target. Android integration must feel 
 
 Web is a supported target, not the implementation substrate for native apps.
 
-- [ ] Browser target.
+- [x] Bootstrap browser target: `flux build web <file.flux|package-dir|flux.toml> [-o directory]` type-checks an ordinary Flux `app`/root view and emits a directly loadable self-contained `index.html` without a VM, browser framework, canvas widget-emulation layer, or user-authored JavaScript bridge. The current bootstrap backend covers declarative application UI, view state/derived expressions, and direct state-transition events; broader general application-code lowering remains explicitly tracked by the separate WASM/application-code item rather than hiding a second source/runtime model.
 - [ ] WASM application-code backend where appropriate.
-- [ ] DOM/browser-native integration where appropriate.
+- [x] DOM/browser-native integration for the current declarative UI surface: Flux built-in elements lower to native semantic DOM controls/containers (`button`, `input`, `img`, `label`+checkbox/radio, `nav`, `figure`, `article`, `header`, `section`, and text nodes) positioned by the compiler-owned grid. Typed view-state transitions attach direct DOM event listeners and refresh the existing nodes in place, with no method-channel/plugin registry/serialized bridge or framework virtual-widget tree.
 - [ ] Browser routing/history.
 - [ ] Browser storage.
-- [ ] Accessibility/semantics.
-- [ ] Responsive web layout.
+- [x] Browser accessibility/semantics for the current web backend: semantic native controls are preserved and Flux `accessibilityLabel`, `accessibilityDescription`, `accessibilityHidden`, and `accessibilityRole` lower to browser `aria-*`/role state on the real DOM nodes. Role spellings are normalized to valid web roles while ordinary native button/input/image semantics remain authoritative instead of creating a parallel accessibility tree.
+- [x] Responsive web layout for the current web backend: Flux grid tracks lower directly to CSS Grid (`px`/`fr`/`auto`) with typed gap/padding/scroll behavior, while `windowWidth`, `windowHeight`, orientation, compact/medium/expanded breakpoints, and `displayScale` read browser viewport/device state and re-run in-place UI refresh on native resize events. The generated viewport metadata and full-width root therefore preserve the same portable responsive-expression contract without a browser framework runtime.
 - [ ] Development server.
 - [ ] Automatic save-triggered refresh/hot apply.
 - [ ] Production bundling/tree shaking.

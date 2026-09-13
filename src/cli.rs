@@ -452,6 +452,9 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         "build" => {
+            if args.get(1).is_some_and(|value| value == "web") {
+                return build_web_command(&args[2..]);
+            }
             if args.get(1).is_some_and(|value| value == "android") {
                 return build_android_command(&args[2..], BuildMode::Release, false, true)
                     .map(|_| ());
@@ -620,6 +623,54 @@ fn validate_android_binding_availability(generated_c: &str, min_sdk: u32) -> Res
             binding.name, binding.minimum_sdk, min_sdk
         )));
     }
+    Ok(())
+}
+
+fn build_web_command(args: &[String]) -> Result<(), CliError> {
+    let Some(target) = args.first() else {
+        return Err(CliError::Message(
+            "web build syntax is 'build web <file.flux|package-dir|flux.toml> [-o directory]'"
+                .to_string(),
+        ));
+    };
+    let target = Path::new(target);
+    let output = output_path(&args[1..])?.unwrap_or_else(|| {
+        if target.is_dir() {
+            target.join("build/web")
+        } else {
+            target
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("build/web")
+        }
+    });
+    let sources = validate_project(target)?;
+    let analysis = match fluxc::project::analyze(target) {
+        Ok(analysis) => analysis,
+        Err(diagnostics) => {
+            report_diagnostics(target, &diagnostics, &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let generated = match fluxc::web::emit_html(&analysis.program) {
+        Ok(generated) => generated,
+        Err(diagnostic) => {
+            report_diagnostics(target, &[diagnostic], &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    if output.exists() && !output.is_dir() {
+        return Err(CliError::Message(format!(
+            "web output '{}' exists and is not a directory",
+            output.display()
+        )));
+    }
+    fs::create_dir_all(&output)
+        .map_err(|error| format!("failed to create '{}': {error}", output.display()))?;
+    let index = output.join("index.html");
+    fs::write(&index, generated)
+        .map_err(|error| format!("failed to write '{}': {error}", index.display()))?;
+    println!("built (web): {}", index.display());
     Ok(())
 }
 
@@ -7968,6 +8019,12 @@ fn usage() -> String {
     let command = command_name();
     format!(
         "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+    )
+    .replace(
+        &format!(" | {command} build android <package-dir|flux.toml>"),
+        &format!(
+            " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] | {command} build android <package-dir|flux.toml>"
+        ),
     )
     .replace(
         "--format directory|tar.gz|container|systemd",

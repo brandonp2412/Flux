@@ -23104,6 +23104,57 @@ fn flux_binary_exposes_the_user_facing_cli_name_and_commands() {
 }
 
 #[test]
+fn web_cli_builds_native_dom_bundle() {
+    let root = std::env::temp_dir().join(format!("flux-web-build-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("web build fixture directory should be created");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        r#"view WebDemo {
+    grid columns: 1fr
+    grid rows: auto auto
+    state active: bool = false
+
+    Text status at 1,1
+        text: "Responsive"
+        visible: windowIsExpanded || active
+        accessibilityLabel: "Status"
+
+    Button toggle at 2,1
+        text: "Toggle"
+        onPress: active => !active
+}
+
+app WebDemo(title: "Flux Web")
+"#,
+    )
+    .expect("web build fixture should be written");
+    let output_dir = root.join("dist");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", "web"])
+        .arg(&source)
+        .args(["-o"])
+        .arg(&output_dir)
+        .output()
+        .expect("web build should run");
+    assert!(
+        built.status.success(),
+        "web build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let html = fs::read_to_string(output_dir.join("index.html"))
+        .expect("web build should emit index.html");
+    assert!(html.contains("<button id=\"flux-toggle\""));
+    assert!(html.contains("grid-template-columns:1fr"));
+    assert!(html.contains("fluxEnv(\"windowIsExpanded\")"));
+    assert!(html.contains("setAttribute('aria-label'"));
+    assert!(html.contains("addEventListener('click'"));
+    assert!(!html.contains("canvas"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn new_cli_scaffolds_a_checked_native_gui_package_without_overwriting() {
     let root = std::env::temp_dir().join(format!("Flux New App {}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
