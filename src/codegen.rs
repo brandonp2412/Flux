@@ -1671,6 +1671,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__locale_format_date_time(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
     {
@@ -1712,6 +1713,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <poll.h>\n");
         out.push_str("#include <sys/socket.h>\n");
         if runtime_usage.contains("flux__net_send_text_parts(")
+            || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
             || runtime_usage.contains("flux__net_send_text_to_parts(")
         {
             out.push_str("#include <sys/uio.h>\n");
@@ -4284,6 +4286,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_tcp_accept_many(")
         || runtime_usage.contains("flux__net_tcp_accept_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_many(")
         || runtime_usage.contains("flux__net_receive_text_from_with_timeout(")
@@ -4374,7 +4377,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
     if runtime_usage.contains("flux__net_send_text(") {
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
     }
-    if runtime_usage.contains("flux__net_send_text_with_timeout(") {
+    if runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
+    {
         out.push_str(r#"static inline int64_t flux__net_monotonic_millis(void) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
@@ -5705,6 +5710,100 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         }
     }
     return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_send_text_parts_with_timeout(") {
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_text_parts_with_timeout(int64_t socket_handle, struct flux__list parts, int64_t timeout_millis) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, "sendTextPartsWithTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "sendTextPartsWithTimeout requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_result(-1, "sendTextPartsWithTimeout requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "sendTextPartsWithTimeout requires a nonblocking TCP socket");
+    if (parts.len == 0) return flux__net_result(0, NULL);
+    ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    size_t index = 0;
+    size_t offset = 0;
+    int64_t total_sent = 0;
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        int64_t now = flux__net_monotonic_millis();
+        if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_result(-1, "failed to start scatter/gather send timeout");
+        deadline = now + timeout_millis;
+    }
+    while (index < parts.len) {
+        struct iovec vectors[64];
+        size_t vector_count = 0;
+        size_t cursor = index;
+        size_t cursor_offset = offset;
+        while (cursor < parts.len && vector_count < 64) {
+            const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
+            size_t length = strlen(text);
+            if (cursor_offset < length) {
+                vectors[vector_count].iov_base = (void *)(text + cursor_offset);
+                vectors[vector_count].iov_len = length - cursor_offset;
+                vector_count += 1;
+            }
+            cursor += 1;
+            cursor_offset = 0;
+        }
+        if (vector_count == 0) {
+            index = cursor;
+            offset = 0;
+            continue;
+        }
+        struct msghdr message;
+        memset(&message, 0, sizeof(message));
+        message.msg_iov = vectors;
+        message.msg_iovlen = vector_count;
+        ssize_t sent = sendmsg((int)socket_handle, &message, MSG_NOSIGNAL);
+        if (sent > 0) {
+            if ((uint64_t)sent > (uint64_t)(INT64_MAX - total_sent)) return flux__net_result(total_sent, "scatter/gather send byte count exceeds i64 range");
+            total_sent += (int64_t)sent;
+            size_t remaining = (size_t)sent;
+            while (index < parts.len) {
+                const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
+                size_t length = strlen(text);
+                size_t available = length - offset;
+                if (remaining < available) {
+                    offset += remaining;
+                    break;
+                }
+                remaining -= available;
+                index += 1;
+                offset = 0;
+                if (remaining == 0) break;
+            }
+            continue;
+        }
+        if (sent == 0) return flux__net_result(total_sent, "socket made no scatter/gather send progress");
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return flux__net_result(total_sent, "failed to send text parts");
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            int64_t now = flux__net_monotonic_millis();
+            if (now < 0) return flux__net_result(total_sent, "failed to query scatter/gather send timeout");
+            if (now >= deadline) return flux__net_result(total_sent, "sendTextPartsWithTimeout timed out");
+            int64_t remaining_millis = deadline - now;
+            wait_millis = remaining_millis > INT_MAX ? INT_MAX : (int)remaining_millis;
+        }
+        struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return flux__net_result(total_sent, "sendTextPartsWithTimeout cancelled by worker scope");
+        if (ready == 0) return flux__net_result(total_sent, "sendTextPartsWithTimeout timed out");
+        if (ready < 0) return flux__net_result(total_sent, "failed to wait for socket writability");
+        if ((descriptor.revents & POLLNVAL) != 0) return flux__net_result(total_sent, "invalid socket handle");
+        if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result(total_sent, "socket closed while waiting to send text parts");
+    }
+    return flux__net_result(total_sent, NULL);
 }
 "#);
     }
@@ -26751,6 +26850,22 @@ fn emit_qualified_call(
                     ),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "sendTextPartsWithTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let parts = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_text_parts_with_timeout({}, {}, {})",
+                        socket_handle.code, parts.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "sendTextTo" | "sendTextToParts" => {

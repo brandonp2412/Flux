@@ -4915,6 +4915,98 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_scatter_gather_timeout_send_is_typed_tree_shaken_and_runnable() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("timed scatter/gather listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    print(connectError)
+    print(net.nonblocking(socket, true))
+    let (bytes, writeError) = net.writePartsTimeout(socket, ["hello", "", " ", "world"], 1000)
+    print(bytes)
+    print(writeError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("timed scatter/gather text send should typecheck");
+    let generated = compile_to_c(&source).expect("timed scatter/gather text send should lower");
+    assert!(generated.contains("#include <sys/uio.h>"));
+    assert!(generated.contains("flux__net_send_text_parts_with_timeout("));
+    assert!(generated.contains("flux__net_poll_cancellable("));
+    assert!(generated.contains("flux__net_monotonic_millis("));
+    assert!(generated.contains("sendTextPartsWithTimeout cancelled by worker scope"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-net-scatter-gather-timeout-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("timed scatter/gather fixture should be writable");
+    let source_path = root.join("scatter_timeout.flux");
+    fs::write(&source_path, &source).expect("timed scatter/gather source should be writable");
+    let binary = root.join("scatter_timeout");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("timed scatter/gather binary should build");
+    assert!(
+        built.status.success(),
+        "timed scatter/gather build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Flux timed client should connect");
+        let mut request = [0u8; 11];
+        stream
+            .read_exact(&mut request)
+            .expect("Flux timed client should send every text fragment");
+        assert_eq!(&request, b"hello world");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("timed scatter/gather binary should run");
+    server
+        .join()
+        .expect("timed scatter/gather server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\n11\nnil\nnil\n"
+    );
+
+    let invalid_timeout = check_source(
+        "fn main() -> i64 {\n    let (bytes, failure) = net.writePartsTimeout(1, [\"x\"], -2)\n    print(bytes)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("timed scatter/gather should reject timeout below -1");
+    assert!(invalid_timeout.message.contains("timeoutMillis must be -1"));
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    let (bytes, failure) = net.writePartsTimeout(socket, ["hidden", "payload"], 10)
+    print(bytes)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead timed scatter/gather send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_parts_with_timeout("));
+    assert!(!unused_generated.contains("flux__net_poll_cancellable("));
+    assert!(!unused_generated.contains("#include <sys/uio.h>"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let peer = UdpSocket::bind("127.0.0.1:0").expect("UDP scatter/gather peer should bind");
     let peer_port = peer.local_addr().unwrap().port();
