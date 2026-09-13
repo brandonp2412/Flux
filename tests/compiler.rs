@@ -36969,6 +36969,158 @@ async fn main() -> i64 {
     assert!(!assigned_after_await_generated.contains("saved_label"));
     assert!(assigned_after_await_generated.contains("const char * flux__local_label;"));
 
+    let pattern_overwrite_source = r#"
+struct Labelled {
+    label: str
+    delta: i64
+}
+
+fn pair() -> (str, i64) {
+    return "multi", 2
+}
+
+fn labelled() -> Labelled {
+    return Labelled { label: "struct", delta: 3 }
+}
+
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumedMulti() -> i64 {
+    var label: str = "before"
+    var delta: i64 = 0
+    print(label)
+    let code: i64 = await ready()
+    (label, delta) = pair()
+    print(label)
+    return code + delta - 3
+}
+
+async fn resumedList() -> i64 {
+    var label: str = "before"
+    print(label)
+    let code: i64 = await ready()
+    [label] = ["list"]
+    print(label)
+    return code - 1
+}
+
+async fn resumedStruct() -> i64 {
+    var label: str = "before"
+    var delta: i64 = 0
+    print(label)
+    let code: i64 = await ready()
+    Labelled { label, delta } = labelled()
+    print(label)
+    return code + delta - 4
+}
+
+async fn main() -> i64 {
+    let first: i64 = await resumedMulti()
+    let second: i64 = await resumedList()
+    let third: i64 = await resumedStruct()
+    return first + second + third
+}
+"#;
+
+    check_source(pattern_overwrite_source)
+        .expect("pattern overwrites should replace stale non-Send state before resumed reads");
+    let pattern_overwrite_generated = compile_to_c(pattern_overwrite_source)
+        .expect("definite pattern overwrites should preserve continuation lowering");
+    assert!(pattern_overwrite_generated.contains("flux__async_resume_resumedMulti"));
+    assert!(pattern_overwrite_generated.contains("flux__async_resume_resumedList"));
+    assert!(pattern_overwrite_generated.contains("flux__async_resume_resumedStruct"));
+    assert!(!pattern_overwrite_generated.contains("flux__async_body_resumedMulti("));
+    assert!(!pattern_overwrite_generated.contains("flux__async_body_resumedList("));
+    assert!(!pattern_overwrite_generated.contains("flux__async_body_resumedStruct("));
+    assert!(!pattern_overwrite_generated.contains("saved_label"));
+
+    let pattern_root = std::env::temp_dir().join(format!(
+        "flux-async-pattern-overwrite-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&pattern_root);
+    fs::create_dir_all(&pattern_root).expect("async pattern overwrite fixture should be writable");
+    let pattern_path = pattern_root.join("main.flux");
+    fs::write(&pattern_path, pattern_overwrite_source)
+        .expect("async pattern overwrite source should be writable");
+    let pattern_binary = pattern_root.join("async-pattern-overwrite");
+    let pattern_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&pattern_path)
+        .arg("-o")
+        .arg(&pattern_binary)
+        .output()
+        .expect("async pattern overwrite binary should build");
+    assert!(
+        pattern_built.status.success(),
+        "async pattern overwrite build failed: {}",
+        String::from_utf8_lossy(&pattern_built.stderr)
+    );
+    let pattern_run = Command::new(&pattern_binary)
+        .output()
+        .expect("async pattern overwrite binary should run");
+    assert!(pattern_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&pattern_run.stdout),
+        "before\nmulti\nbefore\nlist\nbefore\nstruct\n"
+    );
+    let _ = fs::remove_dir_all(&pattern_root);
+
+    let branch_overwrite_source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed(flag: bool) -> i64 {
+    var label: str = "before"
+    print(label)
+    let code: i64 = await ready()
+    if flag:
+        label = "then"
+    else:
+        label = "else"
+    print(label)
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed(true)
+}
+"#;
+
+    let branch_overwrite_generated = compile_to_c(branch_overwrite_source)
+        .expect("all resumed branches overwrite stale non-Send state before reading it");
+    assert!(branch_overwrite_generated.contains("flux__async_resume_resumed"));
+    assert!(!branch_overwrite_generated.contains("flux__async_body_resumed("));
+    assert!(!branch_overwrite_generated.contains("saved_label"));
+
+    let partial_branch_overwrite = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed(flag: bool) -> i64 {
+    var label: str = "before"
+    let code: i64 = await ready()
+    if flag:
+        label = "then"
+    print(label)
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed(true)
+}
+"#;
+
+    let partial_branch_generated = compile_to_c(partial_branch_overwrite).expect(
+        "a path retaining stale non-Send state must remain valid through blocking lowering",
+    );
+    assert!(!partial_branch_generated.contains("flux__async_resume_resumed"));
+    assert!(partial_branch_generated.contains("flux__async_body_resumed"));
+
     let read_before_overwrite = r#"
 async fn ready() -> i64 {
     return 1

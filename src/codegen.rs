@@ -16065,6 +16065,128 @@ fn async_continuation_state_type(signatures: &Signatures, ty: &Type) -> bool {
     signatures.is_copy_type(ty) && signatures.is_send_type(ty)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AsyncLocalTailEffect {
+    None,
+    Overwritten,
+    Read,
+}
+
+fn async_struct_assignment_targets_name(
+    fields: &[crate::ast::StructPatternField],
+    name: &str,
+) -> bool {
+    fields.iter().any(|field| {
+        field.binding.name == name
+            || field
+                .nested
+                .as_ref()
+                .is_some_and(|nested| async_struct_assignment_targets_name(&nested.fields, name))
+    })
+}
+
+fn async_block_local_tail_effect(block: &[Stmt], name: &str) -> AsyncLocalTailEffect {
+    for stmt in block {
+        match async_stmt_local_tail_effect(stmt, name) {
+            AsyncLocalTailEffect::None => {}
+            effect => return effect,
+        }
+    }
+    AsyncLocalTailEffect::None
+}
+
+fn async_stmt_local_tail_effect(stmt: &Stmt, name: &str) -> AsyncLocalTailEffect {
+    let expr_effect = |expr: &Expr| {
+        let mut reads = HashSet::new();
+        typecheck::collect_expr_reads(expr, &mut reads);
+        reads
+            .contains(name)
+            .then_some(AsyncLocalTailEffect::Read)
+            .unwrap_or(AsyncLocalTailEffect::None)
+    };
+
+    match &stmt.kind {
+        StmtKind::Assign {
+            name: target,
+            expr,
+            coalescing,
+            ..
+        } if target == name => {
+            if *coalescing || expr_effect(expr) == AsyncLocalTailEffect::Read {
+                AsyncLocalTailEffect::Read
+            } else {
+                AsyncLocalTailEffect::Overwritten
+            }
+        }
+        StmtKind::AssignMultiDestructure { bindings, expr } => {
+            if expr_effect(expr) == AsyncLocalTailEffect::Read {
+                AsyncLocalTailEffect::Read
+            } else if bindings.iter().any(|binding| binding.name == name) {
+                AsyncLocalTailEffect::Overwritten
+            } else {
+                AsyncLocalTailEffect::None
+            }
+        }
+        StmtKind::AssignListDestructure {
+            bindings,
+            rest,
+            expr,
+        } => {
+            if expr_effect(expr) == AsyncLocalTailEffect::Read {
+                AsyncLocalTailEffect::Read
+            } else if bindings.iter().any(|binding| binding.name == name)
+                || rest.as_ref().is_some_and(|rest| rest.binding.name == name)
+            {
+                AsyncLocalTailEffect::Overwritten
+            } else {
+                AsyncLocalTailEffect::None
+            }
+        }
+        StmtKind::AssignStructDestructure { fields, expr, .. } => {
+            if expr_effect(expr) == AsyncLocalTailEffect::Read {
+                AsyncLocalTailEffect::Read
+            } else if async_struct_assignment_targets_name(fields, name) {
+                AsyncLocalTailEffect::Overwritten
+            } else {
+                AsyncLocalTailEffect::None
+            }
+        }
+        StmtKind::If {
+            cond,
+            body,
+            else_body,
+            ..
+        } => {
+            if expr_effect(cond) == AsyncLocalTailEffect::Read {
+                return AsyncLocalTailEffect::Read;
+            }
+            let then_effect = async_block_local_tail_effect(body, name);
+            let else_effect = async_block_local_tail_effect(else_body, name);
+            if then_effect == AsyncLocalTailEffect::Read
+                || else_effect == AsyncLocalTailEffect::Read
+            {
+                AsyncLocalTailEffect::Read
+            } else if !else_body.is_empty()
+                && then_effect == AsyncLocalTailEffect::Overwritten
+                && else_effect == AsyncLocalTailEffect::Overwritten
+            {
+                AsyncLocalTailEffect::Overwritten
+            } else {
+                AsyncLocalTailEffect::None
+            }
+        }
+        _ => {
+            let mut reads = HashSet::new();
+            typecheck::collect_block_reads(std::slice::from_ref(stmt), &mut reads);
+            if reads.contains(name) {
+                AsyncLocalTailEffect::Read
+            } else {
+                AsyncLocalTailEffect::None
+            }
+        }
+    }
+}
+
 fn async_local_crosses_straight_line_suspend(
     function: &Function,
     declaration_index: usize,
@@ -16074,30 +16196,10 @@ fn async_local_crosses_straight_line_suspend(
         if !stmt_contains_await(&function.body[await_index]) {
             continue;
         }
-        for stmt in &function.body[await_index + 1..] {
-            if let StmtKind::Assign {
-                name: target,
-                expr,
-                coalescing,
-                ..
-            } = &stmt.kind
-                && target == name
-            {
-                if *coalescing {
-                    return true;
-                }
-                let mut reads = HashSet::new();
-                typecheck::collect_expr_reads(expr, &mut reads);
-                if reads.contains(name) {
-                    return true;
-                }
-                break;
-            }
-            let mut reads = HashSet::new();
-            typecheck::collect_block_reads(std::slice::from_ref(stmt), &mut reads);
-            if reads.contains(name) {
-                return true;
-            }
+        if async_block_local_tail_effect(&function.body[await_index + 1..], name)
+            == AsyncLocalTailEffect::Read
+        {
+            return true;
         }
     }
     false
