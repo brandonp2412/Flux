@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod formatter;
 pub mod ir;
 pub mod lsp;
+pub mod package_ecosystem;
 pub mod parser;
 pub mod project;
 pub mod semantic;

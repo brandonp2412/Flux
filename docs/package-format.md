@@ -75,6 +75,12 @@ search_paths = ["native/lib"]
 
 For Linux native compilation, package-aware build, run, test, debug, profile, and packaging flows translate these validated values into compiler-owned library search and `-l` linker arguments. They pair with typed `extern c "symbol" fn ...` declarations in Flux source; the manifest alone never creates callable symbols or bypasses the compiler's restricted native-import type checks. Native libraries are linked but are not automatically bundled for redistribution. Android and other platform bindings remain separate compiler-owned integrations, and ownership-sensitive FFI shapes remain rejected until their cross-boundary lifetime rules are explicit.
 
+## Source package archives and cache
+
+The package-ecosystem bootstrap defines `.fluxpkg` format version 1 as a reproducible gzip-compressed POSIX tar source archive. Entries are sorted, timestamps are fixed to the Unix epoch, numeric owner/group are normalized to zero, and root `.git`, `target`, and `dist` trees are omitted. Symlinks are rejected so a published source package cannot silently depend on a host path outside the package tree. The archive creator returns the SHA-256 digest of the exact bytes that were produced.
+
+Already-obtained archives can be placed in the Flux package cache by their lowercase SHA-256 digest. Cache insertion verifies the source bytes before storing them, and cache lookup re-hashes the stored archive before returning it; corrupt or tampered entries fail closed. `FLUX_PACKAGE_CACHE_DIR` selects the package-cache root explicitly, otherwise package storage lives below the existing Flux/XDG cache location. Registry transport, `--offline`, `flux vendor`, GitHub Release fetching/publishing, and extraction remain package-management follow-up work rather than being implied by this cache primitive.
+
 ## Reproducible lockfile
 
 Packages with dependencies use a compiler-owned `flux.lock`. Run `flux lock <package-dir|flux.toml>` after changing dependency declarations or resolved local package metadata. Package-aware analysis/build commands reject a missing or stale lockfile rather than silently resolving a different graph.
