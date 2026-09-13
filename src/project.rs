@@ -477,7 +477,9 @@ pub fn analyze_package_test(
             root: package_root,
             dependencies: manifest.dependencies,
             constants: manifest.constants,
+            platform: manifest.platform,
         }],
+        native_target: codegen::NativeTarget::Linux,
         overlays: HashMap::new(),
         parse_cache: None,
     };
