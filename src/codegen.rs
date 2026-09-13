@@ -8562,79 +8562,116 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_hint, child_hint);\n");
                 out.push_str("    (*env)->DeleteLocalRef(env, child_hint);\n");
             }
-            let mut android_input_type = None;
-            if let Some(property) = view_property(element, "keyboard_type") {
-                let Some(keyboard_type) = static_expr_str(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android TextInput.keyboard_type must be a compile-time string",
-                    ));
-                };
-                android_input_type = Some(match keyboard_type.as_str() {
-                    "text" => 1,
-                    "email" => 33,
-                    "number" if multiline => {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.multiline is not supported with keyboardType 'number'",
-                        ));
-                    }
-                    "number" => 2,
-                    "decimal" if multiline => {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.multiline is not supported with keyboardType 'decimal'",
-                        ));
-                    }
-                    "decimal" => 8194,
-                    "phone" if multiline => {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.multiline is not supported with keyboardType 'phone'",
-                        ));
-                    }
-                    "phone" => 3,
-                    "url" => 17,
-                    _ => {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.keyboard_type must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
-                        ));
-                    }
-                });
-            }
-            if let Some(property) = view_property(element, "password") {
-                let Some(password) = static_expr_bool(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android TextInput.password must be a compile-time bool value",
-                    ));
-                };
-                if password {
-                    if multiline {
+            let keyboard_type_property = view_property(element, "keyboard_type");
+            let (android_input_type, dynamic_keyboard_type) = if let Some(property) =
+                keyboard_type_property
+            {
+                if let Some(keyboard_type) = static_expr_str(&property.value, signatures) {
+                    let input_type = match keyboard_type.as_str() {
+                        "text" => 1,
+                        "email" => 33,
+                        "number" if multiline => {
+                            return Err(diag(
+                                property.value.span,
+                                "TextInput.multiline is not supported with keyboardType 'number'",
+                            ));
+                        }
+                        "number" => 2,
+                        "decimal" if multiline => {
+                            return Err(diag(
+                                property.value.span,
+                                "TextInput.multiline is not supported with keyboardType 'decimal'",
+                            ));
+                        }
+                        "decimal" => 8194,
+                        "phone" if multiline => {
+                            return Err(diag(
+                                property.value.span,
+                                "TextInput.multiline is not supported with keyboardType 'phone'",
+                            ));
+                        }
+                        "phone" => 3,
+                        "url" => 17,
+                        _ => {
+                            return Err(diag(
+                                property.value.span,
+                                "TextInput.keyboard_type must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
+                            ));
+                        }
+                    };
+                    (Some(input_type), None)
+                } else {
+                    (None, Some(ui_expr_c(&property.value, view, signatures)?))
+                }
+            } else {
+                (None, None)
+            };
+            let password_property = view_property(element, "password");
+            let (password, dynamic_password) = if let Some(property) = password_property {
+                if let Some(password) = static_expr_bool(&property.value, signatures) {
+                    if password && multiline {
                         return Err(diag(
                             property.value.span,
                             "TextInput.password and TextInput.multiline cannot both be true",
                         ));
                     }
-                    android_input_type = Some(129);
+                    (password, None)
+                } else {
+                    (false, Some(ui_expr_c(&property.value, view, signatures)?))
                 }
-            }
-            if multiline {
-                android_input_type = Some(android_input_type.unwrap_or(1) | 131072);
-            }
+            } else {
+                (false, None)
+            };
             out.push_str("    jmethodID set_single_line = (*env)->GetMethodID(env, child_class, \"setSingleLine\", \"(Z)V\");\n");
             out.push_str("    if (set_single_line == NULL) return;\n");
             out.push_str(&format!(
                 "    (*env)->CallVoidMethod(env, child, set_single_line, (jboolean){});\n",
                 if multiline { "false" } else { "true" }
             ));
-            if let Some(input_type) = android_input_type {
+            if dynamic_keyboard_type.is_some() || dynamic_password.is_some() {
+                if let Some(value) = dynamic_keyboard_type.as_ref() {
+                    out.push_str(&format!(
+                        "    const char *child_keyboard_type_value = {value};\n    int child_android_input_type = 0;\n    if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"text\") == 0) child_android_input_type = 1;\n    else if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"email\") == 0) child_android_input_type = 33;\n    else if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"number\") == 0) child_android_input_type = 2;\n    else if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"decimal\") == 0) child_android_input_type = 8194;\n    else if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"phone\") == 0) child_android_input_type = 3;\n    else if (child_keyboard_type_value != NULL && strcmp(child_keyboard_type_value, \"url\") == 0) child_android_input_type = 17;\n    else {{ fputs(\"Flux runtime error: TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'\\n\", stderr); abort(); }}\n"
+                    ));
+                    if multiline {
+                        out.push_str("    if (child_android_input_type == 2 || child_android_input_type == 8194 || child_android_input_type == 3) { fputs(\"Flux runtime error: TextInput.multiline is not supported with keyboardType 'number', 'decimal', or 'phone'\\n\", stderr); abort(); }\n");
+                    }
+                } else {
+                    out.push_str(&format!(
+                        "    int child_android_input_type = {};\n",
+                        android_input_type.unwrap_or(1)
+                    ));
+                }
+                if let Some(value) = dynamic_password.as_ref() {
+                    out.push_str(&format!("    bool child_password = {value};\n"));
+                    if multiline {
+                        out.push_str("    if (child_password) { fputs(\"Flux runtime error: TextInput.password and TextInput.multiline cannot both be true\\n\", stderr); abort(); }\n");
+                    }
+                    out.push_str("    if (child_password) child_android_input_type = 129;\n");
+                } else if password {
+                    out.push_str("    child_android_input_type = 129;\n");
+                }
+                if multiline {
+                    out.push_str("    child_android_input_type |= 131072;\n");
+                }
                 out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
                 out.push_str("    if (set_input_type == NULL) return;\n");
-                out.push_str(&format!(
-                    "    (*env)->CallVoidMethod(env, child, set_input_type, (jint){input_type});\n"
-                ));
+                out.push_str("    (*env)->CallVoidMethod(env, child, set_input_type, (jint)child_android_input_type);\n");
+            } else {
+                let mut static_input_type = android_input_type;
+                if password {
+                    static_input_type = Some(129);
+                }
+                if multiline {
+                    static_input_type = Some(static_input_type.unwrap_or(1) | 131072);
+                }
+                if let Some(input_type) = static_input_type {
+                    out.push_str("    jmethodID set_input_type = (*env)->GetMethodID(env, child_class, \"setInputType\", \"(I)V\");\n");
+                    out.push_str("    if (set_input_type == NULL) return;\n");
+                    out.push_str(&format!(
+                        "    (*env)->CallVoidMethod(env, child, set_input_type, (jint){input_type});\n"
+                    ));
+                }
             }
             if read_only {
                 out.push_str("    jmethodID set_key_listener = (*env)->GetMethodID(env, child_class, \"setKeyListener\", \"(Landroid/text/method/KeyListener;)V\");\n");
@@ -8645,18 +8682,23 @@ fn emit_android_native_application(
                 out.push_str("    (*env)->CallVoidMethod(env, child, set_text_selectable, (jboolean)true);\n");
             }
             if let Some(property) = view_property(element, "max_length") {
-                let Some(max_length) = static_expr_i64(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Android TextInput.max_length must be a compile-time i64 value",
+                let max_length = if let Some(max_length) =
+                    static_expr_i64(&property.value, signatures)
+                {
+                    if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                        return Err(diag(
+                            property.value.span,
+                            "TextInput.max_length must be between 0 and 2147483647",
+                        ));
+                    }
+                    max_length.to_string()
+                } else {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    int64_t child_max_length = {value};\n    if (child_max_length < 0 || child_max_length > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }}\n"
                     ));
+                    "child_max_length".to_string()
                 };
-                if !(0..=i64::from(i32::MAX)).contains(&max_length) {
-                    return Err(diag(
-                        property.value.span,
-                        "TextInput.max_length must be between 0 and 2147483647",
-                    ));
-                }
                 out.push_str(
                     "    jclass max_length_activity_class = (*env)->GetObjectClass(env, activity);\n",
                 );
@@ -12051,6 +12093,9 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Button", "primary")
             | ("TextInput", "placeholder")
             | ("TextInput", "validation_state")
+            | ("TextInput", "keyboard_type")
+            | ("TextInput", "password")
+            | ("TextInput", "max_length")
             | ("Image", "source")
             | ("Image", "alt")
             | ("Image", "fit")
@@ -12228,7 +12273,13 @@ fn android_ui_element_needs_refresh(
             "max_width_chars",
         ],
         "Button" => &["text", "size", "primary"],
-        "TextInput" => &["placeholder", "validation_state"],
+        "TextInput" => &[
+            "placeholder",
+            "validation_state",
+            "keyboard_type",
+            "password",
+            "max_length",
+        ],
         "Image" => &["source", "alt", "fit", "can_shrink"],
         "Toggle" => &["label", "checked"],
         "Radio" => &["label", "selected"],
@@ -13216,6 +13267,75 @@ fn emit_android_ui_refresh(
                     out.push_str("                    if (refresh_input_style != NULL) (*env)->CallVoidMethod(env, activity, refresh_input_style, child, refresh_validation_state);\n");
                     out.push_str("                    (*env)->DeleteLocalRef(env, refresh_validation_state);\n");
                     out.push_str("                }\n");
+                }
+                let refresh_keyboard_type =
+                    android_ui_property_needs_refresh(element, "keyboard_type", &runtime_names);
+                let refresh_password =
+                    android_ui_property_needs_refresh(element, "password", &runtime_names);
+                if refresh_keyboard_type || refresh_password {
+                    let multiline = match view_property(element, "multiline") {
+                        Some(property) => static_expr_bool(&property.value, signatures)
+                            .expect("validated Android TextInput.multiline is compile-time"),
+                        None => false,
+                    };
+                    let keyboard_type = if let Some(property) =
+                        view_property(element, "keyboard_type")
+                    {
+                        if let Some(value) = static_expr_str(&property.value, signatures) {
+                            match value.as_str() {
+                                "text" => "1".to_string(),
+                                "email" => "33".to_string(),
+                                "number" => "2".to_string(),
+                                "decimal" => "8194".to_string(),
+                                "phone" => "3".to_string(),
+                                "url" => "17".to_string(),
+                                _ => unreachable!("validated TextInput.keyboardType"),
+                            }
+                        } else {
+                            let value = ui_expr_c(&property.value, view, signatures)?;
+                            out.push_str(&format!(
+                                "                const char *refresh_keyboard_type_value = {value};\n                int refresh_android_input_type = 0;\n                if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"text\") == 0) refresh_android_input_type = 1;\n                else if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"email\") == 0) refresh_android_input_type = 33;\n                else if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"number\") == 0) refresh_android_input_type = 2;\n                else if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"decimal\") == 0) refresh_android_input_type = 8194;\n                else if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"phone\") == 0) refresh_android_input_type = 3;\n                else if (refresh_keyboard_type_value != NULL && strcmp(refresh_keyboard_type_value, \"url\") == 0) refresh_android_input_type = 17;\n                else {{ fputs(\"Flux runtime error: TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'\\n\", stderr); abort(); }}\n"
+                            ));
+                            if multiline {
+                                out.push_str("                if (refresh_android_input_type == 2 || refresh_android_input_type == 8194 || refresh_android_input_type == 3) { fputs(\"Flux runtime error: TextInput.multiline is not supported with keyboardType 'number', 'decimal', or 'phone'\\n\", stderr); abort(); }\n");
+                            }
+                            "refresh_android_input_type".to_string()
+                        }
+                    } else {
+                        "1".to_string()
+                    };
+                    if keyboard_type != "refresh_android_input_type" {
+                        out.push_str(&format!(
+                            "                int refresh_android_input_type = {keyboard_type};\n"
+                        ));
+                    }
+                    let password = view_property(element, "password")
+                        .map(|property| ui_expr_c(&property.value, view, signatures))
+                        .transpose()?
+                        .unwrap_or_else(|| "false".to_string());
+                    if multiline && refresh_password {
+                        out.push_str(&format!(
+                            "                if ({password}) {{ fputs(\"Flux runtime error: TextInput.password and TextInput.multiline cannot both be true\\n\", stderr); abort(); }}\n"
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "                if ({password}) refresh_android_input_type = 129;\n"
+                    ));
+                    if multiline {
+                        out.push_str("                refresh_android_input_type |= 131072;\n");
+                    }
+                    out.push_str("                jmethodID refresh_input_type = (*env)->GetMethodID(env, activity_class, \"setInputTypePreservingSelection\", \"(Landroid/widget/EditText;I)V\");\n");
+                    out.push_str("                if (refresh_input_type != NULL) (*env)->CallVoidMethod(env, activity, refresh_input_type, child, (jint)refresh_android_input_type);\n");
+                }
+                if android_ui_property_needs_refresh(element, "max_length", &runtime_names)
+                    && let Some(property) = view_property(element, "max_length")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                int64_t refresh_max_length = {value};\n                if (refresh_max_length < 0 || refresh_max_length > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }}\n"
+                    ));
+                    out.push_str("                jmethodID refresh_max_length_method = (*env)->GetMethodID(env, activity_class, \"setMaxLength\", \"(Landroid/widget/EditText;I)V\");\n");
+                    out.push_str("                if (refresh_max_length_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_max_length_method, child, (jint)refresh_max_length);\n");
                 }
             }
             "Image" => {

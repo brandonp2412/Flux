@@ -5128,6 +5128,18 @@ __FLUX_PICKER_METHODS__
         view.setFilters(new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
     }
 
+    public void setInputTypePreservingSelection(EditText view, int inputType) {
+        int start = view.getSelectionStart();
+        int end = view.getSelectionEnd();
+        view.setInputType(inputType);
+        int length = view.getText().length();
+        if (start >= 0 && end >= 0) {
+            int restoredStart = Math.max(0, Math.min(length, start));
+            int restoredEnd = Math.max(restoredStart, Math.min(length, end));
+            view.setSelection(restoredStart, restoredEnd);
+        }
+    }
+
     public void setCheckedSilently(CompoundButton button, boolean checked) {
         restoringCheckedState = true;
         try {
@@ -8650,6 +8662,13 @@ app OverlayDemo(title: "Overlay")
                 "public void restoreTextInput(EditText view, int viewId, String fallback)"
             )
         );
+        assert!(
+            activity.contains(
+                "public void setInputTypePreservingSelection(EditText view, int inputType)"
+            )
+        );
+        assert!(activity.contains("int start = view.getSelectionStart();"));
+        assert!(activity.contains("view.setSelection(restoredStart, restoredEnd);"));
         assert!(activity.contains("selectionStarts"));
         assert!(activity.contains("rememberSelection"));
         assert!(activity.contains("restoringFocus"));

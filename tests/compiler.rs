@@ -32220,6 +32220,81 @@ app StaticTextWidth
 }
 
 #[test]
+fn android_text_input_mode_and_length_refresh_from_view_state_without_rebuilding() {
+    let source = r#"
+view DynamicInput {
+    state keyboard: str = "email"
+    state secret: bool = false
+    state limit: i64 = 24
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    TextInput query at 1,1
+        text: "hello"
+        keyboardType: keyboard
+        password: secret
+        maxLength: limit
+    Button keyboard_mode at 2,1
+        text: "URL keyboard"
+        onPress: keyboard => "url"
+    Button secrecy at 3,1
+        text: "Toggle password"
+        onPress: secret => !secret
+    Button grow at 4,1
+        text: "Grow limit"
+        onPress: limit => limit + 1
+}
+app DynamicInput
+"#;
+
+    check_source(source).expect("state-driven Android TextInput mode should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("state-driven Android TextInput mode should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("state-driven Android TextInput mode should lower");
+
+    assert!(android.contains("const char *child_keyboard_type_value = flux__ui_state_keyboard"));
+    assert!(android.contains("bool child_password = flux__ui_state_secret"));
+    assert!(android.contains("int64_t child_max_length = flux__ui_state_limit"));
+    assert!(android.contains("const char *refresh_keyboard_type_value = flux__ui_state_keyboard"));
+    assert!(android.contains("if (flux__ui_state_secret) refresh_android_input_type = 129"));
+    assert!(android.contains("int64_t refresh_max_length = flux__ui_state_limit"));
+    assert!(android.contains("setInputTypePreservingSelection"));
+    assert!(android.contains("setMaxLength"));
+    assert!(android.contains("TextInput.keyboardType must be one of"));
+    assert!(android.contains("TextInput.maxLength must be between 0 and 2147483647"));
+    assert!(android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2) {"));
+
+    let static_source = r#"
+view StaticInput {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput query at 1,1
+        keyboardType: "email"
+        password: false
+        maxLength: 24
+}
+app StaticInput
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static Android TextInput mode should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static Android TextInput mode should lower");
+    assert!(!static_android.contains("refresh_keyboard_type_value"));
+    assert!(!static_android.contains("refresh_max_length"));
+}
+
+#[test]
 fn android_minimum_size_refreshes_from_view_state_without_rebuilding() {
     let source = r#"
 view DynamicMinimumSize {
