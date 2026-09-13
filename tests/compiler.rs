@@ -26821,6 +26821,125 @@ fn dependency_add_remove_commands_update_manifest_and_lock() {
 }
 
 #[test]
+fn dependency_fetch_update_and_outdated_cover_local_path_graphs() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-fetch-update-outdated-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dep = root.join("dep");
+    let leaf = root.join("leaf");
+    for package in [&app, &dep, &leaf] {
+        fs::create_dir_all(package.join("src")).expect("package directory should be writable");
+    }
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\", version = \"^1.0.0\" }\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        dep.join("flux.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.2.0\"\nentry = \"src/lib.flux\"\n\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1.0.0\" }\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(
+        leaf.join("flux.toml"),
+        "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("leaf manifest should be writable");
+    fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("app source should be writable");
+    fs::write(dep.join("src/lib.flux"), "pub fn value() -> i64 { 1 }\n")
+        .expect("dependency source should be writable");
+    fs::write(leaf.join("src/lib.flux"), "pub fn value() -> i64 { 2 }\n")
+        .expect("leaf source should be writable");
+
+    let fetch = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("fetch")
+        .arg(&app)
+        .output()
+        .expect("flux fetch should run");
+    assert!(
+        fetch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetch.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&fetch.stdout).trim(),
+        "fetched: 2 local path dependencies"
+    );
+    assert!(app.join("flux.lock").exists());
+
+    let outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("outdated")
+        .arg(&app)
+        .output()
+        .expect("flux outdated should run");
+    assert!(outdated.status.success());
+    let outdated_text = String::from_utf8_lossy(&outdated.stdout);
+    assert!(outdated_text.contains("dep: current 1.2.0 requirement ^1.0.0 compatible"));
+    assert!(outdated_text.contains("dep/leaf: current 1.0.0 requirement ^1.0.0 compatible"));
+
+    fs::write(
+        leaf.join("flux.toml"),
+        "[package]\nname = \"leaf\"\nversion = \"1.1.0\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("updated leaf manifest should be writable");
+    let update = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("update")
+        .arg(&app)
+        .output()
+        .expect("flux update should run");
+    assert!(
+        update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let lock = fs::read_to_string(app.join("flux.lock")).expect("lockfile should be readable");
+    assert!(lock.contains("version = \"1.1.0\""));
+
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\", version = \"^1.0.0\" }\nremote = \"~3.4.0\"\n",
+    )
+    .expect("remote dependency manifest should be writable");
+    let remote_fetch = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("fetch")
+        .arg(&app)
+        .output()
+        .expect("remote flux fetch should run");
+    assert!(!remote_fetch.status.success());
+    let remote_fetch_error = String::from_utf8_lossy(&remote_fetch.stderr);
+    assert!(remote_fetch_error.contains("dependency fetch transport is not available yet"));
+    assert!(remote_fetch_error.contains("remote [registry:~3.4.0]"));
+
+    let remote_update = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("update")
+        .arg(&app)
+        .output()
+        .expect("remote flux update should run");
+    assert!(!remote_update.status.success());
+    assert!(
+        String::from_utf8_lossy(&remote_update.stderr)
+            .contains("dependency update transport is not available yet")
+    );
+
+    let remote_outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("outdated")
+        .arg(&app)
+        .output()
+        .expect("remote flux outdated should run");
+    assert!(remote_outdated.status.success());
+    assert!(
+        String::from_utf8_lossy(&remote_outdated.stdout)
+            .contains("remote: current ? requirement ~3.4.0 latest unavailable")
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn dependency_resolution_reports_conflicting_and_cyclic_paths() {
     let root = std::env::temp_dir().join(format!(
         "flux-package-resolution-conflicts-{}",

@@ -1868,6 +1868,153 @@ pub fn dependency_why(target: &Path, dependency: &str) -> Result<String, Vec<Dia
     Ok(paths.join("\n"))
 }
 
+pub fn fetch_dependencies(target: &Path) -> Result<usize, Vec<Diagnostic>> {
+    ensure_lockfile(target, false)?;
+    let manifest = read_package_manifest_target(target, "fetch")?;
+    validate_lockfile(&manifest)?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let mut active = HashSet::from([root]);
+    let nodes = collect_dependency_graph(&manifest, &mut active)?;
+    let mut path_count = 0;
+    let mut unsupported = Vec::new();
+    collect_fetchable_dependencies(&nodes, &mut path_count, &mut unsupported);
+    if !unsupported.is_empty() {
+        unsupported.sort();
+        unsupported.dedup();
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "dependency fetch transport is not available yet for: {}; local path dependencies are already available without copying",
+                unsupported.join(", ")
+            ),
+        )]);
+    }
+    Ok(path_count)
+}
+
+pub fn update_dependencies(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "update")?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let mut active = HashSet::from([root]);
+    let nodes = collect_dependency_graph(&manifest, &mut active)?;
+    let mut path_count = 0;
+    let mut unsupported = Vec::new();
+    collect_fetchable_dependencies(&nodes, &mut path_count, &mut unsupported);
+    if !unsupported.is_empty() {
+        unsupported.sort();
+        unsupported.dedup();
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!(
+                "dependency update transport is not available yet for: {}; only local path dependencies can currently be re-resolved",
+                unsupported.join(", ")
+            ),
+        )]);
+    }
+    write_lockfile(target)
+}
+
+pub fn outdated_dependencies(target: &Path) -> Result<String, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "outdated")?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let mut active = HashSet::from([root]);
+    let mut lines = Vec::new();
+    collect_outdated_dependencies(&manifest, "", &mut active, &mut lines)?;
+    if lines.is_empty() {
+        return Ok("no dependencies".to_string());
+    }
+    lines.sort();
+    Ok(lines.join("\n"))
+}
+
+fn collect_fetchable_dependencies(
+    nodes: &[DependencyGraphNode],
+    path_count: &mut usize,
+    unsupported: &mut Vec<String>,
+) {
+    for node in nodes {
+        if node.source.starts_with("path:") {
+            *path_count += 1;
+        } else {
+            unsupported.push(format!("{} [{}]", node.package, node.source));
+        }
+        collect_fetchable_dependencies(&node.children, path_count, unsupported);
+    }
+}
+
+fn collect_outdated_dependencies(
+    manifest: &PackageManifest,
+    prefix: &str,
+    active: &mut HashSet<PathBuf>,
+    lines: &mut Vec<String>,
+) -> Result<(), Vec<Diagnostic>> {
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    for (alias, dependency) in &manifest.dependencies {
+        let id = if prefix.is_empty() {
+            alias.clone()
+        } else {
+            format!("{prefix}/{alias}")
+        };
+        match dependency {
+            PackageDependency::Registry { requirement } => lines.push(format!(
+                "{id}: current ? requirement {requirement} latest unavailable [registry metadata not fetched]"
+            )),
+            PackageDependency::Git { url, rev } => lines.push(format!(
+                "{id}: current {rev} latest unavailable [git:{url}]"
+            )),
+            PackageDependency::Path { path, requirement } => {
+                let dependency_manifest = read_manifest(&root.join(path).join("flux.toml"))?;
+                let current = dependency_manifest.version.as_deref().unwrap_or("unversioned");
+                let requirement_text = requirement.as_deref().unwrap_or("*");
+                let status = match (requirement.as_deref(), dependency_manifest.version.as_deref()) {
+                    (Some(requirement), Some(version)) if semver_requirement_matches(requirement, version) => {
+                        "compatible"
+                    }
+                    (Some(_), Some(_)) => "incompatible",
+                    (Some(_), None) => "unversioned",
+                    (None, _) => "unconstrained",
+                };
+                lines.push(format!(
+                    "{id}: current {current} requirement {requirement_text} {status} [path:{}]",
+                    lock_path(path)
+                ));
+                let dependency_root = dependency_manifest
+                    .path
+                    .parent()
+                    .expect("canonical manifest path has a parent")
+                    .to_path_buf();
+                if !active.insert(dependency_root.clone()) {
+                    return Err(vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!(
+                            "cyclic path dependency encountered while inspecting '{}'",
+                            dependency_manifest.name
+                        ),
+                    )]);
+                }
+                collect_outdated_dependencies(&dependency_manifest, &id, active, lines)?;
+                active.remove(&dependency_root);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_dependency_graph(
     manifest: &PackageManifest,
     active: &mut HashSet<PathBuf>,
