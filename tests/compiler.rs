@@ -34992,6 +34992,93 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_assignment_suspends_only_for_missing_values() {
+    let source = r#"
+async fn fallback(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn optionalFallback(value: i64) -> i64? {
+    print(value)
+    return value
+}
+
+async fn fillMissing() -> i64 {
+    var value: i64? = none
+    value ??= await fallback(9)
+    return value ?? -1
+}
+
+async fn keepPresent() -> i64 {
+    var value: i64? = 7
+    value ??= await fallback(11)
+    return value ?? -1
+}
+
+async fn fillOptional() -> i64 {
+    var value: i64? = none
+    value ??= await optionalFallback(5)
+    return value ?? -1
+}
+
+async fn main() -> i64 {
+    let missing: i64 = await fillMissing()
+    let present: i64 = await keepPresent()
+    let optional: i64 = await fillOptional()
+    return missing + present + optional
+}
+"#;
+
+    check_source(source).expect("async coalescing assignment should typecheck");
+    let generated = compile_to_c(source)
+        .expect("async coalescing assignment should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_fillMissing"));
+    assert!(generated.contains("flux__async_resume_keepPresent"));
+    assert!(generated.contains("flux__async_resume_fillOptional"));
+    assert!(generated.contains("if (!flux__local_value.has_value)"));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(9), flux__async_resume_fillMissing, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_optionalFallback(INT64_C(5), flux__async_resume_fillOptional, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_fallback(flux__async_start_fallback"));
+    assert!(
+        !generated
+            .contains("flux__async_await_optionalFallback(flux__async_start_optionalFallback")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-assignment-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async coalescing fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-assignment");
+    fs::write(&source_path, source).expect("async coalescing source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async coalescing binary should build");
+    assert!(
+        built.status.success(),
+        "async coalescing build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("async coalescing binary should run");
+    assert_eq!(output.status.code(), Some(21));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n5\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_optional_promotion_branches_suspend_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
