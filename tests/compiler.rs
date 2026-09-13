@@ -23594,6 +23594,71 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
 }
 
 #[test]
+fn platform_modules_preserve_shared_interface_capabilities_and_logical_imports() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-platform-interface-capabilities-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("portable source directory should be writable");
+    fs::create_dir_all(root.join("platform/android"))
+        .expect("Android implementation directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"platform-capabilities\"\nentry = \"src/main.flux\"\n\n[platform.android]\nmodules = [\"src/platform.flux=platform/android/platform.flux\"]\n",
+    )
+    .expect("platform capability manifest should be writable");
+    fs::write(
+        root.join("src/capability.flux"),
+        "pub interface PlatformNumber {\n    fn value() -> i64\n}\n",
+    )
+    .expect("shared capability interface should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        "import \"capability.flux\"\nimport \"platform.flux\"\nfn main() -> i64 { PlatformNumber.value(platformNumber()) }\n",
+    )
+    .expect("portable entry should be writable");
+    fs::write(
+        root.join("src/platform.flux"),
+        "import \"capability.flux\"\nstruct NativeNumber {\n    value: i64\n}\nfn nativeValue(number: NativeNumber) -> i64 { number.value }\nimpl PlatformNumber for NativeNumber {\n    value: nativeValue\n}\npub fn platformNumber() -> PlatformNumber { PlatformNumber(NativeNumber { value: 11 }) }\n",
+    )
+    .expect("Linux platform implementation should be writable");
+    fs::write(
+        root.join("platform/android/platform.flux"),
+        "import \"capability.flux\"\nstruct NativeNumber {\n    value: i64\n}\nfn nativeValue(number: NativeNumber) -> i64 { number.value }\nimpl PlatformNumber for NativeNumber {\n    value: nativeValue\n}\npub fn platformNumber() -> PlatformNumber { PlatformNumber(NativeNumber { value: 22 }) }\n",
+    )
+    .expect("Android platform implementation should be writable");
+    fluxc::project::write_lockfile(&root).expect("platform capability lockfile should be writable");
+
+    let linux = fluxc::project::analyze(&root).expect("Linux capability package should analyze");
+    let linux_c = linux
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+        .expect("Linux interface capability should lower natively");
+    assert!(linux_c.contains(".flux__field_value = INT64_C(11)"));
+
+    let android = fluxc::project::analyze_for_target(&root, fluxc::codegen::NativeTarget::Android)
+        .expect("Android capability package should analyze through logical imports");
+    let android_c = android
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("Android interface capability should lower natively");
+    assert!(android_c.contains(".flux__field_value = INT64_C(22)"));
+    assert!(
+        android
+            .sources
+            .iter()
+            .any(|source| source.module_name == "platform-capabilities::src::capability")
+    );
+    assert!(
+        android
+            .sources
+            .iter()
+            .any(|source| source.module_name == "platform-capabilities::src::platform")
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_platform_module_manifest_rejects_unsafe_paths_and_duplicates() {
     let root = std::env::temp_dir().join(format!(
         "flux-package-platform-errors-{}",

@@ -43,6 +43,8 @@ Each mapping is `logical/module.flux=target/implementation.flux`. Both sides mus
 
 Selection is compile-time only. Non-selected implementations are not loaded into the target program, and Flux inserts no runtime target dispatcher, serialized plugin protocol, method channel, or application-authored native bridge. Normal native analysis/build selects Linux mappings; Android application builds select Android mappings before native/JNI lowering. Future native targets must extend this compiler-owned selection model rather than exposing platform implementation objects to application source.
 
+Relative imports inside a selected implementation resolve as though that implementation occupied its logical module path, not from the physical target-specific file. This lets every target implementation import the same nearby shared Flux interface/capability module while portable callers keep one logical import. A target implementation can therefore keep its concrete provider private, implement the shared public interface, and return only the interface value to portable code; target-specific native modules such as `android.*` remain confined to the selected implementation when required.
+
 ## Package constants and resources
 
 `[constants]` declares package-scoped compile-time primitive values. Names use ordinary Flux identifier syntax, and values are `i64`, `bool`, or quoted `str` literals:

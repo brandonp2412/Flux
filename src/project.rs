@@ -2413,8 +2413,20 @@ impl Loader<'_> {
                 ));
                 continue;
             }
-            let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
-            let requested = parent.join(import_path);
+            let requested = if let Some(package) = current_package.as_ref() {
+                let logical_source = package
+                    .root
+                    .join(package.logical_module_path(self.native_target, &canonical));
+                logical_source
+                    .parent()
+                    .unwrap_or(package.root.as_path())
+                    .join(import_path)
+            } else {
+                canonical
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(import_path)
+            };
             let resolved = current_package
                 .as_ref()
                 .map(|package| package.resolve_module(self.native_target, &requested))
