@@ -877,11 +877,14 @@ pub fn check_all_with_package_constants(
                 diagnostics.push(diagnostic);
             }
             let ty = signatures.canonical_type(&param.ty);
-            if function.foreign_symbol.is_some() && !extern_c_param_type_supported(&ty) {
+            if function.foreign_symbol.is_some()
+                && !extern_c_param_type_supported(&ty)
+                && !(function.unsafe_foreign && extern_c_unsafe_param_type_supported(&ty))
+            {
                 diagnostics.push(diag(
                     param.type_span,
                     &format!(
-                        "extern C parameter '{}' has unsupported type '{}'; current native imports accept only i64, bool, str, and error",
+                        "extern C parameter '{}' has unsupported type '{}'; safe native imports accept only i64 and bool, while 'unsafe extern c' additionally permits borrowed str/error parameters with caller-guaranteed call-scoped lifetimes",
                         param.name,
                         ty.name()
                     ),
@@ -954,6 +957,9 @@ pub fn check_all_with_package_constants(
             }
         }
         if function.unsafe_foreign
+            && !function.params.iter().any(|param| {
+                extern_c_unsafe_param_type_supported(&signatures.canonical_type(&param.ty))
+            })
             && !function
                 .returns
                 .iter()
@@ -964,7 +970,7 @@ pub fn check_all_with_package_constants(
                     function.keyword_span,
                     "unsafe extern C is unnecessary for this signature; use ordinary 'extern c'",
                 )
-                .with_note("the unsafe import form is reserved for borrowed str/error results whose native lifetime Flux cannot prove"),
+                .with_note("the unsafe import form is reserved for borrowed str/error parameters or results whose native lifetime Flux cannot prove"),
             );
         }
         signatures.insert_function(
@@ -3145,7 +3151,11 @@ fn grid_elements_overlap(left: &crate::ast::ViewElement, right: &crate::ast::Vie
 }
 
 fn extern_c_param_type_supported(ty: &Type) -> bool {
-    matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error)
+    matches!(ty, Type::I64 | Type::Bool)
+}
+
+fn extern_c_unsafe_param_type_supported(ty: &Type) -> bool {
+    matches!(ty, Type::Str | Type::Error)
 }
 
 fn extern_c_return_type_supported(ty: &Type) -> bool {

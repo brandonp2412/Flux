@@ -78,6 +78,21 @@ fn main() -> i64 {
             .contains("extern C return type 'str' is unsupported")
     }));
 
+    let borrowed_param = r#"
+extern c "native_length" fn nativeLength(value: str) -> i64
+
+fn main() -> i64 {
+    return nativeLength("flux")
+}
+"#;
+    let errors = check_source_all(borrowed_param)
+        .expect_err("borrowed foreign inputs must be explicitly unsafe lifetime boundaries");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("safe native imports accept only i64 and bool")
+    }));
+
     let as_value = r#"
 extern c "native_double" fn nativeDouble(value: i64) -> i64
 
@@ -118,6 +133,19 @@ fn main() -> i64 {
         compile_to_c(source).expect("unsafe borrowed-string import should lower on Linux");
     assert!(generated.contains("extern const char * getenv("));
     assert!(generated.contains("getenv(\"PATH\")"));
+
+    let borrowed_parameter = r#"
+unsafe extern c "native_length" fn nativeLength(value: str) -> i64
+
+fn main() -> i64 {
+    return nativeLength("flux")
+}
+"#;
+    check_source(borrowed_parameter)
+        .expect("explicit unsafe import should permit a call-scoped borrowed string parameter");
+    let generated = compile_to_c(borrowed_parameter)
+        .expect("unsafe borrowed-string parameter should lower on Linux");
+    assert!(generated.contains("extern int64_t native_length(const char *"));
 
     let unnecessary = r#"
 unsafe extern c "labs" fn nativeAbs(value: i64) -> i64
@@ -23677,13 +23705,18 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
     )
     .expect("app entry should be writable");
     fs::write(
+        dependency.join("src/capability.flux"),
+        "pub interface PlatformValue {\n    fn value() -> i64\n}\n",
+    )
+    .expect("portable capability contract should be writable");
+    fs::write(
         app.join("src/local.flux"),
-        "pub fn localValue() -> i64 { 1 }\n",
+        "import \"pkg:dep/src/capability.flux\"\nstruct NativeValue {\n    marker: i64\n}\nfn nativeValue(_provider: NativeValue) -> i64 { 1 }\nimpl PlatformValue for NativeValue {\n    value: nativeValue\n}\npub fn localValue() -> i64 { PlatformValue.value(NativeValue { marker: 0 }) }\n",
     )
     .expect("portable app module should be writable");
     fs::write(
         app.join("platform/android/local.flux"),
-        "pub fn localValue() -> i64 { 10 }\n",
+        "import \"pkg:dep/src/capability.flux\"\nstruct NativeValue {\n    marker: i64\n}\nfn nativeValue(_provider: NativeValue) -> i64 { android.sdk() }\nimpl PlatformValue for NativeValue {\n    value: nativeValue\n}\npub fn localValue() -> i64 { PlatformValue.value(NativeValue { marker: 0 }) }\n",
     )
     .expect("Android app module should be writable");
     fs::write(
@@ -23751,9 +23784,12 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
             .iter()
             .all(|source| source.path != app.join("src/local.flux"))
     );
-    android
+    let android_c = android
         .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
         .expect("selected Android modules should lower natively");
+    assert!(android_c.contains("flux__android_sdk_int"));
+    assert!(!android_c.contains("dynamic_dispatch"));
+    assert!(!android_c.contains("method_channel"));
 
     let _ = fs::remove_dir_all(&root);
 }
