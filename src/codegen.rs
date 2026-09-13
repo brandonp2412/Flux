@@ -15768,6 +15768,49 @@ fn async_continuation_state_type(signatures: &Signatures, ty: &Type) -> bool {
     signatures.is_copy_type(ty) && signatures.is_send_type(ty)
 }
 
+fn async_block_assigns_name(block: &[Stmt], name: &str) -> bool {
+    block.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Assign { name: target, .. } => target == name,
+        StmtKind::AssignMultiDestructure { bindings, .. }
+        | StmtKind::AssignListDestructure { bindings, .. } => {
+            bindings.iter().any(|binding| binding.name == name)
+        }
+        StmtKind::AssignStructDestructure { .. } => true,
+        StmtKind::If {
+            body, else_body, ..
+        } => async_block_assigns_name(body, name) || async_block_assigns_name(else_body, name),
+        StmtKind::ForRange { body, .. }
+        | StmtKind::ForEach { body, .. }
+        | StmtKind::While { body, .. } => async_block_assigns_name(body, name),
+        StmtKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| async_block_assigns_name(&arm.body, name)),
+        StmtKind::ListMatch { arms, .. } => arms
+            .iter()
+            .any(|arm| async_block_assigns_name(&arm.body, name)),
+        _ => false,
+    })
+}
+
+fn async_local_crosses_straight_line_suspend(
+    function: &Function,
+    declaration_index: usize,
+    name: &str,
+) -> bool {
+    for await_index in declaration_index + 1..function.body.len() {
+        if !stmt_contains_await(&function.body[await_index]) {
+            continue;
+        }
+        let trailing = &function.body[await_index + 1..];
+        let mut reads = HashSet::new();
+        typecheck::collect_block_reads(trailing, &mut reads);
+        if reads.contains(name) || async_block_assigns_name(trailing, name) {
+            return true;
+        }
+    }
+    false
+}
+
 fn collect_async_saved_locals(
     block: &[Stmt],
     through_index: usize,
@@ -15979,6 +16022,11 @@ fn async_continuation_plan(
         .then_some(())
         .filter(|_| while_await.is_none() && for_range_await.is_none() && match_await.is_none())
         .and_then(|_| async_coalescing_await_plan(function));
+    let straight_line_awaits = branch_await.is_none()
+        && while_await.is_none()
+        && for_range_await.is_none()
+        && match_await.is_none()
+        && coalescing_await.is_none();
     if function
         .body
         .iter()
@@ -16141,20 +16189,32 @@ fn async_continuation_plan(
         match &stmt.kind {
             StmtKind::Let { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !async_continuation_state_type(signatures, &ty) {
+                let save = async_continuation_state_type(signatures, &ty);
+                if !save
+                    && (!straight_line_awaits
+                        || async_local_crosses_straight_line_suspend(function, stmt_index, name))
+                {
                     return None;
                 }
                 env.insert(name.clone(), ty.clone());
-                locals.insert(name.clone(), ty);
+                if save {
+                    locals.insert(name.clone(), ty);
+                }
             }
             StmtKind::Var { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !async_continuation_state_type(signatures, &ty) {
+                let save = async_continuation_state_type(signatures, &ty);
+                if !save
+                    && (!straight_line_awaits
+                        || async_local_crosses_straight_line_suspend(function, stmt_index, name))
+                {
                     return None;
                 }
                 env.insert(name.clone(), ty.clone());
-                locals.insert(name.clone(), ty);
-                mutable.insert(name.clone());
+                if save {
+                    locals.insert(name.clone(), ty);
+                    mutable.insert(name.clone());
+                }
             }
             StmtKind::LetDestructure {
                 bindings,
@@ -16166,13 +16226,23 @@ fn async_continuation_plan(
                         continue;
                     }
                     let ty = signatures.canonical_type(&binding.ty);
-                    if !async_continuation_state_type(signatures, &ty) {
+                    let save = async_continuation_state_type(signatures, &ty);
+                    if !save
+                        && (!straight_line_awaits
+                            || async_local_crosses_straight_line_suspend(
+                                function,
+                                stmt_index,
+                                &binding.name,
+                            ))
+                    {
                         return None;
                     }
                     env.insert(binding.name.clone(), ty.clone());
-                    locals.insert(binding.name.clone(), ty);
-                    if *is_mutable {
-                        mutable.insert(binding.name.clone());
+                    if save {
+                        locals.insert(binding.name.clone(), ty);
+                        if *is_mutable {
+                            mutable.insert(binding.name.clone());
+                        }
                     }
                 }
             }
@@ -16195,13 +16265,23 @@ fn async_continuation_plan(
                         continue;
                     }
                     let ty = signatures.canonical_type(&ty);
-                    if !async_continuation_state_type(signatures, &ty) {
+                    let save = async_continuation_state_type(signatures, &ty);
+                    if !save
+                        && (!straight_line_awaits
+                            || async_local_crosses_straight_line_suspend(
+                                function,
+                                stmt_index,
+                                &binding.name,
+                            ))
+                    {
                         return None;
                     }
                     env.insert(binding.name.clone(), ty.clone());
-                    locals.insert(binding.name.clone(), ty);
-                    if *is_mutable {
-                        mutable.insert(binding.name.clone());
+                    if save {
+                        locals.insert(binding.name.clone(), ty);
+                        if *is_mutable {
+                            mutable.insert(binding.name.clone());
+                        }
                     }
                 }
             }

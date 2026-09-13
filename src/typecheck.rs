@@ -3495,7 +3495,7 @@ fn collect_struct_pattern_declarations(
     }
 }
 
-fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
+pub(crate) fn collect_block_reads(body: &[Stmt], reads: &mut HashSet<String>) {
     for stmt in body {
         match &stmt.kind {
             StmtKind::Let { expr, .. }

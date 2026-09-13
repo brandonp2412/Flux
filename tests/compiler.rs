@@ -35916,6 +35916,81 @@ async fn main() -> i64 {
         .expect("post-await non-Send locals should not disable continuation lowering");
     assert!(post_await_generated.contains("flux__async_resume_resumed"));
     assert!(!post_await_generated.contains("flux__async_body_resumed("));
+
+    let dead_before_await_source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    let label: str = "before"
+    print(label)
+    let code: i64 = await ready()
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    check_source(dead_before_await_source)
+        .expect("non-Send locals dead before suspension should remain task-local");
+    let dead_before_await_generated = compile_to_c(dead_before_await_source)
+        .expect("dead pre-await non-Send locals should not disable continuation lowering");
+    assert!(dead_before_await_generated.contains("flux__async_resume_resumed"));
+    assert!(!dead_before_await_generated.contains("saved_label"));
+
+    let mutable_dead_before_await_source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    var label: str = "before"
+    print(label)
+    label = "updated"
+    print(label)
+    let code: i64 = await ready()
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    check_source(mutable_dead_before_await_source)
+        .expect("mutable non-Send locals dead before suspension should remain task-local");
+    let mutable_dead_before_await_generated = compile_to_c(mutable_dead_before_await_source)
+        .expect("dead mutable pre-await non-Send locals should not disable continuation lowering");
+    assert!(mutable_dead_before_await_generated.contains("flux__async_resume_resumed"));
+    assert!(!mutable_dead_before_await_generated.contains("saved_label"));
+
+    let assigned_after_await_source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    var label: str = "before"
+    print(label)
+    let code: i64 = await ready()
+    label = "after"
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    check_source(assigned_after_await_source)
+        .expect("post-await writes should keep non-Send mutable locals task-local");
+    let assigned_after_await_generated = compile_to_c(assigned_after_await_source)
+        .expect("post-await writes should retain blocking lowering for non-Send locals");
+    assert!(!assigned_after_await_generated.contains("flux__async_resume_resumed"));
+    assert!(assigned_after_await_generated.contains("flux__async_body_resumed"));
 }
 
 #[test]
