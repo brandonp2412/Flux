@@ -29469,6 +29469,112 @@ fn main() -> i64 {
 }
 
 #[test]
+fn android_camera_launch_and_media_playback_use_direct_framework_calls_and_tree_shake() {
+    let source = r#"
+fn started() -> void {
+    print(android.camera())
+    print(android.play("https://example.com/audio.mp3"))
+    print(android.pause())
+    print(android.resume())
+    print(android.stop())
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+
+    check_source(source).expect("Android camera/media calls should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("Android camera/media app should analyze");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Android camera/media calls should lower directly");
+    assert!(generated.contains("static bool flux__android_camera(void)"));
+    assert!(generated.contains("android.media.action.IMAGE_CAPTURE"));
+    assert!(generated.contains("startActivity"));
+    assert!(generated.contains("static bool flux__android_play(const char *source)"));
+    assert!(generated.contains("android/media/MediaPlayer"));
+    assert!(generated.contains("android/net/Uri"));
+    assert!(generated.contains("static inline bool flux__android_pause(void)"));
+    assert!(generated.contains("static inline bool flux__android_resume(void)"));
+    assert!(generated.contains("static inline bool flux__android_stop(void)"));
+    assert!(generated.contains("\"release\", \"()V\""));
+    assert!(!generated.contains("MethodChannel"));
+    assert!(!generated.contains("plugin registry"));
+
+    let error = compile_to_c(source).expect_err("Android camera/media APIs must reject Linux");
+    assert!(
+        error
+            .message
+            .contains("android.* platform APIs require the Android target")
+    );
+
+    let unused = r#"
+fn unused() -> void {
+    android.camera()
+    android.play("unused.mp3")
+    android.pause()
+    android.resume()
+    android.stop()
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(unused, SourceId::UNKNOWN)
+        .expect("unreachable Android camera/media app should analyze");
+    let tree_shaken = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("unreachable Android camera/media code should tree-shake");
+    assert!(!tree_shaken.contains("flux__android_camera("));
+    assert!(!tree_shaken.contains("flux__android_play("));
+    assert!(!tree_shaken.contains("flux__android_pause("));
+    assert!(!tree_shaken.contains("flux__android_resume("));
+    assert!(!tree_shaken.contains("flux__android_stop("));
+    assert!(!tree_shaken.contains("android/media/MediaPlayer"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    android.camera(1)
+    android.play(false)
+    android.pause(1)
+    android.resume("bad")
+    android.stop(false)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("Android camera/media contracts must be typed");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("android.camera expects 0 arguments"))
+    );
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.play source") && error.message.contains("expected str")
+    }));
+    for name in ["pause", "resume", "stop"] {
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains(&format!("android.{name} expects 0 arguments"))
+        }));
+    }
+}
+
+#[test]
 fn android_background_jobs_use_native_job_scheduler_with_compiler_owned_callback() {
     let source = r#"
 fn background(jobId: i64) -> void {

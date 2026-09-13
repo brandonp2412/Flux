@@ -90,6 +90,12 @@ const PATH: &[AndroidBindingParam] = &[AndroidBindingParam {
     ty: AndroidBindingType::Str,
     optional: false,
 }];
+const MEDIA_SOURCE: &[AndroidBindingParam] = &[AndroidBindingParam {
+    name: "source",
+    signature: "source: str",
+    ty: AndroidBindingType::Str,
+    optional: false,
+}];
 const SECURE_KEY_VALUE: &[AndroidBindingParam] = &[
     AndroidBindingParam {
         name: "key",
@@ -278,6 +284,11 @@ pub const ANDROID_BINDINGS: &[AndroidBinding] = &[
     binding!("openNotificationSettings", NO_PARAMS, Void),
     binding!("share", TEXT, Void),
     binding!("setClipboardText", TEXT, Void),
+    binding!("camera", NO_PARAMS, Bool),
+    binding!("play", MEDIA_SOURCE, Bool),
+    binding!("pause", NO_PARAMS, Bool),
+    binding!("resume", NO_PARAMS, Bool),
+    binding!("stop", NO_PARAMS, Bool),
     binding!("startMicrophoneRecording", PATH, Bool),
     binding!("stopMicrophoneRecording", NO_PARAMS, Bool),
     binding_min_sdk!("secureStore", SECURE_KEY_VALUE, Bool, 23),

@@ -1825,6 +1825,13 @@ fn emit_runtime_prelude(
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
     let uses_android_set_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
+    let uses_android_camera = uses_android && runtime_usage.contains("flux__android_camera(");
+    let uses_android_play = uses_android && runtime_usage.contains("flux__android_play(");
+    let uses_android_pause = uses_android && runtime_usage.contains("flux__android_pause(");
+    let uses_android_resume = uses_android && runtime_usage.contains("flux__android_resume(");
+    let uses_android_stop = uses_android && runtime_usage.contains("flux__android_stop(");
+    let uses_android_media_playback =
+        uses_android_play || uses_android_pause || uses_android_resume || uses_android_stop;
     let uses_android_start_microphone_recording =
         uses_android && runtime_usage.contains("flux__android_start_microphone_recording(");
     let uses_android_stop_microphone_recording =
@@ -1934,6 +1941,8 @@ fn emit_runtime_prelude(
         || uses_android_open_notification_settings
         || uses_android_share
         || uses_android_set_clipboard_text
+        || uses_android_camera
+        || uses_android_media_playback
         || uses_android_microphone
         || uses_android_secure_storage
         || uses_android_read_clipboard_text
@@ -2035,6 +2044,7 @@ fn emit_runtime_prelude(
                 || uses_dialog_choose))
         || uses_android_notifications
         || uses_android_has_system_feature
+        || uses_android_play
         || uses_android_microphone
         || uses_android_secure_storage
         || uses_android_permission_granted
@@ -2065,6 +2075,37 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
         out.push_str("    return result;\n");
         out.push_str("}\n");
+    }
+    if uses_android_camera {
+        out.push_str("static bool flux__android_camera(void) {\n");
+        out.push_str("    if (flux__android_activity == NULL) return false;\n");
+        out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
+        out.push_str("    bool launched = false; jclass intent_class = (*env)->FindClass(env, \"android/content/Intent\"); jclass activity_class = NULL; jobject intent = NULL; jstring action = NULL;\n");
+        out.push_str("    if (intent_class != NULL) { jmethodID ctor = (*env)->GetMethodID(env, intent_class, \"<init>\", \"(Ljava/lang/String;)V\"); action = (*env)->NewStringUTF(env, \"android.media.action.IMAGE_CAPTURE\"); if (ctor != NULL && action != NULL) intent = (*env)->NewObject(env, intent_class, ctor, action); }\n");
+        out.push_str("    if (intent != NULL && !(*env)->ExceptionCheck(env)) { activity_class = (*env)->GetObjectClass(env, flux__android_activity->clazz); if (activity_class != NULL) { jmethodID start = (*env)->GetMethodID(env, activity_class, \"startActivity\", \"(Landroid/content/Intent;)V\"); if (start != NULL) { (*env)->CallVoidMethod(env, flux__android_activity->clazz, start, intent); launched = !(*env)->ExceptionCheck(env); } } }\n");
+        out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (activity_class != NULL) (*env)->DeleteLocalRef(env, activity_class); if (intent != NULL) (*env)->DeleteLocalRef(env, intent); if (action != NULL) (*env)->DeleteLocalRef(env, action); if (intent_class != NULL) (*env)->DeleteLocalRef(env, intent_class); flux__android_release_env(detach); return launched;\n}\n");
+    }
+    if uses_android_media_playback {
+        out.push_str("static jobject flux__android_media_player = NULL;\n");
+        out.push_str("static bool flux__android_media_control(const char *method_name, bool release_after) {\n");
+        out.push_str("    if (method_name == NULL || flux__android_media_player == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; jobject player = flux__android_media_player; if (release_after) flux__android_media_player = NULL; bool applied = false; jclass player_class = (*env)->GetObjectClass(env, player); if (player_class != NULL) { jmethodID method = (*env)->GetMethodID(env, player_class, method_name, \"()V\"); if (method != NULL) { (*env)->CallVoidMethod(env, player, method); applied = !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (release_after) { jmethodID release = (*env)->GetMethodID(env, player_class, \"release\", \"()V\"); if (release != NULL) (*env)->CallVoidMethod(env, player, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); } (*env)->DeleteLocalRef(env, player_class); } if (release_after) (*env)->DeleteGlobalRef(env, player); flux__android_release_env(detach); return applied;\n}\n");
+        if uses_android_play {
+            out.push_str("static bool flux__android_play(const char *source) {\n");
+            out.push_str("    if (source == NULL || source[0] == '\\0' || flux__android_activity == NULL) return false; if (flux__android_media_player != NULL) (void)flux__android_media_control(\"stop\", true); bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool started = false; jclass uri_class = NULL; jclass player_class = NULL; jstring source_string = NULL; jobject uri = NULL; jobject player = NULL;\n");
+            out.push_str("    uri_class = (*env)->FindClass(env, \"android/net/Uri\"); player_class = (*env)->FindClass(env, \"android/media/MediaPlayer\"); source_string = flux__android_utf8_string(env, source); if (uri_class == NULL || player_class == NULL || source_string == NULL) goto media_done;\n");
+            out.push_str("    jmethodID parse = (*env)->GetStaticMethodID(env, uri_class, \"parse\", \"(Ljava/lang/String;)Landroid/net/Uri;\"); if (parse == NULL) goto media_done; uri = (*env)->CallStaticObjectMethod(env, uri_class, parse, source_string); if (uri == NULL || (*env)->ExceptionCheck(env)) goto media_done;\n");
+            out.push_str("    jmethodID create = (*env)->GetStaticMethodID(env, player_class, \"create\", \"(Landroid/content/Context;Landroid/net/Uri;)Landroid/media/MediaPlayer;\"); if (create == NULL) goto media_done; player = (*env)->CallStaticObjectMethod(env, player_class, create, flux__android_activity->clazz, uri); if (player == NULL || (*env)->ExceptionCheck(env)) goto media_done; jmethodID start = (*env)->GetMethodID(env, player_class, \"start\", \"()V\"); if (start == NULL) goto media_done; (*env)->CallVoidMethod(env, player, start); if ((*env)->ExceptionCheck(env)) goto media_done; flux__android_media_player = (*env)->NewGlobalRef(env, player); started = flux__android_media_player != NULL;\n");
+            out.push_str("media_done:\n    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (!started && player != NULL) { jmethodID release = (*env)->GetMethodID(env, player_class, \"release\", \"()V\"); if (release != NULL) (*env)->CallVoidMethod(env, player, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); } if (player != NULL) (*env)->DeleteLocalRef(env, player); if (uri != NULL) (*env)->DeleteLocalRef(env, uri); if (source_string != NULL) (*env)->DeleteLocalRef(env, source_string); if (player_class != NULL) (*env)->DeleteLocalRef(env, player_class); if (uri_class != NULL) (*env)->DeleteLocalRef(env, uri_class); flux__android_release_env(detach); return started;\n}\n");
+        }
+        if uses_android_pause {
+            out.push_str("static inline bool flux__android_pause(void) { return flux__android_media_control(\"pause\", false); }\n");
+        }
+        if uses_android_resume {
+            out.push_str("static inline bool flux__android_resume(void) { return flux__android_media_control(\"start\", false); }\n");
+        }
+        if uses_android_stop {
+            out.push_str("static inline bool flux__android_stop(void) { return flux__android_media_control(\"stop\", true); }\n");
+        }
     }
     if uses_android_microphone {
         out.push_str("static jobject flux__android_microphone_recorder = NULL;\n");

@@ -7120,6 +7120,11 @@ mod tests {
         assert!(android_items.contains("fn android.noticeSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.clipboard(text: str) -> void"));
+        assert!(android_items.contains("fn android.camera() -> bool"));
+        assert!(android_items.contains("fn android.play(source: str) -> bool"));
+        assert!(android_items.contains("fn android.pause() -> bool"));
+        assert!(android_items.contains("fn android.resume() -> bool"));
+        assert!(android_items.contains("fn android.stop() -> bool"));
         assert!(android_items.contains("fn android.record(path: str) -> bool"));
         assert!(android_items.contains("fn android.stopRecord() -> bool"));
         assert!(android_items.contains("fn android.store(key: str, value: str) -> bool"));
