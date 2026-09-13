@@ -9531,7 +9531,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "exists" | "size" | "modifiedUnixMillis" | "remove" => {
+            "exists" | "size" | "modifiedUnixMillis" | "accessed" | "permissions" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -9547,7 +9547,9 @@ fn check_qualified_call(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
-                    "size" | "modifiedUnixMillis" => vec![Type::I64, Type::Error],
+                    "size" | "modifiedUnixMillis" | "accessed" | "permissions" => {
+                        vec![Type::I64, Type::Error]
+                    }
                     _ => vec![Type::Error],
                 });
             }
@@ -9613,7 +9615,8 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "exists" | "modifiedUnixMillis" | "create" | "createAll" | "remove" | "removeAll" => {
+            "exists" | "modifiedUnixMillis" | "accessed" | "permissions" | "create"
+            | "createAll" | "remove" | "removeAll" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -9629,7 +9632,9 @@ fn check_qualified_call(
                 )?;
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
-                    "modifiedUnixMillis" => vec![Type::I64, Type::Error],
+                    "modifiedUnixMillis" | "accessed" | "permissions" => {
+                        vec![Type::I64, Type::Error]
+                    }
                     _ => vec![Type::Error],
                 });
             }

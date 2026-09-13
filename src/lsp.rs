@@ -1615,6 +1615,11 @@ fn add_qualified_namespace_completions(
             ("exists", "fn file.exists(path: str) -> bool"),
             ("size", "fn file.size(path: str) -> (i64, error)"),
             ("modified", "fn file.modified(path: str) -> (i64, error)"),
+            ("accessed", "fn file.accessed(path: str) -> (i64, error)"),
+            (
+                "permissions",
+                "fn file.permissions(path: str) -> (i64, error)",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1637,6 +1642,14 @@ fn add_qualified_namespace_completions(
             (
                 "modified",
                 "fn directory.modified(path: str) -> (i64, error)",
+            ),
+            (
+                "accessed",
+                "fn directory.accessed(path: str) -> (i64, error)",
+            ),
+            (
+                "permissions",
+                "fn directory.permissions(path: str) -> (i64, error)",
             ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
@@ -3474,7 +3487,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "size" | "modifiedUnixMillis" => {
+                "size" | "modifiedUnixMillis" | "accessed" | "permissions" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
@@ -3519,9 +3532,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "modifiedUnixMillis" => {
+                "modifiedUnixMillis" | "accessed" | "permissions" => {
                     return Some(signature_help_for_builtin(
-                        "directory.modifiedUnixMillis",
+                        &format!("directory.{member}"),
                         &["path: str"],
                         "(i64, error)",
                         active_parameter,
@@ -7101,6 +7114,8 @@ mod tests {
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.accessed(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
@@ -7123,6 +7138,8 @@ mod tests {
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.accessed(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
@@ -8982,11 +8999,15 @@ mod tests {
     }
 
     #[test]
-    fn signature_help_supports_filesystem_modification_times() {
-        let uri = "file:///tmp/filesystem-modified-signatures.flux";
+    fn signature_help_supports_filesystem_metadata() {
+        let uri = "file:///tmp/filesystem-metadata-signatures.flux";
         let source = r#"fn main() -> i64 {
     let (_fileModified, _fileFailure) = file.modifiedUnixMillis("a")
     let (_directoryModified, _directoryFailure) = directory.modifiedUnixMillis("a")
+    let (_fileAccessed, _fileAccessFailure) = file.accessed("a")
+    let (_directoryAccessed, _directoryAccessFailure) = directory.accessed("a")
+    let (_filePermissions, _filePermissionsFailure) = file.permissions("a")
+    let (_directoryPermissions, _directoryPermissionsFailure) = directory.permissions("a")
     return 0
 }
 "#;
@@ -9000,11 +9021,27 @@ mod tests {
                 "directory.modifiedUnixMillis(",
                 "fn directory.modified(path: str) -> (i64, error)",
             ),
+            (
+                "file.accessed(",
+                "fn file.accessed(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.accessed(",
+                "fn directory.accessed(path: str) -> (i64, error)",
+            ),
+            (
+                "file.permissions(",
+                "fn file.permissions(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.permissions(",
+                "fn directory.permissions(path: str) -> (i64, error)",
+            ),
         ] {
             let line_index = source
                 .lines()
                 .position(|line| line.contains(needle))
-                .expect("filesystem modification-time call line should exist");
+                .expect("filesystem metadata call line should exist");
             let line = source.lines().nth(line_index).unwrap();
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(
@@ -9015,7 +9052,7 @@ mod tests {
                 cursor,
                 PositionEncoding::Utf8,
             )
-            .expect("filesystem modification-time call should have signature help")
+            .expect("filesystem metadata call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

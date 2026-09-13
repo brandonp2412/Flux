@@ -8813,6 +8813,143 @@ fn main() -> i64 {
 }
 
 #[test]
+fn canonical_filesystem_scalar_metadata_is_typed_native_and_tree_shaken() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-filesystem-scalar-metadata-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem metadata fixture should be writable");
+    let file = root.join("content.txt");
+    fs::write(&file, "metadata").expect("filesystem metadata file should be writable");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    let (fileAccessed, fileAccessedError) = file.accessed("{}")
+    print(fileAccessed > 0)
+    print(fileAccessedError)
+    let (filePermissions, filePermissionsError) = file.permissions("{}")
+    print(filePermissions >= 0)
+    print(filePermissionsError)
+    let (directoryAccessed, directoryAccessedError) = directory.accessed("{}")
+    print(directoryAccessed > 0)
+    print(directoryAccessedError)
+    let (directoryPermissions, directoryPermissionsError) = directory.permissions("{}")
+    print(directoryPermissions >= 0)
+    print(directoryPermissionsError)
+    let (_wrongDirectory, wrongDirectoryError) = directory.permissions("{}")
+    print(wrongDirectoryError)
+    let (_wrongFile, wrongFileError) = file.permissions("{}")
+    print(wrongFileError)
+    return 0
+}}
+"#,
+        path(&file),
+        path(&file),
+        path(&root),
+        path(&root),
+        path(&file),
+        path(&root),
+    );
+
+    check_source(&source).expect("filesystem scalar metadata APIs should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem scalar metadata APIs should lower");
+    for helper in [
+        "flux__fs_file_accessed_unix_millis",
+        "flux__fs_directory_accessed_unix_millis",
+        "flux__fs_file_permissions",
+        "flux__fs_directory_permissions",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing generated helper {helper}"
+        );
+    }
+
+    let source_path = root.join("metadata.flux");
+    fs::write(&source_path, &source).expect("filesystem metadata Flux source should be writable");
+    let binary = root.join("metadata");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem metadata binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem metadata build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem metadata binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
+    );
+
+    let unused = r#"
+fn hidden() -> void {
+    let (_fileAccessed, _fileAccessedError) = file.accessed("/tmp/unused-flux-file")
+    let (_filePermissions, _filePermissionsError) = file.permissions("/tmp/unused-flux-file")
+    let (_directoryAccessed, _directoryAccessedError) = directory.accessed("/tmp/unused-flux-directory")
+    let (_directoryPermissions, _directoryPermissionsError) = directory.permissions("/tmp/unused-flux-directory")
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead filesystem metadata calls should lower");
+    for helper in [
+        "flux__fs_file_accessed_unix_millis",
+        "flux__fs_directory_accessed_unix_millis",
+        "flux__fs_file_permissions",
+        "flux__fs_directory_permissions",
+    ] {
+        assert!(
+            !unused_generated.contains(helper),
+            "dead filesystem metadata helper should tree-shake: {helper}"
+        );
+    }
+
+    let invalid = r#"
+fn main() -> i64 {
+    let (_fileAccessed, _fileAccessedError) = file.accessed(1)
+    let (_filePermissions, _filePermissionsError) = file.permissions(false)
+    let (_directoryAccessed, _directoryAccessedError) = directory.accessed(1)
+    let (_directoryPermissions, _directoryPermissionsError) = directory.permissions(false)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid)
+        .expect_err("invalid filesystem scalar metadata calls should fail");
+    for label in [
+        "file.accessed path",
+        "file.permissions path",
+        "directory.accessed path",
+        "directory.permissions path",
+    ] {
+        assert!(
+            errors.iter().any(
+                |error| error.message.contains(label) && error.message.contains("expected str")
+            ),
+            "missing filesystem metadata diagnostic for {label}: {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_read_callbacks_are_not_exposed() {
     let source = r#"
 fn consume(_text: str) -> void {

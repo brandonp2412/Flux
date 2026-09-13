@@ -1688,6 +1688,8 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
     {
         out.push_str("#include <time.h>\n");
     }
@@ -5793,6 +5795,10 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__fs_file_size(")
         || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_permissions(")
+        || runtime_usage.contains("flux__fs_directory_permissions(")
     {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
@@ -5810,6 +5816,28 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_directory_modified_unix_millis(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_modified_unix_millis(const char *path) { return flux__fs_modified_unix_millis(path, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_accessed_unix_millis(const char *path, bool expect_directory) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect access time\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); int64_t seconds = (int64_t)info.st_atime; if ((time_t)seconds != info.st_atime) return flux__fs_i64_result(-1, \"access time exceeds i64\"); int64_t millis; if (__builtin_mul_overflow(seconds, INT64_C(1000), &millis)) return flux__fs_i64_result(-1, \"access time exceeds i64\"); return flux__fs_i64_result(millis, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_accessed_unix_millis(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_accessed_unix_millis(const char *path) { return flux__fs_accessed_unix_millis(path, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_accessed_unix_millis(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_accessed_unix_millis(const char *path) { return flux__fs_accessed_unix_millis(path, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_permissions(")
+        || runtime_usage.contains("flux__fs_directory_permissions(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_permissions(const char *path, bool expect_directory) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect permissions\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); return flux__fs_i64_result((int64_t)(info.st_mode & 07777), NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_permissions(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_permissions(const char *path) { return flux__fs_permissions(path, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_permissions(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_permissions(const char *path) { return flux__fs_permissions(path, true); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -29105,7 +29133,7 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid file call reached code generation"));
         }
         match name {
-            "exists" | "size" | "modifiedUnixMillis" | "remove" => {
+            "exists" | "size" | "modifiedUnixMillis" | "accessed" | "permissions" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -29119,6 +29147,16 @@ fn emit_qualified_call(
                     ),
                     "modifiedUnixMillis" => (
                         "flux__fs_file_modified_unix_millis",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "accessed" => (
+                        "flux__fs_file_accessed_unix_millis",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "permissions" => (
+                        "flux__fs_file_permissions",
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
@@ -29172,6 +29210,16 @@ fn emit_qualified_call(
             "exists" => ("flux__fs_is_directory", vec![Type::Bool], None),
             "modifiedUnixMillis" => (
                 "flux__fs_directory_modified_unix_millis",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "accessed" => (
+                "flux__fs_directory_accessed_unix_millis",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "permissions" => (
+                "flux__fs_directory_permissions",
                 vec![Type::I64, Type::Error],
                 Some("flux__fs_i64_error".to_string()),
             ),
