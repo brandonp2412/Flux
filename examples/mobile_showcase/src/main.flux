@@ -43,18 +43,18 @@ view HorseTinder {
         shadowBlur: 12
         shadowOffsetY: 6
 
-    Text profileName at 3,1 span columns 3
+    Text profileName at 3,1 span columns 5
         text: "Buttercup, 7"
         color: "#FFFFFF"
-        size: 36
+        size: 34
         bold: true
         wrap: false
         alignY: "center"
 
-    Text matchBadge at 3,4 span columns 2
+    Text matchBadge at 4,4 span columns 2
         text: "98% MATCH"
         color: "#FFFFFF"
-        size: 8
+        size: 9
         bold: true
         wrap: false
         letterSpacing: 1
@@ -63,15 +63,17 @@ view HorseTinder {
         alignY: "center"
         padding: 4
         minWidth: 96
+        minHeight: 30
+        maxHeight: 30
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 1
         radius: radiusPill
 
-    Text profileMeta at 4,1 span columns 5
+    Text profileMeta at 4,1 span columns 3
         text: "Chestnut  ·  Mare  ·  16.1 hands"
         color: "#C4CBD5"
-        size: 12
+        size: 13
         bold: true
         wrap: false
         alignY: "center"
