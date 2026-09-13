@@ -799,6 +799,7 @@ pub enum ExprKind {
     ListSpread {
         value: Box<Expr>,
         spread_span: SourceSpan,
+        optional: bool,
     },
     ListOptional {
         value: Box<Expr>,

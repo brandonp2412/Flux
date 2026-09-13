@@ -25422,6 +25422,7 @@ fn list_literal_needs_builder(expr: &Expr) -> bool {
 enum BufferedListItem {
     Scalar(String),
     Spread(String),
+    OptionalSpread(String),
     Optional(String),
     Conditional {
         condition: String,
@@ -25464,18 +25465,43 @@ fn emit_list_builder_binding(
     out.push_str(&format!("{pad}size_t {capacity_name} = 0;\n"));
     for item in items {
         match &item.kind {
-            ExprKind::ListSpread { value, .. } => {
+            ExprKind::ListSpread {
+                value, optional, ..
+            } => {
                 let spread = emit_expr(value, env, signatures)?;
-                let source_name = format!("flux__list_build_source_{}", *temp_counter);
-                *temp_counter += 1;
-                out.push_str(&format!(
-                    "{pad}struct flux__list {source_name} = {};\n",
-                    spread.code
-                ));
-                out.push_str(&format!(
-                    "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
-                ));
-                buffered_items.push(BufferedListItem::Spread(source_name));
+                if *optional {
+                    let optional_ty = signatures.canonical_type(&spread.ty);
+                    let Type::Optional(inner) = &optional_ty else {
+                        return Err(diag(
+                            value.span,
+                            "optional-aware list spread requires an optional list value",
+                        ));
+                    };
+                    if !matches!(signatures.canonical_type(inner), Type::List(_)) {
+                        return Err(diag(
+                            value.span,
+                            "optional-aware list spread requires an optional list value",
+                        ));
+                    }
+                    let source_name = format!("flux__list_build_optional_source_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {source_name} = {};\n{pad}if ({source_name}.has_value) {{ if (SIZE_MAX - {capacity_name} < {source_name}.value.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} {capacity_name} += {source_name}.value.len; }}\n",
+                        c_type(&optional_ty, signatures), spread.code
+                    ));
+                    buffered_items.push(BufferedListItem::OptionalSpread(source_name));
+                } else {
+                    let source_name = format!("flux__list_build_source_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}struct flux__list {source_name} = {};\n",
+                        spread.code
+                    ));
+                    out.push_str(&format!(
+                        "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
+                    ));
+                    buffered_items.push(BufferedListItem::Spread(source_name));
+                }
             }
             ExprKind::ListOptional { value, .. } => {
                 let optional = emit_expr(value, env, signatures)?;
@@ -25610,6 +25636,11 @@ fn emit_list_builder_binding(
             BufferedListItem::Spread(source_name) => {
                 out.push_str(&format!(
                     "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
+                ));
+            }
+            BufferedListItem::OptionalSpread(source_name) => {
+                out.push_str(&format!(
+                    "{pad}if ({source_name}.has_value) {{ for (size_t {index_name} = 0; {index_name} < {source_name}.value.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}.value, {index_name}, sizeof({element_c}))); }} }}\n"
                 ));
             }
             BufferedListItem::Optional(optional_name) => {

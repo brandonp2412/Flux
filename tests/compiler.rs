@@ -8891,6 +8891,133 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_aware_list_spreads_are_typed_formatted_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let present: i64[]? = [2, 3]
+    let missing: i64[]? = none
+    let values: i64[] = [1, ...?present, 4, ...?missing, 5]
+    print values.length
+    print values[0]
+    print values[1]
+    print values[2]
+    print values[3]
+    print values[4]
+    return 0
+}
+"#;
+
+    check_source(source).expect("optional-aware list spreads should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("optional-aware list spreads should format canonically");
+    assert!(formatted.contains("[1, ...?present, 4, ...?missing, 5]"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional-aware spreads should reparse"),
+        formatted
+    );
+
+    let generated =
+        compile_to_c(source).expect("optional-aware list spreads should lower natively");
+    assert!(generated.contains("flux__list_build_optional_source_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(".value.len"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-aware-spread-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary optional-aware spread directory should be writable");
+    let c_path = root.join("optional_aware_spread.c");
+    let exe_path = root.join("optional_aware_spread");
+    fs::write(&c_path, generated).expect("generated optional-aware spread C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional-aware spreads");
+    assert!(
+        compile.status.success(),
+        "optional-aware spread C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-aware spread program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "5\n1\n2\n3\n4\n5\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    let source: i64[] = [1, 2]
+    let values: i64[] = [...?source]
+    return values.length
+}
+"#;
+    let error = check_source(non_optional)
+        .expect_err("optional-aware spread must reject a non-optional list");
+    assert!(
+        error
+            .message
+            .contains("optional-aware list spread requires an optional list value")
+    );
+
+    let optional_scalar = r#"
+fn main() -> i64 {
+    let source: i64? = 1
+    let values: i64[] = [...?source]
+    return values.length
+}
+"#;
+    let error = check_source(optional_scalar)
+        .expect_err("optional-aware spread must reject an optional scalar");
+    assert!(
+        error
+            .message
+            .contains("optional-aware list spread requires an optional list value")
+    );
+
+    let live_nested_borrow = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[1], [2]]
+    let maybeRows: i64[][]? = rows
+    let projected: i64[][] = [...?maybeRows]
+    let _moved: i64[][]? = maybeRows
+    return projected[0][0]
+}
+"#;
+    let errors = check_source_all(live_nested_borrow)
+        .expect_err("optional nested-list spread must keep copied descriptors borrowed");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("while borrowed view 'projected' is still live")
+    }));
+
+    let dead_nested_borrow = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[1], [2]]
+    let maybeRows: i64[][]? = rows
+    let projected: i64[][] = [...?maybeRows]
+    print projected[0][0]
+    let _moved: i64[][]? = maybeRows
+    return 0
+}
+"#;
+    check_source(dead_nested_borrow)
+        .expect("optional nested-list spread borrow must end after its final reachable use");
+}
+
+#[test]
 fn rejects_invalid_list_if_elements() {
     let bad_condition = r#"
 fn main() -> i64 {

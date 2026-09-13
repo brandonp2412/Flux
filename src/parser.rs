@@ -756,7 +756,9 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(item, source_id);
             }
         }
-        ExprKind::ListSpread { value, spread_span } => {
+        ExprKind::ListSpread {
+            value, spread_span, ..
+        } => {
             *spread_span = spread_span.with_source(source_id);
             attach_expr_source(value, source_id);
         }
@@ -1082,7 +1084,9 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
                 shift_expr_columns(item, offset);
             }
         }
-        ExprKind::ListSpread { value, spread_span } => {
+        ExprKind::ListSpread {
+            value, spread_span, ..
+        } => {
             spread_span.column += offset;
             shift_expr_columns(value, offset);
         }
@@ -6886,6 +6890,13 @@ impl ExprParser<'_> {
 
         let spread_span = self.tokens[self.index].span;
         self.index += 3;
+        let optional = matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Question)
+        );
+        if optional {
+            self.index += 1;
+        }
         let value = self.parse_conditional()?;
         Ok(Expr {
             line: self.line,
@@ -6897,6 +6908,7 @@ impl ExprParser<'_> {
             kind: ExprKind::ListSpread {
                 value: Box::new(value),
                 spread_span: SourceSpan::new(self.line, spread_span.column, 3),
+                optional,
             },
         })
     }

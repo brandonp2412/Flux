@@ -2661,11 +2661,26 @@ fn record_expr_types(
                 record_expr_types(item, env, signatures, evaluations);
             }
         }
-        ExprKind::ListSpread { value, .. } => {
+        ExprKind::ListSpread {
+            value, optional, ..
+        } => {
             record_expr_types(value, env, signatures, evaluations);
-            if let Ok(ty) = typecheck::type_of_expr(value, env, signatures)
-                && let Type::List(element) = signatures.canonical_type(&ty)
-            {
+            if let Ok(ty) = typecheck::type_of_expr(value, env, signatures) {
+                let ty = signatures.canonical_type(&ty);
+                let element = if *optional {
+                    let Type::Optional(inner) = ty else {
+                        return;
+                    };
+                    let Type::List(element) = signatures.canonical_type(&inner) else {
+                        return;
+                    };
+                    element
+                } else {
+                    let Type::List(element) = ty else {
+                        return;
+                    };
+                    element
+                };
                 evaluations.push((expr.span, vec![*element]));
             }
         }

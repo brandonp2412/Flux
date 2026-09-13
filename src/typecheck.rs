@@ -5703,13 +5703,40 @@ pub fn type_of_expr(
             };
             let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
                 match &item.kind {
-                    ExprKind::ListSpread { value, .. } => {
+                    ExprKind::ListSpread {
+                        value, optional, ..
+                    } => {
                         let spread_ty =
                             signatures.canonical_type(&type_of_expr(value, env, signatures)?);
-                        let Type::List(element) = spread_ty else {
-                            return Err(diag(value.span, "list spread expression must be a list"));
-                        };
-                        Ok(*element)
+                        if *optional {
+                            let Type::Optional(inner) = spread_ty else {
+                                return Err(diag(
+                                    value.span,
+                                    "optional-aware list spread requires an optional list value",
+                                ));
+                            };
+                            if matches!(inner.as_ref(), Type::Void) {
+                                return Err(diag(
+                                    value.span,
+                                    "optional-aware list spread cannot infer a list type from bare none",
+                                ));
+                            }
+                            let Type::List(element) = signatures.canonical_type(&inner) else {
+                                return Err(diag(
+                                    value.span,
+                                    "optional-aware list spread requires an optional list value",
+                                ));
+                            };
+                            Ok(*element)
+                        } else {
+                            let Type::List(element) = spread_ty else {
+                                return Err(diag(
+                                    value.span,
+                                    "list spread expression must be a list",
+                                ));
+                            };
+                            Ok(*element)
+                        }
                     }
                     ExprKind::ListOptional { value, .. } => {
                         let optional_ty =

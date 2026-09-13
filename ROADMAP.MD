@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 545
+- Completed baseline units: 546
 - Reported overall progress: **74%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -266,7 +266,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 - [ ] Set literals.
 - [ ] Map literals.
 - [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
-- [ ] Optional-aware spread analogous to Dart `...?`.
+- [x] Optional-aware spread analogous to Dart `...?`: optional list sources are evaluated once, contribute zero elements when absent, preserve ordinary spread ordering/overflow checks when present, format canonically, and lower allocation-free through the existing stack-backed list builder.
 - [x] Null/optional-aware collection elements use `?element` inside list literals: the expression must be a concrete Copy optional, is evaluated exactly once, appends its payload only when present, rejects bare `none`/non-optionals/type mismatches statically, formats canonically, participates in semantic/typed-IR traversal, and lowers through the existing overflow-checked stack-backed list builder with no allocation or runtime null assertion.
 - [x] List-only `if condition: value` / `if condition: first else: second` construction items with strict bool conditions, exact element typing, selected-branch evaluation, and the same overflow-checked stack-backed builder used by spreads.
 - [x] Python-style list comprehensions with optional boolean filters: `[expr for item in source if condition]`.
@@ -358,7 +358,7 @@ The ownership track now has explicit compiler-level `Copy` and cross-thread `Sen
 - [ ] Prevent dangling borrows.
   - [x] Bootstrap live-view move exclusion for zero-copy list borrows: CFG liveness rejects moving a local list owner while a derived slice, nested-list index/property (`first`/`last`/`only`), `take`, `skip`, `chunk`, list-rest pattern, list-match rest, destructured nested-list element, transitive view binding, or local nested-list literal containing its descriptor remains live, while permitting the move immediately after the borrow's last reachable use. Dedicated regression coverage now pins both sides of the `chunk` lifetime boundary: moving the owner while chunk descriptors remain live fails, while moving it immediately after their last reachable use succeeds. Full first-class lifetime inference and escaping-borrow validation remain pending.
   - [x] Follow-up: value-producing enum/list `match` results preserve zero-copy list-view provenance through the selected arm, including nested list views reached through expression-scoped arm bindings, so a live match-selected view prevents moving its owner while a move after the view's last use remains valid.
-  - [x] Follow-up: preserve embedded nested-list borrow provenance through list spreads and conditional collection elements; the borrow analysis traverses the dedicated IR wrappers, ignores statically unreachable collection branches, keeps an embedded inner-list owner borrowed while the constructed aggregate remains live, and releases that restriction after the aggregate's final reachable use.
+  - [x] Follow-up: preserve embedded nested-list borrow provenance through ordinary/optional-aware list spreads and conditional collection elements; the borrow analysis traverses the dedicated IR wrappers, ignores statically unreachable collection branches, keeps an embedded inner-list owner borrowed while the constructed aggregate remains live, and releases that restriction after the aggregate's final reachable use.
   - [x] Follow-up: nested-list comprehensions preserve borrow provenance from scoped element bindings into the constructed aggregate; moving the source owner is rejected while a comprehension-projected inner view remains live and becomes valid immediately after the aggregate's last reachable use.
   - [x] Follow-up: descriptor-preserving nested-list `where`, `merge`, and nested-result `flat` keep embedded list owners borrowed until the transformed aggregate's last reachable use; capture-free anonymous functions also reject list returns so stack-backed collection storage cannot escape a callback before owned collection transfer/lifetime semantics exist.
   - [x] Follow-up: live-view move validation resolves each live alias through the definitions that actually reach the move node, and transitive borrow provenance follows resolved definition identities rather than globally matching a binding name. Mutually exclusive sibling branches may therefore reuse local view names without an unrelated borrowed definition falsely poisoning a valid owner move, while real same-path transitive views remain protected.
