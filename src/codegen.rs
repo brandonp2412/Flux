@@ -1486,6 +1486,13 @@ pub fn emit_c_for_target_with_source_metadata(
     {
         out.push('\n');
     }
+    let has_reachable_async = program
+        .functions
+        .iter()
+        .any(|function| reachable_functions.contains(&function.name) && function.asynchronous);
+    if has_reachable_async {
+        out.push_str("#ifdef FLUX_DEBUG_METADATA\nstruct flux__debug_task_record { const char *function_name; void *task; int *state; bool *done; int64_t *worker_scope_id; struct flux__debug_task_record *next; };\nstatic pthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;\nstatic struct flux__debug_task_record *flux__debug_task_head = NULL;\nstatic void flux__debug_task_register(struct flux__debug_task_record *record, const char *function_name, void *task, int *state, bool *done, int64_t *worker_scope_id) { record->function_name = function_name; record->task = task; record->state = state; record->done = done; record->worker_scope_id = worker_scope_id; pthread_mutex_lock(&flux__debug_task_mutex); record->next = flux__debug_task_head; flux__debug_task_head = record; pthread_mutex_unlock(&flux__debug_task_mutex); }\nstatic void flux__debug_task_unregister(struct flux__debug_task_record *record) { pthread_mutex_lock(&flux__debug_task_mutex); struct flux__debug_task_record **cursor = &flux__debug_task_head; while (*cursor != NULL && *cursor != record) cursor = &(*cursor)->next; if (*cursor == record) *cursor = record->next; pthread_mutex_unlock(&flux__debug_task_mutex); }\n#endif\n");
+    }
     for function in &program.functions {
         if !reachable_functions.contains(&function.name) || !function.asynchronous {
             continue;
@@ -1502,6 +1509,7 @@ pub fn emit_c_for_target_with_source_metadata(
         out.push_str("    void *continuation_context;\n");
         out.push_str("    int64_t worker_scope_id;\n");
         out.push_str("    const char *scope_error;\n");
+        out.push_str("#ifdef FLUX_DEBUG_METADATA\n    struct flux__debug_task_record debug_record;\n#endif\n");
         for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
                 "    {} arg_{index};\n",
@@ -18692,6 +18700,7 @@ fn emit_async_task_runtime(
 
     out.push_str(&format!("{} {{\n", async_release_prototype(function)));
     out.push_str("    if (flux__task == NULL) return;\n");
+    out.push_str("#ifdef FLUX_DEBUG_METADATA\n    flux__debug_task_unregister(&flux__task->debug_record);\n#endif\n");
     out.push_str("    pthread_cond_destroy(&flux__task->completed);\n");
     out.push_str("    pthread_mutex_destroy(&flux__task->mutex);\n");
     out.push_str("    free(flux__task);\n}\n");
@@ -18740,6 +18749,10 @@ fn emit_async_task_runtime(
     out.push_str("    flux__task->done = false;\n    flux__task->state = 0;\n");
     out.push_str("    flux__task->continuation = flux__continuation;\n    flux__task->continuation_context = flux__context;\n");
     out.push_str("    flux__task->worker_scope_id = flux__async_scope_create();\n    flux__task->scope_error = NULL;\n");
+    out.push_str(&format!(
+        "#ifdef FLUX_DEBUG_METADATA\n    flux__debug_task_register(&flux__task->debug_record, \"{}\", flux__task, &flux__task->state, &flux__task->done, &flux__task->worker_scope_id);\n#endif\n",
+        function.name.replace('\\', "\\\\").replace('"', "\\\"")
+    ));
     for (index, param) in function.params.iter().enumerate() {
         out.push_str(&format!(
             "    flux__task->arg_{index} = {};\n",

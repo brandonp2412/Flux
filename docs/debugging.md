@@ -23,6 +23,8 @@ Flux also installs a small debugger support layer into that GDB session. It keep
 ```text
 flux-locals
 flux-print value
+flux-inspect value
+flux-tasks
 flux-eval value + 3 * 2
 flux-eval value < 0 && true
 flux-watch value
@@ -30,7 +32,11 @@ next
 flux-unwatch value
 ```
 
-`flux-locals` shows visible parameters and locals with their Flux names. `flux-print name` inspects one visible local. `flux-eval expression` evaluates a side-effect-free Flux expression over visible primitive locals using Flux semantics rather than handing source text to GDB's C evaluator. The bootstrap evaluator supports `i64`, `bool`, and `str` literals/locals, parentheses, `!`/unary `-`, checked integer `+ - * /`, comparisons/equality, and short-circuit `&&` / `||`. `flux-watch name` reports a local each time execution stops until `flux-unwatch name` removes it. Watches report an explicit `<out of scope>` state instead of accidentally resolving another native symbol.
+`flux-locals` shows visible parameters and locals with their Flux names. `flux-print name` inspects one visible local. `flux-inspect name` additionally reports the value's ownership class: current scalar/aggregate/function/string handles are `Copy`, while list/view descriptors are shown as non-`Copy` immutable borrows with their length, stride, and storage identity without dereferencing borrowed elements. Unknown native pointer shapes stay visibly classified as compiler/native handles rather than being guessed as owned Flux values.
+
+`flux-tasks` lists the compiler-owned async tasks that are live in a debug build, including the source async function, running/suspended/completed status, continuation state number, worker scope, and task handle. This registry exists only in debug-mode native builds, so profile/release artifacts carry no task-debug registry overhead.
+
+`flux-eval expression` evaluates a side-effect-free Flux expression over visible primitive locals using Flux semantics rather than handing source text to GDB's C evaluator. The bootstrap evaluator supports `i64`, `bool`, and `str` literals/locals, parentheses, `!`/unary `-`, checked integer `+ - * /`, comparisons/equality, and short-circuit `&&` / `||`. `flux-watch name` reports a local each time execution stops until `flux-unwatch name` removes it. Watches report an explicit `<out of scope>` state instead of accidentally resolving another native symbol.
 
 You can install one or more breakpoints before the debugger opens:
 
@@ -45,7 +51,7 @@ Add `--run` to start the program immediately after the requested breakpoints are
 flux debug examples/branches.flux --break examples/branches.flux:3 --run
 ```
 
-The bootstrap debugger intentionally delegates process control to GDB while Flux supplies source-aware inspection and primitive expression evaluation on top. `flux-eval` does not execute function calls, assignments, platform operations, or aggregate/member access, so debugger evaluation cannot mutate the debuggee accidentally; richer aggregate/ownership-aware inspection and async/task debugging remain roadmap work.
+The bootstrap debugger intentionally delegates process control to GDB while Flux supplies source-aware inspection, ownership classification, async-task state, and primitive expression evaluation on top. `flux-eval` does not execute function calls, assignments, platform operations, or aggregate/member access, so debugger evaluation cannot mutate the debuggee accidentally. Ownership inspection deliberately describes borrowed list/view storage rather than chasing it, and async task inspection exposes compiler state without making task/runtime objects part of Flux source.
 
 ## Crash symbolization
 

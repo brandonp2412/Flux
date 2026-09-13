@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 539
+- Completed baseline units: 540
 - Reported overall progress: **73%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -1012,8 +1012,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Locals. The debugger embeds a Flux-aware GDB support layer: `flux-locals` enumerates the currently visible parameters/locals using source-language names and values, and `flux-print name` resolves one visible Flux local without requiring the developer to know compiler-generated `flux__local_*` symbols.
 - [x] Watches. `flux-watch name` tracks a visible Flux local and reports it with its source-language name whenever execution stops; `flux-unwatch name` removes the watch and out-of-scope transitions are explicit instead of silently binding a different native symbol.
 - [x] Expression evaluation. Bootstrap `flux-eval expression` evaluates side-effect-free primitive Flux expressions directly over visible debugger locals instead of forwarding source text into GDB/C: `i64`/`bool`/`str` values, parentheses, unary `!`/`-`, checked integer arithmetic/division, comparisons/equality, and short-circuit `&&`/`||` follow Flux semantics. Function calls, assignment/platform effects, and aggregate/member evaluation remain intentionally unavailable until they can preserve Flux ownership/effect rules.
-- [ ] Async/task debugging.
-- [ ] Ownership-aware value inspection.
+- [x] Async/task debugging. Debug-mode native builds expose compiler-owned live async-task metadata without adding release/profile overhead, and the Flux GDB support layer provides `flux-tasks` to list each live task by source async function, running/suspended/completed state, continuation state number, worker scope, and native task handle. A real GDB regression stops inside an async child while its parent is suspended and verifies both task states through the user-facing debugger metadata.
+- [x] Ownership-aware value inspection. `flux-inspect name` classifies visible source locals using Flux ownership semantics instead of blindly chasing native storage: current scalar/aggregate/function/string handles are identified as `Copy`, compiler-known list/view descriptors are explicitly reported as non-`Copy` immutable borrows with length/stride/storage identity, and unknown native pointer shapes remain labelled as compiler/native handles rather than being misrepresented as owned Flux values. The GDB regression verifies both a `Copy` scalar and a live borrowed list view.
 - [x] Native debug metadata. Generated C carries source-aware `#line` directives and debug/profile Clang modes retain DWARF line tables that resolve native instructions back to `.flux` files; this is now exercised through the user-facing debugger path.
 - [x] Predictable bootstrap debug/profile/release native build behavior: `debug` uses no optimization plus full debug info/frame pointers, `profile` uses optimized code with debug info/frame pointers, and `release` uses aggressive optimization/LTO.
 - [x] Platform debugger integration where useful. On the current Linux development target, `flux debug <target>` verifies GDB availability, builds with Flux debug metadata, opens the debugger with inherited terminal I/O, supports preconfigured source/function breakpoints plus optional immediate run, embeds Flux-aware local/watch commands, and cleans up its temporary binary/support script after the session. `flux doctor` reports GDB availability.

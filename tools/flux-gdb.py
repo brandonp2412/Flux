@@ -318,6 +318,57 @@ def _format_flux_value(value):
     return str(value[1])
 
 
+def _flux_ownership_summary(value):
+    value_type = value.type.strip_typedefs()
+    if value_type.code == gdb.TYPE_CODE_STRUCT and value_type.tag == "flux__list":
+        length = int(value["len"])
+        stride = int(value["stride"])
+        data = value["data"]
+        return "non-Copy immutable borrowed list/view; len={} stride={} data={}".format(
+            length, stride, data
+        )
+    if value_type.code == gdb.TYPE_CODE_PTR:
+        target = value_type.target().strip_typedefs()
+        if target.code == gdb.TYPE_CODE_INT and target.sizeof == 1:
+            return "Copy borrowed str/error handle; value={}".format(value)
+        if target.code == gdb.TYPE_CODE_FUNC:
+            return "Copy function value; value={}".format(value)
+        return "compiler/native pointer handle; value={}".format(value)
+    if value_type.code in (
+        gdb.TYPE_CODE_BOOL,
+        gdb.TYPE_CODE_INT,
+        gdb.TYPE_CODE_ENUM,
+        gdb.TYPE_CODE_STRUCT,
+        gdb.TYPE_CODE_UNION,
+    ):
+        return "Copy value; value={}".format(value)
+    return "ownership class unavailable for native type {}; value={}".format(value_type, value)
+
+
+def _debug_task_records():
+    try:
+        cursor = gdb.parse_and_eval("flux__debug_task_head")
+    except gdb.error:
+        raise gdb.GdbError(
+            "async task metadata is unavailable; build in debug mode or use 'flux debug'"
+        )
+    records = []
+    visited = set()
+    while int(cursor) != 0:
+        address = int(cursor)
+        if address in visited:
+            raise gdb.GdbError("async task metadata list is cyclic")
+        visited.add(address)
+        record = cursor.dereference()
+        function_name = record["function_name"].string()
+        state = int(record["state"].dereference())
+        done = bool(record["done"].dereference())
+        scope = int(record["worker_scope_id"].dereference())
+        records.append((function_name, state, done, scope, record["task"]))
+        cursor = record["next"]
+    return records
+
+
 class FluxLocals(gdb.Command):
     """Show visible Flux locals using source-language names."""
 
@@ -361,6 +412,40 @@ class FluxPrint(gdb.Command):
         name = argument.strip()
         value = _lookup_flux_local(gdb.selected_frame(), name)
         gdb.write("{} = {}\n".format(name, value))
+
+
+class FluxInspect(gdb.Command):
+    """Inspect one visible Flux local with its ownership class: flux-inspect name."""
+
+    def __init__(self):
+        super().__init__("flux-inspect", gdb.COMMAND_DATA)
+
+    def invoke(self, argument, from_tty):
+        name = argument.strip()
+        value = _lookup_flux_local(gdb.selected_frame(), name)
+        gdb.write("{}: {}\n".format(name, _flux_ownership_summary(value)))
+
+
+class FluxTasks(gdb.Command):
+    """List live compiler-owned Flux async tasks and suspension states."""
+
+    def __init__(self):
+        super().__init__("flux-tasks", gdb.COMMAND_STATUS)
+
+    def invoke(self, argument, from_tty):
+        if argument.strip():
+            raise gdb.GdbError("flux-tasks takes no arguments")
+        records = _debug_task_records()
+        if not records:
+            gdb.write("No live Flux async tasks.\n")
+            return
+        for function_name, state, done, scope, task in records:
+            status = "completed" if done else ("suspended" if state != 0 else "running")
+            gdb.write(
+                "{}: status={} state={} scope={} task={}\n".format(
+                    function_name, status, state, scope, task
+                )
+            )
 
 
 _flux_watches = []
@@ -413,5 +498,7 @@ gdb.events.stop.connect(_show_flux_watches)
 FluxLocals()
 FluxEval()
 FluxPrint()
+FluxInspect()
+FluxTasks()
 FluxWatch()
 FluxUnwatch()

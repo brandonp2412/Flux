@@ -21710,6 +21710,80 @@ fn flux_debugger_evaluates_flux_primitive_expressions() {
 }
 
 #[test]
+fn flux_debugger_lists_async_tasks_and_reports_ownership_classes() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let gdb_ready = Command::new("gdb")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !gdb_ready {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("flux-debug-tasks-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async debugger fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "async fn child(value: i64) -> i64 {\n    let values: i64[] = [value, value + 1]\n    print(values.count)\n    return value\n}\n\nasync fn main() -> i64 {\n    return await child(41)\n}\n",
+    )
+    .expect("async debugger source should be writable");
+    let binary = root.join("debug-tasks");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug", "-o"])
+        .arg(&binary)
+        .output()
+        .expect("async debugger binary should build");
+    assert!(
+        built.status.success(),
+        "async debugger fixture failed to build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let support = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/flux-gdb.py");
+    let breakpoint = format!("break {}:3", source.display());
+    let output = Command::new("gdb")
+        .args(["--batch", "--quiet", "-x"])
+        .arg(&support)
+        .arg("-ex")
+        .arg(&breakpoint)
+        .arg("-ex")
+        .arg("run")
+        .arg("-ex")
+        .arg("flux-tasks")
+        .arg("-ex")
+        .arg("flux-inspect value")
+        .arg("-ex")
+        .arg("flux-inspect values")
+        .arg(&binary)
+        .output()
+        .expect("GDB async task inspection should run");
+    let _ = fs::remove_dir_all(&root);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Operation not permitted") || stderr.contains("ptrace") {
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "GDB async inspection failed: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("child: status=running state=0"), "{stdout}");
+    assert!(stdout.contains("main: status=suspended state="), "{stdout}");
+    assert!(stdout.contains("value: Copy value; value=41"), "{stdout}");
+    assert!(
+        stdout.contains("values: non-Copy immutable borrowed list/view; len=2"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn native_symbol_tools_split_and_resolve_flux_source_locations() {
     if !cfg!(target_os = "linux") {
         return;

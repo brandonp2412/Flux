@@ -47,7 +47,12 @@ impl BuildMode {
 
     fn clang_args(self) -> &'static [&'static str] {
         match self {
-            Self::Debug => &["-O0", "-g3", "-fno-omit-frame-pointer"],
+            Self::Debug => &[
+                "-O0",
+                "-g3",
+                "-fno-omit-frame-pointer",
+                "-DFLUX_DEBUG_METADATA=1",
+            ],
             Self::Profile => &["-O2", "-g", "-fno-omit-frame-pointer", "-DNDEBUG"],
             Self::Release => &["-O3", "-flto", "-DNDEBUG"],
         }
@@ -7470,6 +7475,7 @@ mod tests {
         assert!(debug.contains(&"-O0"));
         assert!(debug.contains(&"-g3"));
         assert!(debug.contains(&"-fno-omit-frame-pointer"));
+        assert!(debug.contains(&"-DFLUX_DEBUG_METADATA=1"));
         assert!(!debug.contains(&"-DNDEBUG"));
 
         let profile = BuildMode::Profile.clang_args();
@@ -7477,12 +7483,14 @@ mod tests {
         assert!(profile.contains(&"-g"));
         assert!(profile.contains(&"-fno-omit-frame-pointer"));
         assert!(profile.contains(&"-DNDEBUG"));
+        assert!(!profile.contains(&"-DFLUX_DEBUG_METADATA=1"));
 
         let release = BuildMode::Release.clang_args();
         assert!(release.contains(&"-O3"));
         assert!(release.contains(&"-flto"));
         assert!(release.contains(&"-DNDEBUG"));
         assert!(!release.contains(&"-g"));
+        assert!(!release.contains(&"-DFLUX_DEBUG_METADATA=1"));
     }
 
     #[test]
