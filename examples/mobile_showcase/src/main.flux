@@ -3,7 +3,7 @@ view HorseTinder {
     state passed: bool = false
     derived actionOffset: i64 = (windowWidth - 320) / 2
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 46 1fr 54 34 72 80 auto
+    grid rows: 46 1fr 54 34 72 auto auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -170,47 +170,47 @@ view HorseTinder {
         layoutTransitionMs: motionNormal
 
     Text result at 6,1 span columns 5
-        text: "IT'S A MATCH  ·  Buttercup likes your pasture too."
+        text: "IT'S A MATCH  ·  Buttercup likes you too."
         visible: liked
-        color: "#FFE1E5"
+        color: "#FFE8EC"
         size: 13
         bold: true
         wrap: true
         maxLines: 2
-        lineHeightPercent: 125
+        lineHeightPercent: 120
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        margin: 8
-        padding: 16
-        minHeight: 80
-        maxHeight: 80
+        margin: 4
+        padding: 10
+        minHeight: 56
+        maxHeight: 56
         backgroundColor: "#35141AF2"
-        borderColor: "#8B3040"
+        borderColor: "#A23649"
         borderWidth: 1
-        radius: 40
+        radius: 16
         layoutTransitionMs: motionNormal
 
     Text passedNote at 6,1 span columns 5
-        text: "PASSED  ·  The photobomber is taking it personally."
+        text: "PASSED  ·  The photobomber took that personally."
         visible: passed
-        color: "#D7DCE4"
+        color: "#DDE2E9"
         size: 12
         bold: true
         wrap: true
         maxLines: 2
-        lineHeightPercent: 125
+        lineHeightPercent: 120
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        margin: 8
-        padding: 16
-        minHeight: 80
-        maxHeight: 80
-        backgroundColor: "#10151CF2"
-        borderColor: "#3C4755"
+        margin: 4
+        padding: 10
+        minHeight: 56
+        maxHeight: 56
+        backgroundColor: "#11161DF2"
+        borderColor: "#465261"
         borderWidth: 1
-        radius: 40
+        radius: 16
         layoutTransitionMs: motionNormal
 }
 
