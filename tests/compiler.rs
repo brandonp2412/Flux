@@ -16752,6 +16752,41 @@ fn main() -> i64 {
     let moved_generated =
         compile_to_c(moved_source).expect("dead non-copy moves should preserve ownership lowering");
     assert!(moved_generated.contains("flux__local_moved = flux__local_source"));
+
+    let dead_list_literal = r#"
+fn main() -> i64 {
+    let deadList: i64[] = [1, 2, 3]
+    if false:
+        print(deadList.length)
+    return 0
+}
+"#;
+    check_source(dead_list_literal).expect("dead non-escaping list literal should typecheck");
+    let dead_list_generated = compile_to_c(dead_list_literal)
+        .expect("dead non-escaping list literal should be eliminated");
+    assert!(!dead_list_generated.contains("flux__local_deadList"));
+    assert!(!dead_list_generated.contains("INT64_C(1), INT64_C(2), INT64_C(3)"));
+}
+
+#[test]
+fn typed_ir_dce_prunes_dead_function_value_roots_before_tree_shaking() {
+    let source = r#"
+fn dead(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    let deadCallback: fn(i64) -> i64 = dead
+    if false:
+        return deadCallback(41)
+    return 0
+}
+"#;
+
+    check_source(source).expect("dead function-value binding should typecheck");
+    let generated = compile_to_c(source).expect("typed IR DCE should lower the program");
+    assert!(!generated.contains("flux__local_deadCallback"));
+    assert!(!generated.contains("flux__fn_dead"));
 }
 
 #[test]
@@ -21891,6 +21926,56 @@ fn main() -> i64 {
             .expect("liveness should be deterministic")
             .live(),
         &[] as &[String]
+    );
+}
+
+#[test]
+fn semantic_cfg_tracks_transitive_value_escape_facts() {
+    let source = r#"
+type Mapper = fn(i64) -> i64
+
+fn plusOne(value: i64) -> i64 {
+    return value + 1
+}
+
+fn apply(mapper: Mapper, value: i64) -> i64 {
+    return mapper(value)
+}
+
+fn main() -> i64 {
+    let mapper: Mapper = plusOne
+    return apply(mapper, 41)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1322))
+        .expect("function-value escape fixture should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let initializer = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.kind,
+                ControlFlowValueKind::NameRead { name, .. } if name == "plusOne"
+            )
+        })
+        .expect("mapper initializer should retain the named function value");
+    let call_argument = graph
+        .values()
+        .iter()
+        .find(|value| {
+            matches!(
+                &value.kind,
+                ControlFlowValueKind::NameRead { name, .. } if name == "mapper"
+            )
+        })
+        .expect("call should read the mapper binding");
+    assert!(graph.value_escapes(call_argument.id));
+    assert!(
+        graph.value_escapes(initializer.id),
+        "escape analysis should propagate through reaching definitions"
     );
 }
 

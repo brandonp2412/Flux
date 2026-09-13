@@ -386,6 +386,7 @@ pub struct ControlFlowGraph {
     value_uses: Vec<ControlFlowValueUse>,
     value_regions: Vec<ControlFlowValueRegion>,
     reachable_values: BTreeSet<ControlFlowValueId>,
+    escaping_values: BTreeSet<ControlFlowValueId>,
     scoped_definitions: Vec<Vec<ControlFlowDefinition>>,
     definition_values: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
     scoped_borrow_sources: BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
@@ -472,6 +473,10 @@ impl ControlFlowGraph {
 
     pub fn is_value_reachable(&self, id: ControlFlowValueId) -> bool {
         self.reachable_values.contains(&id)
+    }
+
+    pub fn value_escapes(&self, id: ControlFlowValueId) -> bool {
+        self.escaping_values.contains(&id)
     }
 
     pub fn definition_name(&self, id: ControlFlowDefinitionId) -> Option<&str> {
@@ -932,10 +937,21 @@ impl<'a> ControlFlowBuilder<'a> {
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
         let (value_uses, value_regions) = collect_value_uses(&self.values);
         let reachable_values = compute_reachable_values(
+            &self.nodes,
+            &self.edges,
             &self.values,
             &value_uses,
             &value_regions,
             &move_states_before,
+            &live_after,
+            self.signatures,
+        );
+        let escaping_values = compute_escaping_values(
+            &self.nodes,
+            &self.values,
+            &value_uses,
+            &definition_values,
+            &reachable_values,
         );
         populate_immutable_borrows(
             &mut self.nodes,
@@ -955,6 +971,7 @@ impl<'a> ControlFlowBuilder<'a> {
             value_uses,
             value_regions,
             reachable_values,
+            escaping_values,
             scoped_definitions: self.scoped_definitions,
             definition_values,
             scoped_borrow_sources: self.scoped_borrow_sources,
@@ -3406,10 +3423,14 @@ fn populate_immutable_borrows(
 }
 
 fn compute_reachable_values(
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
     values: &[ControlFlowValue],
     uses: &[ControlFlowValueUse],
     regions: &[ControlFlowValueRegion],
     move_states_before: &[ControlFlowMoveState],
+    live_after: &[ControlFlowLiveState],
+    signatures: &Signatures,
 ) -> BTreeSet<ControlFlowValueId> {
     let mut reachable = BTreeSet::new();
     let mut pending = values
@@ -3419,6 +3440,7 @@ fn compute_reachable_values(
                 && move_states_before
                     .get(value.producer.0)
                     .is_some_and(ControlFlowMoveState::reachable)
+                && value_root_is_observable(value.id, nodes, edges, values, live_after, signatures)
         })
         .map(|value| value.id)
         .collect::<Vec<_>>();
@@ -3438,6 +3460,191 @@ fn compute_reachable_values(
     }
 
     reachable
+}
+
+fn value_root_is_observable(
+    id: ControlFlowValueId,
+    nodes: &[ControlFlowNode],
+    edges: &[ControlFlowEdge],
+    values: &[ControlFlowValue],
+    live_after: &[ControlFlowLiveState],
+    signatures: &Signatures,
+) -> bool {
+    let Some(value) = values.get(id.0) else {
+        return true;
+    };
+    let Some(node) = nodes.get(value.producer.0) else {
+        return true;
+    };
+    let discardable = ir_value_is_discardable(id, values, signatures, &mut HashSet::new());
+    match node.kind {
+        ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::ExpressionStatement) => {
+            !discardable
+        }
+        ControlFlowNodeKind::Evaluation(
+            ControlFlowEvaluationKind::BindingInitializer
+            | ControlFlowEvaluationKind::AssignmentValue,
+        ) if value.result_index == Some(0) => {
+            let Some(target) = edges
+                .iter()
+                .find(|edge| edge.from == node.id && edge.kind == ControlFlowEdgeKind::Next)
+                .and_then(|edge| nodes.get(edge.to.0))
+            else {
+                return true;
+            };
+            if target.definitions.len() != 1 {
+                return true;
+            }
+            let definition = &target.definitions[0];
+            let dead = live_after
+                .get(target.id.0)
+                .is_some_and(|state| !state.contains(&definition.name));
+            !(dead && discardable)
+        }
+        _ => true,
+    }
+}
+
+fn ir_value_is_discardable(
+    id: ControlFlowValueId,
+    values: &[ControlFlowValue],
+    signatures: &Signatures,
+    visiting: &mut HashSet<ControlFlowValueId>,
+) -> bool {
+    let Some(value) = values.get(id.0) else {
+        return false;
+    };
+    if value.source_constant.is_some() {
+        return true;
+    }
+    if !visiting.insert(id) {
+        return false;
+    }
+    let child = |child, visiting: &mut HashSet<ControlFlowValueId>| {
+        ir_value_is_discardable(child, values, signatures, visiting)
+    };
+    let result = match &value.kind {
+        ControlFlowValueKind::Literal | ControlFlowValueKind::AnonymousFunction { .. } => true,
+        ControlFlowValueKind::NameRead { .. } => signatures.is_copy_type(&value.ty),
+        ControlFlowValueKind::List { items } => items.iter().all(|item| child(*item, visiting)),
+        ControlFlowValueKind::ListSpread { value }
+        | ControlFlowValueKind::ListOptional { value } => child(*value, visiting),
+        ControlFlowValueKind::ListIf {
+            condition,
+            value,
+            else_value,
+        } => {
+            child(*condition, visiting)
+                && child(*value, visiting)
+                && else_value.is_none_or(|value| child(value, visiting))
+        }
+        ControlFlowValueKind::StructLiteral { base, fields, .. } => {
+            base.is_none_or(|value| child(value, visiting))
+                && fields.iter().all(|(_, value)| child(*value, visiting))
+        }
+        ControlFlowValueKind::Field { base, .. } => child(*base, visiting),
+        ControlFlowValueKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            child(*condition, visiting)
+                && child(*then_value, visiting)
+                && child(*else_value, visiting)
+        }
+        ControlFlowValueKind::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => child(*operand, visiting),
+        ControlFlowValueKind::Binary { op, left, right }
+            if matches!(
+                op,
+                BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+            ) =>
+        {
+            child(*left, visiting) && child(*right, visiting)
+        }
+        _ => false,
+    };
+    visiting.remove(&id);
+    result
+}
+
+fn compute_escaping_values(
+    nodes: &[ControlFlowNode],
+    values: &[ControlFlowValue],
+    uses: &[ControlFlowValueUse],
+    definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    reachable_values: &BTreeSet<ControlFlowValueId>,
+) -> BTreeSet<ControlFlowValueId> {
+    let mut escaping = BTreeSet::new();
+    let mut pending = Vec::new();
+
+    for node in nodes {
+        if matches!(
+            node.kind,
+            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::ReturnValue(_))
+        ) {
+            pending.extend(
+                node.values
+                    .iter()
+                    .copied()
+                    .filter(|value| reachable_values.contains(value)),
+            );
+        }
+    }
+    for value in values
+        .iter()
+        .filter(|value| reachable_values.contains(&value.id))
+    {
+        match &value.kind {
+            ControlFlowValueKind::Call { arguments, .. }
+            | ControlFlowValueKind::QualifiedCall { arguments, .. }
+            | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
+                pending.extend(arguments.iter().copied());
+            }
+            ControlFlowValueKind::OptionalCascadeCall {
+                optional,
+                arguments,
+                ..
+            } => {
+                pending.push(*optional);
+                pending.extend(arguments.iter().copied());
+            }
+            _ => {}
+        }
+    }
+
+    while let Some(id) = pending.pop() {
+        if !reachable_values.contains(&id) || !escaping.insert(id) {
+            continue;
+        }
+        for usage in uses.iter().filter(|usage| usage.user == id) {
+            if reachable_values.contains(&usage.value) {
+                pending.push(usage.value);
+            }
+        }
+        if let Some(ControlFlowValue {
+            kind: ControlFlowValueKind::NameRead { definitions, .. },
+            ..
+        }) = values.get(id.0)
+        {
+            pending.extend(
+                definitions
+                    .iter()
+                    .filter_map(|definition| definition_values.get(definition).copied()),
+            );
+        }
+    }
+
+    escaping
 }
 
 fn value_use_is_reachable(

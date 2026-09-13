@@ -18283,7 +18283,9 @@ fn collect_function_reachability_from_ir(
     };
     for value in cfg.values().iter().filter(|value| {
         cfg.is_value_reachable(value.id)
-            || (cfg.is_reachable(value.producer) && cfg.uses_of(value.id).next().is_none())
+            || (value.result_index.is_none()
+                && cfg.is_reachable(value.producer)
+                && cfg.uses_of(value.id).next().is_none())
     }) {
         match &value.kind {
             crate::ir::ControlFlowValueKind::NameRead { name, definitions }
@@ -22021,6 +22023,56 @@ fn emit_function(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let dead_expression_spans = cfg
+        .nodes()
+        .iter()
+        .filter(|node| cfg.is_reachable(node.id))
+        .filter(|node| {
+            matches!(
+                node.kind,
+                crate::ir::ControlFlowNodeKind::Evaluation(
+                    crate::ir::ControlFlowEvaluationKind::ExpressionStatement
+                )
+            ) && !node.values.is_empty()
+                && node
+                    .values
+                    .iter()
+                    .all(|value| !cfg.is_value_reachable(*value))
+        })
+        .map(|node| source_span_key(node.span))
+        .collect::<HashSet<_>>();
+    let dead_non_escaping_let_binding_spans =
+        cfg.nodes()
+            .iter()
+            .filter(|node| cfg.is_reachable(node.id))
+            .filter_map(|node| match &node.kind {
+                crate::ir::ControlFlowNodeKind::Binding {
+                    name,
+                    mutable: false,
+                    ..
+                } if cfg
+                    .live_after(node.id)
+                    .is_some_and(|state| !state.contains(name)) =>
+                {
+                    let initializer = cfg.incoming(node.id).find_map(|edge| {
+                        let source = cfg.node(edge.from)?;
+                        matches!(
+                            source.kind,
+                            crate::ir::ControlFlowNodeKind::Evaluation(
+                                crate::ir::ControlFlowEvaluationKind::BindingInitializer
+                            )
+                        )
+                        .then_some(source)
+                    })?;
+                    (!initializer.values.is_empty()
+                        && initializer.values.iter().all(|value| {
+                            !cfg.is_value_reachable(*value) && !cfg.value_escapes(*value)
+                        }))
+                    .then_some(source_span_key(node.span))
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
     let dead_definition_names = cfg
         .nodes()
         .iter()
@@ -22044,6 +22096,8 @@ fn emit_function(
         dead_assignment_spans: &dead_assignment_spans,
         dead_var_initializer_spans: &dead_var_initializer_spans,
         dead_let_binding_spans: &dead_let_binding_spans,
+        dead_expression_spans: &dead_expression_spans,
+        dead_non_escaping_let_binding_spans: &dead_non_escaping_let_binding_spans,
         dead_definition_names: &dead_definition_names,
         async_state_machine: false,
         async_loop_control: None,
@@ -22107,6 +22161,8 @@ struct BlockEmitContext<'a> {
     dead_assignment_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_var_initializer_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_expression_spans: &'a HashSet<(u32, usize, usize, usize)>,
+    dead_non_escaping_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
     async_state_machine: bool,
     async_loop_control: Option<AsyncLoopControlContext<'a>>,
@@ -23528,7 +23584,10 @@ fn emit_block(
             && context
                 .dead_let_binding_spans
                 .contains(&source_span_key(stmt.span))
-            && signatures.is_copy_type(ty)
+            && (signatures.is_copy_type(ty)
+                || context
+                    .dead_non_escaping_let_binding_spans
+                    .contains(&source_span_key(stmt.span)))
         {
             if dead_store_rhs_is_discardable(expr, env, signatures) {
                 continue;
@@ -23545,6 +23604,13 @@ fn emit_block(
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
             }
+        }
+        if matches!(stmt.kind, StmtKind::Expr(_))
+            && context
+                .dead_expression_spans
+                .contains(&source_span_key(stmt.span))
+        {
+            continue;
         }
         emit_source_line(out, stmt.span, context.source_paths);
         let pad = "    ".repeat(depth);
