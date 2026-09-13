@@ -21968,6 +21968,14 @@ fn checked_i64_identity_operand<'a>(expr: &'a Expr, signatures: &Signatures) -> 
 }
 
 fn same_pure_i64_expression(left: &Expr, right: &Expr, signatures: &Signatures) -> bool {
+    if let (Some(ConstantValue::I64(left_value)), Some(ConstantValue::I64(right_value))) = (
+        typecheck::constant_primitive_value(left, signatures),
+        typecheck::constant_primitive_value(right, signatures),
+    ) && left_value == right_value
+    {
+        return true;
+    }
+
     if let (Some(left), Some(right)) = (
         checked_negation_operand(left, signatures),
         checked_negation_operand(right, signatures),
@@ -22062,16 +22070,20 @@ fn same_checked_i64_expression_comparison_c(
     left_code: &str,
     signatures: &Signatures,
 ) -> Option<String> {
-    if !matches!(
-        left.kind,
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            ..
-        } | ExprKind::Binary {
-            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
-            ..
-        }
-    ) || !same_pure_i64_expression(left, right, signatures)
+    let checked_expression = |expr: &Expr| {
+        matches!(
+            expr.kind,
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                ..
+            } | ExprKind::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                ..
+            }
+        )
+    };
+    if (!checked_expression(left) && !checked_expression(right))
+        || !same_pure_i64_expression(left, right, signatures)
     {
         return None;
     }
@@ -22423,10 +22435,7 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
         } => {
             constant_i64(left).is_some_and(|value| value >= 0)
                 || constant_i64(right).is_some_and(|value| value < 0)
-                || matches!(
-                    (&left.kind, &right.kind),
-                    (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-                )
+                || same_pure_i64_expression(left, right, signatures)
         }
         ExprKind::Binary {
             left,
@@ -22436,11 +22445,8 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
             let constant_factor_excludes_min = |factor: i64| {
                 factor == 0 || factor == -1 || !factor.unsigned_abs().is_power_of_two()
             };
-            let same_binding_square = matches!(
-                (&left.kind, &right.kind),
-                (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-            );
-            same_binding_square
+            let equivalent_square = same_pure_i64_expression(left, right, signatures);
+            equivalent_square
                 || constant_i64(left).is_some_and(constant_factor_excludes_min)
                 || constant_i64(right).is_some_and(constant_factor_excludes_min)
         }
@@ -22449,10 +22455,8 @@ fn i64_expr_result_excludes_min(expr: &Expr, signatures: &Signatures) -> bool {
             op: BinOp::Div,
             right,
         } => {
-            matches!(
-                (&left.kind, &right.kind),
-                (ExprKind::Var(left_name), ExprKind::Var(right_name)) if left_name == right_name
-            ) || constant_i64(right).is_some_and(|divisor| divisor != 0 && divisor != 1)
+            same_pure_i64_expression(left, right, signatures)
+                || constant_i64(right).is_some_and(|divisor| divisor != 0 && divisor != 1)
         }
         _ => false,
     }
@@ -22876,6 +22880,13 @@ fn dead_store_rhs_is_discardable(
         ExprKind::Binary { left, op, right }
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
         {
+            if matches!(op, BinOp::Sub)
+                && same_pure_i64_expression(left, right, signatures)
+                && dead_store_rhs_is_discardable(left, env, signatures)
+                && dead_store_rhs_is_discardable(right, env, signatures)
+            {
+                return true;
+            }
             match checked_i64_reduction(*op, left, right, signatures) {
                 Some(CheckedI64Reduction::Zero) => true,
                 Some(

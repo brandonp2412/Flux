@@ -18501,6 +18501,119 @@ app Status
 }
 
 #[test]
+fn reuses_constant_alias_equivalence_for_range_proofs_and_dead_stores() {
+    let source = r#"
+const FIRST: i64 = 7
+const SECOND: i64 = 7
+
+fn aliasCompare(value: i64) -> bool {
+    return (value + FIRST) == (SECOND + value)
+}
+
+fn negateDifference(value: i64, offset: i64) -> i64 {
+    return -((value + offset) - (offset + value))
+}
+
+fn negateSquare(value: i64, offset: i64) -> i64 {
+    return -((value + offset) * (offset + value))
+}
+
+fn negateSelfDivision(value: i64, offset: i64) -> i64 {
+    return -((value + offset) / (offset + value))
+}
+
+fn deadIdentity(value: i64) -> i64 {
+    let _unused: i64 = (value + 0) - value
+    return value
+}
+
+fn main() -> i64 {
+    print(aliasCompare(3))
+    print(negateDifference(3, 4))
+    print(negateSquare(3, 4))
+    print(negateSelfDivision(3, 4))
+    print(deadIdentity(9))
+    return 0
+}
+"#;
+
+    check_source(source).expect("equivalent pure arithmetic range proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("equivalent pure arithmetic should share safety and dead-store proofs");
+    assert_eq!(
+        generated
+            .matches("flux_add_i64(flux__local_value, INT64_C(7))")
+            .count(),
+        1,
+        "equal constant aliases should let a reflexive checked comparison reuse one evaluation",
+    );
+    assert!(
+        !generated.contains("flux_neg_i64("),
+        "subtraction, square, and self-division equivalence should prove the outer negation safe",
+    );
+    assert!(
+        !generated.contains("flux_sub_i64("),
+        "equivalent subtraction and the dead identity-only subtraction should not retain a checked subtraction helper",
+    );
+    assert!(generated.contains("flux_mul_i64(flux__checked_reuse, flux__checked_reuse)"));
+    assert!(generated.contains("flux_div_self_i64("));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-pure-equivalence-range-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary pure-equivalence directory should be writable");
+    let c_path = root.join("pure-equivalence-range.c");
+    let exe_path = root.join("pure-equivalence-range");
+    fs::write(&c_path, &generated).expect("generated pure-equivalence C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile pure-equivalence C");
+    assert!(
+        compile.status.success(),
+        "pure-equivalence C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("pure-equivalence program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\n0\n-49\n-1\n9\n"
+    );
+    let _ = fs::remove_dir_all(root);
+
+    let ui = r#"
+const FIRST: i64 = 7
+const SECOND: i64 = 7
+view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 2
+    Text label at 1,1
+        text: "Ready"
+        visible: (count + FIRST) == (SECOND + count)
+}
+app Counter
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI constant-alias equivalence should share optimized lowering");
+    assert_eq!(
+        ui_generated
+            .matches("flux_add_i64(flux__ui_state_count, INT64_C(7))")
+            .count(),
+        1,
+    );
+}
+
+#[test]
 fn reuses_equivalent_pure_checked_i64_arithmetic_operands() {
     let source = r#"
 fn addEquivalent(value: i64, offset: i64) -> i64 {
