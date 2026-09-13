@@ -8814,6 +8814,46 @@ fn check_qualified_call(
                 }
                 return Ok(Vec::new());
             }
+            "after" | "every" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("time.{name} expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let duration = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &duration,
+                    &format!("time.{name} durationMs"),
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[0], signatures),
+                    Some(ConstantValue::I64(value)) if value < 0 || (name == "every" && value == 0)
+                ) {
+                    return Err(diag(
+                        args[0].span,
+                        if name == "every" {
+                            "time.every durationMs must be positive"
+                        } else {
+                            "time.after durationMs must be non-negative"
+                        },
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: Vec::new(),
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    &format!("time.{name} callback"),
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "sleepUntilMonotonic" => {
                 if args.len() != 1 {
                     return Err(diag(

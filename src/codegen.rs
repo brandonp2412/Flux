@@ -1610,11 +1610,13 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
 ) {
+    let uses_workers = runtime_usage.contains("flux__worker_")
+        || runtime_usage.contains("flux__time_start_timer(");
     if runtime_usage.contains("flux__locale_format_") {
         out.push_str("#define _XOPEN_SOURCE 700\n");
     }
     if runtime_usage.contains("flux__time_")
-        || runtime_usage.contains("flux__worker_")
+        || uses_workers
         || runtime_usage.contains("flux__channel_")
         || runtime_usage.contains("flux__async_task_")
         || runtime_usage.contains("flux__process_termination_requested(")
@@ -1634,7 +1636,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
-    if runtime_usage.contains("flux__worker_")
+    if uses_workers
         || runtime_usage.contains("flux__channel_")
         || runtime_usage.contains("flux__async_task_")
     {
@@ -1655,6 +1657,7 @@ fn emit_runtime_prelude(
     if uses_background
         || runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
+        || runtime_usage.contains("flux__time_start_timer(")
         || runtime_usage.contains("flux__fs_create_directories(")
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__net_")
@@ -4243,7 +4246,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
     }
     if uses_cancellable_net {
-        if runtime_usage.contains("flux__worker_") {
+        if uses_workers {
             out.push_str("static bool flux__worker_cancelled(void);\n");
             out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int64_t remaining = timeout_millis; for (;;) { if (flux__worker_cancelled()) return -2; int wait_millis = remaining < 0 ? 50 : (remaining > 50 ? 50 : (int)remaining); int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); if (result != 0) return result; if (remaining == 0) return 0; if (remaining > 0) { remaining -= wait_millis; if (remaining <= 0) return 0; } } }\n");
         } else {
@@ -5275,13 +5278,13 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         }
     }
 
-    if runtime_usage.contains("flux__worker_") && runtime_usage.contains("flux__channel_") {
+    if uses_workers && runtime_usage.contains("flux__channel_") {
         out.push_str("static void flux__channel_wake_all(void);\n");
-    } else if runtime_usage.contains("flux__worker_") {
+    } else if uses_workers {
         out.push_str("#define flux__channel_wake_all() ((void)0)\n");
     }
 
-    if runtime_usage.contains("flux__worker_") {
+    if uses_workers {
         out.push_str("struct flux__worker_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("struct flux__worker_state { int64_t id; int64_t parent_id; pthread_t thread; void (*entry)(void); void (*entry_i64)(int64_t); int64_t argument; bool has_argument; bool joining; bool joined; bool cancel_requested; const char *scope_error; struct flux__worker_state *next; };\n");
         out.push_str("static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
@@ -5337,6 +5340,14 @@ static const char *flux__channel_close(int64_t handle) { if (handle <= 0) return
 "#);
     }
 
+    if runtime_usage.contains("flux__time_start_timer(") {
+        out.push_str(r#"struct flux__timer_payload { void (*callback)(void); int64_t duration_ms; bool repeat; };
+static bool flux__time_timer_wait(int64_t duration_ms) { while (duration_ms > 0) { if (flux__worker_cancelled()) return false; int64_t chunk_ms = duration_ms > INT64_C(50) ? INT64_C(50) : duration_ms; struct timespec remaining = { .tv_sec = (time_t)(chunk_ms / INT64_C(1000)), .tv_nsec = (long)((chunk_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) { if (flux__worker_cancelled()) return false; continue; } fputs("Flux runtime error: timer sleep failed\n", stderr); abort(); } duration_ms -= chunk_ms; } return !flux__worker_cancelled(); }
+static void flux__time_timer_entry(int64_t raw_payload) { struct flux__timer_payload *payload = (struct flux__timer_payload *)(intptr_t)raw_payload; if (payload == NULL) return; do { if (!flux__time_timer_wait(payload->duration_ms)) break; payload->callback(); } while (payload->repeat && !flux__worker_cancelled()); free(payload); }
+static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms, void (*callback)(void), bool repeat) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (callback == NULL) { result.v1 = "timer callback is invalid"; return result; } if (duration_ms < 0 || (repeat && duration_ms == 0)) { result.v1 = repeat ? "time.every durationMs must be positive" : "time.after durationMs must be non-negative"; return result; } struct flux__timer_payload *payload = malloc(sizeof(*payload)); if (payload == NULL) { result.v1 = "timer could not allocate state"; return result; } payload->callback = callback; payload->duration_ms = duration_ms; payload->repeat = repeat; result = flux__worker_start_with(flux__time_timer_entry, (int64_t)(intptr_t)payload); if (result.v1 != NULL) free(payload); return result; }
+"#);
+    }
+
     if runtime_usage.contains("flux__time_unix_millis(")
         || runtime_usage.contains("flux__time_monotonic_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
@@ -5349,7 +5360,7 @@ static const char *flux__channel_close(int64_t handle) { if (handle <= 0) return
     if runtime_usage.contains("flux__time_monotonic_millis(") {
         out.push_str("static inline int64_t flux__time_monotonic_millis(void) { return flux__time_clock_millis(CLOCK_MONOTONIC); }\n");
     }
-    let worker_aware_time_sleep = runtime_usage.contains("flux__worker_");
+    let worker_aware_time_sleep = uses_workers;
     if runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
     {
@@ -27000,6 +27011,23 @@ fn emit_qualified_call(
                     format!("flux__time_sleep_millis({})", duration.code),
                     Vec::new(),
                     None,
+                ));
+            }
+            "after" | "every" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
+                let duration = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__time_start_timer({}, {}, {})",
+                        duration.code,
+                        callback.code,
+                        if name == "every" { "true" } else { "false" }
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__worker_i64_error".to_string()),
                 ));
             }
             "sleepUntilMonotonic" => {

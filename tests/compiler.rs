@@ -7452,6 +7452,136 @@ fn main() -> i64 {
 }
 
 #[test]
+fn structured_timers_run_repeat_cancel_and_tree_shake() {
+    let source = r#"
+fn once() -> void {
+    print(7)
+}
+fn tick() -> void {
+    print(8)
+}
+fn main() -> i64 {
+    let (onceHandle, onceError) = time.after(10, once)
+    if onceError != nil:
+        return 1
+    let onceJoin: error = worker.join(onceHandle)
+    if onceJoin != nil:
+        return 2
+    let (repeatHandle, repeatError) = time.every(10, tick)
+    if repeatError != nil:
+        return 3
+    time.sleep(35)
+    let cancelError: error = worker.cancel(repeatHandle)
+    if cancelError != nil:
+        return 4
+    let repeatJoin: error = worker.join(repeatHandle)
+    if repeatJoin != nil:
+        return 5
+    return 0
+}
+"#;
+    check_source(source).expect("structured timer fixture should typecheck");
+    let generated = compile_to_c(source).expect("structured timers should lower natively");
+    assert!(generated.contains("static struct flux__worker_i64_error flux__time_start_timer"));
+    assert!(generated.contains("static void flux__time_timer_entry"));
+    assert!(generated.contains("flux__worker_start_with(flux__time_timer_entry"));
+    assert!(generated.contains("#include <pthread.h>"));
+    assert!(generated.contains("#include <time.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-structured-timer-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("structured timer fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("structured timer source should be writable");
+    let binary = root.join("structured-timer");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("structured timer binary should build");
+    assert!(
+        built.status.success(),
+        "structured timer build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("structured timer binary should run");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let output = String::from_utf8_lossy(&run.stdout);
+    let lines = output.lines().collect::<Vec<_>>();
+    assert_eq!(lines.first().copied(), Some("7"));
+    assert!(
+        lines.len() >= 3,
+        "repeating timer should fire at least twice: {output}"
+    );
+    assert!(lines[1..].iter().all(|line| *line == "8"));
+
+    let invalid_after = r#"
+fn callback() -> void {
+}
+fn main() -> i64 {
+    let (_handle, _failure) = time.after(-1, callback)
+    return 0
+}
+"#;
+    let error = check_source(invalid_after).expect_err("negative one-shot delay must fail");
+    assert!(
+        error
+            .message
+            .contains("time.after durationMs must be non-negative")
+    );
+
+    let invalid_every = r#"
+fn callback() -> void {
+}
+fn main() -> i64 {
+    let (_handle, _failure) = time.every(0, callback)
+    return 0
+}
+"#;
+    let error = check_source(invalid_every).expect_err("zero repeating interval must fail");
+    assert!(
+        error
+            .message
+            .contains("time.every durationMs must be positive")
+    );
+
+    let invalid_callback = r#"
+fn callback(_value: i64) -> void {
+}
+fn main() -> i64 {
+    let (_handle, _failure) = time.after(1, callback)
+    return 0
+}
+"#;
+    let error = check_source(invalid_callback).expect_err("timer callback shape must be exact");
+    assert!(error.message.contains("time.after callback"));
+
+    let dead = r#"
+fn callback() -> void {
+}
+fn hidden() -> void {
+    let (_handle, _failure) = time.every(10, callback)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead timer calls should lower safely");
+    assert!(!dead_generated.contains("flux__time_start_timer("));
+    assert!(!dead_generated.contains("#include <pthread.h>"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn sqlite_interface_is_typed_borrowed_tree_shaken_and_runnable() {
     let root = std::env::temp_dir().join(format!("flux-sqlite-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
