@@ -2991,10 +2991,20 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_http_serve_concurrent("));
     assert!(generated.contains("flux__worker_start_with(flux__net_http_concurrent_entry"));
     assert!(generated.contains("int64_t handles[64]"));
+    assert!(
+        generated.contains("static pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER")
+    );
     assert!(generated.contains("static bool flux__worker_done(int64_t handle)"));
+    assert!(
+        generated.contains(
+            "static bool flux__worker_wait_any_done(const int64_t *handles, size_t count)"
+        )
+    );
+    assert!(generated.contains("pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex)"));
+    assert!(generated.contains("current != NULL && current->cancel_requested"));
     assert!(generated.contains("flux__net_http_reap_concurrent_ready(handles, &pending)"));
-    assert!(generated.contains("const char *slot_error = flux__worker_join(handles[0])"));
-    assert!(generated.contains("pending -= 1"));
+    assert!(generated.contains("if (!flux__worker_wait_any_done(handles, pending))"));
+    assert!(!generated.contains("flux__worker_join(handles[0])"));
     assert!(generated.contains("http.serveConcurrent cancelled by worker scope"));
     assert!(generated.contains("flux__worker_fail_current(error)"));
 
@@ -7293,7 +7303,9 @@ async fn main() -> i64 {
 
     check_source(source).expect("automatic structured cancellation should typecheck");
     let generated = compile_to_c(source).expect("automatic structured cancellation should lower");
-    assert!(generated.contains("else state->entry(); flux__worker_cancel_children(); const char *child_error = flux__worker_join_children(); pthread_mutex_lock(&flux__worker_mutex); if (state->scope_error == NULL) state->scope_error = child_error; state->done = true; pthread_mutex_unlock(&flux__worker_mutex)"));
+    assert!(generated.contains("else state->entry(); flux__worker_cancel_children(); const char *child_error = flux__worker_join_children(); pthread_mutex_lock(&flux__worker_mutex); if (state->scope_error == NULL) state->scope_error = child_error; state->done = true; flux__worker_notify_changed(); pthread_mutex_unlock(&flux__worker_mutex)"));
+    assert!(generated.contains("#define flux__worker_notify_changed() ((void)0)"));
+    assert!(!generated.contains("static pthread_cond_t flux__worker_changed"));
     assert!(generated.contains("static const char *flux__async_scope_finish(void) { flux__worker_cancel_children(); return flux__worker_join_children(); }"));
     assert!(
         generated
