@@ -7572,14 +7572,23 @@ fn check_qualified_call(
                     &offset,
                     "net.sendTextProgress offset",
                 )?;
-                if matches!(
-                    constant_primitive_value(&args[2], signatures),
-                    Some(ConstantValue::I64(value)) if value < 0
-                ) {
-                    return Err(diag(
-                        args[2].span,
-                        "net.sendTextProgress offset must be non-negative",
-                    ));
+                if let Some(ConstantValue::I64(value)) =
+                    constant_primitive_value(&args[2], signatures)
+                {
+                    if value < 0 {
+                        return Err(diag(
+                            args[2].span,
+                            "net.sendTextProgress offset must be non-negative",
+                        ));
+                    }
+                    if let ExprKind::Str(text) = &args[1].kind {
+                        if (value as u64) > text.len() as u64 {
+                            return Err(diag(
+                                args[2].span,
+                                "net.sendTextProgress offset exceeds literal text length",
+                            ));
+                        }
+                    }
                 }
                 return Ok(vec![Type::I64, Type::Bool, Type::Error]);
             }
@@ -7650,14 +7659,32 @@ fn check_qualified_call(
                     &offset,
                     "net.sendTextPartsProgress offset",
                 )?;
-                if matches!(
-                    constant_primitive_value(&args[2], signatures),
-                    Some(ConstantValue::I64(value)) if value < 0
-                ) {
-                    return Err(diag(
-                        args[2].span,
-                        "net.sendTextPartsProgress offset must be non-negative",
-                    ));
+                if let Some(ConstantValue::I64(value)) =
+                    constant_primitive_value(&args[2], signatures)
+                {
+                    if value < 0 {
+                        return Err(diag(
+                            args[2].span,
+                            "net.sendTextPartsProgress offset must be non-negative",
+                        ));
+                    }
+                    if let ExprKind::List(items) = &args[1].kind {
+                        let literal_length = items.iter().try_fold(0usize, |total, item| {
+                            if let ExprKind::Str(text) = &item.kind {
+                                total.checked_add(text.len())
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(literal_length) = literal_length {
+                            if (value as u64) > literal_length as u64 {
+                                return Err(diag(
+                                    args[2].span,
+                                    "net.sendTextPartsProgress offset exceeds literal text length",
+                                ));
+                            }
+                        }
+                    }
                 }
                 return Ok(vec![Type::I64, Type::Bool, Type::Error]);
             }

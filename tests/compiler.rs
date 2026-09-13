@@ -4929,7 +4929,10 @@ fn socket_progressive_text_send_is_resumable_nonblocking_and_tree_shaken() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("progressive-send listener should bind");
     let port = listener.local_addr().unwrap().port();
     let source = format!(
-        r#"fn main() -> i64 {{
+        r#"fn runtimeOffset(value: i64) -> i64 {{
+    return value
+}}
+fn main() -> i64 {{
     let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
     print(connectError)
     let (blockedOffset, blockedComplete, blockedError) = net.sendTextProgress(socket, "hello", 0)
@@ -4945,7 +4948,7 @@ fn socket_progressive_text_send_is_resumable_nonblocking_and_tree_shaken() {
     print(sameOffset)
     print(alreadyComplete)
     print(repeatError)
-    let (badOffset, badComplete, badError) = net.sendTextProgress(socket, "hello", 99)
+    let (badOffset, badComplete, badError) = net.sendTextProgress(socket, "hello", runtimeOffset(99))
     print(badOffset)
     print(badComplete)
     print(badError)
@@ -5012,6 +5015,16 @@ fn socket_progressive_text_send_is_resumable_nonblocking_and_tree_shaken() {
         negative_offset
             .message
             .contains("net.sendTextProgress offset must be non-negative")
+    );
+
+    let too_large_literal_offset = check_source(
+        "fn main() -> i64 {\n    let (offset, complete, failure) = net.sendTextProgress(1, \"hello\", 6)\n    print(offset)\n    print(complete)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("progressive send should reject an out-of-range literal offset");
+    assert!(
+        too_large_literal_offset
+            .message
+            .contains("net.sendTextProgress offset exceeds literal text length")
     );
 
     let unused = r#"
@@ -5189,6 +5202,16 @@ fn socket_scatter_gather_progress_send_resumes_from_global_byte_offset() {
         invalid_offset
             .message
             .contains("offset must be non-negative")
+    );
+
+    let too_large_literal_offset = check_source(
+        "fn main() -> i64 {\n    let (next, complete, failure) = net.writePartsFrom(1, [\"ab\", \"c\"], 4)\n    print(next)\n    print(complete)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("resumable scatter/gather should reject an out-of-range literal offset");
+    assert!(
+        too_large_literal_offset
+            .message
+            .contains("offset exceeds literal text length")
     );
 
     let unused = r#"
