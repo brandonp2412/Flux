@@ -14181,11 +14181,11 @@ fn ui_expr_c(
             {
                 return Ok(code);
             }
-            if let Some(other) = boolean_resolution_other(*op, left, right) {
+            if let Some(other) = boolean_resolution_other(*op, left, right, signatures) {
                 let other_code = ui_expr_c(other, view, signatures)?;
                 return Ok(format!("({left_code} {} {other_code})", c_operator(*op)));
             }
-            if let Some(other) = boolean_left_resolution_other(*op, left, right) {
+            if let Some(other) = boolean_left_resolution_other(*op, left, right, signatures) {
                 let other_code = ui_expr_c(other, view, signatures)?;
                 return Ok(format!("({right_code} {} {other_code})", c_operator(*op)));
             }
@@ -22443,6 +22443,90 @@ fn same_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
     }
 }
 
+fn same_pure_boolean_expression(left: &Expr, right: &Expr, signatures: &Signatures) -> bool {
+    if let (Some(ConstantValue::Bool(left_value)), Some(ConstantValue::Bool(right_value))) = (
+        typecheck::constant_primitive_value(left, signatures),
+        typecheck::constant_primitive_value(right, signatures),
+    ) && left_value == right_value
+    {
+        return true;
+    }
+
+    match (&left.kind, &right.kind) {
+        (ExprKind::Var(left_name), ExprKind::Var(right_name)) => left_name == right_name,
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => same_pure_boolean_expression(left_inner, right_inner, signatures),
+        (
+            ExprKind::Binary {
+                left: left_left,
+                op: left_op,
+                right: left_right,
+            },
+            ExprKind::Binary {
+                left: right_left,
+                op: right_op,
+                right: right_right,
+            },
+        ) if left_op == right_op && matches!(left_op, BinOp::And | BinOp::Or) => {
+            same_pure_boolean_expression(left_left, right_left, signatures)
+                && same_pure_boolean_expression(left_right, right_right, signatures)
+        }
+        (
+            ExprKind::Binary {
+                left: left_left,
+                op: left_op,
+                right: left_right,
+            },
+            ExprKind::Binary {
+                left: right_left,
+                op: right_op,
+                right: right_right,
+            },
+        ) if left_op == right_op
+            && matches!(
+                left_op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) =>
+        {
+            same_pure_i64_expression(left_left, right_left, signatures)
+                && same_pure_i64_expression(left_right, right_right, signatures)
+        }
+        _ => false,
+    }
+}
+
+fn complementary_pure_boolean_expression(
+    left: &Expr,
+    right: &Expr,
+    signatures: &Signatures,
+) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            _,
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: right_inner,
+            },
+        ) => same_pure_boolean_expression(left, right_inner, signatures),
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: left_inner,
+            },
+            _,
+        ) => same_pure_boolean_expression(left_inner, right, signatures),
+        _ => false,
+    }
+}
+
 fn complementary_boolean_binding_term(left: &Expr, right: &Expr) -> bool {
     match (&left.kind, &right.kind) {
         (
@@ -22477,7 +22561,12 @@ fn boolean_absorption_operand_is_discardable(expr: &Expr, signatures: &Signature
         )
 }
 
-fn boolean_resolution_other<'a>(op: BinOp, left: &Expr, right: &'a Expr) -> Option<&'a Expr> {
+fn boolean_resolution_other<'a>(
+    op: BinOp,
+    left: &Expr,
+    right: &'a Expr,
+    signatures: &Signatures,
+) -> Option<&'a Expr> {
     if !matches!(op, BinOp::And | BinOp::Or) {
         return None;
     }
@@ -22495,16 +22584,21 @@ fn boolean_resolution_other<'a>(op: BinOp, left: &Expr, right: &'a Expr) -> Opti
     ) {
         return None;
     }
-    if complementary_boolean_binding_term(left, nested_left) {
+    if complementary_pure_boolean_expression(left, nested_left, signatures) {
         Some(nested_right)
-    } else if complementary_boolean_binding_term(left, nested_right) {
+    } else if complementary_pure_boolean_expression(left, nested_right, signatures) {
         Some(nested_left)
     } else {
         None
     }
 }
 
-fn boolean_left_resolution_other<'a>(op: BinOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
+fn boolean_left_resolution_other<'a>(
+    op: BinOp,
+    left: &'a Expr,
+    right: &Expr,
+    signatures: &Signatures,
+) -> Option<&'a Expr> {
     if !matches!(op, BinOp::And | BinOp::Or) {
         return None;
     }
@@ -22522,7 +22616,7 @@ fn boolean_left_resolution_other<'a>(op: BinOp, left: &'a Expr, right: &Expr) ->
     ) {
         return None;
     }
-    complementary_boolean_binding_term(nested_left, right).then_some(nested_right)
+    complementary_pure_boolean_expression(nested_left, right, signatures).then_some(nested_right)
 }
 
 fn boolean_identity_c(
@@ -22575,6 +22669,23 @@ fn boolean_identity_c(
             );
         }
 
+        if same_pure_boolean_expression(left, right, signatures) {
+            let result = if matches!(op, BinOp::Eq) {
+                "true"
+            } else {
+                "false"
+            };
+            return Some(format!("((void)({left_code}), {result})"));
+        }
+        if complementary_pure_boolean_expression(left, right, signatures) {
+            let result = if matches!(op, BinOp::Eq) {
+                "false"
+            } else {
+                "true"
+            };
+            return Some(format!("((void)({left_code}), {result})"));
+        }
+
         let negate = |code: &str| format!("(!({code}))");
         return match (op, left_constant, right_constant) {
             (BinOp::Eq, Some(ConstantValue::Bool(true)), _)
@@ -22596,6 +22707,9 @@ fn boolean_identity_c(
     if same_boolean_binding_term(left, right) {
         return Some(left_code.to_string());
     }
+    if same_pure_boolean_expression(left, right, signatures) {
+        return Some(left_code.to_string());
+    }
 
     let absorbed_nested_binding = match &right.kind {
         ExprKind::Binary {
@@ -22607,8 +22721,8 @@ fn boolean_identity_c(
             (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
         ) =>
         {
-            same_boolean_binding_term(left, nested_left)
-                || (same_boolean_binding_term(left, nested_right)
+            same_pure_boolean_expression(left, nested_left, signatures)
+                || (same_pure_boolean_expression(left, nested_right, signatures)
                     && boolean_absorption_operand_is_discardable(nested_left, signatures))
         }
         _ => false,
@@ -22627,9 +22741,9 @@ fn boolean_identity_c(
             (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
         ) =>
         {
-            (same_boolean_binding_term(right, nested_left)
+            (same_pure_boolean_expression(right, nested_left, signatures)
                 && boolean_absorption_operand_is_discardable(nested_right, signatures))
-                || (same_boolean_binding_term(right, nested_right)
+                || (same_pure_boolean_expression(right, nested_right, signatures)
                     && boolean_absorption_operand_is_discardable(nested_left, signatures))
         }
         _ => false,
@@ -22649,9 +22763,9 @@ fn boolean_identity_c(
         ) =>
         {
             let nested_complement_is_unconditionally_reached =
-                complementary_boolean_binding_term(left, nested_left);
+                complementary_pure_boolean_expression(left, nested_left, signatures);
             let nested_complement_follows_discardable_work =
-                complementary_boolean_binding_term(left, nested_right)
+                complementary_pure_boolean_expression(left, nested_right, signatures)
                     && boolean_absorption_operand_is_discardable(nested_left, signatures);
             if nested_complement_is_unconditionally_reached
                 || nested_complement_follows_discardable_work
@@ -22667,7 +22781,9 @@ fn boolean_identity_c(
         return Some(format!("((void)({left_code}), {result})"));
     }
 
-    if complementary_boolean_binding_term(left, right) {
+    if complementary_boolean_binding_term(left, right)
+        || complementary_pure_boolean_expression(left, right, signatures)
+    {
         let result = if matches!(op, BinOp::And) {
             "false"
         } else {
@@ -27678,10 +27794,11 @@ fn emit_expr(
                 signatures,
             ) {
                 code
-            } else if let Some(other) = boolean_resolution_other(*op, left, right) {
+            } else if let Some(other) = boolean_resolution_other(*op, left, right, signatures) {
                 let other = emit_expr(other, env, signatures)?;
                 format!("({} {} {})", emitted_left.code, c_operator(*op), other.code)
-            } else if let Some(other) = boolean_left_resolution_other(*op, left, right) {
+            } else if let Some(other) = boolean_left_resolution_other(*op, left, right, signatures)
+            {
                 let other = emit_expr(other, env, signatures)?;
                 format!(
                     "({} {} {})",

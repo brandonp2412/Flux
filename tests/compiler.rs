@@ -17317,6 +17317,144 @@ app Status
 }
 
 #[test]
+fn reuses_equivalent_pure_boolean_predicates_without_dropping_effects() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn repeatedAnd(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) && (value + 1 > limit)
+}
+
+fn repeatedOr(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) || (value + 1 > limit)
+}
+
+fn complementAnd(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) && !(value + 1 > limit)
+}
+
+fn complementOr(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) || !(value + 1 > limit)
+}
+
+fn equalPredicate(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) == (value + 1 > limit)
+}
+
+fn unequalComplement(value: i64, limit: i64) -> bool {
+    return (value + 1 > limit) != !(value + 1 > limit)
+}
+
+fn absorbPredicate(value: i64, limit: i64, other: bool) -> bool {
+    return (value + 1 > limit) && ((value + 1 > limit) || other)
+}
+
+fn resolvePredicate(value: i64, limit: i64, other: bool) -> bool {
+    return (value + 1 > limit) || (!(value + 1 > limit) && other)
+}
+
+fn retainEffects(value: i64, limit: i64) -> bool {
+    return (observe(value) > limit) && (observe(value) > limit)
+}
+
+fn main() -> i64 {
+    print(repeatedAnd(1, 1))
+    print(repeatedOr(0, 1))
+    print(complementAnd(1, 1))
+    print(complementOr(0, 1))
+    print(equalPredicate(1, 1))
+    print(unequalComplement(1, 1))
+    print(absorbPredicate(1, 1, false))
+    print(resolvePredicate(0, 1, true))
+    print(retainEffects(2, 1))
+    return 0
+}
+"#;
+
+    check_source(source).expect("pure boolean predicate reuse should typecheck");
+    let generated = compile_to_c(source)
+        .expect("pure boolean predicate reuse should lower without duplicate work");
+    assert_eq!(
+        generated
+            .matches("flux_add_i64(flux__local_value, INT64_C(1))")
+            .count(),
+        8,
+        "each pure repeated/complementary/absorbed predicate should evaluate its checked addition once",
+    );
+    assert_eq!(
+        generated
+            .matches("flux__fn_observe(flux__local_value)")
+            .count(),
+        2,
+        "effectful lookalike predicates must retain both source evaluations",
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-pure-boolean-reuse-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary pure-boolean directory should be writable");
+    let c_path = root.join("pure-boolean-reuse.c");
+    let exe_path = root.join("pure-boolean-reuse");
+    fs::write(&c_path, &generated).expect("generated pure-boolean C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile pure-boolean C");
+    assert!(
+        compile.status.success(),
+        "pure-boolean C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("pure-boolean program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n2\n2\ntrue\n"
+    );
+    let _ = fs::remove_dir_all(root);
+
+    let ui = r#"
+view Status {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto
+    state count: i64 = 1
+    Text first at 1,1
+        text: "One"
+        visible: (count + 1 > 1) && (count + 1 > 1)
+    Text second at 2,1
+        text: "Two"
+        visible: (count + 1 > 1) && !(count + 1 > 1)
+    Text third at 3,1
+        text: "Three"
+        visible: (count + 1 > 1) == (count + 1 > 1)
+    Text fourth at 4,1
+        text: "Four"
+        visible: (count + 1 > 1) && ((count + 1 > 1) || false)
+    Text fifth at 5,1
+        text: "Five"
+        visible: (count + 1 > 1) || (!(count + 1 > 1) && true)
+}
+app Status
+"#;
+    let ui_generated =
+        compile_to_c(ui).expect("UI pure boolean predicate reuse should share native lowering");
+    assert!(!ui_generated.contains("&& (flux_add_i64(flux__ui_state_count, INT64_C(1))"));
+    assert!(!ui_generated.contains("== (flux_add_i64(flux__ui_state_count, INT64_C(1))"));
+    assert!(!ui_generated.contains("|| (!(flux_add_i64(flux__ui_state_count, INT64_C(1))"));
+}
+
+#[test]
 fn eliminates_redundant_negated_same_binding_boolean_work() {
     let source = r#"
 fn observe(value: bool) -> bool {
