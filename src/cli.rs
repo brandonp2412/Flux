@@ -400,6 +400,96 @@ fn run() -> Result<(), CliError> {
                 )),
             }
         }
+        "fetch" => {
+            if args.len() < 2 || args.len() > 3 || (args.len() == 3 && args[2] != "--offline") {
+                return Err(CliError::Message(
+                    "fetch syntax is 'fetch <package-dir|flux.toml> [--offline]'".to_string(),
+                ));
+            }
+            let target = Path::new(&args[1]);
+            let offline = args.get(2).is_some_and(|value| value == "--offline");
+            let provider = fluxc::package_ecosystem::configured_registry_provider(offline)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            let graph = fluxc::package_ecosystem::fetch_package_dependencies(
+                target,
+                &provider,
+                offline,
+            )
+            .map_err(|error| CliError::Message(error.to_string()))?;
+            if graph.releases.is_empty() {
+                println!("fetched: no registry dependencies");
+            } else {
+                for release in graph.releases.values() {
+                    println!(
+                        "fetched: {} {} sha256:{}",
+                        release.package, release.version, release.sha256
+                    );
+                }
+            }
+            Ok(())
+        }
+        "vendor" => {
+            if args.len() < 2 {
+                return Err(CliError::Message(
+                    "vendor syntax is 'vendor <package-dir|flux.toml> [-o directory] [--offline]'"
+                        .to_string(),
+                ));
+            }
+            let target = Path::new(&args[1]);
+            let mut offline = false;
+            let mut output = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--offline" => {
+                        if offline {
+                            return Err(CliError::Message(
+                                "vendor accepts --offline only once".to_string(),
+                            ));
+                        }
+                        offline = true;
+                        index += 1;
+                    }
+                    "-o" => {
+                        if output.is_some() || index + 1 >= args.len() {
+                            return Err(CliError::Message(
+                                "vendor syntax is 'vendor <package-dir|flux.toml> [-o directory] [--offline]'"
+                                    .to_string(),
+                            ));
+                        }
+                        output = Some(PathBuf::from(&args[index + 1]));
+                        index += 2;
+                    }
+                    _ => {
+                        return Err(CliError::Message(
+                            "vendor syntax is 'vendor <package-dir|flux.toml> [-o directory] [--offline]'"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            let package_root = if target.is_dir() {
+                target.to_path_buf()
+            } else {
+                target
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf()
+            };
+            let destination = output.unwrap_or_else(|| package_root.join("vendor"));
+            let provider = fluxc::package_ecosystem::configured_registry_provider(offline)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            let graph = fluxc::package_ecosystem::vendor_package_dependencies(
+                target,
+                &provider,
+                &destination,
+                offline,
+            )
+            .map_err(|error| CliError::Message(error.to_string()))?;
+            println!("vendored: {}", destination.display());
+            println!("packages: {}", graph.releases.len());
+            Ok(())
+        }
         "lock" => {
             let path = require_target(&args)?;
             if args.len() != 2 {
@@ -8750,7 +8840,7 @@ fn usage() -> String {
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
-        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} lock"),
+        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
     )
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),

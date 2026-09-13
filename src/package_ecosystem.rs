@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
@@ -35,6 +35,129 @@ impl DirectoryRegistryProvider {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticRegistryProvider {
+    base_url: String,
+    offline: bool,
+}
+
+impl StaticRegistryProvider {
+    pub fn new(base_url: impl Into<String>) -> io::Result<Self> {
+        let mut base_url = base_url.into();
+        while base_url.ends_with('/') {
+            base_url.pop();
+        }
+        if !base_url.starts_with("https://") && !base_url.starts_with("file://") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "static registry URL must use https:// (or file:// for local testing)",
+            ));
+        }
+        Ok(Self {
+            base_url,
+            offline: false,
+        })
+    }
+
+    pub fn with_offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
+        self
+    }
+
+    fn read_text(&self, relative: &str) -> io::Result<String> {
+        if let Some(root) = self.base_url.strip_prefix("file://") {
+            return fs::read_to_string(Path::new(root).join(relative));
+        }
+        let cache_key = sha256_bytes(self.base_url.as_bytes());
+        let cached = package_cache_root()?
+            .join("registry")
+            .join(cache_key)
+            .join(relative);
+        match fs::read_to_string(&cached) {
+            Ok(source) => return Ok(source),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if self.offline {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("registry metadata '{relative}' is not cached while offline"),
+            ));
+        }
+        let url = format!("{}/{}", self.base_url, relative);
+        let output = Command::new("curl")
+            .args(["--fail", "--location", "--silent", "--show-error"])
+            .arg(&url)
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "failed to read static registry resource '{url}'"
+            )));
+        }
+        let source = String::from_utf8(output.stdout).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("static registry resource '{url}' is not UTF-8"),
+            )
+        })?;
+        if let Some(parent) = cached.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temporary = cached.with_extension(format!("tmp-{}", std::process::id()));
+        fs::write(&temporary, source.as_bytes())?;
+        match fs::rename(&temporary, &cached) {
+            Ok(()) => {}
+            Err(_error) if cached.is_file() => {
+                let _ = fs::remove_file(&temporary);
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        }
+        Ok(source)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfiguredRegistryProvider {
+    Directory(DirectoryRegistryProvider),
+    Static(StaticRegistryProvider),
+}
+
+impl RegistryProvider for ConfiguredRegistryProvider {
+    fn versions(&self, package: &str) -> io::Result<Vec<String>> {
+        match self {
+            Self::Directory(provider) => provider.versions(package),
+            Self::Static(provider) => provider.versions(package),
+        }
+    }
+
+    fn release(&self, package: &str, version: &str) -> io::Result<RegistryRelease> {
+        match self {
+            Self::Directory(provider) => provider.release(package, version),
+            Self::Static(provider) => provider.release(package, version),
+        }
+    }
+}
+
+pub fn configured_registry_provider(offline: bool) -> io::Result<ConfiguredRegistryProvider> {
+    if let Some(root) = env::var_os("FLUX_REGISTRY_DIR") {
+        return Ok(ConfiguredRegistryProvider::Directory(
+            DirectoryRegistryProvider::new(PathBuf::from(root)),
+        ));
+    }
+    if let Ok(url) = env::var("FLUX_REGISTRY_URL") {
+        return StaticRegistryProvider::new(url)
+            .map(|provider| provider.with_offline(offline))
+            .map(ConfiguredRegistryProvider::Static);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "registry dependencies require FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL",
+    ))
 }
 
 impl RegistryProvider for DirectoryRegistryProvider {
@@ -88,6 +211,47 @@ impl RegistryProvider for DirectoryRegistryProvider {
                 format!(
                     "registry metadata '{}' does not match requested {package} {version}",
                     path.display()
+                ),
+            ));
+        }
+        Ok(release)
+    }
+}
+
+impl RegistryProvider for StaticRegistryProvider {
+    fn versions(&self, package: &str) -> io::Result<Vec<String>> {
+        validate_package_name(package)?;
+        let source = self.read_text(&format!("{package}/versions.txt"))?;
+        let mut versions = Vec::new();
+        for raw in source.lines() {
+            let version = raw.trim();
+            if version.is_empty() || version.starts_with('#') {
+                continue;
+            }
+            validate_version(version)?;
+            versions.push(version.to_string());
+        }
+        versions.sort();
+        versions.dedup();
+        Ok(versions)
+    }
+
+    fn release(&self, package: &str, version: &str) -> io::Result<RegistryRelease> {
+        validate_package_name(package)?;
+        validate_version(version)?;
+        let relative = format!("{package}/{version}.toml");
+        let source = self.read_text(&relative)?;
+        let release = parse_registry_release(&source).map_err(|message| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid static registry metadata '{relative}': {message}"),
+            )
+        })?;
+        if release.package != package || release.version != version {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "registry metadata '{relative}' does not match requested {package} {version}"
                 ),
             ));
         }
@@ -321,6 +485,276 @@ pub fn materialize_registry_release(
 ) -> io::Result<PathBuf> {
     let archive = fetch_registry_release(release, offline)?;
     extract_fluxpkg(&archive, &release.sha256, destination)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRegistryGraph {
+    pub releases: BTreeMap<String, RegistryRelease>,
+}
+
+pub fn resolve_package_registry_graph(
+    target: &Path,
+    provider: &dyn RegistryProvider,
+) -> io::Result<ResolvedRegistryGraph> {
+    let manifest = package_manifest_target(target)?;
+    let mut base_requirements = BTreeMap::<String, Vec<String>>::new();
+    let mut visited_paths = BTreeSet::new();
+    collect_manifest_registry_requirements(&manifest, &mut visited_paths, &mut base_requirements)?;
+    normalize_requirements(&mut base_requirements);
+
+    let mut requirements = base_requirements.clone();
+    for _ in 0..256 {
+        let mut releases = BTreeMap::new();
+        for (package, package_requirements) in &requirements {
+            let release = resolve_registry_release(provider, package, package_requirements)?
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!(
+                            "no registry release of '{package}' satisfies {}",
+                            package_requirements.join(", ")
+                        ),
+                    )
+                })?;
+            let compatible = crate::project::resolve_semver_requirement(
+                &release.flux,
+                [env!("CARGO_PKG_VERSION")],
+            )
+            .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?
+            .is_some();
+            if !compatible {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry package {} {} requires Flux {}, but this compiler is {}",
+                        release.package,
+                        release.version,
+                        release.flux,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ));
+            }
+            releases.insert(package.clone(), release);
+        }
+
+        let mut next_requirements = base_requirements.clone();
+        for release in releases.values() {
+            for (dependency, requirement) in &release.dependencies {
+                next_requirements
+                    .entry(dependency.clone())
+                    .or_default()
+                    .push(requirement.clone());
+            }
+        }
+        normalize_requirements(&mut next_requirements);
+        if next_requirements == requirements {
+            reject_registry_cycles(&releases)?;
+            return Ok(ResolvedRegistryGraph { releases });
+        }
+        requirements = next_requirements;
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "registry dependency resolution did not converge",
+    ))
+}
+
+pub fn fetch_package_dependencies(
+    target: &Path,
+    provider: &dyn RegistryProvider,
+    offline: bool,
+) -> io::Result<ResolvedRegistryGraph> {
+    let graph = resolve_package_registry_graph(target, provider)?;
+    for release in graph.releases.values() {
+        fetch_registry_release(release, offline)?;
+    }
+    Ok(graph)
+}
+
+pub fn vendor_package_dependencies(
+    target: &Path,
+    provider: &dyn RegistryProvider,
+    destination: &Path,
+    offline: bool,
+) -> io::Result<ResolvedRegistryGraph> {
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "vendor destination '{}' already exists",
+                destination.display()
+            ),
+        ));
+    }
+    let graph = fetch_package_dependencies(target, provider, offline)?;
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("vendor");
+    let temporary = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temporary);
+    fs::create_dir(&temporary)?;
+
+    let result = (|| -> io::Result<()> {
+        let packages = temporary.join("packages");
+        fs::create_dir(&packages)?;
+        let mut lock =
+            String::from("# Generated by Flux vendor. Do not edit.\nformat_version = 1\n");
+        for release in graph.releases.values() {
+            let package_root = packages.join(&release.package).join(&release.version);
+            materialize_registry_release(release, &package_root, true)?;
+            lock.push_str("\n[[package]]\n");
+            lock.push_str(&format!("name = {:?}\n", release.package));
+            lock.push_str(&format!("version = {:?}\n", release.version));
+            lock.push_str(&format!("sha256 = {:?}\n", release.sha256));
+            lock.push_str(&format!("asset = {:?}\n", release.asset));
+        }
+        fs::write(temporary.join("flux.vendor.lock"), lock)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, destination) {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(error);
+    }
+    Ok(graph)
+}
+
+fn package_manifest_target(target: &Path) -> io::Result<crate::project::PackageManifest> {
+    let path = if target.is_dir() {
+        target.join("flux.toml")
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        target.to_path_buf()
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "package dependency transfer requires a package directory or flux.toml target",
+        ));
+    };
+    crate::project::read_manifest(&path).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })
+}
+
+fn collect_manifest_registry_requirements(
+    manifest: &crate::project::PackageManifest,
+    visited_paths: &mut BTreeSet<PathBuf>,
+    requirements: &mut BTreeMap<String, Vec<String>>,
+) -> io::Result<()> {
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    if !visited_paths.insert(root.clone()) {
+        return Ok(());
+    }
+    for (name, dependency) in &manifest.dependencies {
+        match dependency {
+            crate::project::PackageDependency::Registry { requirement } => {
+                requirements
+                    .entry(name.clone())
+                    .or_default()
+                    .push(requirement.clone());
+            }
+            crate::project::PackageDependency::Path { path, .. } => {
+                let dependency_manifest = crate::project::read_manifest(
+                    &root.join(path).join("flux.toml"),
+                )
+                .map_err(|diagnostics| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        diagnostics
+                            .into_iter()
+                            .map(|diagnostic| diagnostic.message)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                })?;
+                collect_manifest_registry_requirements(
+                    &dependency_manifest,
+                    visited_paths,
+                    requirements,
+                )?;
+            }
+            crate::project::PackageDependency::Git { url, rev } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "Git dependency '{name}' ({url}#{rev}) is not yet supported by flux fetch/vendor"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_requirements(requirements: &mut BTreeMap<String, Vec<String>>) {
+    for values in requirements.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+}
+
+fn reject_registry_cycles(releases: &BTreeMap<String, RegistryRelease>) -> io::Result<()> {
+    fn visit(
+        package: &str,
+        releases: &BTreeMap<String, RegistryRelease>,
+        visiting: &mut BTreeSet<String>,
+        visited: &mut BTreeSet<String>,
+        stack: &mut Vec<String>,
+    ) -> io::Result<()> {
+        if visited.contains(package) {
+            return Ok(());
+        }
+        if !visiting.insert(package.to_string()) {
+            if let Some(start) = stack.iter().position(|item| item == package) {
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(package.to_string());
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "cyclic registry dependency detected: {}",
+                        cycle.join(" -> ")
+                    ),
+                ));
+            }
+        }
+        stack.push(package.to_string());
+        if let Some(release) = releases.get(package) {
+            for dependency in release.dependencies.keys() {
+                if releases.contains_key(dependency) {
+                    visit(dependency, releases, visiting, visited, stack)?;
+                }
+            }
+        }
+        stack.pop();
+        visiting.remove(package);
+        visited.insert(package.to_string());
+        Ok(())
+    }
+
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut stack = Vec::new();
+    for package in releases.keys() {
+        visit(package, releases, &mut visiting, &mut visited, &mut stack)?;
+    }
+    Ok(())
 }
 
 pub fn extract_cached_fluxpkg(expected_sha256: &str, destination: &Path) -> io::Result<PathBuf> {
@@ -899,6 +1333,94 @@ mod tests {
             release.dependencies.get("util"),
             Some(&"^1.0.0".to_string())
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn static_registry_provider_reads_version_index_and_release_metadata() {
+        let root = temp_root("static-registry");
+        let package = root.join("demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("versions.txt"), "1.2.0\n1.0.0\n1.2.0\n").unwrap();
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        fs::write(
+            package.join("1.2.0.toml"),
+            format!(
+                "format_version = 1\npackage = \"demo\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/demo\"\nversion = \"1.2.0\"\nflux = \"*\"\nasset = \"https://github.com/flux-lang/demo/releases/download/v1.2.0/demo.fluxpkg\"\nsha256 = \"{hash}\"\nyanked = false\n"
+            ),
+        )
+        .unwrap();
+        let provider = StaticRegistryProvider::new(format!("file://{}", root.display())).unwrap();
+        assert_eq!(provider.versions("demo").unwrap(), vec!["1.0.0", "1.2.0"]);
+        assert_eq!(provider.release("demo", "1.2.0").unwrap().version, "1.2.0");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_graph_fetch_and_vendor_are_transitive_and_offline() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let root = temp_root("registry-graph-vendor");
+        let app = root.join("app");
+        let registry = root.join("registry");
+        let cache = root.join("cache");
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::write(
+            app.join("flux.toml"),
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n\n[dependencies]\nalpha = \"^1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+
+        unsafe { std::env::set_var("FLUX_PACKAGE_CACHE_DIR", &cache) };
+        for (name, version) in [("alpha", "1.1.0"), ("beta", "2.0.0")] {
+            let package_root = root.join(format!("src-{name}"));
+            fs::create_dir_all(package_root.join("src")).unwrap();
+            fs::write(
+                package_root.join("flux.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"{version}\"\nentry = \"src/main.flux\"\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                package_root.join("src/main.flux"),
+                "fn value() -> i64 { 1 }\n",
+            )
+            .unwrap();
+            let archive = root.join(format!("{name}-{version}.fluxpkg"));
+            let hash = create_fluxpkg(&package_root, &archive).unwrap();
+            cache_fluxpkg(&archive, &hash).unwrap();
+            let package_index = registry.join(name);
+            fs::create_dir_all(&package_index).unwrap();
+            let dependencies = if name == "alpha" {
+                "\n[dependencies]\nbeta = \"~2.0.0\"\n"
+            } else {
+                ""
+            };
+            fs::write(
+                package_index.join(format!("{version}.toml")),
+                format!(
+                    "format_version = 1\npackage = \"{name}\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/{name}\"\nversion = \"{version}\"\nflux = \"*\"\nasset = \"https://invalid.example/{name}-{version}.fluxpkg\"\nsha256 = \"{hash}\"\nyanked = false\n{dependencies}"
+                ),
+            )
+            .unwrap();
+        }
+
+        let provider = DirectoryRegistryProvider::new(&registry);
+        let graph = fetch_package_dependencies(&app, &provider, true).unwrap();
+        assert_eq!(graph.releases.len(), 2);
+        assert_eq!(graph.releases["alpha"].version, "1.1.0");
+        assert_eq!(graph.releases["beta"].version, "2.0.0");
+
+        let vendor = root.join("vendor");
+        vendor_package_dependencies(&app, &provider, &vendor, true).unwrap();
+        assert!(vendor.join("packages/alpha/1.1.0/flux.toml").is_file());
+        assert!(vendor.join("packages/beta/2.0.0/flux.toml").is_file());
+        let lock = fs::read_to_string(vendor.join("flux.vendor.lock")).unwrap();
+        assert!(lock.contains("name = \"alpha\""));
+        assert!(lock.contains("name = \"beta\""));
+
+        unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
         let _ = fs::remove_dir_all(root);
     }
 
