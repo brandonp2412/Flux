@@ -2089,6 +2089,142 @@ fn main() -> i64 {
 }
 
 #[test]
+fn network_timeout_io_is_typed_native_tree_shaken_and_runnable() {
+    let source = r#"
+fn consume(_socket: i64, text: str) -> void {
+    print(text)
+}
+fn consumeFrom(_socket: i64, text: str, _host: str, _port: i64) -> void {
+    print(text)
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    if listenError != nil:
+        return 1
+    let (port, portError) = net.port(listener)
+    if portError != nil:
+        return 2
+    let (_timedSocket, immediateAccept, immediateAcceptError) = net.acceptTimeout(listener, 0)
+    if immediateAcceptError != nil:
+        return 3
+    print(immediateAccept)
+    let (client, connectError) = net.connect("127.0.0.1", port)
+    if connectError != nil:
+        return 4
+    let (server, accepted, acceptError) = net.acceptTimeout(listener, 1000)
+    if acceptError != nil:
+        return 5
+    if accepted == false:
+        return 6
+    let (_emptyBytes, immediateRead, immediateReadError) = net.readTimeout(server, 64, 0, consume)
+    if immediateReadError != nil:
+        return 7
+    print(immediateRead)
+    let writeError: error = net.write(client, "ping")
+    if writeError != nil:
+        return 8
+    let (bytes, readable, readError) = net.readTimeout(server, 64, 1000, consume)
+    if readError != nil:
+        return 9
+    if readable == false:
+        return 10
+    print(bytes)
+    let (udpServer, udpBindError) = net.bind("127.0.0.1", 0)
+    if udpBindError != nil:
+        return 11
+    let (udpPort, udpPortError) = net.port(udpServer)
+    if udpPortError != nil:
+        return 12
+    let (_emptyDatagramBytes, immediateDatagram, immediateDatagramError) = net.readFromTimeout(udpServer, 64, 0, consumeFrom)
+    if immediateDatagramError != nil:
+        return 13
+    print(immediateDatagram)
+    let (udpClient, udpConnectError) = net.udp("127.0.0.1", udpPort)
+    if udpConnectError != nil:
+        return 14
+    let udpWriteError: error = net.write(udpClient, "pong")
+    if udpWriteError != nil:
+        return 15
+    let (datagramBytes, datagramReady, datagramError) = net.readFromTimeout(udpServer, 64, 1000, consumeFrom)
+    if datagramError != nil:
+        return 16
+    if datagramReady == false:
+        return 17
+    print(datagramBytes)
+    print(net.close(udpClient))
+    print(net.close(udpServer))
+    print(net.close(server))
+    print(net.close(client))
+    print(net.close(listener))
+    return 0
+}
+"#;
+    check_source(source).expect("timeout I/O fixture should typecheck");
+    let generated = compile_to_c(source).expect("timeout I/O should lower natively");
+    assert!(generated.contains("flux__net_tcp_accept_with_timeout("));
+    assert!(generated.contains("flux__net_receive_text_with_timeout("));
+    assert!(generated.contains("flux__net_receive_text_from_with_timeout("));
+    assert!(generated.contains("flux__net_poll_cancellable("));
+    assert!(generated.contains("acceptTimeout cancelled by worker scope"));
+    assert!(generated.contains("readTimeout cancelled by worker scope"));
+    assert!(generated.contains("readFromTimeout cancelled by worker scope"));
+    assert!(generated.contains("MSG_DONTWAIT"));
+
+    let root = std::env::temp_dir().join(format!("flux-net-timeout-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("timeout I/O fixture should be writable");
+    let source_path = root.join("timeout.flux");
+    fs::write(&source_path, source).expect("timeout I/O source should be writable");
+    let binary = root.join("timeout");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("timeout I/O binary should build");
+    assert!(
+        built.status.success(),
+        "timeout I/O build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("timeout I/O binary should run");
+    assert!(
+        run.status.success(),
+        "timeout I/O run failed: {}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let output = String::from_utf8_lossy(&run.stdout);
+    assert!(output.contains("false\nfalse\n"));
+    assert!(output.contains("ping\n4\nfalse\n"));
+    assert!(output.contains("pong\n4\n"));
+
+    let invalid_timeout = check_source(
+        "fn main() -> i64 {\n    let (_socket, _ready, _failure) = net.acceptTimeout(1, -2)\n    return 0\n}\n",
+    )
+    .expect_err("timeouts below -1 must fail statically");
+    assert!(invalid_timeout.message.contains("timeoutMillis must be -1"));
+
+    let dead = r#"
+fn consume(_socket: i64, _text: str) -> void {
+}
+fn hidden(socket: i64) -> void {
+    let (_bytes, _ready, _failure) = net.readTimeout(socket, 64, 10, consume)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead timeout I/O should tree-shake");
+    assert!(!dead_generated.contains("flux__net_receive_text_with_timeout("));
+    assert!(!dead_generated.contains("flux__net_poll_cancellable("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn tcp_half_close_is_typed_native_tree_shaken_and_runnable() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
     let port = listener.local_addr().unwrap().port();

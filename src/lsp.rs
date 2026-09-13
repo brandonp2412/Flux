@@ -1190,6 +1190,10 @@ fn add_qualified_namespace_completions(
             ),
             ("accept", "fn net.accept(listener: i64) -> (i64, error)"),
             (
+                "acceptTimeout",
+                "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
                 "acceptMany",
                 "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
@@ -1228,6 +1232,10 @@ fn add_qualified_namespace_completions(
                 "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
+                "readTimeout",
+                "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readMany",
                 "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
@@ -1238,6 +1246,10 @@ fn add_qualified_namespace_completions(
             (
                 "readFrom",
                 "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+            ),
+            (
+                "readFromTimeout",
+                "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "nonblocking",
@@ -2727,6 +2739,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "tcpAcceptWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.acceptTimeout",
+                        &["listener: i64", "timeoutMillis: i64"],
+                        "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
                 "acceptMany" | "tcpAcceptMany" => {
                     return Some(signature_help_for_builtin(
                         &format!("net.{member}"),
@@ -2824,6 +2844,19 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "receiveTextWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, str) -> void",
+                        ],
+                        "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
                 "receiveTextMany" => {
                     return Some(signature_help_for_builtin(
                         "net.receiveTextMany",
@@ -2847,6 +2880,19 @@ fn signature_help_for_document_cached(
                             "callback: fn(i64, str, str, i64) -> void",
                         ],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveTextFromWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readFromTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, str, str, i64) -> void",
+                        ],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -6829,6 +6875,9 @@ mod tests {
         );
         assert!(net_items.contains("fn net.accept(listener: i64) -> (i64, error)"));
         assert!(net_items.contains(
+            "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
             "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains("fn net.port(socket: i64) -> (i64, error)"));
@@ -6858,6 +6907,9 @@ mod tests {
             "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains(
+            "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
             "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains(
@@ -6865,6 +6917,9 @@ mod tests {
         ));
         assert!(net_items.contains(
             "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)"
         ));
         assert!(net_items.contains("fn net.nonblocking(socket: i64, enabled: bool) -> error"));
         assert!(net_items.contains("fn net.noDelay(socket: i64, enabled: bool) -> error"));
@@ -8107,6 +8162,45 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("network call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_network_timeout_io() {
+        let uri = "file:///tmp/network-timeout-signatures.flux";
+        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_accepted, _acceptReady, _acceptError) = net.acceptTimeout(1, 0)\n    let (_bytes, _readReady, _readError) = net.readTimeout(1, 64, 0, consume)\n    let (_datagramBytes, _datagramReady, _datagramError) = net.readFromTimeout(1, 64, 0, consumeFrom)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "net.acceptTimeout(",
+                "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
+                "net.readTimeout(",
+                "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "net.readFromTimeout(",
+                "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("timeout I/O call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("timeout I/O call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }
