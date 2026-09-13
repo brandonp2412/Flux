@@ -27395,6 +27395,62 @@ app Form
 }
 
 #[test]
+fn android_text_input_text_refreshes_from_state_without_rebuilding() {
+    let source = r#"
+view ControlledInput {
+    state query: str = "initial"
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput input at 1,1
+        text: query
+        onChange: query, value => value
+    Button reset at 2,1
+        text: "Reset"
+        onPress: query => "reset"
+}
+app ControlledInput
+"#;
+
+    check_source(source).expect("state-driven TextInput text should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("state-driven TextInput text should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("state-driven TextInput text should lower");
+
+    assert!(android.contains(
+        "jstring refresh_text_input_value = flux__android_utf8_string(env, flux__ui_state_query);"
+    ));
+    assert!(android.contains("updateTextInputValue"));
+    assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let static_source = r#"
+view StaticInputText {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: "fixed"
+}
+app StaticInputText
+"#;
+    let static_database =
+        fluxc::semantic::SemanticDatabase::analyze(static_source, SourceId::UNKNOWN)
+            .expect("static TextInput text should analyze");
+    let static_android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        static_database.program(),
+        static_database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("static TextInput text should lower");
+    assert!(!static_android.contains("refresh_text_input_value"));
+}
+
+#[test]
 fn text_input_lowers_native_entry_and_typed_submit_callback() {
     let source = r#"
 fn submit(value: str) -> void {

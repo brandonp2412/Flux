@@ -5126,10 +5126,45 @@ __FLUX_PICKER_METHODS__
         }
     }
 
+    public void updateTextInputValue(EditText view, String value) {
+        if (value == null) value = "";
+        String current = view.getText().toString();
+        if (current.equals(value)) return;
+        int viewId = view.getId();
+        int start = view.getSelectionStart();
+        int end = view.getSelectionEnd();
+        restoringInput = true;
+        try {
+            view.setText(value);
+            int length = view.getText().length();
+            int restoredStart = start < 0 ? length : Math.max(0, Math.min(length, start));
+            int restoredEnd = end < 0 ? restoredStart : Math.max(restoredStart, Math.min(length, end));
+            view.setSelection(restoredStart, restoredEnd);
+            String applied = view.getText().toString();
+            textValues.put(viewId, applied);
+            selectionStarts.put(viewId, restoredStart);
+            selectionEnds.put(viewId, restoredEnd);
+            composingStarts.remove(viewId);
+            composingEnds.remove(viewId);
+        } finally {
+            restoringInput = false;
+        }
+    }
+
     public void setMaxLength(EditText view, int maxLength) {
         view.setFilters(maxLength == 0
             ? new InputFilter[0]
             : new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
+        CharSequence current = view.getText();
+        if (maxLength > 0 && current.length() > maxLength) {
+            int end = maxLength;
+            if (end > 0 && end < current.length()
+                    && Character.isHighSurrogate(current.charAt(end - 1))
+                    && Character.isLowSurrogate(current.charAt(end))) {
+                end--;
+            }
+            updateTextInputValue(view, current.subSequence(0, end).toString());
+        }
     }
 
     public void setInputTypePreservingSelection(EditText view, int inputType) {
@@ -5969,11 +6004,13 @@ __FLUX_PICKER_METHODS__
         view.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (restoringInput) return;
                 String text = s.toString();
                 textValues.put(viewId, text);
                 if (onChange) nativeOnTextChanged(viewId, text);
             }
             @Override public void afterTextChanged(Editable s) {
+                if (restoringInput) return;
                 rememberSelection(viewId, view.getSelectionStart(), view.getSelectionEnd());
                 int composingStart = BaseInputConnection.getComposingSpanStart(s);
                 int composingEnd = BaseInputConnection.getComposingSpanEnd(s);
@@ -8237,9 +8274,17 @@ app OverlayDemo(title: "Overlay")
     #[test]
     fn android_text_input_helpers_preserve_portable_input_semantics() {
         let activity = android_activity_java_source("");
+        assert!(activity.contains("public void updateTextInputValue(EditText view, String value)"));
+        assert!(activity.contains("if (current.equals(value)) return;"));
+        assert!(activity.contains("if (restoringInput) return;"));
         assert!(activity.contains("public void setMaxLength(EditText view, int maxLength)"));
         assert!(activity.contains("maxLength == 0"));
         assert!(activity.contains("? new InputFilter[0]"));
+        assert!(activity.contains("Character.isHighSurrogate(current.charAt(end - 1))"));
+        assert!(
+            activity
+                .contains("updateTextInputValue(view, current.subSequence(0, end).toString());")
+        );
         assert!(activity.contains(
             "int composingStart = BaseInputConnection.getComposingSpanStart(view.getText());"
         ));

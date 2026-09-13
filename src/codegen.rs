@@ -12182,6 +12182,23 @@ fn android_ui_property_needs_refresh(
         .is_some_and(|property| android_ui_expr_needs_refresh(&property.value, runtime_names))
 }
 
+fn android_ui_element_refresh_dependencies(
+    element: &crate::ast::ViewElement,
+    runtime_dependencies: &HashMap<String, UiRefreshDependencies>,
+) -> UiRefreshDependencies {
+    let mut dependencies = ui_element_refresh_dependencies(element, runtime_dependencies);
+    if element.kind == "TextInput"
+        && let Some(property) = view_property(element, "text")
+    {
+        let text_dependencies = ui_expr_refresh_dependencies(&property.value, runtime_dependencies);
+        dependencies
+            .states
+            .extend(text_dependencies.states.iter().copied());
+        dependencies.environment |= text_dependencies.environment;
+    }
+    dependencies
+}
+
 fn android_ui_element_needs_refresh(
     element: &crate::ast::ViewElement,
     runtime_names: &HashSet<String>,
@@ -12266,6 +12283,7 @@ fn android_ui_element_needs_refresh(
         ],
         "Button" => &["text", "size", "primary"],
         "TextInput" => &[
+            "text",
             "placeholder",
             "validation_state",
             "keyboard_type",
@@ -12322,7 +12340,7 @@ fn emit_android_ui_refresh(
         if !android_ui_element_needs_refresh(element, &runtime_names) {
             continue;
         }
-        let dependencies = ui_element_refresh_dependencies(element, &runtime_dependencies);
+        let dependencies = android_ui_element_refresh_dependencies(element, &runtime_dependencies);
         let condition = ui_refresh_condition(&dependencies);
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str(&format!("    if ({condition}) {{\n"));
@@ -13362,6 +13380,19 @@ fn emit_android_ui_refresh(
                     ));
                     out.push_str("                jmethodID refresh_max_length_method = (*env)->GetMethodID(env, activity_class, \"setMaxLength\", \"(Landroid/widget/EditText;I)V\");\n");
                     out.push_str("                if (refresh_max_length_method != NULL) (*env)->CallVoidMethod(env, activity, refresh_max_length_method, child, (jint)refresh_max_length);\n");
+                }
+                if android_ui_property_needs_refresh(element, "text", &runtime_names)
+                    && let Some(property) = view_property(element, "text")
+                {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "                jstring refresh_text_input_value = flux__android_utf8_string(env, {value});\n"
+                    ));
+                    out.push_str("                if (refresh_text_input_value != NULL) {\n");
+                    out.push_str("                    jmethodID refresh_text_input = (*env)->GetMethodID(env, activity_class, \"updateTextInputValue\", \"(Landroid/widget/EditText;Ljava/lang/String;)V\");\n");
+                    out.push_str("                    if (refresh_text_input != NULL) (*env)->CallVoidMethod(env, activity, refresh_text_input, child, refresh_text_input_value);\n");
+                    out.push_str("                    (*env)->DeleteLocalRef(env, refresh_text_input_value);\n");
+                    out.push_str("                }\n");
                 }
             }
             "Image" => {
