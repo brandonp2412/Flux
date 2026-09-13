@@ -3339,6 +3339,7 @@ fn main() -> i64 {
     assert!(generated.contains("pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex)"));
     assert!(generated.contains("current != NULL && current->cancel_requested"));
     assert!(generated.contains("flux__net_http_reap_concurrent_ready(handles, &pending)"));
+    assert!(generated.contains("flux__net_http_cancel_join_concurrent_batch(handles, pending)"));
     assert!(generated.contains("if (!flux__worker_wait_any_done(handles, pending))"));
     assert!(!generated.contains("flux__worker_join(handles[0])"));
     assert!(generated.contains("http.serveConcurrent cancelled by worker scope"));
@@ -3472,6 +3473,106 @@ fn main() -> i64 {
         "structured concurrent server should cancel and drain promptly"
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout), "served\nserved\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_serve_concurrent_drains_owned_requests_before_returning_errors() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-serve-concurrent-error-drain-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("concurrent HTTP error-drain fixture should be writable");
+    let source_path = root.join("serve-error-drain.flux");
+    let source = r#"
+fn request(socket: i64, _method: str, target: str, _version: str) -> void {
+    if target == "/slow":
+        time.sleep(1200)
+        let _responseError: error = http.respond(socket, 200, "text/plain", "served")
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn serve(listener: i64) -> void {
+    let serveError: error = http.serveConcurrentLimit(listener, 4096, 1024, 2, request, header, body)
+    if serveError == nil:
+        print("missing-error")
+    let joinError: error = worker.joinAll()
+    if joinError != nil:
+        print("join-error")
+    print("drained")
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    if listenError != nil:
+        return 1
+    let (port, portError) = net.port(listener)
+    if portError != nil:
+        return 2
+    let (server, startError) = worker.startWith(serve, listener)
+    if startError != nil:
+        return 3
+    time.sleep(50)
+    let (slow, slowError) = net.connect("127.0.0.1", port)
+    if slowError != nil:
+        return 4
+    let slowRequestError: error = http.request(slow, "GET", "/slow", "example.test", "text/plain", "")
+    if slowRequestError != nil:
+        return 5
+    time.sleep(100)
+    let (broken, brokenError) = net.connect("127.0.0.1", port)
+    if brokenError != nil:
+        return 6
+    let brokenWriteError: error = net.write(broken, "BROKEN\r\n\r\n")
+    if brokenWriteError != nil:
+        return 7
+    let joinError: error = worker.join(server)
+    if joinError != nil:
+        return 8
+    let slowCloseError: error = net.close(slow)
+    if slowCloseError != nil:
+        return 9
+    let brokenCloseError: error = net.close(broken)
+    if brokenCloseError != nil:
+        return 10
+    let listenerCloseError: error = net.close(listener)
+    if listenerCloseError != nil:
+        return 11
+    return 0
+}
+"#;
+    fs::write(&source_path, source).expect("concurrent HTTP error-drain source should write");
+    let binary = root.join("serve-error-drain");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("concurrent HTTP error-drain binary should build");
+    assert!(
+        built.status.success(),
+        "concurrent HTTP error-drain build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let started = Instant::now();
+    let run = Command::new(&binary)
+        .output()
+        .expect("concurrent HTTP error-drain binary should run");
+    assert!(
+        run.status.success(),
+        "concurrent HTTP error-drain fixture failed with {:?}: stdout={} stderr={}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "serveConcurrentLimit should cancel and join its owned requests before returning"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "drained\n");
     let _ = fs::remove_dir_all(&root);
 }
 
