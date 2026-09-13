@@ -50,7 +50,7 @@ view HorseTinder {
         wrap: false
         alignY: "center"
 
-    Text matchBadge at 3,4
+    Text matchBadge at 4,4
         text: "98% MATCH"
         color: "#FFFFFF"
         size: 9
@@ -69,12 +69,12 @@ view HorseTinder {
         borderWidth: 1
         radius: radiusPill
 
-    Text profileMeta at 4,1 span columns 5
-        text: "Chestnut  ·  Mare  ·  16.1 hands  ·  4 km away"
-        color: "#C8CED7"
+    Text profileMeta at 4,1 span columns 3
+        text: "Chestnut  ·  Mare  ·  16.1 hands"
+        color: "#B8C0CC"
         size: 12
-        bold: true
         wrap: false
+        alignY: "center"
 
     Text bio at 5,1 span columns 5
         text: "Beach gallops, generous with hay, and emotionally available. Photobomber included."
