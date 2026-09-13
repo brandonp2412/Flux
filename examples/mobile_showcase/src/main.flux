@@ -2,7 +2,6 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     derived actionOffset: i64 = (windowWidth - 320) / 2
-    derived edgeOffset: i64 = windowWidth - 320
     grid columns: 1fr 80 24 80 1fr
     grid rows: 46 1fr 54 34 68 80 auto
     grid gap: 8
@@ -52,7 +51,7 @@ view HorseTinder {
         wrap: false
         alignY: "center"
 
-    Text matchBadge at 4,4
+    Text matchBadge at 3,4 span columns 2
         text: "98% MATCH"
         color: "#FFFFFF"
         size: 9
@@ -62,19 +61,19 @@ view HorseTinder {
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        translateX: edgeOffset
-        padding: 4
-        minHeight: 26
-        maxHeight: 26
+        padding: 6
+        minHeight: 30
+        maxHeight: 30
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 1
         radius: radiusPill
 
-    Text profileMeta at 4,1 span columns 3
+    Text profileMeta at 4,1 span columns 5
         text: "Chestnut  ·  Mare  ·  16.1 hands"
         color: "#C4CBD5"
         size: 12
+        bold: true
         wrap: false
         alignY: "center"
 
