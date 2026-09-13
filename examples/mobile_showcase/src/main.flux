@@ -189,10 +189,11 @@ view HorseTinder {
         layoutTransitionMs: motionNormal
 
     Text passedNote at 6,1 span columns 5
-        text: "Passed. The photobomber is taking it personally."
+        text: "PASSED  ·  The photobomber is taking it personally."
         visible: passed
-        color: "#E5E7EB"
+        color: "#D7DCE4"
         size: 13
+        bold: true
         wrap: false
         maxLines: 1
         textAlign: "center"
@@ -202,8 +203,8 @@ view HorseTinder {
         padding: 24
         minHeight: 80
         maxHeight: 80
-        backgroundColor: "#11151BF2"
-        borderColor: "#343C47"
+        backgroundColor: "#10151CF2"
+        borderColor: "#3C4755"
         borderWidth: 1
         radius: 40
         layoutTransitionMs: motionNormal
