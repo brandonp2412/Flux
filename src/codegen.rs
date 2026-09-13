@@ -5986,6 +5986,12 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         || runtime_usage.contains("flux__fs_directory_owner(")
         || runtime_usage.contains("flux__fs_file_group(")
         || runtime_usage.contains("flux__fs_directory_group(")
+        || runtime_usage.contains("flux__fs_file_inode(")
+        || runtime_usage.contains("flux__fs_directory_inode(")
+        || runtime_usage.contains("flux__fs_file_device(")
+        || runtime_usage.contains("flux__fs_directory_device(")
+        || runtime_usage.contains("flux__fs_file_hard_links(")
+        || runtime_usage.contains("flux__fs_directory_hard_links(")
     {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
@@ -6055,6 +6061,33 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_directory_group(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_group(const char *path) { return flux__fs_identity(path, true, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_inode(")
+        || runtime_usage.contains("flux__fs_directory_inode(")
+        || runtime_usage.contains("flux__fs_file_device(")
+        || runtime_usage.contains("flux__fs_directory_device(")
+        || runtime_usage.contains("flux__fs_file_hard_links(")
+        || runtime_usage.contains("flux__fs_directory_hard_links(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_stat_number(const char *path, bool expect_directory, int field) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect filesystem metadata\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); uintmax_t value = field == 0 ? (uintmax_t)info.st_ino : field == 1 ? (uintmax_t)info.st_dev : (uintmax_t)info.st_nlink; if (value > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, \"filesystem metadata exceeds i64\"); return flux__fs_i64_result((int64_t)value, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_inode(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_inode(const char *path) { return flux__fs_stat_number(path, false, 0); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_inode(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_inode(const char *path) { return flux__fs_stat_number(path, true, 0); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_device(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_device(const char *path) { return flux__fs_stat_number(path, false, 1); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_device(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_device(const char *path) { return flux__fs_stat_number(path, true, 1); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_hard_links(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_hard_links(const char *path) { return flux__fs_stat_number(path, false, 2); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_hard_links(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_hard_links(const char *path) { return flux__fs_stat_number(path, true, 2); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -30750,7 +30783,7 @@ fn emit_qualified_call(
         }
         match name {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "owner" | "group" | "remove" => {
+            | "owner" | "group" | "inode" | "device" | "hardLinks" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -30789,6 +30822,21 @@ fn emit_qualified_call(
                     ),
                     "group" => (
                         "flux__fs_file_group",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "inode" => (
+                        "flux__fs_file_inode",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "device" => (
+                        "flux__fs_file_device",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "hardLinks" => (
+                        "flux__fs_file_hard_links",
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
@@ -30904,6 +30952,21 @@ fn emit_qualified_call(
             ),
             "group" => (
                 "flux__fs_directory_group",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "inode" => (
+                "flux__fs_directory_inode",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "device" => (
+                "flux__fs_directory_device",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "hardLinks" => (
+                "flux__fs_directory_hard_links",
                 vec![Type::I64, Type::Error],
                 Some("flux__fs_i64_error".to_string()),
             ),

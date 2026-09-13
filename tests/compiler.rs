@@ -8946,10 +8946,32 @@ fn main() -> i64 {{
     let (directoryGroup, directoryGroupError) = directory.group("{}")
     print(directoryGroup >= 0)
     print(directoryGroupError)
+    let (fileInode, fileInodeError) = file.inode("{}")
+    print(fileInode > 0)
+    print(fileInodeError)
+    let (directoryInode, directoryInodeError) = directory.inode("{}")
+    print(directoryInode > 0)
+    print(directoryInodeError)
+    let (fileDevice, fileDeviceError) = file.device("{}")
+    print(fileDevice >= 0)
+    print(fileDeviceError)
+    let (directoryDevice, directoryDeviceError) = directory.device("{}")
+    print(directoryDevice >= 0)
+    print(directoryDeviceError)
+    let (fileHardLinks, fileHardLinksError) = file.hardLinks("{}")
+    print(fileHardLinks >= 1)
+    print(fileHardLinksError)
+    let (directoryHardLinks, directoryHardLinksError) = directory.hardLinks("{}")
+    print(directoryHardLinks >= 1)
+    print(directoryHardLinksError)
     let (_wrongDirectory, wrongDirectoryError) = directory.permissions("{}")
     print(wrongDirectoryError)
     let (_wrongFile, wrongFileError) = file.permissions("{}")
     print(wrongFileError)
+    let (_wrongDirectoryInode, wrongDirectoryInodeError) = directory.inode("{}")
+    print(wrongDirectoryInodeError)
+    let (_wrongFileDevice, wrongFileDeviceError) = file.device("{}")
+    print(wrongFileDeviceError)
     return 0
 }}
 "#,
@@ -8962,6 +8984,14 @@ fn main() -> i64 {{
         path(&file),
         path(&file),
         path(&root),
+        path(&root),
+        path(&file),
+        path(&root),
+        path(&file),
+        path(&root),
+        path(&file),
+        path(&root),
+        path(&file),
         path(&root),
         path(&file),
         path(&root),
@@ -8980,6 +9010,12 @@ fn main() -> i64 {{
         "flux__fs_directory_owner",
         "flux__fs_file_group",
         "flux__fs_directory_group",
+        "flux__fs_file_inode",
+        "flux__fs_directory_inode",
+        "flux__fs_file_device",
+        "flux__fs_directory_device",
+        "flux__fs_file_hard_links",
+        "flux__fs_directory_hard_links",
     ] {
         assert!(
             generated.contains(helper),
@@ -9006,9 +9042,20 @@ fn main() -> i64 {{
         .output()
         .expect("filesystem metadata binary should run");
     assert!(run.status.success());
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 36, "unexpected metadata output: {stdout}");
+    for pair in lines[..32].chunks_exact(2) {
+        assert_eq!(pair, &["true", "nil"]);
+    }
     assert_eq!(
-        String::from_utf8_lossy(&run.stdout),
-        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
+        &lines[32..],
+        &[
+            "path is not a directory",
+            "path is not a file",
+            "path is not a directory",
+            "path is not a file",
+        ]
     );
 
     let unused = r#"
@@ -9023,6 +9070,12 @@ fn hidden() -> void {
     let (_directoryOwner, _directoryOwnerError) = directory.owner("/tmp/unused-flux-directory")
     let (_fileGroup, _fileGroupError) = file.group("/tmp/unused-flux-file")
     let (_directoryGroup, _directoryGroupError) = directory.group("/tmp/unused-flux-directory")
+    let (_fileInode, _fileInodeError) = file.inode("/tmp/unused-flux-file")
+    let (_directoryInode, _directoryInodeError) = directory.inode("/tmp/unused-flux-directory")
+    let (_fileDevice, _fileDeviceError) = file.device("/tmp/unused-flux-file")
+    let (_directoryDevice, _directoryDeviceError) = directory.device("/tmp/unused-flux-directory")
+    let (_fileHardLinks, _fileHardLinksError) = file.hardLinks("/tmp/unused-flux-file")
+    let (_directoryHardLinks, _directoryHardLinksError) = directory.hardLinks("/tmp/unused-flux-directory")
 }
 fn main() -> i64 {
     return 0
@@ -9041,6 +9094,12 @@ fn main() -> i64 {
         "flux__fs_directory_owner",
         "flux__fs_file_group",
         "flux__fs_directory_group",
+        "flux__fs_file_inode",
+        "flux__fs_directory_inode",
+        "flux__fs_file_device",
+        "flux__fs_directory_device",
+        "flux__fs_file_hard_links",
+        "flux__fs_directory_hard_links",
     ] {
         assert!(
             !unused_generated.contains(helper),
@@ -9060,6 +9119,12 @@ fn main() -> i64 {
     let (_directoryOwner, _directoryOwnerError) = directory.owner(false)
     let (_fileGroup, _fileGroupError) = file.group(false)
     let (_directoryGroup, _directoryGroupError) = directory.group(1)
+    let (_fileInode, _fileInodeError) = file.inode(false)
+    let (_directoryInode, _directoryInodeError) = directory.inode(1)
+    let (_fileDevice, _fileDeviceError) = file.device(false)
+    let (_directoryDevice, _directoryDeviceError) = directory.device(1)
+    let (_fileHardLinks, _fileHardLinksError) = file.hardLinks(false)
+    let (_directoryHardLinks, _directoryHardLinksError) = directory.hardLinks(1)
     return 0
 }
 "#;
@@ -9076,6 +9141,12 @@ fn main() -> i64 {
         "directory.owner path",
         "file.group path",
         "directory.group path",
+        "file.inode path",
+        "directory.inode path",
+        "file.device path",
+        "directory.device path",
+        "file.hardLinks path",
+        "directory.hardLinks path",
     ] {
         assert!(
             errors.iter().any(

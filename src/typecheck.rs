@@ -9863,7 +9863,7 @@ fn check_qualified_call(
         }
         match name.as_str() {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "owner" | "group" | "remove" => {
+            | "owner" | "group" | "inode" | "device" | "hardLinks" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -9880,7 +9880,9 @@ fn check_qualified_call(
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
                     "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-                    | "owner" | "group" => vec![Type::I64, Type::Error],
+                    | "owner" | "group" | "inode" | "device" | "hardLinks" => {
+                        vec![Type::I64, Type::Error]
+                    }
                     _ => vec![Type::Error],
                 });
             }
@@ -9990,7 +9992,8 @@ fn check_qualified_call(
         }
         match name.as_str() {
             "exists" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
-            | "group" | "create" | "createAll" | "remove" | "removeAll" => {
+            | "group" | "inode" | "device" | "hardLinks" | "create" | "createAll" | "remove"
+            | "removeAll" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -10007,7 +10010,9 @@ fn check_qualified_call(
                 return Ok(match name.as_str() {
                     "exists" => vec![Type::Bool],
                     "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
-                    | "group" => vec![Type::I64, Type::Error],
+                    | "group" | "inode" | "device" | "hardLinks" => {
+                        vec![Type::I64, Type::Error]
+                    }
                     _ => vec![Type::Error],
                 });
             }

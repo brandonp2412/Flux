@@ -1650,6 +1650,9 @@ fn add_qualified_namespace_completions(
             ),
             ("owner", "fn file.owner(path: str) -> (i64, error)"),
             ("group", "fn file.group(path: str) -> (i64, error)"),
+            ("inode", "fn file.inode(path: str) -> (i64, error)"),
+            ("device", "fn file.device(path: str) -> (i64, error)"),
+            ("hardLinks", "fn file.hardLinks(path: str) -> (i64, error)"),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1692,6 +1695,12 @@ fn add_qualified_namespace_completions(
             ),
             ("owner", "fn directory.owner(path: str) -> (i64, error)"),
             ("group", "fn directory.group(path: str) -> (i64, error)"),
+            ("inode", "fn directory.inode(path: str) -> (i64, error)"),
+            ("device", "fn directory.device(path: str) -> (i64, error)"),
+            (
+                "hardLinks",
+                "fn directory.hardLinks(path: str) -> (i64, error)",
+            ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
             (
@@ -3598,7 +3607,7 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-                | "owner" | "group" => {
+                | "owner" | "group" | "inode" | "device" | "hardLinks" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
@@ -3660,7 +3669,7 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
-                | "group" => {
+                | "group" | "inode" | "device" | "hardLinks" => {
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
@@ -7285,6 +7294,9 @@ mod tests {
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.owner(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.group(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.inode(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.device(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.hardLinks(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.accessed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.changed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
@@ -7316,6 +7328,9 @@ mod tests {
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.owner(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.group(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.inode(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.device(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.hardLinks(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.accessed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.changed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
@@ -9264,6 +9279,12 @@ mod tests {
     let (_directoryOwner, _directoryOwnerFailure) = directory.owner("a")
     let (_fileGroup, _fileGroupFailure) = file.group("a")
     let (_directoryGroup, _directoryGroupFailure) = directory.group("a")
+    let (_fileInode, _fileInodeFailure) = file.inode("a")
+    let (_directoryInode, _directoryInodeFailure) = directory.inode("a")
+    let (_fileDevice, _fileDeviceFailure) = file.device("a")
+    let (_directoryDevice, _directoryDeviceFailure) = directory.device("a")
+    let (_fileHardLinks, _fileHardLinksFailure) = file.hardLinks("a")
+    let (_directoryHardLinks, _directoryHardLinksFailure) = directory.hardLinks("a")
     return 0
 }
 "#;
@@ -9310,6 +9331,24 @@ mod tests {
             (
                 "directory.group(",
                 "fn directory.group(path: str) -> (i64, error)",
+            ),
+            ("file.inode(", "fn file.inode(path: str) -> (i64, error)"),
+            (
+                "directory.inode(",
+                "fn directory.inode(path: str) -> (i64, error)",
+            ),
+            ("file.device(", "fn file.device(path: str) -> (i64, error)"),
+            (
+                "directory.device(",
+                "fn directory.device(path: str) -> (i64, error)",
+            ),
+            (
+                "file.hardLinks(",
+                "fn file.hardLinks(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.hardLinks(",
+                "fn directory.hardLinks(path: str) -> (i64, error)",
             ),
         ] {
             let line_index = source
