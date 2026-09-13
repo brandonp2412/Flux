@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLUX="$ROOT/tools/flux"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/flux-platform-e2e.XXXXXX")"
+DEVICE="${FLUX_E2E_DEVICE:-}"
+trap 'rm -rf "$WORK"' EXIT
+
+printf '%s\n' '[flux-platform-e2e] Linux native execution'
+LINUX_BIN="$WORK/package"
+"$FLUX" build "$ROOT/examples/package" --mode release -o "$LINUX_BIN"
+LINUX_OUTPUT="$("$LINUX_BIN")"
+if [[ "$LINUX_OUTPUT" != "42" ]]; then
+  printf 'Linux E2E output mismatch: expected 42, got %q\n' "$LINUX_OUTPUT" >&2
+  exit 1
+fi
+
+if [[ -z "$DEVICE" ]]; then
+  DEVICE="$(adb devices -l | awk '/model:WayDroid_x86_64_Device/ { print $1; exit }')"
+fi
+if [[ -z "$DEVICE" ]]; then
+  printf '%s\n' 'No ADB-connected x86_64 Waydroid device found. Start Waydroid and connect it with ADB, or set FLUX_E2E_DEVICE.' >&2
+  exit 1
+fi
+
+printf '%s\n' "[flux-platform-e2e] Android native install/launch on $DEVICE"
+APK="$WORK/showcase.apk"
+"$FLUX" build android "$ROOT/examples/mobile_showcase" -o "$APK" --mode release --abi x86_64 --format apk
+adb -s "$DEVICE" install -r "$APK" >/dev/null
+adb -s "$DEVICE" shell am force-stop app.flux.showcase
+START_OUTPUT="$(adb -s "$DEVICE" shell am start -W -n app.flux.showcase/app.flux.runtime.FluxActivity | tr -d '\r')"
+if ! printf '%s\n' "$START_OUTPUT" | rg -q '^Status: ok$'; then
+  printf '%s\n' 'Android E2E launch did not report Status: ok:' >&2
+  printf '%s\n' "$START_OUTPUT" >&2
+  exit 1
+fi
+PID="$(adb -s "$DEVICE" shell pidof app.flux.showcase | tr -d '\r')"
+if [[ -z "$PID" ]]; then
+  printf '%s\n' 'Android E2E app is not running after successful launch.' >&2
+  exit 1
+fi
+printf '%s\n' "[flux-platform-e2e] PASS: Linux executed expected native output; Android package installed and launched as PID $PID"

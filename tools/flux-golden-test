@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASELINE="${FLUX_GOLDEN_BASELINE:-$ROOT/assets/readme/flux-mobile-showcase.png}"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/flux-golden-test.XXXXXX")"
+CAPTURE="$WORK/current.png"
+DIFF="$ROOT/target/flux-golden-diff.png"
+trap 'rm -rf "$WORK"' EXIT
+
+if [[ ! -f "$BASELINE" ]]; then
+  printf 'Golden baseline not found: %s\n' "$BASELINE" >&2
+  exit 1
+fi
+
+rm -f "$DIFF"
+"$ROOT/tools/capture-readme-showcase" "$CAPTURE"
+
+python3 - "$BASELINE" "$CAPTURE" "$DIFF" <<'PYCMP'
+from pathlib import Path
+import sys
+try:
+    from PIL import Image, ImageChops
+except ImportError:
+    raise SystemExit("flux-golden-test requires Python Pillow (python-pillow)")
+
+baseline_path, capture_path, diff_path = map(Path, sys.argv[1:])
+with Image.open(baseline_path) as baseline_image, Image.open(capture_path) as capture_image:
+    baseline = baseline_image.convert("RGBA")
+    capture = capture_image.convert("RGBA")
+    if baseline.size != capture.size:
+        raise SystemExit(
+            f"golden size mismatch: expected {baseline.size[0]}x{baseline.size[1]}, "
+            f"got {capture.size[0]}x{capture.size[1]}"
+        )
+    diff = ImageChops.difference(baseline, capture)
+    if diff.getbbox() is not None:
+        diff.save(diff_path)
+        changed = sum(1 for pixel in diff.getdata() if pixel != (0, 0, 0, 0))
+        total = baseline.width * baseline.height
+        raise SystemExit(
+            f"golden pixel mismatch: {changed}/{total} pixels differ "
+            f"({changed / total:.4%}); diff: {diff_path}"
+        )
+print(f"golden screenshot matches {baseline_path}")
+PYCMP

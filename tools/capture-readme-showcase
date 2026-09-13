@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLUX="$ROOT/tools/flux"
 PACKAGE="$ROOT/examples/mobile_showcase"
-OUTPUT="$ROOT/assets/readme/flux-mobile-showcase.png"
+OUTPUT="${1:-$ROOT/assets/readme/flux-mobile-showcase.png}"
 DEVICE="${FLUX_SCREENSHOT_DEVICE:-}"
 
 if [[ -z "$DEVICE" ]]; then
@@ -15,6 +15,7 @@ if [[ -z "$DEVICE" ]]; then
   exit 1
 fi
 
+mkdir -p "$(dirname "$OUTPUT")"
 TMPDIR="$(mktemp -d "$ROOT/target/readme-showcase.XXXXXX")"
 APK="$TMPDIR/showcase.apk"
 CAPTURE="$TMPDIR/showcase.png"

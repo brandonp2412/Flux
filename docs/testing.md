@@ -8,7 +8,11 @@ Pass `--ui` to allow a test source to declare an `app`. The test is compiled thr
 
 Pass `--accessibility` to run the native UI test with an additional compiler-owned accessibility audit before launch. The audit requires an accessible name for interactive controls and for Image, Button, TextInput, Toggle, and Radio elements unless an element is explicitly `accessibilityHidden: true`. Existing visible `text`, `label`, `title`, or Image `alt` properties satisfy the name where appropriate, while `accessibilityLabel` is the explicit universal override. Audit failures identify the view, element, and source line. `--accessibility` implies `--ui`.
 
-Golden/screenshot baselines and cross-platform UI-test execution remain roadmap work.
+## Golden screenshots and platform E2E
+
+`./tools/flux-golden-test` builds the checked-in mobile showcase through the ordinary Android release backend, installs it on an ADB-connected x86_64 Waydroid device, forces the canonical 1080x1920/360-dpi portrait surface, captures the real native UI, and compares decoded RGBA pixels exactly against `assets/readme/flux-mobile-showcase.png`. Set `FLUX_SCREENSHOT_DEVICE` to select a device explicitly. A mismatch fails and writes `target/flux-golden-diff.png`, so the README image doubles as an executable visual regression baseline rather than a separately rendered test fixture. Python Pillow is required only by this screenshot comparison tool.
+
+`./tools/flux-platform-e2e` exercises both current native application targets end to end: it builds and executes the Linux release fixture and requires its real process output, then builds the Android release showcase, installs it through ADB, launches the generated `FluxActivity`, requires Android ActivityManager to report `Status: ok`, and verifies the application process is alive. It auto-selects an x86_64 Waydroid device or accepts `FLUX_E2E_DEVICE`. This is intentionally a real platform harness rather than a mocked renderer or generated-code-only check.
 
 ## Deterministic time
 
