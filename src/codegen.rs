@@ -9772,7 +9772,7 @@ fn emit_android_native_application(
     out.push_str("}\n\n");
 
     if let Some(function) = application_metadata_function(application, "on_background_job") {
-        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxJobService_nativeRunJob(JNIEnv *env, jobject service, jint job_id) {\n    (void)env;\n    (void)service;\n");
+        out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxBackgroundRunner_runJob(JNIEnv *env, jclass runner_class, jint job_id) {\n    (void)env;\n    (void)runner_class;\n");
         out.push_str(&format!(
             "    {}((int64_t)job_id);\n",
             function_c_name(function)

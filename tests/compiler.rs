@@ -31868,7 +31868,7 @@ app Screen(onStart: started, onBackgroundJob: background)
     assert!(generated.contains("static bool flux__android_schedule_background_job"));
     assert!(generated.contains("static void flux__android_cancel_background_job"));
     assert!(generated.contains("app/flux/runtime/FluxJobService"));
-    assert!(generated.contains("Java_app_flux_runtime_FluxJobService_nativeRunJob"));
+    assert!(generated.contains("Java_app_flux_runtime_FluxBackgroundRunner_runJob"));
     assert!(generated.contains("flux__fn_background((int64_t)job_id);"));
     assert!(!generated.contains("MethodChannel"));
     assert!(!generated.contains("plugin registry"));

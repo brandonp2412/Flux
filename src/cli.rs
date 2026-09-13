@@ -4388,6 +4388,19 @@ fn android_has_generated_java(c_source: &str) -> bool {
         || android_has_generated_secure_storage(c_source)
 }
 
+fn android_background_runner_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+public final class FluxBackgroundRunner {
+    static { System.loadLibrary("flux"); }
+
+    private FluxBackgroundRunner() {}
+
+    public static native void runJob(int jobId);
+}
+"#
+}
+
 fn android_job_service_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
@@ -4399,10 +4412,6 @@ import android.content.ComponentName;
 import android.content.Context;
 
 public final class FluxJobService extends JobService {
-    static { System.loadLibrary("flux"); }
-
-    private native void nativeRunJob(int jobId);
-
     public static boolean schedule(Context context, long jobId, long delayMs) {
         if (context == null || jobId < 0 || jobId > Integer.MAX_VALUE || delayMs < 0) return false;
         JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
@@ -4422,13 +4431,39 @@ public final class FluxJobService extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters params) {
-        nativeRunJob(params.getJobId());
+        FluxBackgroundRunner.runJob(params.getJobId());
         return false;
     }
 
     @Override
     public boolean onStopJob(JobParameters params) {
         return false;
+    }
+}
+"#
+}
+
+#[allow(dead_code)]
+fn android_work_manager_worker_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+import android.content.Context;
+import androidx.work.Worker;
+import androidx.work.WorkerParameters;
+
+public final class FluxWorkManagerWorker extends Worker {
+    public static final String JOB_ID_KEY = "fluxJobId";
+
+    public FluxWorkManagerWorker(Context context, WorkerParameters params) {
+        super(context, params);
+    }
+
+    @Override
+    public Result doWork() {
+        long jobId = getInputData().getLong(JOB_ID_KEY, -1L);
+        if (jobId < 0 || jobId > Integer.MAX_VALUE) return Result.failure();
+        FluxBackgroundRunner.runJob((int) jobId);
+        return Result.success();
     }
 }
 "#
@@ -6294,6 +6329,11 @@ fn compile_android_activity_dex(
         java_sources.push(java_source);
     }
     if android_has_generated_job_service(c_source) {
+        let runner_source = java_dir.join("FluxBackgroundRunner.java");
+        fs::write(&runner_source, android_background_runner_java_source()).map_err(|error| {
+            format!("failed to write compiler-generated Android background runner: {error}")
+        })?;
+        java_sources.push(runner_source);
         let java_source = java_dir.join("FluxJobService.java");
         fs::write(&java_source, android_job_service_java_source()).map_err(|error| {
             format!("failed to write compiler-generated Android job service: {error}")
@@ -6340,12 +6380,14 @@ fn compile_android_activity_dex(
         }
     }
     if android_has_generated_job_service(c_source) {
-        let service_class = runtime_classes.join("FluxJobService.class");
-        if !generated_classes.iter().any(|path| path == &service_class) {
-            return Err(CliError::Message(format!(
-                "javac did not produce the compiler-generated Android job service class '{}'",
-                service_class.display()
-            )));
+        for class_name in ["FluxBackgroundRunner.class", "FluxJobService.class"] {
+            let class_path = runtime_classes.join(class_name);
+            if !generated_classes.iter().any(|path| path == &class_path) {
+                return Err(CliError::Message(format!(
+                    "javac did not produce compiler-generated Android background class '{}'",
+                    class_path.display()
+                )));
+            }
         }
     }
     if android_has_generated_secure_storage(c_source) {
@@ -7491,9 +7533,11 @@ mod tests {
     use super::{
         AdbDevice, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode, CliError,
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
-        android_abi_from_runtime, android_activity_java_source, android_build_options,
+        android_abi_from_runtime, android_activity_java_source,
+        android_background_runner_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
-        android_publish_options, android_secure_storage_java_source, build_native_configured,
+        android_publish_options, android_secure_storage_java_source,
+        android_work_manager_worker_java_source, build_native_configured,
         build_native_instrumented, build_options, debug_options, demangle_profile_symbols,
         display_flux_symbol, find_android_compile_jar, json_string,
         native_build_cache_path_configured, native_cache_entry_is_valid,
@@ -8463,11 +8507,20 @@ app OverlayDemo(title: "Overlay")
         assert!(!secure_storage.contains("MethodChannel"));
         assert!(!secure_storage.contains("PluginRegistry"));
 
+        let background_runner = android_background_runner_java_source();
+        assert!(background_runner.contains("public static native void runJob(int jobId)"));
+        assert!(background_runner.contains("System.loadLibrary(\"flux\")"));
         let job_service = android_job_service_java_source();
         assert!(job_service.contains("extends JobService"));
         assert!(job_service.contains("new JobInfo.Builder"));
         assert!(job_service.contains(".setMinimumLatency(delayMs)"));
-        assert!(job_service.contains("nativeRunJob(params.getJobId())"));
+        assert!(job_service.contains("FluxBackgroundRunner.runJob(params.getJobId())"));
+        let work_manager_worker = android_work_manager_worker_java_source();
+        assert!(work_manager_worker.contains("extends Worker"));
+        assert!(work_manager_worker.contains("WorkerParameters params"));
+        assert!(work_manager_worker.contains("getInputData().getLong(JOB_ID_KEY, -1L)"));
+        assert!(work_manager_worker.contains("FluxBackgroundRunner.runJob((int) jobId)"));
+        assert!(work_manager_worker.contains("return Result.success()"));
         assert!(job_service.contains("JobScheduler.RESULT_SUCCESS"));
         assert!(!job_service.contains("MethodChannel"));
 
