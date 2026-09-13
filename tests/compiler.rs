@@ -3596,6 +3596,8 @@ fn main() -> i64 {
         "flux__net_http_serve_concurrent_limit(INT64_C(1), INT64_C(4096), INT64_C(1024), INT64_C(8)"
     ));
     assert!(generated.contains("if (pending == (size_t)max_concurrent)"));
+    assert!(generated.contains("while (pending < (size_t)max_concurrent)"));
+    assert!(generated.contains("flux__net_poll_cancellable(&queued, 1, 0)"));
     assert!(generated.contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64"));
 
     let invalid = check_source(&source.replace(

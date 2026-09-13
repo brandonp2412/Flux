@@ -5942,32 +5942,55 @@ static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_
             (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
             return "HTTP listener closed while waiting to accept";
         }
-        int accepted;
-        do { accepted = accept((int)listener, NULL, NULL); } while (accepted < 0 && errno == EINTR);
-        if (accepted < 0) {
-            (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
-            return "failed to accept HTTP connection";
+        while (pending < (size_t)max_concurrent) {
+            int accepted;
+            do { accepted = accept((int)listener, NULL, NULL); } while (accepted < 0 && errno == EINTR);
+            if (accepted < 0) {
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return "failed to accept HTTP connection";
+            }
+            struct flux__http_concurrent_payload *payload = malloc(sizeof(*payload));
+            if (payload == NULL) {
+                close(accepted);
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return "http.serveConcurrent could not allocate request state";
+            }
+            payload->socket_handle = (int64_t)accepted;
+            payload->max_head_bytes = max_head_bytes;
+            payload->max_body_bytes = max_body_bytes;
+            payload->request_callback = request_callback;
+            payload->header_callback = header_callback;
+            payload->body_callback = body_callback;
+            struct flux__worker_i64_error started = flux__worker_start_with(flux__net_http_concurrent_entry, (int64_t)(intptr_t)payload);
+            if (started.v1 != NULL) {
+                close(accepted);
+                free(payload);
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return started.v1;
+            }
+            handles[pending++] = started.v0;
+            if (pending == (size_t)max_concurrent) break;
+
+            struct pollfd queued = { .fd = (int)listener, .events = POLLIN, .revents = 0 };
+            int queued_ready = flux__net_poll_cancellable(&queued, 1, 0);
+            if (queued_ready == -2) {
+                const char *batch_error = flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return batch_error != NULL ? batch_error : "http.serveConcurrent cancelled by worker scope";
+            }
+            if (queued_ready < 0) {
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return "failed to inspect queued HTTP connections";
+            }
+            if (queued_ready == 0) break;
+            if ((queued.revents & POLLNVAL) != 0) {
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return "invalid TCP listener handle";
+            }
+            if ((queued.revents & (POLLERR | POLLHUP)) != 0) {
+                (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
+                return "HTTP listener closed while draining queued connections";
+            }
         }
-        struct flux__http_concurrent_payload *payload = malloc(sizeof(*payload));
-        if (payload == NULL) {
-            close(accepted);
-            (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
-            return "http.serveConcurrent could not allocate request state";
-        }
-        payload->socket_handle = (int64_t)accepted;
-        payload->max_head_bytes = max_head_bytes;
-        payload->max_body_bytes = max_body_bytes;
-        payload->request_callback = request_callback;
-        payload->header_callback = header_callback;
-        payload->body_callback = body_callback;
-        struct flux__worker_i64_error started = flux__worker_start_with(flux__net_http_concurrent_entry, (int64_t)(intptr_t)payload);
-        if (started.v1 != NULL) {
-            close(accepted);
-            free(payload);
-            (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
-            return started.v1;
-        }
-        handles[pending++] = started.v0;
     }
 }
 static const char *flux__net_http_serve_concurrent(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
