@@ -4548,6 +4548,7 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.method.KeyListener;
 import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -4582,6 +4583,7 @@ public final class FluxActivity extends Activity implements View.OnClickListener
     private final Map<Integer, Integer> selectionEnds = new HashMap<>();
     private final Map<Integer, Integer> composingStarts = new HashMap<>();
     private final Map<Integer, Integer> composingEnds = new HashMap<>();
+    private final Map<Integer, KeyListener> editableKeyListeners = new HashMap<>();
     private final Map<Integer, Long> lastTapTimes = new HashMap<>();
     private final Map<Integer, float[]> dragStarts = new HashMap<>();
     private final Map<Integer, Float> scaleStarts = new HashMap<>();
@@ -5137,6 +5139,24 @@ __FLUX_PICKER_METHODS__
             int restoredStart = Math.max(0, Math.min(length, start));
             int restoredEnd = Math.max(restoredStart, Math.min(length, end));
             view.setSelection(restoredStart, restoredEnd);
+        }
+    }
+
+    public void configureTextInput(EditText view, int inputType, boolean multiline, boolean readOnly) {
+        int viewId = view.getId();
+        KeyListener editable = editableKeyListeners.get(viewId);
+        if (editable == null && view.getKeyListener() != null) {
+            editable = view.getKeyListener();
+            editableKeyListeners.put(viewId, editable);
+        }
+        if (view.getKeyListener() == null && editable != null) view.setKeyListener(editable);
+        view.setTextIsSelectable(false);
+        view.setSingleLine(!multiline);
+        setInputTypePreservingSelection(view, inputType);
+        if (view.getKeyListener() != null) editableKeyListeners.put(viewId, view.getKeyListener());
+        if (readOnly) {
+            view.setKeyListener(null);
+            view.setTextIsSelectable(true);
         }
     }
 
@@ -5915,6 +5935,28 @@ __FLUX_PICKER_METHODS__
         view.setImportantForAccessibility(hidden ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
     }
 
+    public void updateTextInputSubmit(EditText view, boolean onSubmit, boolean multiline, boolean submitOnEnter) {
+        final int viewId = view.getId();
+        view.setOnEditorActionListener(null);
+        if (onSubmit && submitOnEnter) {
+            view.setImeOptions(EditorInfo.IME_ACTION_DONE);
+            view.setOnEditorActionListener((editor, actionId, event) -> {
+                boolean enter = event != null
+                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN;
+                if (actionId == EditorInfo.IME_ACTION_DONE || enter) {
+                    nativeOnSubmit(viewId, editor.getText().toString());
+                    return true;
+                }
+                return false;
+            });
+        } else if (multiline) {
+            view.setImeOptions(EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+        } else {
+            view.setImeOptions(EditorInfo.IME_ACTION_NONE);
+        }
+    }
+
     public void wireTextInput(EditText view, boolean onChange, boolean onSubmit, boolean multiline, boolean submitOnEnter) {
         final int viewId = view.getId();
         view.addTextChangedListener(new TextWatcher() {
@@ -5937,21 +5979,7 @@ __FLUX_PICKER_METHODS__
                 }
             }
         });
-        if (onSubmit && submitOnEnter) {
-            view.setImeOptions(EditorInfo.IME_ACTION_DONE);
-            view.setOnEditorActionListener((editor, actionId, event) -> {
-                boolean enter = event != null
-                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
-                    && event.getAction() == KeyEvent.ACTION_DOWN;
-                if (actionId == EditorInfo.IME_ACTION_DONE || enter) {
-                    nativeOnSubmit(viewId, editor.getText().toString());
-                    return true;
-                }
-                return false;
-            });
-        } else if (multiline) {
-            view.setImeOptions(EditorInfo.IME_FLAG_NO_ENTER_ACTION);
-        }
+        updateTextInputSubmit(view, onSubmit, multiline, submitOnEnter);
     }
 }
 "#;
@@ -8667,6 +8695,16 @@ app OverlayDemo(title: "Overlay")
                 "public void setInputTypePreservingSelection(EditText view, int inputType)"
             )
         );
+        assert!(activity.contains("private final Map<Integer, KeyListener> editableKeyListeners"));
+        assert!(activity.contains(
+            "public void configureTextInput(EditText view, int inputType, boolean multiline, boolean readOnly)"
+        ));
+        assert!(activity.contains("if (readOnly) {"));
+        assert!(activity.contains("view.setKeyListener(null);"));
+        assert!(activity.contains(
+            "public void updateTextInputSubmit(EditText view, boolean onSubmit, boolean multiline, boolean submitOnEnter)"
+        ));
+        assert!(activity.contains("view.setOnEditorActionListener(null);"));
         assert!(activity.contains("int start = view.getSelectionStart();"));
         assert!(activity.contains("view.setSelection(restoredStart, restoredEnd);"));
         assert!(activity.contains("selectionStarts"));

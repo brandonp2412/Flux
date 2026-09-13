@@ -32226,13 +32226,19 @@ view DynamicInput {
     state keyboard: str = "email"
     state secret: bool = false
     state limit: i64 = 24
+    state multi: bool = false
+    state submit: bool = true
+    state locked: bool = false
     grid columns: 1fr
-    grid rows: auto auto auto auto
+    grid rows: auto auto auto auto auto auto auto
     TextInput query at 1,1
         text: "hello"
         keyboardType: keyboard
         password: secret
         maxLength: limit
+        multiline: multi
+        submitOnEnter: submit
+        readOnly: locked
     Button keyboard_mode at 2,1
         text: "URL keyboard"
         onPress: keyboard => "url"
@@ -32242,6 +32248,15 @@ view DynamicInput {
     Button grow at 4,1
         text: "Grow limit"
         onPress: limit => limit + 1
+    Button multiline_mode at 5,1
+        text: "Toggle multiline"
+        onPress: multi => !multi
+    Button submit_mode at 6,1
+        text: "Toggle submit"
+        onPress: submit => !submit
+    Button lock_mode at 7,1
+        text: "Toggle readonly"
+        onPress: locked => !locked
 }
 app DynamicInput
 "#;
@@ -32260,14 +32275,17 @@ app DynamicInput
     assert!(android.contains("const char *child_keyboard_type_value = flux__ui_state_keyboard"));
     assert!(android.contains("bool child_password = flux__ui_state_secret"));
     assert!(android.contains("int64_t child_max_length = flux__ui_state_limit"));
+    assert!(android.contains("bool child_multiline = flux__ui_state_multi"));
+    assert!(android.contains("bool child_read_only = flux__ui_state_locked"));
     assert!(android.contains("const char *refresh_keyboard_type_value = flux__ui_state_keyboard"));
-    assert!(android.contains("if (flux__ui_state_secret) refresh_android_input_type = 129"));
+    assert!(android.contains("bool refresh_multiline = flux__ui_state_multi"));
+    assert!(android.contains("bool refresh_read_only = flux__ui_state_locked"));
     assert!(android.contains("int64_t refresh_max_length = flux__ui_state_limit"));
-    assert!(android.contains("setInputTypePreservingSelection"));
+    assert!(android.contains("configureTextInput"));
+    assert!(android.contains("updateTextInputSubmit"));
     assert!(android.contains("setMaxLength"));
     assert!(android.contains("TextInput.keyboardType must be one of"));
     assert!(android.contains("TextInput.maxLength must be between 0 and 2147483647"));
-    assert!(android.contains("if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2) {"));
 
     let static_source = r#"
 view StaticInput {
