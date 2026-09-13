@@ -1,7 +1,8 @@
 view HorseTinder {
     state decision: str = ""
+    derived actionOffset: i64 = (windowWidth - 354) / 2
     grid columns: 1fr 80 40 80 1fr
-    grid rows: 52 1fr 60 36 auto 80
+    grid rows: auto 1fr 60 36 auto 80
     grid gap: 12
     grid padding: 20
     grid scroll: true
@@ -106,6 +107,7 @@ view HorseTinder {
         padding: 20
         alignX: "center"
         alignY: "center"
+        translateX: actionOffset
         clip: true
         backgroundColor: "#18231F"
         borderColor: "#59675F"
@@ -129,6 +131,7 @@ view HorseTinder {
         padding: 19
         alignX: "center"
         alignY: "center"
+        translateX: actionOffset
         clip: true
         backgroundColor: "#B48A52"
         borderColor: "#D4B17E"
