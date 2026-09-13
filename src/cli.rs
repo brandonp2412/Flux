@@ -7515,6 +7515,14 @@ __FLUX_PICKER_METHODS__
         view.setHintTextColor(parseFluxColor("textMuted"));
     }
 
+    public void setTextInputValidationMessage(EditText view, String validationState, String message) {
+        if ("normal".equals(validationState) || message == null || message.isEmpty()) {
+            view.setError(null);
+            return;
+        }
+        view.setError(message, null);
+    }
+
     public void styleCheckable(CompoundButton view) {
         applyFluxTextLocales(view);
         int accent = parseFluxColor("accent");
@@ -11933,6 +11941,8 @@ app OverlayDemo(title: "Overlay")
             activity.contains("public void styleTextInput(EditText view, String validationState)")
         );
         assert!(activity.contains("\"error\".equals(validationState)"));
+        assert!(activity.contains("public void setTextInputValidationMessage(EditText view, String validationState, String message)"));
+        assert!(activity.contains("view.setError(message, null);"));
         assert!(activity.contains("parseFluxColor(\"danger\")"));
         assert!(activity.contains("parseFluxColor(\"success\")"));
         assert!(activity.contains("parseFluxColor(\"warning\")"));

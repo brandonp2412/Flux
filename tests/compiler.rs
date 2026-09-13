@@ -30111,6 +30111,7 @@ view Form {
     TextInput email at 1,1
         placeholder: "Email"
         validationState: "error"
+        validationMessage: "Enter a valid email address"
 }
 app Form
 "#;
@@ -30122,6 +30123,9 @@ app Form
     assert!(linux.contains(".flux-input-warning { border-color: @flux_warning;"));
     assert!(linux.contains("flux__ui_validation_state(\"error\")"));
     assert!(linux.contains("g_strdup_printf(\"flux-input-%s\""));
+    assert!(linux.contains("gtk_widget_set_tooltip_text(flux__ui_email"));
+    assert!(linux.contains("gtk_entry_set_icon_from_icon_name(GTK_ENTRY(flux__ui_email)"));
+    assert!(linux.contains("Enter a valid email address"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("validation-state fixture should analyze");
@@ -30135,6 +30139,8 @@ app Form
     assert!(android.contains("styleTextInput"));
     assert!(android.contains("Landroid/widget/EditText;Ljava/lang/String;)V"));
     assert!(android.contains("NewStringUTF(env, flux__ui_validation_state(\"error\"))"));
+    assert!(android.contains("setTextInputValidationMessage"));
+    assert!(android.contains("Enter a valid email address"));
 
     let dynamic = r#"
 view Form {
@@ -30143,6 +30149,7 @@ view Form {
     grid rows: auto auto
     TextInput email at 1,1
         validationState: validation
+        validationMessage: validation
     Button invalidate at 2,1
         text: "Mark invalid"
         onPress: validation => "error"
@@ -30168,6 +30175,8 @@ app Form
     .expect("dynamic validation should lower on Android");
     assert!(android.contains("flux__ui_validation_state(flux__ui_state_validation)"));
     assert!(android.contains("refresh_input_style"));
+    assert!(android.contains("refresh_validation_message_method"));
+    assert!(linux.contains("gtk_entry_set_icon_tooltip_text(GTK_ENTRY(flux__ui_email)"));
     assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
 
     let invalid = r#"
