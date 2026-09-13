@@ -36917,6 +36917,98 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_assignment_inside_branch_shapes_stays_lazy_and_nonblocking() {
+    let source = r#"
+enum Choice {
+    Value(i64?)
+    Keep(i64)
+}
+
+async fn fallback(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn branch(flag: bool, initial: i64?) -> i64 {
+    var value: i64? = initial
+    if flag:
+        value ??= await fallback(9)
+    return value ?? -1
+}
+
+async fn choose(choice: Choice) -> i64 {
+    var value: i64? = none
+    match choice:
+        Choice.Value(initial):
+            value = initial
+            value ??= await fallback(5)
+        Choice.Keep(initial):
+            value = initial
+    return value ?? -1
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let present: i64? = 3
+    let first: i64 = await branch(true, missing)
+    let second: i64 = await branch(true, present)
+    let third: i64 = await branch(false, missing)
+    let fourth: i64 = await choose(Choice.Value(missing))
+    let fifth: i64 = await choose(Choice.Value(present))
+    let sixth: i64 = await choose(Choice.Keep(4))
+    return first + second + third + fourth + fifth + sixth
+}
+"#;
+
+    check_source(source).expect("nested async coalescing assignments should typecheck");
+    let generated = compile_to_c(source)
+        .expect("nested async coalescing assignments should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_branch"));
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("if (!flux__local_value.has_value)"));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(9), flux__async_resume_branch, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(5), flux__async_resume_choose, flux__task)"
+    ));
+    assert!(
+        !generated.contains("flux__async_await_fallback(flux__async_start_fallback(INT64_C(9)))")
+    );
+    assert!(
+        !generated.contains("flux__async_await_fallback(flux__async_start_fallback(INT64_C(5)))")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-nested-coalescing-assignment-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("nested async coalescing fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-nested-coalescing-assignment");
+    fs::write(&source_path, source).expect("nested async coalescing source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("nested async coalescing binary should build");
+    assert!(
+        built.status.success(),
+        "nested async coalescing build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("nested async coalescing binary should run");
+    assert_eq!(output.status.code(), Some(23));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n5\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_optional_promotion_branches_suspend_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {

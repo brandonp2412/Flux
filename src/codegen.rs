@@ -15599,6 +15599,27 @@ fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
     Some(await_indices)
 }
 
+fn block_branch_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
+    let mut await_indices = Vec::new();
+    for (index, stmt) in block.iter().enumerate() {
+        if !stmt_contains_await(stmt) {
+            continue;
+        }
+        if let Some(await_expr) = direct_await_expr(stmt) {
+            direct_await_call(await_expr)?;
+            await_indices.push(index);
+            continue;
+        }
+        let await_expr = coalescing_assignment_await_expr(stmt)?;
+        direct_await_call(await_expr)?;
+        if !await_indices.is_empty() || index + 1 != block.len() {
+            return None;
+        }
+        await_indices.push(index);
+    }
+    Some(await_indices)
+}
+
 fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
     let await_statements = function
         .body
@@ -15622,8 +15643,8 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     if expr_contains_await(cond) {
         return None;
     }
-    let then_await_indices = block_direct_await_indices(body)?;
-    let else_await_indices = block_direct_await_indices(else_body)?;
+    let then_await_indices = block_branch_await_indices(body)?;
+    let else_await_indices = block_branch_await_indices(else_body)?;
     if then_await_indices.is_empty() && else_await_indices.is_empty() {
         None
     } else {
@@ -15733,7 +15754,7 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
         if arm.guard.as_ref().is_some_and(expr_contains_await) {
             return None;
         }
-        let await_indices = block_direct_await_indices(&arm.body)?;
+        let await_indices = block_branch_await_indices(&arm.body)?;
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -19571,6 +19592,60 @@ fn emit_async_suspend(
     Ok(())
 }
 
+fn emit_async_branch_suspend(
+    out: &mut String,
+    pad: &str,
+    stmt: &Stmt,
+    next_state: usize,
+    function: &Function,
+    plan: &AsyncContinuationPlan,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    signatures: &Signatures,
+) -> Result<bool, Diagnostic> {
+    let Some(_) = coalescing_assignment_await_expr(stmt) else {
+        emit_async_suspend(out, pad, stmt, next_state, function, plan, env, signatures)?;
+        return Ok(false);
+    };
+    let StmtKind::Assign {
+        name,
+        coalescing: true,
+        ..
+    } = &stmt.kind
+    else {
+        return Err(diag(
+            stmt.span,
+            "async coalescing branch continuation plan changed after type checking",
+        ));
+    };
+    let Some(target_ty) = env.get(name).map(|ty| signatures.canonical_type(ty)) else {
+        return Err(diag(
+            stmt.span,
+            "async coalescing branch target disappeared after type checking",
+        ));
+    };
+    if !matches!(target_ty, Type::Optional(_)) || !mutable.contains(name) {
+        return Err(diag(
+            stmt.span,
+            "async coalescing branch target contract changed after type checking",
+        ));
+    }
+    out.push_str(&format!("{pad}if (!{}.has_value) {{\n", local_c_name(name)));
+    let nested_pad = format!("{pad}    ");
+    emit_async_suspend(
+        out,
+        &nested_pad,
+        stmt,
+        next_state,
+        function,
+        plan,
+        env,
+        signatures,
+    )?;
+    out.push_str(&format!("{pad}}}\n"));
+    Ok(true)
+}
+
 fn emit_async_branch_resume_states(
     out: &mut String,
     function: &Function,
@@ -19861,7 +19936,7 @@ fn emit_async_branch_continuation_function(
         )?;
         let awaited_stmt = &body[first_await];
         emit_source_line(out, awaited_stmt.span, context.source_paths);
-        emit_async_suspend(
+        emit_async_branch_suspend(
             out,
             "                ",
             awaited_stmt,
@@ -19869,6 +19944,7 @@ fn emit_async_branch_continuation_function(
             function,
             plan,
             &then_env,
+            &then_mutable,
             signatures,
         )?;
     } else {
@@ -19909,7 +19985,7 @@ fn emit_async_branch_continuation_function(
             )?;
             let awaited_stmt = &else_body[first_await];
             emit_source_line(out, awaited_stmt.span, context.source_paths);
-            emit_async_suspend(
+            emit_async_branch_suspend(
                 out,
                 "                ",
                 awaited_stmt,
@@ -19917,6 +19993,7 @@ fn emit_async_branch_continuation_function(
                 function,
                 plan,
                 &else_env,
+                &else_mutable,
                 signatures,
             )?;
         } else {
@@ -20979,7 +21056,7 @@ fn emit_async_match_continuation_function(
                 let awaited_stmt = &arm.body[first_await];
                 emit_source_line(out, awaited_stmt.span, context.source_paths);
                 let suspend_pad = "    ".repeat(body_depth);
-                emit_async_suspend(
+                let conditional_suspend = emit_async_branch_suspend(
                     out,
                     &suspend_pad,
                     awaited_stmt,
@@ -20987,8 +21064,21 @@ fn emit_async_match_continuation_function(
                     function,
                     plan,
                     &arm_env,
+                    &arm_mutable,
                     signatures,
                 )?;
+                if conditional_suspend {
+                    emit_async_match_tail(
+                        out,
+                        function,
+                        signatures,
+                        match_plan,
+                        &outer_env,
+                        &outer_mutable,
+                        temp_counter,
+                        state_context,
+                    )?;
+                }
                 resume_envs.push((arm_index, next_state, arm_env, arm_mutable));
                 next_state += await_indices.len();
             } else {
