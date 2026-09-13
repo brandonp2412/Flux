@@ -8122,6 +8122,84 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "receiveTextManyWithTimeout" => {
+                if args.len() != 5 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "net.receiveTextManyWithTimeout expects 5 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.receiveTextManyWithTimeout socket",
+                )?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "net.receiveTextManyWithTimeout maxBytes",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.receiveTextManyWithTimeout maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let max_count = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &max_count,
+                    "net.receiveTextManyWithTimeout maxCount",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if value < 1 || value > i32::MAX as i64
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.receiveTextManyWithTimeout maxCount must be between 1 and 2147483647",
+                    ));
+                }
+                let timeout = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::I64,
+                    &timeout,
+                    "net.receiveTextManyWithTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[3], signatures),
+                    Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[3].span,
+                        "net.receiveTextManyWithTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[4].span,
+                    &expected,
+                    &callback,
+                    "net.receiveTextManyWithTimeout callback",
+                )?;
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
             "receiveText" => {
                 if args.len() != 3 {
                     return Err(diag(
@@ -8283,6 +8361,84 @@ fn check_qualified_call(
                     "net.receiveTextFromMany callback",
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
+            }
+            "receiveTextFromManyWithTimeout" => {
+                if args.len() != 5 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "net.receiveTextFromManyWithTimeout expects 5 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.receiveTextFromManyWithTimeout socket",
+                )?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "net.receiveTextFromManyWithTimeout maxBytes",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.receiveTextFromManyWithTimeout maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let max_count = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &max_count,
+                    "net.receiveTextFromManyWithTimeout maxCount",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if value < 1 || value > i32::MAX as i64
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.receiveTextFromManyWithTimeout maxCount must be between 1 and 2147483647",
+                    ));
+                }
+                let timeout = type_of_expr(&args[3], env, signatures)?;
+                require_type(
+                    args[3].span,
+                    &Type::I64,
+                    &timeout,
+                    "net.receiveTextFromManyWithTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[3], signatures),
+                    Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[3].span,
+                        "net.receiveTextFromManyWithTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::Str, Type::Str, Type::I64],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[4].span,
+                    &expected,
+                    &callback,
+                    "net.receiveTextFromManyWithTimeout callback",
+                )?;
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
             }
             "receiveTextFrom" => {
                 if args.len() != 3 {

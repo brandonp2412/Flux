@@ -2157,6 +2157,24 @@ fn main() -> i64 {
     if readable == false:
         return 10
     print(bytes)
+    let serverNonblockingError: error = net.nonblocking(server, true)
+    if serverNonblockingError != nil:
+        return 18
+    let (_emptyBatchBytes, immediateBatch, immediateBatchError) = net.readManyTimeout(server, 64, 8, 0, consume)
+    if immediateBatchError != nil:
+        return 19
+    print(immediateBatch)
+    let batchWriteError: error = net.write(client, "batch")
+    if batchWriteError != nil:
+        return 20
+    let (batchBytes, batchReady, batchError) = net.readManyTimeout(server, 64, 8, 1000, consume)
+    if batchError != nil:
+        return 21
+    if batchReady == false:
+        return 22
+    if batchBytes <= 0:
+        return 23
+    print(batchBytes)
     let (udpServer, udpBindError) = net.bind("127.0.0.1", 0)
     if udpBindError != nil:
         return 11
@@ -2179,6 +2197,24 @@ fn main() -> i64 {
     if datagramReady == false:
         return 17
     print(datagramBytes)
+    let udpNonblockingError: error = net.nonblocking(udpServer, true)
+    if udpNonblockingError != nil:
+        return 24
+    let (_emptyDatagramBatchBytes, immediateDatagramBatch, immediateDatagramBatchError) = net.readManyFromTimeout(udpServer, 64, 8, 0, consumeFrom)
+    if immediateDatagramBatchError != nil:
+        return 25
+    print(immediateDatagramBatch)
+    let udpBatchWriteError: error = net.write(udpClient, "batch")
+    if udpBatchWriteError != nil:
+        return 26
+    let (datagramBatchBytes, datagramBatchReady, datagramBatchError) = net.readManyFromTimeout(udpServer, 64, 8, 1000, consumeFrom)
+    if datagramBatchError != nil:
+        return 27
+    if datagramBatchReady == false:
+        return 28
+    if datagramBatchBytes != 5:
+        return 29
+    print(datagramBatchBytes)
     print(net.close(udpClient))
     print(net.close(udpServer))
     print(net.close(server))
@@ -2191,11 +2227,15 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("timeout I/O should lower natively");
     assert!(generated.contains("flux__net_tcp_accept_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_with_timeout("));
+    assert!(generated.contains("flux__net_receive_text_many_with_timeout("));
     assert!(generated.contains("flux__net_receive_text_from_with_timeout("));
+    assert!(generated.contains("flux__net_receive_text_from_many_with_timeout("));
     assert!(generated.contains("flux__net_poll_cancellable("));
     assert!(generated.contains("acceptTimeout cancelled by worker scope"));
     assert!(generated.contains("readTimeout cancelled by worker scope"));
+    assert!(generated.contains("readManyTimeout cancelled by worker scope"));
     assert!(generated.contains("readFromTimeout cancelled by worker scope"));
+    assert!(generated.contains("readManyFromTimeout cancelled by worker scope"));
     assert!(generated.contains("MSG_DONTWAIT"));
 
     let root = std::env::temp_dir().join(format!("flux-net-timeout-{}", std::process::id()));
@@ -2227,8 +2267,8 @@ fn main() -> i64 {
     );
     let output = String::from_utf8_lossy(&run.stdout);
     assert!(output.contains("false\nfalse\n"));
-    assert!(output.contains("ping\n4\nfalse\n"));
-    assert!(output.contains("pong\n4\n"));
+    assert!(output.contains("ping\n4\nfalse\nbatch\n5\n"));
+    assert!(output.contains("pong\n4\nfalse\nbatch\n5\n"));
 
     let invalid_timeout = check_source(
         "fn main() -> i64 {\n    let (_socket, _ready, _failure) = net.acceptTimeout(1, -2)\n    return 0\n}\n",
@@ -2239,8 +2279,12 @@ fn main() -> i64 {
     let dead = r#"
 fn consume(_socket: i64, _text: str) -> void {
 }
+fn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {
+}
 fn hidden(socket: i64) -> void {
     let (_bytes, _ready, _failure) = net.readTimeout(socket, 64, 10, consume)
+    let (_batchBytes, _batchReady, _batchFailure) = net.readManyTimeout(socket, 64, 8, 10, consume)
+    let (_datagramBatchBytes, _datagramBatchReady, _datagramBatchFailure) = net.readManyFromTimeout(socket, 64, 8, 10, consumeFrom)
 }
 fn main() -> i64 {
     return 0
@@ -2248,6 +2292,8 @@ fn main() -> i64 {
 "#;
     let dead_generated = compile_to_c(dead).expect("dead timeout I/O should tree-shake");
     assert!(!dead_generated.contains("flux__net_receive_text_with_timeout("));
+    assert!(!dead_generated.contains("flux__net_receive_text_many_with_timeout("));
+    assert!(!dead_generated.contains("flux__net_receive_text_from_many_with_timeout("));
     assert!(!dead_generated.contains("flux__net_poll_cancellable("));
     let _ = fs::remove_dir_all(&root);
 }

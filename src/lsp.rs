@@ -1256,8 +1256,16 @@ fn add_qualified_namespace_completions(
                 "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
+                "readManyTimeout",
+                "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readManyFrom",
                 "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+            ),
+            (
+                "readManyFromTimeout",
+                "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "readFrom",
@@ -2948,6 +2956,20 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "receiveTextManyWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readManyTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, str) -> void",
+                        ],
+                        "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
                 "receiveTextFromMany" => {
                     return Some(signature_help_for_builtin(
                         "net.receiveTextFromMany",
@@ -2958,6 +2980,20 @@ fn signature_help_for_document_cached(
                             "callback: fn(i64, str, str, i64) -> void",
                         ],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveTextFromManyWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readManyFromTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, str, str, i64) -> void",
+                        ],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -7003,7 +7039,13 @@ mod tests {
             "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains(
+            "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
             "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)"
         ));
         assert!(net_items.contains(
             "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
@@ -8333,7 +8375,7 @@ mod tests {
     #[test]
     fn signature_help_supports_network_timeout_io() {
         let uri = "file:///tmp/network-timeout-signatures.flux";
-        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_accepted, _acceptReady, _acceptError) = net.acceptTimeout(1, 0)\n    let (_bytes, _readReady, _readError) = net.readTimeout(1, 64, 0, consume)\n    let (_datagramBytes, _datagramReady, _datagramError) = net.readFromTimeout(1, 64, 0, consumeFrom)\n    let (_written, _writeError) = net.writePartsTimeout(1, [\"a\", \"b\"], 0)\n    return 0\n}\n";
+        let source = "fn consume(_socket: i64, _text: str) -> void {\n}\nfn consumeFrom(_socket: i64, _text: str, _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_accepted, _acceptReady, _acceptError) = net.acceptTimeout(1, 0)\n    let (_bytes, _readReady, _readError) = net.readTimeout(1, 64, 0, consume)\n    let (_batchBytes, _batchReady, _batchError) = net.readManyTimeout(1, 64, 8, 0, consume)\n    let (_datagramBytes, _datagramReady, _datagramError) = net.readFromTimeout(1, 64, 0, consumeFrom)\n    let (_datagramBatchBytes, _datagramBatchReady, _datagramBatchError) = net.readManyFromTimeout(1, 64, 8, 0, consumeFrom)\n    let (_written, _writeError) = net.writePartsTimeout(1, [\"a\", \"b\"], 0)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -8345,8 +8387,16 @@ mod tests {
                 "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
             ),
             (
+                "net.readManyTimeout(",
+                "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "net.readFromTimeout(",
                 "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "net.readManyFromTimeout(",
+                "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.writePartsTimeout(",
