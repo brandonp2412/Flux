@@ -1666,6 +1666,12 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_termination_requested(")
         || runtime_usage.contains("flux__process_cpu_millis(")
         || runtime_usage.contains("flux__process_peak_resident_memory_bytes(")
+        || runtime_usage.contains("flux__fs_file_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_modified_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_file_changed_unix_millis(")
+        || runtime_usage.contains("flux__fs_directory_changed_unix_millis(")
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_file_truncate(")
         || runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
@@ -6097,6 +6103,10 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         || runtime_usage.contains("flux__fs_directory_device(")
         || runtime_usage.contains("flux__fs_file_hard_links(")
         || runtime_usage.contains("flux__fs_directory_hard_links(")
+        || runtime_usage.contains("flux__fs_file_block_size(")
+        || runtime_usage.contains("flux__fs_directory_block_size(")
+        || runtime_usage.contains("flux__fs_file_allocated_size(")
+        || runtime_usage.contains("flux__fs_directory_allocated_size(")
     {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
@@ -6193,6 +6203,25 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_directory_hard_links(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_hard_links(const char *path) { return flux__fs_stat_number(path, true, 2); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_block_size(")
+        || runtime_usage.contains("flux__fs_directory_block_size(")
+        || runtime_usage.contains("flux__fs_file_allocated_size(")
+        || runtime_usage.contains("flux__fs_directory_allocated_size(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_storage_number(const char *path, bool expect_directory, bool allocated) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, \"failed to inspect filesystem storage metadata\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); if (allocated) { if (info.st_blocks < 0 || (uintmax_t)info.st_blocks > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, \"filesystem storage metadata exceeds i64\"); int64_t bytes; if (__builtin_mul_overflow((int64_t)info.st_blocks, INT64_C(512), &bytes)) return flux__fs_i64_result(-1, \"filesystem storage metadata exceeds i64\"); return flux__fs_i64_result(bytes, NULL); } if (info.st_blksize < 0 || (uintmax_t)info.st_blksize > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, \"filesystem storage metadata exceeds i64\"); return flux__fs_i64_result((int64_t)info.st_blksize, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_block_size(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_block_size(const char *path) { return flux__fs_storage_number(path, false, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_block_size(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_block_size(const char *path) { return flux__fs_storage_number(path, true, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_allocated_size(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_allocated_size(const char *path) { return flux__fs_storage_number(path, false, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_allocated_size(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_allocated_size(const char *path) { return flux__fs_storage_number(path, true, true); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -31406,7 +31435,8 @@ fn emit_qualified_call(
         }
         match name {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "owner" | "group" | "inode" | "device" | "hardLinks" | "remove" => {
+            | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
+            | "allocatedSize" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -31460,6 +31490,16 @@ fn emit_qualified_call(
                     ),
                     "hardLinks" => (
                         "flux__fs_file_hard_links",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "blockSize" => (
+                        "flux__fs_file_block_size",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "allocatedSize" => (
+                        "flux__fs_file_allocated_size",
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
@@ -31597,6 +31637,16 @@ fn emit_qualified_call(
             ),
             "hardLinks" => (
                 "flux__fs_directory_hard_links",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "blockSize" => (
+                "flux__fs_directory_block_size",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "allocatedSize" => (
+                "flux__fs_directory_allocated_size",
                 vec![Type::I64, Type::Error],
                 Some("flux__fs_i64_error".to_string()),
             ),

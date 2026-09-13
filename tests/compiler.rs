@@ -9098,6 +9098,18 @@ fn main() -> i64 {{
     let (directoryHardLinks, directoryHardLinksError) = directory.hardLinks("{}")
     print(directoryHardLinks >= 1)
     print(directoryHardLinksError)
+    let (fileBlockSize, fileBlockSizeError) = file.blockSize("{}")
+    print(fileBlockSize > 0)
+    print(fileBlockSizeError)
+    let (fileAllocatedSize, fileAllocatedSizeError) = file.allocatedSize("{}")
+    print(fileAllocatedSize >= 0)
+    print(fileAllocatedSizeError)
+    let (directoryBlockSize, directoryBlockSizeError) = directory.blockSize("{}")
+    print(directoryBlockSize > 0)
+    print(directoryBlockSizeError)
+    let (directoryAllocatedSize, directoryAllocatedSizeError) = directory.allocatedSize("{}")
+    print(directoryAllocatedSize >= 0)
+    print(directoryAllocatedSizeError)
     let (_wrongDirectory, wrongDirectoryError) = directory.permissions("{}")
     print(wrongDirectoryError)
     let (_wrongFile, wrongFileError) = file.permissions("{}")
@@ -9126,6 +9138,10 @@ fn main() -> i64 {{
         path(&file),
         path(&root),
         path(&file),
+        path(&file),
+        path(&root),
+        path(&root),
+        path(&file),
         path(&root),
         path(&file),
         path(&root),
@@ -9150,6 +9166,10 @@ fn main() -> i64 {{
         "flux__fs_directory_device",
         "flux__fs_file_hard_links",
         "flux__fs_directory_hard_links",
+        "flux__fs_file_block_size",
+        "flux__fs_directory_block_size",
+        "flux__fs_file_allocated_size",
+        "flux__fs_directory_allocated_size",
     ] {
         assert!(
             generated.contains(helper),
@@ -9178,12 +9198,12 @@ fn main() -> i64 {{
     assert!(run.status.success());
     let stdout = String::from_utf8_lossy(&run.stdout);
     let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 36, "unexpected metadata output: {stdout}");
-    for pair in lines[..32].chunks_exact(2) {
+    assert_eq!(lines.len(), 44, "unexpected metadata output: {stdout}");
+    for pair in lines[..40].chunks_exact(2) {
         assert_eq!(pair, &["true", "nil"]);
     }
     assert_eq!(
-        &lines[32..],
+        &lines[40..],
         &[
             "path is not a directory",
             "path is not a file",
@@ -9210,6 +9230,10 @@ fn hidden() -> void {
     let (_directoryDevice, _directoryDeviceError) = directory.device("/tmp/unused-flux-directory")
     let (_fileHardLinks, _fileHardLinksError) = file.hardLinks("/tmp/unused-flux-file")
     let (_directoryHardLinks, _directoryHardLinksError) = directory.hardLinks("/tmp/unused-flux-directory")
+    let (_fileBlockSize, _fileBlockSizeError) = file.blockSize("/tmp/unused-flux-file")
+    let (_directoryBlockSize, _directoryBlockSizeError) = directory.blockSize("/tmp/unused-flux-directory")
+    let (_fileAllocatedSize, _fileAllocatedSizeError) = file.allocatedSize("/tmp/unused-flux-file")
+    let (_directoryAllocatedSize, _directoryAllocatedSizeError) = directory.allocatedSize("/tmp/unused-flux-directory")
 }
 fn main() -> i64 {
     return 0
@@ -9234,6 +9258,10 @@ fn main() -> i64 {
         "flux__fs_directory_device",
         "flux__fs_file_hard_links",
         "flux__fs_directory_hard_links",
+        "flux__fs_file_block_size",
+        "flux__fs_directory_block_size",
+        "flux__fs_file_allocated_size",
+        "flux__fs_directory_allocated_size",
     ] {
         assert!(
             !unused_generated.contains(helper),
@@ -9259,6 +9287,10 @@ fn main() -> i64 {
     let (_directoryDevice, _directoryDeviceError) = directory.device(1)
     let (_fileHardLinks, _fileHardLinksError) = file.hardLinks(false)
     let (_directoryHardLinks, _directoryHardLinksError) = directory.hardLinks(1)
+    let (_fileBlockSize, _fileBlockSizeError) = file.blockSize(false)
+    let (_directoryBlockSize, _directoryBlockSizeError) = directory.blockSize(1)
+    let (_fileAllocatedSize, _fileAllocatedSizeError) = file.allocatedSize(1)
+    let (_directoryAllocatedSize, _directoryAllocatedSizeError) = directory.allocatedSize(false)
     return 0
 }
 "#;
@@ -9281,6 +9313,10 @@ fn main() -> i64 {
         "directory.device path",
         "file.hardLinks path",
         "directory.hardLinks path",
+        "file.blockSize path",
+        "directory.blockSize path",
+        "file.allocatedSize path",
+        "directory.allocatedSize path",
     ] {
         assert!(
             errors.iter().any(

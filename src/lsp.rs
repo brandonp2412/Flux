@@ -1653,6 +1653,11 @@ fn add_qualified_namespace_completions(
             ("inode", "fn file.inode(path: str) -> (i64, error)"),
             ("device", "fn file.device(path: str) -> (i64, error)"),
             ("hardLinks", "fn file.hardLinks(path: str) -> (i64, error)"),
+            ("blockSize", "fn file.blockSize(path: str) -> (i64, error)"),
+            (
+                "allocatedSize",
+                "fn file.allocatedSize(path: str) -> (i64, error)",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1708,6 +1713,14 @@ fn add_qualified_namespace_completions(
             (
                 "hardLinks",
                 "fn directory.hardLinks(path: str) -> (i64, error)",
+            ),
+            (
+                "blockSize",
+                "fn directory.blockSize(path: str) -> (i64, error)",
+            ),
+            (
+                "allocatedSize",
+                "fn directory.allocatedSize(path: str) -> (i64, error)",
             ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
@@ -3623,7 +3636,8 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-                | "owner" | "group" | "inode" | "device" | "hardLinks" => {
+                | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
+                | "allocatedSize" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
@@ -3693,7 +3707,7 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
-                | "group" | "inode" | "device" | "hardLinks" => {
+                | "group" | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize" => {
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
@@ -7329,6 +7343,8 @@ mod tests {
         assert!(file_items.contains("fn file.inode(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.device(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.hardLinks(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.blockSize(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.allocatedSize(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.accessed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.changed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
@@ -7365,6 +7381,8 @@ mod tests {
         assert!(directory_items.contains("fn directory.inode(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.device(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.hardLinks(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.blockSize(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.allocatedSize(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.accessed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.changed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
@@ -9347,6 +9365,10 @@ mod tests {
     let (_directoryDevice, _directoryDeviceFailure) = directory.device("a")
     let (_fileHardLinks, _fileHardLinksFailure) = file.hardLinks("a")
     let (_directoryHardLinks, _directoryHardLinksFailure) = directory.hardLinks("a")
+    let (_fileBlockSize, _fileBlockSizeFailure) = file.blockSize("a")
+    let (_directoryBlockSize, _directoryBlockSizeFailure) = directory.blockSize("a")
+    let (_fileAllocatedSize, _fileAllocatedSizeFailure) = file.allocatedSize("a")
+    let (_directoryAllocatedSize, _directoryAllocatedSizeFailure) = directory.allocatedSize("a")
     return 0
 }
 "#;
@@ -9411,6 +9433,22 @@ mod tests {
             (
                 "directory.hardLinks(",
                 "fn directory.hardLinks(path: str) -> (i64, error)",
+            ),
+            (
+                "file.blockSize(",
+                "fn file.blockSize(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.blockSize(",
+                "fn directory.blockSize(path: str) -> (i64, error)",
+            ),
+            (
+                "file.allocatedSize(",
+                "fn file.allocatedSize(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.allocatedSize(",
+                "fn directory.allocatedSize(path: str) -> (i64, error)",
             ),
         ] {
             let line_index = source
