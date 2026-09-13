@@ -26507,7 +26507,34 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
             .iter()
             .any(|error| error.message.contains("lockfile") && error.message.contains("stale"))
     );
-    fluxc::project::write_lockfile(&app).expect("stale lockfile should refresh deterministically");
+    let stale_lock = fs::read_to_string(&lock_path).expect("stale lockfile should remain readable");
+    let locked_stale_check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .arg("--locked")
+        .output()
+        .expect("locked stale check should run");
+    assert!(!locked_stale_check.status.success());
+    assert_eq!(
+        fs::read_to_string(&lock_path).expect("locked stale lockfile should remain readable"),
+        stale_lock,
+        "--locked must not rewrite a stale lockfile"
+    );
+
+    let refreshed_stale_check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .output()
+        .expect("ordinary stale check should refresh the lockfile");
+    assert!(
+        refreshed_stale_check.status.success(),
+        "ordinary stale check failed: {}",
+        String::from_utf8_lossy(&refreshed_stale_check.stderr)
+    );
+    let refreshed_lock =
+        fs::read_to_string(&lock_path).expect("refreshed stale lockfile should be readable");
+    assert_ne!(refreshed_lock, stale_lock);
+    assert!(refreshed_lock.contains("version = \"2.0.1\""));
     fluxc::project::check(&app).expect("refreshed lockfile should restore the build");
 
     let _ = fs::remove_dir_all(&root);
