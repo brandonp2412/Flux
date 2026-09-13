@@ -36080,21 +36080,57 @@ async fn addOne(value: i64) -> i64 {
     return value + 1
 }
 
-async fn withContinue() -> i64 {
+async fn withLoopControl() -> i64 {
     var value: i64 = 0
-    while value < 1:
+    var total: i64 = 0
+    while value < 5:
         value = await addOne(value)
-        continue
-    return value
+        if value == 2:
+            continue
+        total = total + value
+        if value == 4:
+            break
+    return total
 }
 
 async fn main() -> i64 {
-    return await withContinue()
+    return await withLoopControl()
 }
 "#;
     let loop_control_generated = compile_to_c(loop_control_source)
-        .expect("loop-control awaits should retain the safe blocking fallback");
-    assert!(loop_control_generated.contains("flux__async_body_withContinue"));
+        .expect("while loop control should suspend through continuation states");
+    assert!(loop_control_generated.contains("flux__async_resume_withLoopControl"));
+    assert!(!loop_control_generated.contains("flux__async_body_withLoopControl("));
+    assert!(
+        !loop_control_generated
+            .contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_value))")
+    );
+
+    let loop_control_root =
+        std::env::temp_dir().join(format!("flux-async-while-control-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&loop_control_root);
+    fs::create_dir_all(&loop_control_root).expect("async while control fixture should be writable");
+    let loop_control_path = loop_control_root.join("main.flux");
+    let loop_control_binary = loop_control_root.join("async-while-control");
+    fs::write(&loop_control_path, loop_control_source)
+        .expect("async while control source should be writable");
+    let loop_control_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&loop_control_path)
+        .arg("-o")
+        .arg(&loop_control_binary)
+        .output()
+        .expect("async while control fixture should build");
+    assert!(
+        loop_control_built.status.success(),
+        "async while control build failed: {}",
+        String::from_utf8_lossy(&loop_control_built.stderr)
+    );
+    let loop_control_status = Command::new(&loop_control_binary)
+        .status()
+        .expect("async while control fixture should run");
+    assert_eq!(loop_control_status.code(), Some(8));
+    let _ = fs::remove_dir_all(&loop_control_root);
 }
 
 #[test]
@@ -36177,25 +36213,63 @@ async fn main() -> i64 {
     let _ = fs::remove_dir_all(&root);
 
     let loop_control_source = r#"
-async fn addOne(value: i64) -> i64 {
-    return value + 1
+async fn add(value: i64, amount: i64) -> i64 {
+    return value + amount
 }
 
-async fn withContinue() -> i64 {
+async fn withLoopControl() -> i64 {
     var total: i64 = 0
-    for _index in 0..1:
-        total = await addOne(total)
-        continue
+    for index in 0..6:
+        total = await add(total, 1)
+        if index == 1:
+            continue
+        if index == 3:
+            break
+        total = total + index
     return total
 }
 
 async fn main() -> i64 {
-    return await withContinue()
+    return await withLoopControl()
 }
 "#;
     let loop_control_generated = compile_to_c(loop_control_source)
-        .expect("range-loop control awaits should retain the safe blocking fallback");
-    assert!(loop_control_generated.contains("flux__async_body_withContinue"));
+        .expect("range loop control should suspend through continuation states");
+    assert!(loop_control_generated.contains("flux__async_resume_withLoopControl"));
+    assert!(!loop_control_generated.contains("flux__async_body_withLoopControl("));
+    assert!(
+        !loop_control_generated.contains(
+            "flux__async_await_add(flux__async_start_add(flux__local_total, INT64_C(1)))"
+        )
+    );
+
+    let loop_control_root = std::env::temp_dir().join(format!(
+        "flux-async-for-range-control-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&loop_control_root);
+    fs::create_dir_all(&loop_control_root).expect("async range control fixture should be writable");
+    let loop_control_path = loop_control_root.join("main.flux");
+    let loop_control_binary = loop_control_root.join("async-for-range-control");
+    fs::write(&loop_control_path, loop_control_source)
+        .expect("async range control source should be writable");
+    let loop_control_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&loop_control_path)
+        .arg("-o")
+        .arg(&loop_control_binary)
+        .output()
+        .expect("async range control fixture should build");
+    assert!(
+        loop_control_built.status.success(),
+        "async range control build failed: {}",
+        String::from_utf8_lossy(&loop_control_built.stderr)
+    );
+    let loop_control_status = Command::new(&loop_control_binary)
+        .status()
+        .expect("async range control fixture should run");
+    assert_eq!(loop_control_status.code(), Some(6));
+    let _ = fs::remove_dir_all(&loop_control_root);
 }
 
 #[test]

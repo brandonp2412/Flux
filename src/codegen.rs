@@ -15599,28 +15599,6 @@ fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
     Some(await_indices)
 }
 
-fn stmt_contains_loop_control(stmt: &Stmt) -> bool {
-    match &stmt.kind {
-        StmtKind::Break | StmtKind::Continue => true,
-        StmtKind::If {
-            body, else_body, ..
-        } => {
-            body.iter().any(stmt_contains_loop_control)
-                || else_body.iter().any(stmt_contains_loop_control)
-        }
-        StmtKind::ForRange { body, .. }
-        | StmtKind::ForEach { body, .. }
-        | StmtKind::While { body, .. } => body.iter().any(stmt_contains_loop_control),
-        StmtKind::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| arm.body.iter().any(stmt_contains_loop_control)),
-        StmtKind::ListMatch { arms, .. } => arms
-            .iter()
-            .any(|arm| arm.body.iter().any(stmt_contains_loop_control)),
-        _ => false,
-    }
-}
-
 fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
     let await_statements = function
         .body
@@ -15671,7 +15649,7 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     let StmtKind::While { cond, body } = &function.body[statement_index].kind else {
         return None;
     };
-    if expr_contains_await(cond) || body.iter().any(stmt_contains_loop_control) {
+    if expr_contains_await(cond) {
         return None;
     }
     let body_await_indices = block_direct_await_indices(body)?;
@@ -15702,10 +15680,7 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     else {
         return None;
     };
-    if expr_contains_await(start)
-        || expr_contains_await(end)
-        || body.iter().any(stmt_contains_loop_control)
-    {
+    if expr_contains_await(start) || expr_contains_await(end) {
         return None;
     }
     let body_await_indices = block_direct_await_indices(body)?;
@@ -19467,6 +19442,79 @@ fn emit_async_completed_await(
     Ok(())
 }
 
+fn emit_async_save_locals(
+    out: &mut String,
+    pad: &str,
+    saved_locals: &[(String, Type)],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    span: SourceSpan,
+) -> Result<(), Diagnostic> {
+    for (name, saved_ty) in saved_locals {
+        let Some(current_ty) = env.get(name) else {
+            continue;
+        };
+        let saved_ty = signatures.canonical_type(saved_ty);
+        let current_ty = signatures.canonical_type(current_ty);
+        let field = async_saved_local_field_name(name);
+        if saved_ty == current_ty {
+            out.push_str(&format!(
+                "{pad}flux__task->{field} = {};\n",
+                local_c_name(name)
+            ));
+        } else if let Type::Optional(inner) = &saved_ty
+            && signatures.canonical_type(inner) == current_ty
+        {
+            out.push_str(&format!(
+                "{pad}flux__task->{field}.has_value = true;\n{pad}flux__task->{field}.value = {};\n",
+                local_c_name(name)
+            ));
+        } else {
+            return Err(diag(
+                span,
+                "async continuation local type changed across suspension",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn emit_async_restore_locals(
+    out: &mut String,
+    pad: &str,
+    saved_locals: &[(String, Type)],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    span: SourceSpan,
+) -> Result<(), Diagnostic> {
+    for (name, saved_ty) in saved_locals {
+        let Some(current_ty) = env.get(name) else {
+            continue;
+        };
+        let saved_ty = signatures.canonical_type(saved_ty);
+        let current_ty = signatures.canonical_type(current_ty);
+        let field = async_saved_local_field_name(name);
+        let value = if current_ty == saved_ty {
+            format!("flux__task->{field}")
+        } else if let Type::Optional(inner) = &saved_ty
+            && signatures.canonical_type(inner) == current_ty
+        {
+            format!("flux__task->{field}.value")
+        } else {
+            return Err(diag(
+                span,
+                "async continuation local type changed while restoring loop-control state",
+            ));
+        };
+        out.push_str(&format!(
+            "{pad}{} {} = {value};\n",
+            c_type(&current_ty, signatures),
+            local_c_name(name)
+        ));
+    }
+    Ok(())
+}
+
 fn emit_async_suspend(
     out: &mut String,
     pad: &str,
@@ -19495,32 +19543,7 @@ fn emit_async_suspend(
             &format!("unknown async function '{callee}' during continuation lowering"),
         )
     })?;
-    for (name, saved_ty) in &plan.locals {
-        let Some(current_ty) = env.get(name) else {
-            continue;
-        };
-        let saved_ty = signatures.canonical_type(saved_ty);
-        let current_ty = signatures.canonical_type(current_ty);
-        let field = async_saved_local_field_name(name);
-        if saved_ty == current_ty {
-            out.push_str(&format!(
-                "{pad}flux__task->{field} = {};\n",
-                local_c_name(name)
-            ));
-        } else if let Type::Optional(inner) = &saved_ty
-            && signatures.canonical_type(inner) == current_ty
-        {
-            out.push_str(&format!(
-                "{pad}flux__task->{field}.has_value = true;\n{pad}flux__task->{field}.value = {};\n",
-                local_c_name(name)
-            ));
-        } else {
-            return Err(diag(
-                stmt.span,
-                "async continuation local type changed across suspension",
-            ));
-        }
-    }
+    emit_async_save_locals(out, pad, &plan.locals, env, signatures, stmt.span)?;
     out.push_str(&format!("{pad}flux__task->state = {next_state};\n"));
     out.push_str(&format!(
         "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
@@ -19965,6 +19988,42 @@ fn emit_async_branch_continuation_function(
     Ok(())
 }
 
+fn emit_async_while_tail(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    while_plan: &AsyncWhileAwaitPlan,
+    outer_env: &HashMap<String, Type>,
+    outer_mutable: &HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let pad = "            ";
+    let mut tail_env = outer_env.clone();
+    let mut tail_mutable = outer_mutable.clone();
+    emit_block(
+        out,
+        &function.body[while_plan.statement_index + 1..],
+        3,
+        &mut tail_env,
+        &mut tail_mutable,
+        signatures,
+        temp_counter,
+        context,
+    )?;
+    if function.returns.is_empty() {
+        out.push_str(&format!(
+            "{pad}{}(flux__task);\n{pad}return;\n",
+            async_finish_c_name(&function.name)
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+        ));
+    }
+    Ok(())
+}
+
 fn emit_async_while_iteration(
     out: &mut String,
     function: &Function,
@@ -20008,28 +20067,16 @@ fn emit_async_while_iteration(
     )?;
     out.push_str(&format!("{pad}}}\n"));
 
-    let mut tail_env = outer_env.clone();
-    let mut tail_mutable = outer_mutable.clone();
-    emit_block(
+    emit_async_while_tail(
         out,
-        &function.body[while_plan.statement_index + 1..],
-        3,
-        &mut tail_env,
-        &mut tail_mutable,
+        function,
         signatures,
+        while_plan,
+        outer_env,
+        outer_mutable,
         temp_counter,
         context,
     )?;
-    if function.returns.is_empty() {
-        out.push_str(&format!(
-            "{pad}{}(flux__task);\n{pad}return;\n",
-            async_finish_c_name(&function.name)
-        ));
-    } else {
-        out.push_str(&format!(
-            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-        ));
-    }
     Ok((body_env, body_mutable))
 }
 
@@ -20149,8 +20196,16 @@ fn emit_async_while_continuation_function(
         ));
     };
     let task_name = async_task_c_name(&function.name);
+    let continue_state = while_plan.body_await_indices.len() + 1;
+    let break_state = continue_state + 1;
     let mut state_context = context;
     state_context.async_state_machine = true;
+    let mut loop_context = state_context;
+    loop_context.async_loop_control = Some(AsyncLoopControlContext {
+        continue_state,
+        break_state,
+        saved_locals: &plan.locals,
+    });
     out.push_str(&async_resume_prototype(function));
     out.push_str(" {\n");
     out.push_str(&format!(
@@ -20158,6 +20213,7 @@ fn emit_async_while_continuation_function(
     ));
     out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
     out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
+    out.push_str("    for (;;) {\n");
     out.push_str("    switch (flux__task->state) {\n");
 
     let mut outer_env = function
@@ -20196,7 +20252,7 @@ fn emit_async_while_continuation_function(
         &outer_env,
         &outer_mutable,
         temp_counter,
-        state_context,
+        loop_context,
     )?;
     out.push_str("        }\n");
 
@@ -20213,9 +20269,69 @@ fn emit_async_while_continuation_function(
         body_env,
         body_mutable,
         temp_counter,
+        loop_context,
+    )?;
+
+    out.push_str(&format!("        case {continue_state}: {{\n"));
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_async_restore_locals(
+        out,
+        pad,
+        &plan.locals,
+        &outer_env,
+        signatures,
+        function.span,
+    )?;
+    let _ = emit_async_while_iteration(
+        out,
+        function,
+        signatures,
+        plan,
+        while_plan,
+        cond,
+        body,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        loop_context,
+    )?;
+    out.push_str("        }\n");
+
+    out.push_str(&format!("        case {break_state}: {{\n"));
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_async_restore_locals(
+        out,
+        pad,
+        &plan.locals,
+        &outer_env,
+        signatures,
+        function.span,
+    )?;
+    emit_async_while_tail(
+        out,
+        function,
+        signatures,
+        while_plan,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
         state_context,
     )?;
+    out.push_str("        }\n");
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
+    out.push_str("    }\n");
     out.push_str("    }\n}\n");
     Ok(())
 }
@@ -20455,8 +20571,16 @@ fn emit_async_for_range_continuation_function(
         ));
     };
     let task_name = async_task_c_name(&function.name);
+    let continue_state = for_plan.body_await_indices.len() + 1;
+    let break_state = continue_state + 1;
     let mut state_context = context;
     state_context.async_state_machine = true;
+    let mut loop_context = state_context;
+    loop_context.async_loop_control = Some(AsyncLoopControlContext {
+        continue_state,
+        break_state,
+        saved_locals: &plan.locals,
+    });
     out.push_str(&async_resume_prototype(function));
     out.push_str(" {\n");
     out.push_str(&format!(
@@ -20464,6 +20588,7 @@ fn emit_async_for_range_continuation_function(
     ));
     out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
     out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
+    out.push_str("    for (;;) {\n");
     out.push_str("    switch (flux__task->state) {\n");
 
     let mut outer_env = function
@@ -20517,7 +20642,7 @@ fn emit_async_for_range_continuation_function(
         &outer_env,
         &outer_mutable,
         temp_counter,
-        state_context,
+        loop_context,
     )?;
     out.push_str("        }\n");
 
@@ -20535,9 +20660,74 @@ fn emit_async_for_range_continuation_function(
         body_env,
         body_mutable,
         temp_counter,
+        loop_context,
+    )?;
+
+    out.push_str(&format!("        case {continue_state}: {{\n"));
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    let mut continue_env = outer_env.clone();
+    continue_env.insert(name.clone(), Type::I64);
+    emit_async_restore_locals(
+        out,
+        pad,
+        &plan.locals,
+        &continue_env,
+        signatures,
+        function.span,
+    )?;
+    let _ = emit_async_for_range_iteration(
+        out,
+        function,
+        signatures,
+        plan,
+        for_plan,
+        name,
+        body,
+        *inclusive,
+        "flux__task->saved_flux__async_range_end",
+        true,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        loop_context,
+    )?;
+    out.push_str("        }\n");
+
+    out.push_str(&format!("        case {break_state}: {{\n"));
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_async_restore_locals(
+        out,
+        pad,
+        &plan.locals,
+        &outer_env,
+        signatures,
+        function.span,
+    )?;
+    emit_async_for_range_tail(
+        out,
+        function,
+        signatures,
+        for_plan,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
         state_context,
     )?;
+    out.push_str("        }\n");
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
+    out.push_str("    }\n");
     out.push_str("    }\n}\n");
     Ok(())
 }
@@ -21334,6 +21524,7 @@ fn emit_function(
         dead_let_binding_spans: &dead_let_binding_spans,
         dead_definition_names: &dead_definition_names,
         async_state_machine: false,
+        async_loop_control: None,
     };
     if function.asynchronous
         && let Some(plan) = async_continuation_plan(function, signatures)
@@ -21380,6 +21571,13 @@ fn emit_function(
 }
 
 #[derive(Clone, Copy)]
+struct AsyncLoopControlContext<'a> {
+    continue_state: usize,
+    break_state: usize,
+    saved_locals: &'a [(String, Type)],
+}
+
+#[derive(Clone, Copy)]
 struct BlockEmitContext<'a> {
     current_function: &'a Function,
     source_paths: &'a HashMap<SourceId, String>,
@@ -21389,6 +21587,16 @@ struct BlockEmitContext<'a> {
     dead_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
     async_state_machine: bool,
+    async_loop_control: Option<AsyncLoopControlContext<'a>>,
+}
+
+impl BlockEmitContext<'_> {
+    fn without_async_loop_control(self) -> Self {
+        Self {
+            async_loop_control: None,
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -23344,8 +23552,42 @@ fn emit_block(
                     out.push_str(&format!("{pad}return {temp};\n"));
                 }
             }
-            StmtKind::Break => out.push_str(&format!("{pad}break;\n")),
-            StmtKind::Continue => out.push_str(&format!("{pad}continue;\n")),
+            StmtKind::Break => {
+                if let Some(loop_control) = context.async_loop_control {
+                    emit_async_save_locals(
+                        out,
+                        &pad,
+                        loop_control.saved_locals,
+                        env,
+                        signatures,
+                        stmt.span,
+                    )?;
+                    out.push_str(&format!(
+                        "{pad}flux__task->state = {};\n{pad}continue;\n",
+                        loop_control.break_state
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}break;\n"));
+                }
+            }
+            StmtKind::Continue => {
+                if let Some(loop_control) = context.async_loop_control {
+                    emit_async_save_locals(
+                        out,
+                        &pad,
+                        loop_control.saved_locals,
+                        env,
+                        signatures,
+                        stmt.span,
+                    )?;
+                    out.push_str(&format!(
+                        "{pad}flux__task->state = {};\n{pad}continue;\n",
+                        loop_control.continue_state
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}continue;\n"));
+                }
+            }
             StmtKind::Expr(expr) => {
                 let value = emit_expr(expr, env, signatures)?;
                 out.push_str(&format!("{pad}{};\n", value.code));
@@ -23605,7 +23847,7 @@ fn emit_block(
                     &mut nested_mutable,
                     signatures,
                     temp_counter,
-                    context,
+                    context.without_async_loop_control(),
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -23667,7 +23909,7 @@ fn emit_block(
                     &mut nested_mutable,
                     signatures,
                     temp_counter,
-                    context,
+                    context.without_async_loop_control(),
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -23728,7 +23970,7 @@ fn emit_block(
                     &mut nested_mutable,
                     signatures,
                     temp_counter,
-                    context,
+                    context.without_async_loop_control(),
                 )?;
                 out.push_str(&format!("{pad}}}\n"));
             }
