@@ -16418,6 +16418,7 @@ struct AsyncContinuationPlan {
     resume_locals: Vec<(String, Type)>,
     mutable: HashSet<String>,
     branch_await: Option<AsyncBranchAwaitPlan>,
+    nested_branch_await: Option<AsyncNestedBranchAwaitPlan>,
     while_await: Option<AsyncWhileAwaitPlan>,
     for_range_await: Option<AsyncForRangeAwaitPlan>,
     match_await: Option<AsyncMatchAwaitPlan>,
@@ -16431,6 +16432,11 @@ struct AsyncBranchAwaitPlan {
     condition_await: bool,
     then_await_indices: Vec<usize>,
     else_await_indices: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct AsyncNestedBranchAwaitPlan {
+    statement_index: usize,
 }
 
 #[derive(Clone)]
@@ -16767,6 +16773,53 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
             else_await_indices,
         })
     }
+}
+
+fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBranchAwaitPlan> {
+    let await_statements = function
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .collect::<Vec<_>>();
+    let [statement_index] = await_statements.as_slice() else {
+        return None;
+    };
+    let statement_index = *statement_index;
+    let StmtKind::If {
+        cond,
+        binding,
+        body,
+        else_body,
+        ..
+    } = &function.body[statement_index].kind
+    else {
+        return None;
+    };
+    if binding.is_some()
+        || expr_contains_await(cond)
+        || body.iter().any(stmt_contains_await)
+        || else_body.len() != 1
+    {
+        return None;
+    }
+    let StmtKind::If {
+        cond: nested_cond,
+        body: nested_body,
+        else_body: nested_else_body,
+        ..
+    } = &else_body[0].kind
+    else {
+        return None;
+    };
+    if !expr_contains_await(nested_cond)
+        || nested_body.iter().any(stmt_contains_await)
+        || nested_else_body.iter().any(stmt_contains_await)
+    {
+        return None;
+    }
+    direct_await_call(nested_cond)?;
+    Some(AsyncNestedBranchAwaitPlan { statement_index })
 }
 
 fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
@@ -17351,10 +17404,15 @@ fn async_continuation_plan(
     let mut resume_locals = BTreeMap::<String, Type>::new();
     let mut mutable = HashSet::new();
     let branch_await = async_branch_await_plan(function);
+    let nested_branch_await = branch_await
+        .is_none()
+        .then(|| async_nested_branch_await_plan(function))
+        .flatten();
     let while_await = branch_await
         .is_none()
-        .then(|| async_while_await_plan(function))
-        .flatten();
+        .then_some(())
+        .filter(|_| nested_branch_await.is_none())
+        .and_then(|_| async_while_await_plan(function));
     let for_range_await = branch_await
         .is_none()
         .then_some(())
@@ -17381,6 +17439,7 @@ fn async_continuation_plan(
         })
         .and_then(|_| async_coalescing_await_plan(function));
     let straight_line_awaits = branch_await.is_none()
+        && nested_branch_await.is_none()
         && while_await.is_none()
         && for_range_await.is_none()
         && match_await.is_none()
@@ -17391,6 +17450,7 @@ fn async_continuation_plan(
         .iter()
         .any(|stmt| stmt_contains_await(stmt) && direct_await_expr(stmt).is_none())
         && branch_await.is_none()
+        && nested_branch_await.is_none()
         && while_await.is_none()
         && for_range_await.is_none()
         && match_await.is_none()
@@ -17404,6 +17464,9 @@ fn async_continuation_plan(
         let specially_lowered = branch_await
             .as_ref()
             .is_some_and(|branch| branch.statement_index == stmt_index)
+            || nested_branch_await
+                .as_ref()
+                .is_some_and(|branch| branch.statement_index == stmt_index)
             || while_await
                 .as_ref()
                 .is_some_and(|while_plan| while_plan.statement_index == stmt_index)
@@ -17428,6 +17491,43 @@ fn async_continuation_plan(
             }
         }
 
+        if nested_branch_await
+            .as_ref()
+            .is_some_and(|branch| branch.statement_index == stmt_index)
+        {
+            let StmtKind::If {
+                cond, else_body, ..
+            } = &stmt.kind
+            else {
+                return None;
+            };
+            if optional_presence_promotion(cond, &env, &mutable, signatures)
+                .is_some_and(|(_, _, present_in_then)| !present_in_then)
+            {
+                return None;
+            }
+            let [nested_stmt] = else_body.as_slice() else {
+                return None;
+            };
+            let StmtKind::If {
+                cond: nested_cond,
+                binding: nested_binding,
+                ..
+            } = &nested_stmt.kind
+            else {
+                return None;
+            };
+            if nested_binding.is_some() {
+                let Type::Optional(inner) = signatures
+                    .canonical_type(&typecheck::type_of_expr(nested_cond, &env, signatures).ok()?)
+                else {
+                    return None;
+                };
+                if !async_continuation_state_type(signatures, &inner) {
+                    return None;
+                }
+            }
+        }
         if let Some(branch) = branch_await
             .as_ref()
             .filter(|branch| branch.statement_index == stmt_index)
@@ -17706,6 +17806,7 @@ fn async_continuation_plan(
         resume_locals: resume_locals.into_iter().collect(),
         mutable,
         branch_await,
+        nested_branch_await,
         while_await,
         for_range_await,
         match_await,
@@ -21665,6 +21766,298 @@ fn emit_async_branch_resume_states(
     Ok(())
 }
 
+fn emit_async_nested_branch_tail(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    branch: &AsyncNestedBranchAwaitPlan,
+    outer_env: &HashMap<String, Type>,
+    outer_mutable: &HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+    depth: usize,
+) -> Result<(), Diagnostic> {
+    let pad = "    ".repeat(depth);
+    let mut tail_env = outer_env.clone();
+    let mut tail_mutable = outer_mutable.clone();
+    emit_block(
+        out,
+        &function.body[branch.statement_index + 1..],
+        depth,
+        &mut tail_env,
+        &mut tail_mutable,
+        signatures,
+        temp_counter,
+        context,
+    )?;
+    if function.returns.is_empty() {
+        out.push_str(&format!(
+            "{pad}{}(flux__task);\n{pad}return;\n",
+            async_finish_c_name(&function.name)
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+        ));
+    }
+    Ok(())
+}
+
+fn emit_async_nested_branch_continuation_function(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    branch: &AsyncNestedBranchAwaitPlan,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let StmtKind::If {
+        cond,
+        binding: None,
+        body,
+        else_body,
+        ..
+    } = &function.body[branch.statement_index].kind
+    else {
+        return Err(diag(
+            function.body[branch.statement_index].span,
+            "async nested-branch continuation plan no longer points at a plain if statement",
+        ));
+    };
+    let [nested_stmt] = else_body.as_slice() else {
+        return Err(diag(
+            function.body[branch.statement_index].span,
+            "async nested-branch continuation plan lost its nested branch",
+        ));
+    };
+    let StmtKind::If {
+        cond: nested_cond,
+        binding: nested_binding,
+        body: nested_body,
+        else_body: nested_else_body,
+        ..
+    } = &nested_stmt.kind
+    else {
+        return Err(diag(
+            nested_stmt.span,
+            "async nested-branch continuation plan no longer points at a nested if statement",
+        ));
+    };
+
+    let task_name = async_task_c_name(&function.name);
+    let mut state_context = context;
+    state_context.async_state_machine = true;
+    out.push_str(&async_resume_prototype(function));
+    out.push_str(" {\n");
+    out.push_str(&format!(
+        "    struct {task_name} *flux__task = (struct {task_name} *)flux__context;\n"
+    ));
+    out.push_str("    if (flux__task == NULL) { fputs(\"Flux runtime error: invalid async continuation context\\n\", stderr); abort(); }\n");
+    out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
+    out.push_str("    switch (flux__task->state) {\n");
+
+    let mut env = function
+        .params
+        .iter()
+        .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+        .collect::<HashMap<_, _>>();
+    let mut mutable = plan.mutable.clone();
+    let pad = "            ";
+    out.push_str("        case 0: {\n");
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_block(
+        out,
+        &function.body[..branch.statement_index],
+        3,
+        &mut env,
+        &mut mutable,
+        signatures,
+        temp_counter,
+        state_context,
+    )?;
+    let outer_env = env.clone();
+    let outer_mutable = mutable.clone();
+    let promotion = optional_presence_promotion(cond, &env, &mutable, signatures).map(
+        |(name, inner, present_in_then)| {
+            let temp = format!("flux__optional_promotion_{}", *temp_counter);
+            *temp_counter += 1;
+            (name, inner, present_in_then, temp)
+        },
+    );
+    let condition = if let Some((name, inner, present_in_then, temp)) = &promotion {
+        let optional_ty = Type::Optional(Box::new(inner.clone()));
+        out.push_str(&format!(
+            "{pad}{} {temp} = {};\n",
+            c_type(&optional_ty, signatures),
+            local_c_name(name)
+        ));
+        if *present_in_then {
+            format!("{temp}.has_value")
+        } else {
+            format!("!{temp}.has_value")
+        }
+    } else {
+        let condition = emit_expr(cond, &env, signatures)?;
+        if signatures.canonical_type(&condition.ty) != Type::Bool {
+            return Err(diag(
+                cond.span,
+                "async nested branch requires a boolean outer condition",
+            ));
+        }
+        c_condition(&condition.code)
+    };
+    out.push_str(&format!("{pad}if ({condition}) {{\n"));
+    let mut then_env = outer_env.clone();
+    let mut then_mutable = outer_mutable.clone();
+    if let Some((name, inner, true, temp)) = &promotion {
+        out.push_str(&format!(
+            "{pad}    {} {} = {temp}.value;\n",
+            c_type(inner, signatures),
+            local_c_name(name)
+        ));
+        then_env.insert(name.clone(), inner.clone());
+    }
+    emit_block(
+        out,
+        body,
+        4,
+        &mut then_env,
+        &mut then_mutable,
+        signatures,
+        temp_counter,
+        state_context,
+    )?;
+    emit_async_nested_branch_tail(
+        out,
+        function,
+        signatures,
+        branch,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        state_context,
+        4,
+    )?;
+    out.push_str(&format!("{pad}}} else {{\n"));
+    emit_source_line(out, nested_cond.span, context.source_paths);
+    emit_async_suspend_expr(
+        out,
+        "                ",
+        nested_cond,
+        nested_cond.span,
+        1,
+        function,
+        plan,
+        &outer_env,
+        signatures,
+    )?;
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str("        }\n");
+
+    out.push_str("        case 1: {\n");
+    for (index, param) in function.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}{} {} = flux__task->arg_{index};\n",
+            c_type(&param.ty, signatures),
+            local_c_name(&param.name)
+        ));
+    }
+    emit_async_restore_locals(
+        out,
+        pad,
+        &plan.locals,
+        &outer_env,
+        signatures,
+        nested_cond.span,
+    )?;
+    let mut nested_then_env = outer_env.clone();
+    let mut nested_then_mutable = outer_mutable.clone();
+    let mut nested_else_env = outer_env.clone();
+    let mut nested_else_mutable = outer_mutable.clone();
+    let nested_condition = if let Some(binding) = nested_binding {
+        let (temp, inner) = emit_async_completed_optional_await(
+            out,
+            pad,
+            nested_cond,
+            function,
+            signatures,
+            temp_counter,
+        )?;
+        if binding.name != "_" {
+            out.push_str(&format!(
+                "{pad}if ({temp}.has_value) {{\n{pad}    {} {} = {temp}.value;\n",
+                c_type(&inner, signatures),
+                local_c_name(&binding.name)
+            ));
+            nested_then_env.insert(binding.name.clone(), inner);
+            None
+        } else {
+            Some(format!("{temp}.has_value"))
+        }
+    } else {
+        Some(emit_async_completed_bool_await(
+            out,
+            pad,
+            nested_cond,
+            function,
+            signatures,
+            temp_counter,
+        )?)
+    };
+    if let Some(nested_condition) = nested_condition {
+        out.push_str(&format!("{pad}if ({nested_condition}) {{\n"));
+    }
+    emit_block(
+        out,
+        nested_body,
+        4,
+        &mut nested_then_env,
+        &mut nested_then_mutable,
+        signatures,
+        temp_counter,
+        state_context,
+    )?;
+    out.push_str(&format!("{pad}}}"));
+    if nested_else_body.is_empty() {
+        out.push('\n');
+    } else {
+        out.push_str(" else {\n");
+        emit_block(
+            out,
+            nested_else_body,
+            4,
+            &mut nested_else_env,
+            &mut nested_else_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+        out.push_str(&format!("{pad}}}\n"));
+    }
+    emit_async_nested_branch_tail(
+        out,
+        function,
+        signatures,
+        branch,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        state_context,
+        3,
+    )?;
+    out.push_str("        }\n");
+    out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
+    out.push_str("    }\n}\n");
+    Ok(())
+}
+
 fn emit_async_branch_continuation_function(
     out: &mut String,
     function: &Function,
@@ -23961,6 +24354,17 @@ fn emit_async_continuation_function(
 ) -> Result<(), Diagnostic> {
     if let Some(branch) = &plan.branch_await {
         return emit_async_branch_continuation_function(
+            out,
+            function,
+            signatures,
+            plan,
+            branch,
+            temp_counter,
+            context,
+        );
+    }
+    if let Some(branch) = &plan.nested_branch_await {
+        return emit_async_nested_branch_continuation_function(
             out,
             function,
             signatures,

@@ -41022,6 +41022,163 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_awaited_nested_branch_conditions_suspend_without_blocking_worker() {
+    let source = r#"
+async fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+async fn maybe(value: i64, present: bool) -> i64? {
+    if present:
+        return value
+    return none
+}
+
+async fn chooseBool(first: bool, value: i64) -> i64 {
+    var total: i64 = 0
+    if first:
+        total = 10
+    elif await positive(value):
+        total = 20
+    else:
+        total = 30
+    return total
+}
+
+async fn chooseOptional(first: bool, present: bool) -> i64 {
+    var total: i64 = 0
+    if first:
+        total = 1
+    elif let value = await maybe(40, present):
+        total = value + 1
+    else:
+        total = 3
+    return total
+}
+
+async fn choosePromoted(value: i64?) -> i64 {
+    var total: i64 = 0
+    if value != none:
+        total = value + 1
+    elif await positive(1):
+        total = 7
+    else:
+        total = 9
+    return total
+}
+
+async fn main() -> i64 {
+    let first: i64 = await chooseBool(true, -1)
+    let nested: i64 = await chooseBool(false, 1)
+    let fallback: i64 = await chooseBool(false, -1)
+    let present: i64 = await chooseOptional(false, true)
+    let missing: i64 = await chooseOptional(false, false)
+    let promoted: i64 = await choosePromoted(4)
+    let promotedFallback: i64 = await choosePromoted(none)
+    return first + nested + fallback + present + missing + promoted + promotedFallback
+}
+"#;
+
+    check_source(source).expect("awaited nested branch conditions should typecheck");
+    let generated = compile_to_c(source)
+        .expect("awaited nested branch conditions should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_chooseBool"));
+    assert!(generated.contains("flux__async_resume_chooseOptional"));
+    assert!(generated.contains("flux__async_resume_choosePromoted"));
+    assert!(generated.contains("flux__async_start_cont_positive"));
+    assert!(generated.contains("flux__async_start_cont_maybe"));
+    assert!(generated.contains("flux__async_optional_condition_"));
+    assert!(!generated.contains("flux__async_body_chooseBool("));
+    assert!(!generated.contains("flux__async_body_chooseOptional("));
+    assert!(!generated.contains("flux__async_body_choosePromoted("));
+    assert!(!generated.contains("flux__async_await_positive(flux__async_start_positive"));
+    assert!(!generated.contains("flux__async_await_maybe(flux__async_start_maybe"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-nested-branch-condition-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("nested branch async fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-nested-branch-condition");
+    fs::write(&source_path, source).expect("nested branch async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("nested branch async binary should build");
+    assert!(
+        built.status.success(),
+        "nested branch async build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("nested branch async binary should run");
+    assert_eq!(status.code(), Some(116));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn async_nested_branch_else_promotion_keeps_safe_blocking_fallback() {
+    let source = r#"
+async fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+async fn choose(value: i64?) -> i64 {
+    if value == none:
+        return 1
+    elif await positive(value):
+        return value + 1
+    return 0
+}
+
+async fn main() -> i64 {
+    return await choose(5)
+}
+"#;
+
+    check_source(source)
+        .expect("else-side optional promotion around nested await should typecheck");
+    let generated = compile_to_c(source)
+        .expect("ownership-sensitive nested promotion should retain the safe fallback");
+    assert!(generated.contains("flux__async_body_choose("));
+    assert!(generated.contains("flux__async_await_positive(flux__async_start_positive"));
+    assert!(!generated.contains("flux__async_resume_choose"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-nested-promotion-fallback-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("nested promotion fallback fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-nested-promotion-fallback");
+    fs::write(&source_path, source).expect("nested promotion fallback source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("nested promotion fallback binary should build");
+    assert!(
+        built.status.success(),
+        "nested promotion fallback build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("nested promotion fallback binary should run");
+    assert_eq!(status.code(), Some(6));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn supports_explicit_mutable_bindings_and_while_loops() {
     let source = r#"
 fn main() -> i64 {
