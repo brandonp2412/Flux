@@ -983,6 +983,13 @@ fn validate_android_binding_availability(generated_c: &str, min_sdk: u32) -> Res
 }
 
 fn compile_web_html(target: &Path) -> Result<String, CliError> {
+    compile_web_html_with_wasm(target, fluxc::web::WasmPolicy::Never)
+}
+
+fn compile_web_html_with_wasm(
+    target: &Path,
+    wasm_policy: fluxc::web::WasmPolicy,
+) -> Result<String, CliError> {
     let sources = validate_project(target)?;
     let analysis = match fluxc::project::analyze(target) {
         Ok(analysis) => analysis,
@@ -991,7 +998,7 @@ fn compile_web_html(target: &Path) -> Result<String, CliError> {
             return Err(CliError::Reported);
         }
     };
-    match fluxc::web::emit_html(&analysis.program) {
+    match fluxc::web::emit_html_with_wasm(&analysis.program, wasm_policy) {
         Ok(generated) => Ok(generated),
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);
@@ -1000,15 +1007,72 @@ fn compile_web_html(target: &Path) -> Result<String, CliError> {
     }
 }
 
+fn web_build_options(
+    args: &[String],
+) -> Result<(Option<PathBuf>, fluxc::web::WasmPolicy), CliError> {
+    let mut output = None;
+    let mut wasm = fluxc::web::WasmPolicy::Never;
+    let mut wasm_seen = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err(CliError::Message(
+                        "output path may only be specified once".to_string(),
+                    ));
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliError::Message(
+                        "'-o' requires an output path".to_string(),
+                    ));
+                };
+                output = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--wasm" => {
+                if wasm_seen {
+                    return Err(CliError::Message(
+                        "web WASM policy may only be specified once".to_string(),
+                    ));
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliError::Message(
+                        "'--wasm' requires never, auto, or always".to_string(),
+                    ));
+                };
+                wasm = match value.as_str() {
+                    "never" => fluxc::web::WasmPolicy::Never,
+                    "auto" => fluxc::web::WasmPolicy::Auto,
+                    "always" => fluxc::web::WasmPolicy::Always,
+                    _ => {
+                        return Err(CliError::Message(format!(
+                            "unknown web WASM policy '{value}'; expected never, auto, or always"
+                        )));
+                    }
+                };
+                wasm_seen = true;
+                index += 2;
+            }
+            other => {
+                return Err(CliError::Message(format!(
+                    "unknown web build option '{other}'; expected -o or --wasm"
+                )));
+            }
+        }
+    }
+    Ok((output, wasm))
+}
+
 fn package_web_command(args: &[String]) -> Result<(), CliError> {
     let Some(target_value) = args.first() else {
         return Err(CliError::Message(
-            "web package syntax is 'package web <file.flux|package-dir|flux.toml> [-o directory]'"
+            "web package syntax is 'package web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always]'"
                 .to_string(),
         ));
     };
     let target = Path::new(target_value);
-    let output_override = output_path(&args[1..])?;
+    let (output_override, wasm_policy) = web_build_options(&args[1..])?;
     let output = if let Some(output) = output_override {
         output
     } else if target.is_dir()
@@ -1051,7 +1115,7 @@ fn package_web_command(args: &[String]) -> Result<(), CliError> {
             output.display()
         )));
     }
-    let generated = compile_web_html(target)?;
+    let generated = compile_web_html_with_wasm(target, wasm_policy)?;
     fs::create_dir_all(&output)
         .map_err(|error| format!("failed to create '{}': {error}", output.display()))?;
     let index = output.join("index.html");
@@ -1069,12 +1133,13 @@ fn package_web_command(args: &[String]) -> Result<(), CliError> {
 fn build_web_command(args: &[String]) -> Result<(), CliError> {
     let Some(target) = args.first() else {
         return Err(CliError::Message(
-            "web build syntax is 'build web <file.flux|package-dir|flux.toml> [-o directory]'"
+            "web build syntax is 'build web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always]'"
                 .to_string(),
         ));
     };
     let target = Path::new(target);
-    let output = output_path(&args[1..])?.unwrap_or_else(|| {
+    let (output_override, wasm_policy) = web_build_options(&args[1..])?;
+    let output = output_override.unwrap_or_else(|| {
         if target.is_dir() {
             target.join("build/web")
         } else {
@@ -1084,7 +1149,7 @@ fn build_web_command(args: &[String]) -> Result<(), CliError> {
                 .join("build/web")
         }
     });
-    let generated = compile_web_html(target)?;
+    let generated = compile_web_html_with_wasm(target, wasm_policy)?;
     if output.exists() && !output.is_dir() {
         return Err(CliError::Message(format!(
             "web output '{}' exists and is not a directory",
@@ -8856,7 +8921,7 @@ fn usage() -> String {
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),
         &format!(
-        " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] | {command} build android <package-dir|flux.toml>"
+        " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always] | {command} build android <package-dir|flux.toml>"
         ),
     )
     .replace(
@@ -8880,7 +8945,7 @@ fn usage() -> String {
     .replace(
         &format!(" | {command} publish android <package-dir|flux.toml>"),
         &format!(
-            " | {command} package web <file.flux|package-dir|flux.toml> [-o directory] | {command} publish android <package-dir|flux.toml>"
+            " | {command} package web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always] | {command} publish android <package-dir|flux.toml>"
         ),
     )
     .replace(
@@ -9233,6 +9298,30 @@ app OverlayDemo(title: "Overlay")
             Some(std::path::Path::new("symbols"))
         );
         assert!(split_symbols_options(&["app".to_string(), "--bad".to_string()]).is_err());
+    }
+
+    #[test]
+    fn web_build_options_support_explicit_wasm_policy() {
+        let defaults = super::web_build_options(&[]).expect("web defaults should parse");
+        assert!(defaults.0.is_none());
+        assert_eq!(defaults.1, crate::web::WasmPolicy::Never);
+
+        let automatic = super::web_build_options(&[
+            "--wasm".to_string(),
+            "auto".to_string(),
+            "-o".to_string(),
+            "dist".to_string(),
+        ])
+        .expect("automatic WASM options should parse");
+        assert_eq!(automatic.0.as_deref(), Some(std::path::Path::new("dist")));
+        assert_eq!(automatic.1, crate::web::WasmPolicy::Auto);
+
+        let forced = super::web_build_options(&["--wasm".to_string(), "always".to_string()])
+            .expect("forced WASM options should parse");
+        assert_eq!(forced.1, crate::web::WasmPolicy::Always);
+        assert!(
+            super::web_build_options(&["--wasm".to_string(), "sometimes".to_string()]).is_err()
+        );
     }
 
     #[test]

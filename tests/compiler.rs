@@ -24294,7 +24294,9 @@ fn web_cli_builds_native_dom_bundle() {
     let source = root.join("main.flux");
     fs::write(
         &source,
-        r#"view UnusedWebView {
+        r#"fn triple(value: i64) -> i64 { value * 3 }
+
+view UnusedWebView {
     grid columns: 1fr
     grid rows: auto
 
@@ -24309,7 +24311,7 @@ view WebDemo {
 
     Text status at 1,1
         text: "Responsive"
-        visible: windowIsExpanded || active
+        visible: triple(windowWidth) > 0 && (windowIsExpanded || active)
         accessibilityLabel: "Status"
 
     Button toggle at 2,1
@@ -24339,6 +24341,8 @@ app WebDemo(title: "Flux Web")
     assert!(html.contains("<button id=\"flux-toggle\""));
     assert!(html.contains("grid-template-columns:1fr"));
     assert!(html.contains("fluxEnv(\"windowIsExpanded\")"));
+    assert!(html.contains("function fluxFn_triple(value){return (value * 3);}"));
+    assert!(!html.contains("WebAssembly.Module"));
     assert!(html.contains("setAttribute('aria-label'"));
     assert!(html.contains("addEventListener('click'"));
     assert!(!html.contains("canvas"));
@@ -24350,6 +24354,31 @@ app WebDemo(title: "Flux Web")
             .count(),
         1,
         "production web build should be a self-contained single-file bundle"
+    );
+
+    let wasm_dir = root.join("wasm-dist");
+    let wasm_build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", "web"])
+        .arg(&source)
+        .args(["--wasm", "auto", "-o"])
+        .arg(&wasm_dir)
+        .output()
+        .expect("automatic WASM web build should run");
+    assert!(
+        wasm_build.status.success(),
+        "automatic WASM web build failed: {}",
+        String::from_utf8_lossy(&wasm_build.stderr)
+    );
+    let wasm_html = fs::read_to_string(wasm_dir.join("index.html"))
+        .expect("automatic WASM build should emit index.html");
+    assert!(wasm_html.contains("new WebAssembly.Module(fluxWasmBytes)"));
+    assert!(wasm_html.contains("fluxWasm.exports[\"triple\"]"));
+    assert_eq!(
+        fs::read_dir(&wasm_dir)
+            .expect("automatic WASM output directory should be readable")
+            .count(),
+        1,
+        "optional WASM should remain a self-contained single-file web artifact"
     );
 
     let deployment_dir = root.join("deployment");
